@@ -46,50 +46,104 @@ int lambda_pol_toy_model(){
 // Constant from Phys. Rev. D 110, 030001 - Published 1 August, 2024, i.e.: https://journals.aps.org/prd/pdf/10.1103/PhysRevD.110.030001
     // Declared both the constant and the function as inline-able objects, so that sampling can take as short a time as possible.
 constexpr double PI = 3.14159265358979323846;
-inline double P_angle_proton(double xi_star, double alpha_H, double P_Lambda) {
+constexpr double alpha_H = 0.747; // Fixed as a constant, just for this toy model!
+inline double P_angle_proton(double xi_star, double P_Lambda){
     return (1.0 / PI) * (1.0 + alpha_H * P_Lambda * std::cos(xi_star));
 }
 
 // Now the actual sampler function -- The goal is to sample an angle given a P(angle) function.
     // Will use a rejection sampling for quick samples!
-    // Will store the samples inside the samples vector.
-void sample_P_angle_proton(std::vector<double> &samples, double alpha_H, double P_Lambda) {
-    std::mt19937 rng {std::random_device{}()}; // Creates a random_device object (temporary) with the uniform initialization on newer C++ (the "{}"),
-                                               // then calls it with () getting a random seed, and then that seed is passed to the random engine.
+    // Will pass P_Lambda_vec, a vector with many different Lambda polarizations, and retrieve a samples vector from it.
+    // Usage example:
+    // std::vector<double> P_Lambda_vec = {0.2, 0.5, -0.3, 0.0, 1.0};  // One P_Lambda per particle
+    // auto angles = sample_P_angle_proton_for_each_PLambda(P_Lambda_vec);
+std::vector<double> sample_P_angle_proton(const std::vector<double> &P_Lambda_vec){
+    std::vector<double> samples;
+    samples.reserve(P_Lambda_vec.size());  // Reserve space for performance
+
+    std::mt19937 rng {std::random_device{}()};  // Creates a random_device object (temporary) with the uniform initialization on newer C++ (the "{}"),
+                                                // then calls it with () getting a random seed, and then that seed is passed to the random engine.
 
     // Uniform distribution for angle xi_star between 0 and pi
     std::uniform_real_distribution<double> dist_x(0.0, PI);
 
-    // We compute P_max (the maximum possible value of P(x))
-    // This occurs at x = 0 or x = pi depending on sign of cos(x) term
-    double P_max = (1.0 / PI) * (1.0 + std::abs(alpha_H * P_Lambda));
+    // Loop over all provided P_Lambda values
+    for (double P_Lambda : P_Lambda_vec){
+        // Compute P_max (the maximum possible value of P(x))
+        // This occurs at x = 0 or x = pi depending on sign of cos(x) term
+        double P_max = (1.0 / PI) * (1.0 + std::abs(alpha_H * P_Lambda));
 
-    // Uniform distribution for y between 0 and P_max
-    // This is used for the rejection sampling step
-    std::uniform_real_distribution<double> dist_y(0.0, P_max);
+        // Uniform distribution for y between 0 and P_max
+        // This is used for the rejection sampling step
+        std::uniform_real_distribution<double> dist_y(0.0, P_max);
 
-    size_t N_part = samples.size();  // Number of particles (or samples) we want to generate
-    size_t i = 0;                    // Counter for accepted samples
+        // Rejection sampling loop — generate one sample for this P_Lambda
+        while (true){
+            // Propose an x uniformly in [0, pi]
+            double x = dist_x(rng);
 
-    // Rejection sampling loop
-    while (i < N_part) {
-        // Propose an x uniformly in [0, pi]
-        double x = dist_x(rng);
+            // Propose a y uniformly in [0, P_max]
+            double y = dist_y(rng);  // Draws from the maximum value distribution independently.
+                                     // This makes it so that we always follow the appropriate limit and have correctly weighted samples of x(!)
 
-        // Propose a y uniformly in [0, P_max]
-        double y = dist_y(rng); // Draws from the maximum value distribution independently.
-                                // This makes it so that we always follow the appropriate limit and have correctly weighted samples of x(!)
+            // Compute the actual probability density at x
+            double px = P_angle_proton(x, P_Lambda);
 
-        // Compute the actual probability density at x
-        double px = P_angle_proton(x, alpha_H, P_Lambda);
-
-        // Accept x if y < P(x). This ensures samples are distributed according to P(x): larger P(x) values will be accepted more easily!
-        if (y < px) {
-            samples[i++] = x;  // Store accepted x and increment sample counter
+            // Accept x if y < P(x). This ensures samples are distributed according to P(x): larger P(x) values will be accepted more easily!
+            if (y < px){
+                samples.push_back(x);  // Store accepted x
+                break;                // Done with this P_Lambda, move to next
+            }
+            // Otherwise, reject and try again
         }
-        // Otherwise, reject and try again
     }
+    return samples;
 }
+
+
+// Another version, that could sample the whole distribution from the same P_Lambda value (not quite what I want: one sample per each P_Lambda value)
+// std::vector<double> sample_P_angle_proton_multiple_times(size_t N_part, double P_Lambda){
+//     std::vector<double> samples;
+//     samples.reserve(N_part); // Reserve space for performance
+
+//     std::mt19937 rng {std::random_device{}()}; // Creates a random_device object (temporary) with the uniform initialization on newer C++ (the "{}"),
+//                                                // then calls it with () getting a random seed, and then that seed is passed to the random engine.
+
+//     // Uniform distribution for angle xi_star between 0 and pi
+//     std::uniform_real_distribution<double> dist_x(0.0, PI);
+
+//     // We compute P_max (the maximum possible value of P(x))
+//     // This occurs at x = 0 or x = pi depending on sign of cos(x) term
+//     double P_max = (1.0 / PI) * (1.0 + std::abs(alpha_H * P_Lambda));
+
+//     // Uniform distribution for y between 0 and P_max
+//     // This is used for the rejection sampling step
+//     std::uniform_real_distribution<double> dist_y(0.0, P_max);
+
+//     size_t N_part = samples.size();  // Number of particles (or samples) we want to generate
+//     size_t i = 0;                    // Counter for accepted samples
+
+//     // Rejection sampling loop
+//     while (i < N_part){
+//         // Propose an x uniformly in [0, pi]
+//         double x = dist_x(rng);
+
+//         // Propose a y uniformly in [0, P_max]
+//         double y = dist_y(rng); // Draws from the maximum value distribution independently.
+//                                 // This makes it so that we always follow the appropriate limit and have correctly weighted samples of x(!)
+
+//         // Compute the actual probability density at x
+//         double px = P_angle_proton(x, alpha_H, P_Lambda);
+
+//         // Accept x if y < P(x). This ensures samples are distributed according to P(x): larger P(x) values will be accepted more easily!
+//         if (y < px){
+//             // samples[i++] = x;  // Store accepted x and increment sample counter
+//             samples.push_back(x); // Store accepted x in the new non-predefined vector
+//             i++;
+//         }
+//         // Otherwise, reject and try again
+//     }
+// }
 
 /////////////////////////////////
 /// Defining getter functions ///
