@@ -85,7 +85,7 @@ void sample_P_angle_proton(std::vector<double> &samples, double alpha_H, double 
 
         // Accept x if y < P(x). This ensures samples are distributed according to P(x): larger P(x) values will be accepted more easily!
         if (y < px) {
-            // samples[i++] = x;  // Store accepted x and increment sample counter
+            samples[i++] = x;  // Store accepted x and increment sample counter
         }
         // Otherwise, reject and try again
     }
