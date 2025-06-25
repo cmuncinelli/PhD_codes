@@ -178,20 +178,26 @@ std::pair<std::vector<double>, std::vector<double>> sample_P_angle_proton(const 
 // Initially, I will only calculate polarization in the 3 directions of the lab frame, to compare with what Vitor's code had as an output (Maybe by comparing those 4-
 // dimensional histograms' slices), but later on it could be interesting to calculate
 
-TLorentzVector Lambda_decay(TLorentzVector Lambda_4_momentum_lab, TVector3 P_Lambda_lab, double xi_star, double phi_star){
-    ////////////////////
-    //// 1 - Boosting the polarization to the lambda rest frame:
-    ////////////////////
-    TVector3 beta_inverse = -Lambda_4_momentum_lab.BoostVector();
-    TLorentzVector P_Lambda_lab_4vec(P_Lambda_lab.X(), P_Lambda_lab.Y(), P_Lambda_lab.Z(), 0); // TLorentzVectors have boost properties!
-
-    TLorentzVector P_Lambda_star_4vec = P_Lambda_lab_4vec;
-    P_Lambda_star_4vec.Boost(beta_inverse); // This boosts the P_Lambda_star_4vec into the rest frame.
-
-    // Getting just the 3 needed components of this vector, in a shorter form for the function.
-        // Also, only the spatial part is what matters in this case
-    TVector3 P_Lambda_star = P_Lambda_star_4vec.Vect();
+TLorentzVector Lambda_decay(TLorentzVector Lambda_4_momentum_lab, TVector3 P_Lambda_star, double xi_star, double phi_star){
     
+    // Rewrote the code to accept a P_Lambda vector already in the rest frame of the Lambda, so no need of the following block:
+        // This makes it so that we only have to calculate the Lorentz boost of this quantity once for both Lambda_decay and P_angle_proton, instead of one for each.
+        // Will use this section's logic for the actual Lambda polarization boost from the lab frame to the Lambda rest frame
+    //////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // ////////////////////
+    // //// 1 - Boosting the polarization to the lambda rest frame:
+    // ////////////////////
+    //
+    // TVector3 beta_inverse = -Lambda_4_momentum_lab.BoostVector();
+    // TLorentzVector P_Lambda_lab_4vec(P_Lambda_lab.X(), P_Lambda_lab.Y(), P_Lambda_lab.Z(), 0); // TLorentzVectors have boost properties!
+    // TLorentzVector P_Lambda_star_4vec = P_Lambda_lab_4vec;
+    // P_Lambda_star_4vec.Boost(beta_inverse); // This boosts the P_Lambda_star_4vec into the rest frame.
+    //
+    // // Getting just the 3 needed components of this vector, in a shorter form for the function.
+    //     // Also, only the spatial part is what matters in this case
+    // TVector3 P_Lambda_star = P_Lambda_star_4vec.Vect();
+    //////////////////////////////////////////////////////////////////////////////////////////////////////////
+
     ////////////////////
     //// 2 - Now decaying the particle given the xi_star and phi_star decay angles:
     ////////////////////
@@ -233,10 +239,11 @@ TLorentzVector Lambda_decay(TLorentzVector Lambda_4_momentum_lab, TVector3 P_Lam
     }
     else{
         // Already aligned (or opposite) - either no rotation or 180 deg
-        if (z_axis.Dot(P_Lambda_star_unit) < 0) {
+        if (z_axis.Dot(P_Lambda_star_unit) < 0){
             // 180 deg rotation about X (could be any axis perpendicular to z)
             rotation_matrix.SetRotationX(PI);
-        } else {
+        } 
+        else{
             // No rotation
             rotation_matrix.UnitMatrix();
         }
@@ -250,12 +257,25 @@ TLorentzVector Lambda_decay(TLorentzVector Lambda_4_momentum_lab, TVector3 P_Lam
     ////////////////////
     TLorentzVector proton_4_momentum(p_star_rotated, E_p_star); // Short for (p_star_rotated.X(), p_star_rotated.Y(), p_star_rotated.Z(), E_p_star);
         // Modifying the vector in place with the Boost() method:
-    proton_4_momentum.Boost(-beta_inverse); // -beta_inverse is just beta, so this properly translates to the lab frame!
+    // proton_4_momentum.Boost(-beta_inverse); // -beta_inverse is just beta, so this properly translates to the lab frame!
+
+    TVector3 beta = Lambda_4_momentum_lab.BoostVector(); // The boost that takes from the Lambda rest frame into the lab frame.
+    proton_4_momentum.Boost(beta);
     
     return proton_4_momentum;
 }
 
+TVector3 boost_polarization_to_rest_frame(TLorentzVector Lambda_4_momentum_lab, TVector3 P_Lambda_lab){
+    TVector3 beta_inverse = -Lambda_4_momentum_lab.BoostVector();
+    TLorentzVector P_Lambda_lab_4vec(P_Lambda_lab.X(), P_Lambda_lab.Y(), P_Lambda_lab.Z(), 0); // TLorentzVectors have boost properties!
+    TLorentzVector P_Lambda_star_4vec = P_Lambda_lab_4vec;
+    P_Lambda_star_4vec.Boost(beta_inverse); // This boosts the P_Lambda_star_4vec into the rest frame.
 
+    // Getting just the 3 needed components of this vector, in a shorter form for the function.
+        // Also, only the spatial part is what matters in this case:
+    TVector3 P_Lambda_star = P_Lambda_star_4vec.Vect();
+    return P_Lambda_star;
+}
 
 
 
