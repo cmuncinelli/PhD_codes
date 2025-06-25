@@ -59,20 +59,20 @@ int lambda_pol_toy_model(){
 /// Defining sampling functions ///
 ///////////////////////////////////
 // Declared the function as an inline-able object, so that sampling can take as short a time as possible:
-inline double P_angle_proton(double xi_star, double P_Lambda){
-    return (1.0 / PI) * (1.0 + alpha_H * P_Lambda * std::cos(xi_star));
+inline double P_angle_proton(double xi_star, double P_Lambda_star){
+    return (1.0 / PI) * (1.0 + alpha_H * P_Lambda_star * std::cos(xi_star));
 }
 
 // Now the actual sampler function -- The goal is to sample an angle given a P(angle) function.
     // Will use a rejection sampling for quick samples!
-    // Will pass P_Lambda_vec, a vector with many different Lambda polarizations, and retrieve a samples vector from it.
+    // Will pass P_Lambda_star_array, an array with many different Lambda polarization modules, already in the rest frame, and retrieve a samples vector from it.
     // Usage example:
-    // std::vector<double> P_Lambda_vec = {0.2, 0.5, -0.3, 0.0, 1.0};  // One P_Lambda per particle
-    // auto [xi_star_vec, phi_vec] = sample_P_angle_proton_for_each_PLambda(P_Lambda_vec);
-std::pair<std::vector<double>, std::vector<double>> sample_P_angle_proton(const std::vector<double> &P_Lambda_vec){
+    // std::vector<double> P_Lambda_star_array = {0.2, 0.5, -0.3, 0.0, 1.0};  // One P_Lambda per particle
+    // auto [xi_star_vec, phi_vec] = sample_P_angle_proton_for_each_PLambda(P_Lambda_star_array);
+std::pair<std::vector<double>, std::vector<double>> sample_P_angle_proton(const std::vector<double> &P_Lambda_star_array){
     std::vector<double> samples;
-    samples.reserve(P_Lambda_vec.size());  // Reserve space for performance
-    samples_azimuth.reserve(P_Lambda_vec.size()); // The azimutal angle from 0 to 2 pi
+    samples.reserve(P_Lambda_star_array.size());  // Reserve space for performance
+    samples_azimuth.reserve(P_Lambda_star_array.size()); // The azimutal angle from 0 to 2 pi
 
     std::mt19937 rng {std::random_device{}()};  // Creates a random_device object (temporary) with the uniform initialization on newer C++ (the "{}"),
                                                 // then calls it with () getting a random seed, and then that seed is passed to the random engine.
@@ -82,7 +82,7 @@ std::pair<std::vector<double>, std::vector<double>> sample_P_angle_proton(const 
     std::uniform_real_distribution<double> dist_azimuth(0.0, 2*PI);
 
     // Loop over all provided P_Lambda values
-    for (double P_Lambda : P_Lambda_vec){
+    for (double P_Lambda : P_Lambda_star_array){
         // Compute P_max (the maximum possible value of P(x))
         // This occurs at x = 0 or x = pi depending on sign of cos(x) term
         double P_max = (1.0 / PI) * (1.0 + std::abs(alpha_H * P_Lambda));
