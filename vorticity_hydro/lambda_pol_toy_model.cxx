@@ -17,6 +17,7 @@
 // #include "math.h" // Same as cmath!
 #include "TString.h"
 #include "TObjArray.h"
+#include "TMath.h"
 
 #include <dirent.h>
 #include <iostream>
@@ -26,7 +27,7 @@
 typedef std::vector<std::vector<double>> DoubleMatrix; // An alias
 
 // Some constants for the code:
-const double PI = 3.14159265358979323846;
+const double PI = TMath::Pi();
     // Constant from Phys. Rev. D 110, 030001 - Published 1 August, 2024, i.e.: https://journals.aps.org/prd/pdf/10.1103/PhysRevD.110.030001
 const double alpha_H = 0.747; // Fixed as a constant, just for this toy model!
 const double mass_Lambda = 1115.683; // In MeV/c^2 (+/- 0.006)
@@ -39,18 +40,235 @@ const double mp_plus_mpi2 = std::pow(mass_proton + mass_pi, 2);
 const double mp_minus_mpi2 = std::pow(mass_proton - mass_pi, 2);
 
 // Function prototypes:
+    // Getter functions:
 void get_lambda(DoubleMatrix &y_matrix, DoubleMatrix &phi_matrix, DoubleMatrix &px_matrix, DoubleMatrix &py_matrix,
                 DoubleMatrix &pz_matrix, DoubleMatrix &E_matrix, DoubleMatrix &St_matrix, DoubleMatrix &Sx_matrix,
                 DoubleMatrix &Sy_matrix, DoubleMatrix &Sz_matrix, int N_events);
 void get_jet(std::vector<double> &n_event, std::vector<double> &n_random, std::vector<double> &phi_random,
              std::vector<double> &momentum_x, std::vector<double> &momentum_y);
 
+    // Physics part functions
+std::pair<double, double> sample_P_angle_proton(double P_Lambda_star_mag, std::mt19937 rng, std::uniform_real_distribution<double> dist_x,
+                                                std::uniform_real_distribution<double> dist_y, std::uniform_real_distribution<double> dist_azimuth);
+TLorentzVector Lambda_decay(TLorentzVector Lambda_4_momentum_lab, TVector3 P_Lambda_star, double xi_star, double phi_star);
+TVector3 boost_polarization_to_rest_frame(TLorentzVector Lambda_4_momentum_lab, TVector3 P_Lambda_lab)
+
 // This code assumes we are in Jarvis4! Also, the getter functions are based on Pol_Analysis_Random_hist_ebe.C from the HadrEx_Ph repository
 int lambda_pol_toy_model(){
+    ////////////////////
+    //// 1 - Initializing variables and histograms:
+    ////////////////////
     int N_events = 250; // There are only 250 events in the desired folder. Possibly oversampled to get statistics.
 
+    TH1D *hLambdaCounter = new TH1D ("hLambdaCounter", "", 1, -1, 1);
+    
+    // Histograms to compare the true magnitude of the Lambda polarizations and the reconstructed magnitude:
+    int N_bins_pol = 100;
+    TH1D *hLambdaPolMag = new TH1D("hLambdaPolMag", "hLambdaPolMag", N_bins_pol, -5, 5); // Should only go from -1 to 1, but I want to check it!
+    TH1D *hLambdaPolMagReco = new TH1D("hLambdaPolMagReco", "hLambdaPolMagReco", N_bins_pol, -5, 5);
+
+        // Checking component by component to see if we can properly reconstruct the average of polarization in each direction
+        // (in this first reconstruction method, I am not aiming to reconstruct the polarization around a jet, but to reconstruct
+        // the "global" polarization components in the XYZ axes. Thus, the Reco value will be a single entry, while the true values
+        // will actually give me distributions of polarizations that I ended up averaging on)
+    TH1D *hLambdaPolX = new TH1D("hLambdaPolX", "hLambdaPolX", N_bins_pol, -5, 5);
+    TH1D *hLambdaPolXReco = new TH1D("hLambdaPolXReco", "hLambdaPolXReco", N_bins_pol, -5, 5);
+
+    TH1D *hLambdaPolY = new TH1D("hLambdaPolY", "hLambdaPolY", N_bins_pol, -5, 5);
+    TH1D *hLambdaPolYReco = new TH1D("hLambdaPolYReco", "hLambdaPolYReco", N_bins_pol, -5, 5);
+
+    TH1D *hLambdaPolZ = new TH1D("hLambdaPolZ", "hLambdaPolZ", N_bins_pol, -5, 5);
+    TH1D *hLambdaPolZReco = new TH1D("hLambdaPolZReco", "hLambdaPolZReco", N_bins_pol, -5, 5);
+
+        // Now declaring 2D histograms that will have the average polarization in the Z axis, and (pT, y) in the plane:
+    int N_bins_pT = 50;
+    int N_bins_rap = 50;
+
+        // These TH2Ds here will be defined as clones later, so it is clearer to the reader to show that they will not need full definitions:
+        // (see below)
+    // TH2D *hLambdaPolX_pT_yReco = new TH2D("hLambdaPolX_pT_yReco", "hLambdaPolX_pT_yReco", N_bins_pT, 0, 5, N_bins_rap, -3, 3);
+    // TH2D *hLambdaPolY_pT_yReco = new TH2D("hLambdaPolY_pT_yReco", "hLambdaPolX_pT_yReco", N_bins_pT, 0, 5, N_bins_rap, -3, 3);
+    // TH2D *hLambdaPolZ_pT_yReco = new TH2D("hLambdaPolZ_pT_yReco", "hLambdaPolX_pT_yReco", N_bins_pT, 0, 5, N_bins_rap, -3, 3);
+
+    TH2D *hLambdaPolX_pT_y = new TH2D("hLambdaPolX_pT_y", "hLambdaPolX_pT_y", N_bins_pT, 0, 5, N_bins_rap, -3, 3);
+    TH2D *hLambdaPolX_pT_yReco;
+
+    TH2D *hLambdaPolY_pT_y = new TH2D("hLambdaPolY_pT_y", "hLambdaPolX_pT_y", N_bins_pT, 0, 5, N_bins_rap, -3, 3);
+    TH2D *hLambdaPolY_pT_yReco;
+
+    TH2D *hLambdaPolZ_pT_y = new TH2D("hLambdaPolZ_pT_y", "hLambdaPolX_pT_y", N_bins_pT, 0, 5, N_bins_rap, -3, 3);
+    TH2D *hLambdaPolZ_pT_yReco;
+
+            // Declaring a counter histogram and some summation-storing histograms to define polarization in each (pT, y) bin:
+    TH2D *hLambdaCounter_pT_y = new TH2D("hLambdaCounter_pT_y", "hLambdaCounter_pT_y", N_bins_pT, 0, 5, N_bins_rap, -3, 3); // Counts the amount of Lambdas in each (pT, y) bin
+
+    TH2D *hLambdaAvgDotX_pT_y = new TH2D("hLambdaAvgDotX_pT_y", "hLambdaAvgDotX_pT_y", N_bins_pT, 0, 5, N_bins_rap, -3, 3); // Receives the same sum as average_dotX, but for each (pT, y) bin
+    TH2D *hLambdaAvgDotY_pT_y = new TH2D("hLambdaAvgDotY_pT_y", "hLambdaAvgDotY_pT_y", N_bins_pT, 0, 5, N_bins_rap, -3, 3);
+    TH2D *hLambdaAvgDotZ_pT_y = new TH2D("hLambdaAvgDotZ_pT_y", "hLambdaAvgDotZ_pT_y", N_bins_pT, 0, 5, N_bins_rap, -3, 3);
+
+    ////////////////////
+    //// 1.1 - Defining randomized samplers for the loop -- It would make no sense to define them inside the loop, as they will not change:
+    ////////////////////
+    std::mt19937 rng {std::random_device{}()};  // Creates a random_device object (temporary) with the uniform initialization on newer C++ (the "{}"),
+                                                // then calls it with () getting a random seed, and then that seed is passed to the random engine.
+        // Uniform distribution for angle xi_star between 0 and pi:
+    std::uniform_real_distribution<double> dist_x(0.0, PI);
+    std::uniform_real_distribution<double> dist_azimuth(0.0, 2*PI);
+
+    ////////////////////
+    //// 2 - Getter function calls:
+    ////////////////////
     DoubleMatrix y_matrix, phi_matrix, px_matrix, py_matrix, pz_matrix, E_matrix, mult_matri, St_matrix, Sx_matrix, Sy_matrix, Sz_matrix;
-    get_lambda(y_matrix, phi_matrix, px_matrix, py_matrix, pz_matrix, E_matrix, mult_matrix, St_matrix, Sx_matrix, Sy_matrix, Sz_matrix);
+    get_lambda(y_matrix, phi_matrix, px_matrix, py_matrix, pz_matrix, E_matrix, mult_matrix, St_matrix, Sx_matrix, Sy_matrix, Sz_matrix, N_events);
+
+    ////////////////////
+    //// 3 - Decaying Lambdas and filling histograms:
+    ////////////////////
+        // Looping on all events and all particles of each event:
+    TVector3 x_hat(1, 0, 0);
+    TVector3 y_hat(0, 1, 0);
+    TVector3 z_hat(0, 0, 1);
+
+    double average_dotX = 0;
+    double average_dotY = 0;
+    double average_dotZ = 0;
+    for (int ev_idx = 0; i<N_events; ev_idx++){
+        for (int particle_idx = 0; y_matrix[ev_idx].size(); particle_idx++){
+            hLambdaCounter->Fill(0);
+
+            // 1 - Fetching particle information:
+            TLorentzVector Lambda_4_momentum_lab(px_matrix[ev_idx][particle_idx], py_matrix[ev_idx][particle_idx], pz_matrix[ev_idx][particle_idx], E_matrix[ev_idx][particle_idx]);
+            TVector3 P_Lambda_lab(Sx_matrix[ev_idx][particle_idx], Sy_matrix[ev_idx][particle_idx], Sz_matrix[ev_idx][particle_idx]);
+            hLambdaPolMag->Fill(P_Lambda_lab.Mag());
+
+                // Filling the known polarizations:
+            hLambdaPolX->Fill(Sx_matrix[ev_idx][particle_idx]);
+            hLambdaPolY->Fill(Sy_matrix[ev_idx][particle_idx]);
+            hLambdaPolZ->Fill(Sz_matrix[ev_idx][particle_idx]);
+
+            // 2 - Calculating the polarization in the Lambda rest frame:
+            TVector3 P_Lambda_star = boost_polarization_to_rest_frame(Lambda_4_momentum_lab, P_Lambda_lab);
+            double P_Lambda_star_mag = P_Lambda_star.Mag();
+
+            // 3 - Sampling decay angles:
+                // Calculating the P_max value for the rejection sampling:
+                // Compute P_max (the maximum possible value of P(x))
+                // This occurs at x = 0 or x = pi depending on sign of cos(x) term
+            double P_max = (1.0 / PI) * (1.0 + std::abs(alpha_H * P_Lambda_star_mag));
+
+                // Defining the uniform distribution dist_y for the sampling:
+                // Uniform distribution for y between 0 and P_max
+            std::uniform_real_distribution<double> dist_y(0.0, P_max);
+
+            auto [xi_star, phi_star] = sample_P_angle_proton(P_Lambda_star_mag, rng, dist_x, dist_y, dist_azimuth); // Uses the new unpacking of C++17
+            
+            // 4 - Generating the proton 4-momentum from the decay:
+                // Actually, I just need the angles at which the proton would decay, not the whole 4-momentum of the decay, but whatever, let's keep it!
+                // In other words, I could've stopped at the sample_P_angle_proton function, and then just rotate those angles to the XYZ axes of the lab frame.
+                // This could turn out to be useful later on, if I intend on doing some background checks for the Lambda reconstructions or something like that.
+            TLorentzVector proton_4_momentum = Lambda_decay(Lambda_4_momentum_lab, P_Lambda_star, xi_star, phi_star);
+
+            // 5 - Extracting useful variables from the 4-momentum of the Lambda:
+                // Earlier getters from the proton 4-momenta (not quite what I need right now)
+            // double proton_y = proton_4_momentum.Rapidity();
+            // double proton_phi = proton_4_momentum.Phi();
+            double lambda_y = Lambda_4_momentum_lab.Rapidity();
+            double lambda_pT = Lambda_4_momentum_lab.Pt();
+
+            // 6 - Summing to average the polarization vector -- Global polarization:
+                // To do the average dot product between the proton momentum direction and \hat{n} when there are (pT, y) bins involved,
+                // it would probably be easier to create a TH2D that collects the sums, and then normalize each bin by the number of times
+                // I added values into it. The bins will not have counts, but the actual value of the sum. If I could just create a matrix
+                // that has those summation values and the appropriate bin limits, then that would be equivalent.
+                // A good idea would be to have a TH2D that has the sums for the averages, and another that has the number of particles in
+                // that specific bin
+            TVector3 proton_unit_vector = (proton_4_momentum.Vect()).Unit();
+            double X_dot = proton_unit_vector.Dot(x_hat);
+            double Y_dot = proton_unit_vector.Dot(y_hat);
+            double Z_dot = proton_unit_vector.Dot(z_hat);
+
+            average_dotX += X_dot;
+            average_dotY += Y_dot;
+            average_dotZ += Z_dot;
+
+            // 7 - Summing to calculate polarization on subsets of the available Lambdas -- Bins of (pT, y):
+            hLambdaCounter_pT_y->Fill(pT, y);
+            
+            hLambdaAvgDotX_pT_y->Fill(pT, y, X_dot);
+            hLambdaAvgDotY_pT_y->Fill(pT, y, Y_dot);
+            hLambdaAvgDotZ_pT_y->Fill(pT, y, Z_dot);
+
+            // 8 - Filling the true values of the TH2D polarization histogram:
+            hLambdaPolX_pT_y->Fill(pT, y, Sx_matrix[ev_idx][particle_idx]);
+            hLambdaPolY_pT_y->Fill(pT, y, Sy_matrix[ev_idx][particle_idx]);
+            hLambdaPolZ_pT_y->Fill(pT, y, Sz_matrix[ev_idx][particle_idx]);
+        }
+    }
+
+    // Finishing the average for the 3 global dot products:
+    average_dotX /= hLambdaCounter->GetBinContent(1);
+    average_dotY /= hLambdaCounter->GetBinContent(1);
+    average_dotZ /= hLambdaCounter->GetBinContent(1);
+
+        // Calculating the mean polarization in each of those three global axes:
+    double PolX = 3./alpha_H * average_dotX;
+    double PolY = 3./alpha_H * average_dotY;
+    double PolZ = 3./alpha_H * average_dotZ;
+
+    hLambdaPolXReco->Fill(PolX);
+    hLambdaPolYReco->Fill(PolY);
+    hLambdaPolZReco->Fill(PolZ);
+
+    // Averaging the TH2D histograms that collect the mean dot product, and then converting them into polarizations:
+    hLambdaAvgDotX_pT_y->Divide(hLambdaCounter_pT_y);
+    hLambdaAvgDotY_pT_y->Divide(hLambdaCounter_pT_y);
+    hLambdaAvgDotZ_pT_y->Divide(hLambdaCounter_pT_y);
+
+        // Cloning the histograms, to keep an average dot product histogram and a polarization histogram as separate entities:
+    hLambdaPolX_pT_yReco = (TH2D*) hLambdaAvgDotX_pT_y->Clone("hLambdaPolX_pT_yReco");
+    hLambdaPolY_pT_yReco = (TH2D*) hLambdaAvgDotY_pT_y->Clone("hLambdaPolY_pT_yReco");
+    hLambdaPolZ_pT_yReco = (TH2D*) hLambdaAvgDotZ_pT_y->Clone("hLambdaPolZ_pT_yReco");
+    
+        // Applying the transform that turns them into polarizations:
+    hLambdaPolX_pT_yReco->Scale(3.0 / alpha_H);
+    hLambdaPolY_pT_yReco->Scale(3.0 / alpha_H);
+    hLambdaPolZ_pT_yReco->Scale(3.0 / alpha_H);
+
+    // Averaging the true values too:
+    hLambdaPolX_pT_y->Divide(hLambdaCounter_pT_y);
+    hLambdaPolY_pT_y->Divide(hLambdaCounter_pT_y);
+    hLambdaPolZ_pT_y->Divide(hLambdaCounter_pT_y);
+
+    ////////////////////
+    //// 4 - Exporting into a .root file for later review
+    ////////////////////
+    std::string filename = "/home/cicero/results/hydro_vorticity/LambdaPol_lumpy_events_60_70_" + std::to_string(N_events) + "ev.root";
+    TFile f(filename.c_str(), "RECREATE");
+
+    hLambdaCounter->Write();
+    hLambdaPolMag->Write();
+    hLambdaPolMagReco->Write();
+
+    hLambdaPolX->Write();
+    hLambdaPolXReco->Write();
+    hLambdaPolY->Write();
+    hLambdaPolYReco->Write();
+    hLambdaPolZ->Write();
+    hLambdaPolZReco->Write();
+    
+    hLambdaPolX_pT_y->Write();
+    hLambdaPolX_pT_yReco->Write();
+    hLambdaPolY_pT_y->Write();
+    hLambdaPolY_pT_yReco->Write();
+    hLambdaPolZ_pT_y->Write();
+    hLambdaPolZ_pT_yReco->Write();
+
+    hLambdaCounter_pT_y->Write();
+    hLambdaAvgDotX_pT_y->Write();
+    hLambdaAvgDotY_pT_y->Write();
+    hLambdaAvgDotZ_pT_y->Write();
+
+    f->Close();
 
     return 0
 }
@@ -65,103 +283,36 @@ inline double P_angle_proton(double xi_star, double P_Lambda_star){
 
 // Now the actual sampler function -- The goal is to sample an angle given a P(angle) function.
     // Will use a rejection sampling for quick samples!
-    // Will pass P_Lambda_star_array, an array with many different Lambda polarization modules, already in the rest frame, and retrieve a samples vector from it.
+    // Receives the Lambda polarization magnitude, already in the rest frame, and returns the two angles needed 
     // Usage example:
-    // std::vector<double> P_Lambda_star_array = {0.2, 0.5, -0.3, 0.0, 1.0};  // One P_Lambda per particle
-    // auto [xi_star_vec, phi_vec] = sample_P_angle_proton_for_each_PLambda(P_Lambda_star_array);
-std::pair<std::vector<double>, std::vector<double>> sample_P_angle_proton(const std::vector<double> &P_Lambda_star_array){
-    std::vector<double> samples;
-    samples.reserve(P_Lambda_star_array.size());  // Reserve space for performance
-    samples_azimuth.reserve(P_Lambda_star_array.size()); // The azimutal angle from 0 to 2 pi
+    // auto [xi_star, phi_star] = sample_P_angle_proton_for_each_PLambda(...);
+std::pair<double, double> sample_P_angle_proton(double P_Lambda_star_mag, std::mt19937 rng, std::uniform_real_distribution<double> dist_x,
+                                                std::uniform_real_distribution<double> dist_y, std::uniform_real_distribution<double> dist_azimuth){
+    // First sampling the azimuthal angle, which is really simple to do:
+    double phi_star = dist_azimuth(rng);
 
-    std::mt19937 rng {std::random_device{}()};  // Creates a random_device object (temporary) with the uniform initialization on newer C++ (the "{}"),
-                                                // then calls it with () getting a random seed, and then that seed is passed to the random engine.
+    // Rejection sampling loop - Generates one sample for the current P_Lambda_star_mag:
+    double xi_star = 0;
+    while (true){
+        // Propose an x uniformly in [0, pi]
+        double xi_star_candidate = dist_x(rng);
 
-    // Uniform distribution for angle xi_star between 0 and pi
-    std::uniform_real_distribution<double> dist_x(0.0, PI);
-    std::uniform_real_distribution<double> dist_azimuth(0.0, 2*PI);
+        // Propose a y uniformly in [0, P_max]
+        double y = dist_y(rng);  // Draws from the maximum value distribution independently.
+                                    // This makes it so that we always follow the appropriate limit and have correctly weighted samples of x(!)
 
-    // Loop over all provided P_Lambda values
-    for (double P_Lambda : P_Lambda_star_array){
-        // Compute P_max (the maximum possible value of P(x))
-        // This occurs at x = 0 or x = pi depending on sign of cos(x) term
-        double P_max = (1.0 / PI) * (1.0 + std::abs(alpha_H * P_Lambda));
+        // Compute the actual probability density at x
+        double px = P_angle_proton(xi_star_candidate, P_Lambda_star_mag);
 
-        // Uniform distribution for y between 0 and P_max
-        // This is used for the rejection sampling step
-        std::uniform_real_distribution<double> dist_y(0.0, P_max);
-
-        // Rejection sampling loop - generate one sample for this P_Lambda
-        while (true){
-            // Propose an x uniformly in [0, pi]
-            double x = dist_x(rng);
-
-            // Propose a y uniformly in [0, P_max]
-            double y = dist_y(rng);  // Draws from the maximum value distribution independently.
-                                     // This makes it so that we always follow the appropriate limit and have correctly weighted samples of x(!)
-
-            // Compute the actual probability density at x
-            double px = P_angle_proton(x, P_Lambda);
-
-            // Accept x if y < P(x). This ensures samples are distributed according to P(x): larger P(x) values will be accepted more easily!
-            if (y < px){
-                samples.push_back(x);  // Store accepted x
-                break;                // Done with this P_Lambda, move to next
-            }
-            // Otherwise, reject and try again
+        // Accept x if y < P(x). This ensures samples are distributed according to P(x): larger P(x) values will be accepted more easily!
+        if (y < px){
+            xi_star = xi_star_candidate;  // Store accepted xi_star_candidate
+            break;                        // Done with this P_Lambda_star_mag. Breaks the loop
         }
-
-        // Now sampling the azimuthal angle:
-        double phi = dist_azimuth(rng);
-        samples_azimuth.push_back(phi);
+        // Otherwise, reject and try again
     }
-    return std::make_pair(samples, samples_azimuth);
+    return std::make_pair(xi_star, phi_star);
 }
-
-
-// Another version, that could sample the whole distribution from the same P_Lambda value (not quite what I want: one sample per each P_Lambda value)
-// std::vector<double> sample_P_angle_proton_multiple_times(size_t N_part, double P_Lambda){
-//     std::vector<double> samples;
-//     samples.reserve(N_part); // Reserve space for performance
-
-//     std::mt19937 rng {std::random_device{}()}; // Creates a random_device object (temporary) with the uniform initialization on newer C++ (the "{}"),
-//                                                // then calls it with () getting a random seed, and then that seed is passed to the random engine.
-
-//     // Uniform distribution for angle xi_star between 0 and pi
-//     std::uniform_real_distribution<double> dist_x(0.0, PI);
-
-//     // We compute P_max (the maximum possible value of P(x))
-//     // This occurs at x = 0 or x = pi depending on sign of cos(x) term
-//     double P_max = (1.0 / PI) * (1.0 + std::abs(alpha_H * P_Lambda));
-
-//     // Uniform distribution for y between 0 and P_max
-//     // This is used for the rejection sampling step
-//     std::uniform_real_distribution<double> dist_y(0.0, P_max);
-
-//     size_t N_part = samples.size();  // Number of particles (or samples) we want to generate
-//     size_t i = 0;                    // Counter for accepted samples
-
-//     // Rejection sampling loop
-//     while (i < N_part){
-//         // Propose an x uniformly in [0, pi]
-//         double x = dist_x(rng);
-
-//         // Propose a y uniformly in [0, P_max]
-//         double y = dist_y(rng); // Draws from the maximum value distribution independently.
-//                                 // This makes it so that we always follow the appropriate limit and have correctly weighted samples of x(!)
-
-//         // Compute the actual probability density at x
-//         double px = P_angle_proton(x, alpha_H, P_Lambda);
-
-//         // Accept x if y < P(x). This ensures samples are distributed according to P(x): larger P(x) values will be accepted more easily!
-//         if (y < px){
-//             // samples[i++] = x;  // Store accepted x and increment sample counter
-//             samples.push_back(x); // Store accepted x in the new non-predefined vector
-//             i++;
-//         }
-//         // Otherwise, reject and try again
-//     }
-// }
 
 ///////////////////////////////
 /// Particle decay function ///
@@ -393,3 +544,106 @@ void get_jet(std::vector<double> &n_event, std::vector<double> &n_random, std::v
     }
     delete random_lines;
 }
+
+// A generalization of previous code for passing multiple particles to be sampled at once.
+    // This one is not useless, just a more general version that is kinda overkill for the way I designed the later code.
+//     // Will pass P_Lambda_star_array, an array with many different Lambda polarization modules, already in the rest frame, and retrieve a samples vector from it.
+//     // Usage example:
+//     // std::vector<double> P_Lambda_star_array = {0.2, 0.5, -0.3, 0.0, 1.0};  // One P_Lambda per particle
+//     // auto [xi_star_vec, phi_vec] = sample_P_angle_proton_for_each_PLambda(P_Lambda_star_array);
+// std::pair<std::vector<double>, std::vector<double>> sample_P_angle_proton_array_modification(const std::vector<double> &P_Lambda_star_array){
+//     std::vector<double> samples;
+//     std::vector<double> samples_azimuth;
+//     samples.reserve(P_Lambda_star_array.size());  // Reserve space for performance
+//     samples_azimuth.reserve(P_Lambda_star_array.size()); // The azimutal angle from 0 to 2 pi
+// 
+//     std::mt19937 rng {std::random_device{}()};  // Creates a random_device object (temporary) with the uniform initialization on newer C++ (the "{}"),
+//                                                 // then calls it with () getting a random seed, and then that seed is passed to the random engine.
+// 
+//     // Uniform distribution for angle xi_star between 0 and pi
+//     std::uniform_real_distribution<double> dist_x(0.0, PI);
+//     std::uniform_real_distribution<double> dist_azimuth(0.0, 2*PI);
+//
+//     // Loop over all provided P_Lambda values
+//     for (double P_Lambda : P_Lambda_star_array){
+//         // Compute P_max (the maximum possible value of P(x))
+//         // This occurs at x = 0 or x = pi depending on sign of cos(x) term
+//         double P_max = (1.0 / PI) * (1.0 + std::abs(alpha_H * P_Lambda));
+// 
+//         // Uniform distribution for y between 0 and P_max
+//         // This is used for the rejection sampling step
+//         std::uniform_real_distribution<double> dist_y(0.0, P_max);
+// 
+//         // Rejection sampling loop - generate one sample for this P_Lambda
+//         while (true){
+//             // Propose an x uniformly in [0, pi]
+//             double x = dist_x(rng);
+// 
+//             // Propose a y uniformly in [0, P_max]
+//             double y = dist_y(rng);  // Draws from the maximum value distribution independently.
+//                                      // This makes it so that we always follow the appropriate limit and have correctly weighted samples of x(!)
+// 
+//             // Compute the actual probability density at x
+//             double px = P_angle_proton(x, P_Lambda);
+// 
+//             // Accept x if y < P(x). This ensures samples are distributed according to P(x): larger P(x) values will be accepted more easily!
+//             if (y < px){
+//                 samples.push_back(x);  // Store accepted x
+//                 break;                // Done with this P_Lambda, move to next
+//             }
+//             // Otherwise, reject and try again
+//         }
+// 
+//         // Now sampling the azimuthal angle:
+//         double phi = dist_azimuth(rng);
+//         samples_azimuth.push_back(phi);
+//     }
+//     return std::make_pair(samples, samples_azimuth);
+// }
+
+
+
+// Useless, older code that actually made no sense to use:
+// Another version, that could sample the whole distribution from the same P_Lambda value (not quite what I want: one sample per each P_Lambda value)
+// std::vector<double> sample_P_angle_proton_multiple_times(size_t N_part, double P_Lambda){
+//     std::vector<double> samples;
+//     samples.reserve(N_part); // Reserve space for performance
+
+//     std::mt19937 rng {std::random_device{}()}; // Creates a random_device object (temporary) with the uniform initialization on newer C++ (the "{}"),
+//                                                // then calls it with () getting a random seed, and then that seed is passed to the random engine.
+
+//     // Uniform distribution for angle xi_star between 0 and pi
+//     std::uniform_real_distribution<double> dist_x(0.0, PI);
+
+//     // We compute P_max (the maximum possible value of P(x))
+//     // This occurs at x = 0 or x = pi depending on sign of cos(x) term
+//     double P_max = (1.0 / PI) * (1.0 + std::abs(alpha_H * P_Lambda));
+
+//     // Uniform distribution for y between 0 and P_max
+//     // This is used for the rejection sampling step
+//     std::uniform_real_distribution<double> dist_y(0.0, P_max);
+
+//     size_t N_part = samples.size();  // Number of particles (or samples) we want to generate
+//     size_t i = 0;                    // Counter for accepted samples
+
+//     // Rejection sampling loop
+//     while (i < N_part){
+//         // Propose an x uniformly in [0, pi]
+//         double x = dist_x(rng);
+
+//         // Propose a y uniformly in [0, P_max]
+//         double y = dist_y(rng); // Draws from the maximum value distribution independently.
+//                                 // This makes it so that we always follow the appropriate limit and have correctly weighted samples of x(!)
+
+//         // Compute the actual probability density at x
+//         double px = P_angle_proton(x, alpha_H, P_Lambda);
+
+//         // Accept x if y < P(x). This ensures samples are distributed according to P(x): larger P(x) values will be accepted more easily!
+//         if (y < px){
+//             // samples[i++] = x;  // Store accepted x and increment sample counter
+//             samples.push_back(x); // Store accepted x in the new non-predefined vector
+//             i++;
+//         }
+//         // Otherwise, reject and try again
+//     }
+// }
