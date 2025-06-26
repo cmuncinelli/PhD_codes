@@ -52,7 +52,7 @@ void get_jet(std::vector<double> &n_event, std::vector<double> &n_random, std::v
 std::pair<double, double> sample_P_angle_proton(double P_Lambda_star_mag, std::mt19937 rng, std::uniform_real_distribution<double> dist_x,
                                                 std::uniform_real_distribution<double> dist_y, std::uniform_real_distribution<double> dist_azimuth);
 TLorentzVector Lambda_decay(TLorentzVector Lambda_4_momentum_lab, TVector3 P_Lambda_star, double xi_star, double phi_star);
-TVector3 boost_polarization_to_rest_frame(TLorentzVector Lambda_4_momentum_lab, TVector3 P_Lambda_lab);
+TVector3 boost_polarization_to_rest_frame(TLorentzVector Lambda_4_momentum_lab, TLorentzVector P_Lambda_lab_4vec);
 
 // This code assumes we are in Jarvis4! Also, the getter functions are based on Pol_Analysis_Random_hist_ebe.C from the HadrEx_Ph repository
 int lambda_pol_toy_model(){
@@ -65,26 +65,26 @@ int lambda_pol_toy_model(){
     TH1D *hLambdaCounter = new TH1D ("hLambdaCounter", "", 1, -1, 1);
     
     // Histograms to compare the true magnitude of the Lambda polarizations and the reconstructed magnitude:
-    int N_bins_pol = 100;
-    TH1D *hLambdaPolMag = new TH1D("hLambdaPolMag", "hLambdaPolMag", N_bins_pol, -5, 5); // Should only go from -1 to 1, but I want to check it!
-    TH1D *hLambdaPolMagReco = new TH1D("hLambdaPolMagReco", "hLambdaPolMagReco", N_bins_pol, -5, 5);
+    int N_bins_pol = 200;
+    TH1D *hLambdaPolMag = new TH1D("hLambdaPolMag", "hLambdaPolMag", N_bins_pol, 0, 0.5); // Should only go from -1 to 1, but I want to check it!
+    TH1D *hLambdaPolMagReco = new TH1D("hLambdaPolMagReco", "hLambdaPolMagReco", N_bins_pol, 0, 0.5);
 
         // Checking component by component to see if we can properly reconstruct the average of polarization in each direction
         // (in this first reconstruction method, I am not aiming to reconstruct the polarization around a jet, but to reconstruct
         // the "global" polarization components in the XYZ axes. Thus, the Reco value will be a single entry, while the true values
         // will actually give me distributions of polarizations that I ended up averaging on)
-    TH1D *hLambdaPolX = new TH1D("hLambdaPolX", "hLambdaPolX", N_bins_pol, -5, 5);
-    TH1D *hLambdaPolXReco = new TH1D("hLambdaPolXReco", "hLambdaPolXReco", N_bins_pol, -5, 5);
+    TH1D *hLambdaPolX = new TH1D("hLambdaPolX", "hLambdaPolX", N_bins_pol, -0.5, 0.5); // Polarization is normalized to 1, and usually does not go over 0.2 !
+    TH1D *hLambdaPolXReco = new TH1D("hLambdaPolXReco", "hLambdaPolXReco", N_bins_pol, -0.5, 0.5);
 
-    TH1D *hLambdaPolY = new TH1D("hLambdaPolY", "hLambdaPolY", N_bins_pol, -5, 5);
-    TH1D *hLambdaPolYReco = new TH1D("hLambdaPolYReco", "hLambdaPolYReco", N_bins_pol, -5, 5);
+    TH1D *hLambdaPolY = new TH1D("hLambdaPolY", "hLambdaPolY", N_bins_pol, -0.5, 0.5);
+    TH1D *hLambdaPolYReco = new TH1D("hLambdaPolYReco", "hLambdaPolYReco", N_bins_pol, -0.5, 0.5);
 
-    TH1D *hLambdaPolZ = new TH1D("hLambdaPolZ", "hLambdaPolZ", N_bins_pol, -5, 5);
-    TH1D *hLambdaPolZReco = new TH1D("hLambdaPolZReco", "hLambdaPolZReco", N_bins_pol, -5, 5);
+    TH1D *hLambdaPolZ = new TH1D("hLambdaPolZ", "hLambdaPolZ", N_bins_pol, -0.5, 0.5);
+    TH1D *hLambdaPolZReco = new TH1D("hLambdaPolZReco", "hLambdaPolZReco", N_bins_pol, -0.5, 0.5);
 
         // Now declaring 2D histograms that will have the average polarization in the Z axis, and (pT, y) in the plane:
-    int N_bins_pT = 50;
-    int N_bins_rap = 50;
+    int N_bins_pT = 20;
+    int N_bins_rap = 20;
 
         // These TH2Ds here will be defined as clones later, so it is clearer to the reader to show that they will not need full definitions:
         // (see below)
@@ -92,21 +92,22 @@ int lambda_pol_toy_model(){
     // TH2D *hLambdaPolY_pT_yReco = new TH2D("hLambdaPolY_pT_yReco", "hLambdaPolX_pT_yReco", N_bins_pT, 0, 5, N_bins_rap, -3, 3);
     // TH2D *hLambdaPolZ_pT_yReco = new TH2D("hLambdaPolZ_pT_yReco", "hLambdaPolX_pT_yReco", N_bins_pT, 0, 5, N_bins_rap, -3, 3);
 
-    TH2D *hLambdaPolX_pT_y = new TH2D("hLambdaPolX_pT_y", "hLambdaPolX_pT_y", N_bins_pT, 0, 5, N_bins_rap, -3, 3);
+        // This simulation only has |y|<0.5 and pT between 0 and 3 GeV/c.
+    TH2D *hLambdaPolX_pT_y = new TH2D("hLambdaPolX_pT_y", "hLambdaPolX_pT_y", N_bins_pT, 0, 3, N_bins_rap, -0.5, 0.5);
     TH2D *hLambdaPolX_pT_yReco;
 
-    TH2D *hLambdaPolY_pT_y = new TH2D("hLambdaPolY_pT_y", "hLambdaPolX_pT_y", N_bins_pT, 0, 5, N_bins_rap, -3, 3);
+    TH2D *hLambdaPolY_pT_y = new TH2D("hLambdaPolY_pT_y", "hLambdaPolX_pT_y", N_bins_pT, 0, 3, N_bins_rap, -0.5, 0.5);
     TH2D *hLambdaPolY_pT_yReco;
 
-    TH2D *hLambdaPolZ_pT_y = new TH2D("hLambdaPolZ_pT_y", "hLambdaPolX_pT_y", N_bins_pT, 0, 5, N_bins_rap, -3, 3);
+    TH2D *hLambdaPolZ_pT_y = new TH2D("hLambdaPolZ_pT_y", "hLambdaPolX_pT_y", N_bins_pT, 0, 3, N_bins_rap, -0.5, 0.5);
     TH2D *hLambdaPolZ_pT_yReco;
 
             // Declaring a counter histogram and some summation-storing histograms to define polarization in each (pT, y) bin:
-    TH2D *hLambdaCounter_pT_y = new TH2D("hLambdaCounter_pT_y", "hLambdaCounter_pT_y", N_bins_pT, 0, 5, N_bins_rap, -3, 3); // Counts the amount of Lambdas in each (pT, y) bin
+    TH2D *hLambdaCounter_pT_y = new TH2D("hLambdaCounter_pT_y", "hLambdaCounter_pT_y", N_bins_pT, 0, 3, N_bins_rap, -0.5, 0.5); // Counts the amount of Lambdas in each (pT, y) bin
 
-    TH2D *hLambdaAvgDotX_pT_y = new TH2D("hLambdaAvgDotX_pT_y", "hLambdaAvgDotX_pT_y", N_bins_pT, 0, 5, N_bins_rap, -3, 3); // Receives the same sum as average_dotX, but for each (pT, y) bin
-    TH2D *hLambdaAvgDotY_pT_y = new TH2D("hLambdaAvgDotY_pT_y", "hLambdaAvgDotY_pT_y", N_bins_pT, 0, 5, N_bins_rap, -3, 3);
-    TH2D *hLambdaAvgDotZ_pT_y = new TH2D("hLambdaAvgDotZ_pT_y", "hLambdaAvgDotZ_pT_y", N_bins_pT, 0, 5, N_bins_rap, -3, 3);
+    TH2D *hLambdaAvgDotX_pT_y = new TH2D("hLambdaAvgDotX_pT_y", "hLambdaAvgDotX_pT_y", N_bins_pT, 0, 3, N_bins_rap, -0.5, 0.5); // Receives the same sum as average_dotX, but for each (pT, y) bin
+    TH2D *hLambdaAvgDotY_pT_y = new TH2D("hLambdaAvgDotY_pT_y", "hLambdaAvgDotY_pT_y", N_bins_pT, 0, 3, N_bins_rap, -0.5, 0.5);
+    TH2D *hLambdaAvgDotZ_pT_y = new TH2D("hLambdaAvgDotZ_pT_y", "hLambdaAvgDotZ_pT_y", N_bins_pT, 0, 3, N_bins_rap, -0.5, 0.5);
 
     ////////////////////
     //// 1.1 - Defining randomized samplers for the loop -- It would make no sense to define them inside the loop, as they will not change:
@@ -120,15 +121,15 @@ int lambda_pol_toy_model(){
     ////////////////////
     //// 2 - Getter function calls:
     ////////////////////
-    std::cout << "\nFetching data...";
+    std::cout << "\nFetching data..." << std::endl;
     DoubleMatrix y_matrix, phi_matrix, px_matrix, py_matrix, pz_matrix, E_matrix, mult_matrix, St_matrix, Sx_matrix, Sy_matrix, Sz_matrix;
     get_lambda(y_matrix, phi_matrix, px_matrix, py_matrix, pz_matrix, E_matrix, mult_matrix, St_matrix, Sx_matrix, Sy_matrix, Sz_matrix, N_events);
-    std::cout << " Done!" << std::endl;
+    std::cout << "\tDone!" << std::endl;
 
     ////////////////////
     //// 3 - Decaying Lambdas and filling histograms:
     ////////////////////
-    std::cout << "Decaying Lambdas and filling histograms" << std::endl;
+    std::cout << "\nDecaying Lambdas and filling histograms" << std::endl;
         // Looping on all events and all particles of each event:
     TVector3 x_hat(1, 0, 0);
     TVector3 y_hat(0, 1, 0);
@@ -137,80 +138,89 @@ int lambda_pol_toy_model(){
     double average_dotX = 0;
     double average_dotY = 0;
     double average_dotZ = 0;
-    for (int ev_idx = 0; ev_idx < N_events; ev_idx++){
-        for (int particle_idx = 0; particle_idx < y_matrix[ev_idx].size(); particle_idx++){
-            hLambdaCounter->Fill(0);
+    int N_resamples = 100; // Goes through each particle N_resamples # of times. This is an attempt to see if the polarization estimate values become more stable!
+    for (int resample_idx = 0; resample_idx < N_resamples; resample_idx++){
+        std::cout << "Now on resample " << std::to_string(resample_idx + 1) << " of " + std::to_string(N_resamples) << std::endl;
+        for (int ev_idx = 0; ev_idx < N_events; ev_idx++){
+            for (int particle_idx = 0; particle_idx < y_matrix[ev_idx].size(); particle_idx++){
+                hLambdaCounter->Fill(0);
 
-            // 1 - Fetching particle information:
-            TLorentzVector Lambda_4_momentum_lab(px_matrix[ev_idx][particle_idx], py_matrix[ev_idx][particle_idx], pz_matrix[ev_idx][particle_idx], E_matrix[ev_idx][particle_idx]);
-            TVector3 P_Lambda_lab(Sx_matrix[ev_idx][particle_idx], Sy_matrix[ev_idx][particle_idx], Sz_matrix[ev_idx][particle_idx]);
-            hLambdaPolMag->Fill(P_Lambda_lab.Mag());
+                // 1 - Fetching particle information:
+                TLorentzVector Lambda_4_momentum_lab(px_matrix[ev_idx][particle_idx], py_matrix[ev_idx][particle_idx], pz_matrix[ev_idx][particle_idx], E_matrix[ev_idx][particle_idx]);
+                // TVector3 P_Lambda_lab(Sx_matrix[ev_idx][particle_idx], Sy_matrix[ev_idx][particle_idx], Sz_matrix[ev_idx][particle_idx]);
+                TLorentzVector P_Lambda_lab_4vec(Sx_matrix[ev_idx][particle_idx], Sy_matrix[ev_idx][particle_idx], Sz_matrix[ev_idx][particle_idx], St_matrix[ev_idx][particle_idx]); // You need the temporal component too!
+                hLambdaPolMag->Fill((P_Lambda_lab_4vec.Vect()).Mag()); // I just want the magnitude of the spatial part for this plot, so just grab the Vect() magnitude
 
-                // Filling the known polarizations:
-            hLambdaPolX->Fill(Sx_matrix[ev_idx][particle_idx]);
-            hLambdaPolY->Fill(Sy_matrix[ev_idx][particle_idx]);
-            hLambdaPolZ->Fill(Sz_matrix[ev_idx][particle_idx]);
+                    // Filling the known polarizations:
+                hLambdaPolX->Fill(Sx_matrix[ev_idx][particle_idx]);
+                hLambdaPolY->Fill(Sy_matrix[ev_idx][particle_idx]);
+                hLambdaPolZ->Fill(Sz_matrix[ev_idx][particle_idx]);
 
-            // 2 - Calculating the polarization in the Lambda rest frame:
-            TVector3 P_Lambda_star = boost_polarization_to_rest_frame(Lambda_4_momentum_lab, P_Lambda_lab);
-            double P_Lambda_star_mag = P_Lambda_star.Mag();
+                // 2 - Calculating the polarization in the Lambda rest frame:
+                TVector3 P_Lambda_star = boost_polarization_to_rest_frame(Lambda_4_momentum_lab, P_Lambda_lab_4vec);
+                double P_Lambda_star_mag = P_Lambda_star.Mag();
 
-            // 3 - Sampling decay angles:
-                // Calculating the P_max value for the rejection sampling:
-                // Compute P_max (the maximum possible value of P(x))
-                // This occurs at x = 0 or x = pi depending on sign of cos(x) term
-            double P_max = (1.0 / PI) * (1.0 + std::abs(alpha_H * P_Lambda_star_mag));
+                // 3 - Sampling decay angles:
+                    // Calculating the P_max value for the rejection sampling:
+                    // Compute P_max (the maximum possible value of P(x))
+                    // This occurs at x = 0 or x = pi depending on sign of cos(x) term
+                double P_max = (1.0 / PI) * (1.0 + std::abs(alpha_H * P_Lambda_star_mag));
 
-                // Defining the uniform distribution dist_y for the sampling:
-                // Uniform distribution for y between 0 and P_max
-            std::uniform_real_distribution<double> dist_y(0.0, P_max);
+                    // Defining the uniform distribution dist_y for the sampling:
+                    // Uniform distribution for y between 0 and P_max
+                std::uniform_real_distribution<double> dist_y(0.0, P_max);
 
-            auto [xi_star, phi_star] = sample_P_angle_proton(P_Lambda_star_mag, rng, dist_x, dist_y, dist_azimuth); // Uses the new unpacking of C++17
-            
-            // 4 - Generating the proton 4-momentum from the decay:
-                // Actually, I just need the angles at which the proton would decay, not the whole 4-momentum of the decay, but whatever, let's keep it!
-                // In other words, I could've stopped at the sample_P_angle_proton function, and then just rotate those angles to the XYZ axes of the lab frame.
-                // This could turn out to be useful later on, if I intend on doing some background checks for the Lambda reconstructions or something like that.
-                // You won't even need the proton's momentum for the ring observable's reconstruction! But whatever...
-            TLorentzVector proton_4_momentum = Lambda_decay(Lambda_4_momentum_lab, P_Lambda_star, xi_star, phi_star);
+                auto [xi_star, phi_star] = sample_P_angle_proton(P_Lambda_star_mag, rng, dist_x, dist_y, dist_azimuth); // Uses the new unpacking of C++17
+                
+                // 4 - Generating the proton 4-momentum from the decay:
+                    // Actually, I just need the angles at which the proton would decay, not the whole 4-momentum of the decay, but whatever, let's keep it!
+                    // In other words, I could've stopped at the sample_P_angle_proton function, and then just rotate those angles to the XYZ axes of the lab frame.
+                    // This could turn out to be useful later on, if I intend on doing some background checks for the Lambda reconstructions or something like that.
+                    // You won't even need the proton's momentum for the ring observable's reconstruction! But whatever...
+                TLorentzVector proton_4_momentum = Lambda_decay(Lambda_4_momentum_lab, P_Lambda_star, xi_star, phi_star);
 
-            // 5 - Extracting useful variables from the 4-momentum of the Lambda:
-                // Earlier getters from the proton 4-momenta (not quite what I need right now)
-            // double proton_y = proton_4_momentum.Rapidity();
-            // double proton_phi = proton_4_momentum.Phi();
-            double lambda_y = Lambda_4_momentum_lab.Rapidity();
-            double lambda_pT = Lambda_4_momentum_lab.Pt();
+                // 5 - Extracting useful variables from the 4-momentum of the Lambda:
+                    // Earlier getters from the proton 4-momenta (not quite what I need right now)
+                // double proton_y = proton_4_momentum.Rapidity();
+                // double proton_phi = proton_4_momentum.Phi();
+                
+                    // Don't need to calculate these numbers! They are already provided in the code! (But I checked and the results match)
+                // double lambda_y = Lambda_4_momentum_lab.Rapidity();
+                // double lambda_pT = Lambda_4_momentum_lab.Pt();
+                double lambda_y = y_matrix[ev_idx][particle_idx];
+                double lambda_pT = std::sqrt(px_matrix[ev_idx][particle_idx]*px_matrix[ev_idx][particle_idx] + py_matrix[ev_idx][particle_idx]*py_matrix[ev_idx][particle_idx]);
 
-            // 6 - Summing to average the polarization vector -- Global polarization:
-                // To do the average dot product between the proton momentum direction and \hat{n} when there are (pT, y) bins involved,
-                // it would probably be easier to create a TH2D that collects the sums, and then normalize each bin by the number of times
-                // I added values into it. The bins will not have counts, but the actual value of the sum. If I could just create a matrix
-                // that has those summation values and the appropriate bin limits, then that would be equivalent.
-                // A good idea would be to have a TH2D that has the sums for the averages, and another that has the number of particles in
-                // that specific bin
-            TVector3 proton_unit_vector = (proton_4_momentum.Vect()).Unit();
-            double X_dot = proton_unit_vector.Dot(x_hat);
-            double Y_dot = proton_unit_vector.Dot(y_hat);
-            double Z_dot = proton_unit_vector.Dot(z_hat);
+                // 6 - Summing to average the polarization vector -- Global polarization:
+                    // To do the average dot product between the proton momentum direction and \hat{n} when there are (pT, y) bins involved,
+                    // it would probably be easier to create a TH2D that collects the sums, and then normalize each bin by the number of times
+                    // I added values into it. The bins will not have counts, but the actual value of the sum. If I could just create a matrix
+                    // that has those summation values and the appropriate bin limits, then that would be equivalent.
+                    // A good idea would be to have a TH2D that has the sums for the averages, and another that has the number of particles in
+                    // that specific bin
+                TVector3 proton_unit_vector = (proton_4_momentum.Vect()).Unit();
+                double X_dot = proton_unit_vector.Dot(x_hat);
+                double Y_dot = proton_unit_vector.Dot(y_hat);
+                double Z_dot = proton_unit_vector.Dot(z_hat);
 
-            average_dotX += X_dot;
-            average_dotY += Y_dot;
-            average_dotZ += Z_dot;
+                average_dotX += X_dot;
+                average_dotY += Y_dot;
+                average_dotZ += Z_dot;
 
-            // 7 - Summing to calculate polarization on subsets of the available Lambdas -- Bins of (pT, y):
-            hLambdaCounter_pT_y->Fill(lambda_pT, lambda_y);
-            
-            hLambdaAvgDotX_pT_y->Fill(lambda_pT, lambda_y, X_dot);
-            hLambdaAvgDotY_pT_y->Fill(lambda_pT, lambda_y, Y_dot);
-            hLambdaAvgDotZ_pT_y->Fill(lambda_pT, lambda_y, Z_dot);
+                // 7 - Summing to calculate polarization on subsets of the available Lambdas -- Bins of (pT, y):
+                hLambdaCounter_pT_y->Fill(lambda_pT, lambda_y);
+                
+                hLambdaAvgDotX_pT_y->Fill(lambda_pT, lambda_y, X_dot);
+                hLambdaAvgDotY_pT_y->Fill(lambda_pT, lambda_y, Y_dot);
+                hLambdaAvgDotZ_pT_y->Fill(lambda_pT, lambda_y, Z_dot);
 
-            // 8 - Filling the true values of the TH2D polarization histogram:
-            hLambdaPolX_pT_y->Fill(lambda_pT, lambda_y, Sx_matrix[ev_idx][particle_idx]);
-            hLambdaPolY_pT_y->Fill(lambda_pT, lambda_y, Sy_matrix[ev_idx][particle_idx]);
-            hLambdaPolZ_pT_y->Fill(lambda_pT, lambda_y, Sz_matrix[ev_idx][particle_idx]);
+                // 8 - Filling the true values of the TH2D polarization histogram:
+                hLambdaPolX_pT_y->Fill(lambda_pT, lambda_y, Sx_matrix[ev_idx][particle_idx]);
+                hLambdaPolY_pT_y->Fill(lambda_pT, lambda_y, Sy_matrix[ev_idx][particle_idx]);
+                hLambdaPolZ_pT_y->Fill(lambda_pT, lambda_y, Sz_matrix[ev_idx][particle_idx]);
+            }
         }
     }
-    std::cout << "Done!" << std::endl;
+    std::cout << "\tDone!" << std::endl;
 
     // Finishing the average for the 3 global dot products:
     average_dotX /= hLambdaCounter->GetBinContent(1);
@@ -226,6 +236,8 @@ int lambda_pol_toy_model(){
     hLambdaPolYReco->Fill(PolY);
     hLambdaPolZReco->Fill(PolZ);
 
+    hLambdaPolMagReco->Fill(std::sqrt(PolX*PolX + PolY*PolY + PolZ*PolZ));
+
     // Averaging the TH2D histograms that collect the mean dot product, and then converting them into polarizations:
     hLambdaAvgDotX_pT_y->Divide(hLambdaCounter_pT_y);
     hLambdaAvgDotY_pT_y->Divide(hLambdaCounter_pT_y);
@@ -235,13 +247,17 @@ int lambda_pol_toy_model(){
     hLambdaPolX_pT_yReco = (TH2D*) hLambdaAvgDotX_pT_y->Clone("hLambdaPolX_pT_yReco");
     hLambdaPolY_pT_yReco = (TH2D*) hLambdaAvgDotY_pT_y->Clone("hLambdaPolY_pT_yReco");
     hLambdaPolZ_pT_yReco = (TH2D*) hLambdaAvgDotZ_pT_y->Clone("hLambdaPolZ_pT_yReco");
+
+    hLambdaPolX_pT_yReco->SetTitle("hLambdaPolX_pT_yReco");
+    hLambdaPolY_pT_yReco->SetTitle("hLambdaPolY_pT_yReco");
+    hLambdaPolZ_pT_yReco->SetTitle("hLambdaPolZ_pT_yReco");
     
         // Applying the transform that turns them into polarizations:
     hLambdaPolX_pT_yReco->Scale(3.0 / alpha_H);
     hLambdaPolY_pT_yReco->Scale(3.0 / alpha_H);
     hLambdaPolZ_pT_yReco->Scale(3.0 / alpha_H);
 
-    // Averaging the true values too:
+    // Averaging the true values too -- This should already mask the arrays too:
     hLambdaPolX_pT_y->Divide(hLambdaCounter_pT_y);
     hLambdaPolY_pT_y->Divide(hLambdaCounter_pT_y);
     hLambdaPolZ_pT_y->Divide(hLambdaCounter_pT_y);
@@ -250,7 +266,9 @@ int lambda_pol_toy_model(){
     //// 4 - Exporting into a .root file for later review
     ////////////////////
     std::cout << "\nExporting results" << std::endl;
-    std::string filename = "/home/cicero/results/hydro_vorticity/LambdaPol_lumpy_events_60_70_" + std::to_string(N_events) + "ev.root";
+    // std::string filename = "/home/cicero/results/hydro_vorticity/LambdaPol_lumpy_events_60_70_" + std::to_string(N_events) + "ev.root";
+    // std::string filename = "/home/cicero/results/hydro_vorticity/LambdaPol2_lumpy_events_60_70_" + std::to_string(N_events) + "ev.root"; // Having many different file names for comparison
+    std::string filename = "/home/cicero/results/hydro_vorticity/LambdaPolResampled" + std::to_string(N_resamples) + "times_lumpy_events_60_70_" + std::to_string(N_events) + "ev.root";
     TFile f(filename.c_str(), "RECREATE");
 
     hLambdaCounter->Write();
@@ -277,6 +295,7 @@ int lambda_pol_toy_model(){
     hLambdaAvgDotZ_pT_y->Write();
 
     f.Close();
+    std::cout << "\tDone!" << std::endl;
 
     std::cout << "\n\nCode execution finished with code 0. Thank you!" << std::endl;
     return 0;
@@ -377,80 +396,108 @@ TLorentzVector Lambda_decay(TLorentzVector Lambda_4_momentum_lab, TVector3 P_Lam
         // phi_star is the azimuth angle for the proton. Just a uniform sample between 0 and 2pi
         // The goal is to use both of these to determine the 4-momentum of the proton daughter
 
-    // First, calculating the momenta in a frame where the polarization is in the z axis (easier to define)
-    double px_star = daughter_momentum * std::sin(xi_star) * std::cos(phi_star);
-    double py_star = daughter_momentum * std::sin(xi_star) * std::sin(phi_star);
-    double pz_star = daughter_momentum * std::cos(xi_star); // This means the z axis points in the polarization direction! Try xi_star = 0 and xi_star = pi to convince yourself.
-    // TLorentzVector proton_4_momentum(px_star, py_star, pz_star, E_p_star);
+        // Method 1 - Defining the vectors in a local frame, where the polarization points in the Z axis, and then using a rotation matrix:
+    // // First, calculating the momenta in a frame where the polarization is in the z axis (easier to define)
+    // double px_star = daughter_momentum * std::sin(xi_star) * std::cos(phi_star);
+    // double py_star = daughter_momentum * std::sin(xi_star) * std::sin(phi_star);
+    // double pz_star = daughter_momentum * std::cos(xi_star); // This means the z axis points in the polarization direction! Try xi_star = 0 and xi_star = pi to convince yourself.
+    // // TLorentzVector proton_4_momentum(px_star, py_star, pz_star, E_p_star);
 
-    ////////////////////
-    //// 4 - Now rotating this frame into the actual xyz coordinates where the polarization points
-    ////////////////////
-    // The idea is that we built the proton's XYZ momenta in a coordinate system where the Z axis is the direction of the polarization.
-    // Now we will take that polarization vector and use it as reference to rotate our proton momentum into the usual XYZ definition, with Z in the beam direction.
-        // Do notice that this here might be a problem if the polarization vector is null, but just assume it isn't!
-        // Also, do notice that you couldn't do this with a momentum_Lambda_star vector and its angle with the P* vector, because the Lambda momentum in its own rest frame is zero!
-    TVector3 P_Lambda_star_unit = P_Lambda_star.Unit(); // The direction of the polarization, which we defined to be in the z axis for the (px,py,pz) vector above.
+    // ////////////////////
+    // //// 4 - Now rotating this frame into the actual xyz coordinates where the polarization points
+    // ////////////////////
+    //
+    //
+    // // The idea is that we built the proton's XYZ momenta in a coordinate system where the Z axis is the direction of the polarization.
+    // // Now we will take that polarization vector and use it as reference to rotate our proton momentum into the usual XYZ definition, with Z in the beam direction.
+    //     // Do notice that this here might be a problem if the polarization vector is null, but just assume it isn't!
+    //     // Also, do notice that you couldn't do this with a momentum_Lambda_star vector and its angle with the P* vector, because the Lambda momentum in its own rest frame is zero!
+    // TVector3 P_Lambda_star_unit = P_Lambda_star.Unit(); // The direction of the polarization, which we defined to be in the z axis for the (px,py,pz) vector above.
 
-        // Do notice that this code only matches the local z axis (the direction of the polarization) with the laboratory's Z axis (the direction of the beam)!
-        // It does not match the actual x and y axes of the laboratory! 
-        // But that is not so much of a problem: the direction of the xy component is totally randomized (it comes from the sampling of a random phi_star
-        // angle between 0 and 2pi) and does not carry any important physical meaning in this case! So there is no problem with how exactly you define this
-        // proton's x and y axes components: they would be randomized and you just added a systematic shift to what is already a random uniform distribution.
-        // This makes no difference and you can interpret it as a slightly more complex way of picking the random xy component from phi_star.
-        // Just be careful not to say that the final proton's azimuthal angle is the same as this phi_star angle in a well defined rotation!
-    // Building a rotation matrix around that will take this local z axis definition into the direction of the polarization in the usual XYZ coordinates:
-    TVector3 z_axis(0, 0, 1);
-    TVector3 rotation_axis = z_axis.Cross(P_Lambda_star_unit);
-    // double rotation_angle = std::acos(z_axis.Dot(P_Lambda_star_unit));
-        // I will actually use the cosine of this dot product above:
-    double cos_angle = z_axis.Dot(P_Lambda_star_unit);
-    double rotation_angle = std::acos(cos_angle);
+    //     // Do notice that this code only matches the local z axis (the direction of the polarization) with the laboratory's Z axis (the direction of the beam)!
+    //     // It does not match the actual x and y axes of the laboratory! 
+    //     // But that is not so much of a problem: the direction of the xy component is totally randomized (it comes from the sampling of a random phi_star
+    //     // angle between 0 and 2pi) and does not carry any important physical meaning in this case! So there is no problem with how exactly you define this
+    //     // proton's x and y axes components: they would be randomized and you just added a systematic shift to what is already a random uniform distribution.
+    //     // This makes no difference and you can interpret it as a slightly more complex way of picking the random xy component from phi_star.
+    //     // Just be careful not to say that the final proton's azimuthal angle is the same as this phi_star angle in a well defined rotation!
+    // // Building a rotation matrix around that will take this local z axis definition into the direction of the polarization in the usual XYZ coordinates:
+    // TVector3 z_axis(0, 0, 1);
+    // TVector3 rotation_axis = z_axis.Cross(P_Lambda_star_unit);
+    // // double rotation_angle = std::acos(z_axis.Dot(P_Lambda_star_unit));
+    //     // I will actually use the cosine of this dot product above:
+    // double cos_angle = z_axis.Dot(P_Lambda_star_unit);
+    // double rotation_angle = std::acos(cos_angle);
 
-    TRotation rotation_matrix;
+    // TRotation rotation_matrix;
 
-    if (rotation_axis.Mag() > 1e-6){
-        rotation_axis = rotation_axis.Unit();
-        rotation_matrix.Rotate(rotation_angle, rotation_axis);
+    // if (rotation_axis.Mag() > 1e-6){
+    //     rotation_axis = rotation_axis.Unit();
+    //     rotation_matrix.Rotate(rotation_angle, rotation_axis);
+    // }
+    // else{
+    //     // A particular case, where the angle is way too small, i.e., the local z axis is already close to the laboratory Z axis.
+    //     // Already aligned (or opposite) - either no rotation or do a 180 degrees rotation:
+    //     if (cos_angle < 0){
+    //         // 180 degree rotation about X (or any axis perpendicular to z)
+    //         rotation_matrix.Rotate(TMath::Pi(), TVector3(1, 0, 0));
+    //     } 
+    //     else{
+    //         // No rotation needed
+    //         rotation_matrix = TRotation(); // identity
+    //     }
+    // }
+    //
+    // TVector3 p_star_vec(px_star, py_star, pz_star);
+    // TVector3 p_star_rotated = rotation_matrix * p_star_vec; // Rotating the local-frame into the usual lab-frame with the Z axis pointing in the beam direction.
+    // // The other way around would be a transpose of this rotation matrix.
+
+
+        // Method 2 - Defining the vector straight in the laboratory's frame of reference:
+    TVector3 P_Lambda_star_unit = P_Lambda_star.Unit(); // The reference for our sampling
+
+    // Pick arbitrary vector not parallel to P_Lambda_star_unit:
+    TVector3 T;
+    if (std::abs(P_Lambda_star_unit.Z()) < 0.99){
+        T = TVector3(0, 0, 1);
     }
     else{
-        // A particular case, where the angle is way too small, i.e., the local z axis is already close to the laboratory Z axis.
-        // Already aligned (or opposite) - either no rotation or do a 180 degrees rotation:
-        if (cos_angle < 0){
-            // 180 degree rotation about X (or any axis perpendicular to z)
-            rotation_matrix.Rotate(TMath::Pi(), TVector3(1, 0, 0));
-        } 
-        else{
-            // No rotation needed
-            rotation_matrix = TRotation(); // identity
-        }
+        T = TVector3(0, 1, 0);
     }
 
-    TVector3 p_star_vec(px_star, py_star, pz_star);
-    TVector3 p_star_rotated = rotation_matrix * p_star_vec; // Rotating the local-frame into the usual lab-frame with the Z axis pointing in the beam direction.
-    // The other way around would be a transpose of this rotation matrix.
+    // Compute orthonormal basis
+    TVector3 u_hat = (T.Cross(P_Lambda_star_unit)).Unit();
+    TVector3 v_hat = (P_Lambda_star_unit.Cross(u_hat)).Unit();
+
+    // Build p_star -- The proton's momentum vector in the usual XYZ axes of the laboratory:
+    TVector3 p_star = daughter_momentum * (std::cos(xi_star) * P_Lambda_star_unit + std::sin(xi_star) * (std::cos(phi_star) * u_hat + std::sin(phi_star) * v_hat));
 
     ////////////////////
     //// 5 - Building the proton 4-momentum and boosting it into the lab frame:
     ////////////////////
-    TLorentzVector proton_4_momentum(p_star_rotated, E_p_star); // Short for (p_star_rotated.X(), p_star_rotated.Y(), p_star_rotated.Z(), E_p_star);
+        // For method 1:
+    // TLorentzVector proton_4_momentum(p_star_rotated, E_p_star); // Short for (p_star_rotated.X(), p_star_rotated.Y(), p_star_rotated.Z(), E_p_star);
         // Modifying the vector in place with the Boost() method:
     // proton_4_momentum.Boost(-beta_inverse); // -beta_inverse is just beta, so this properly translates to the lab frame!
 
+        // For method 2:
+    TLorentzVector proton_4_momentum(p_star, E_p_star);
     TVector3 beta = Lambda_4_momentum_lab.BoostVector(); // The boost that takes from the Lambda rest frame into the lab frame.
     proton_4_momentum.Boost(beta);
     
     return proton_4_momentum;
 }
 
-TVector3 boost_polarization_to_rest_frame(TLorentzVector Lambda_4_momentum_lab, TVector3 P_Lambda_lab){
-    TVector3 beta_inverse = -Lambda_4_momentum_lab.BoostVector();
-    TLorentzVector P_Lambda_lab_4vec(P_Lambda_lab.X(), P_Lambda_lab.Y(), P_Lambda_lab.Z(), 0); // TLorentzVectors have boost properties!
+TVector3 boost_polarization_to_rest_frame(TLorentzVector Lambda_4_momentum_lab, TLorentzVector P_Lambda_lab_4vec){
+    TVector3 beta_inverse = -Lambda_4_momentum_lab.BoostVector(); // TLorentzVectors have boost properties!
+        // The definition below is wrong! I need the St components for the polarization vector too!
+        // Reworked the code to include the St component now.
+    // TLorentzVector P_Lambda_lab_4vec(P_Lambda_lab.X(), P_Lambda_lab.Y(), P_Lambda_lab.Z(), 0);
     TLorentzVector P_Lambda_star_4vec = P_Lambda_lab_4vec;
     P_Lambda_star_4vec.Boost(beta_inverse); // This boosts the P_Lambda_star_4vec into the rest frame.
 
     // Getting just the 3 needed components of this vector, in a shorter form for the function.
-        // Also, only the spatial part is what matters in this case:
+        // Also, only the spatial part is what matters in this case, because we are no longer doing any Lorentz transforms, so 'am converting it to a TVector3
     TVector3 P_Lambda_star = P_Lambda_star_4vec.Vect();
     return P_Lambda_star;
 }
@@ -468,7 +515,7 @@ TVector3 boost_polarization_to_rest_frame(TLorentzVector Lambda_4_momentum_lab, 
 void get_lambda(DoubleMatrix &y_matrix, DoubleMatrix &phi_matrix, DoubleMatrix &px_matrix, DoubleMatrix &py_matrix,
                 DoubleMatrix &pz_matrix, DoubleMatrix &E_matrix, DoubleMatrix& mult_matrix, DoubleMatrix &St_matrix,
                 DoubleMatrix &Sx_matrix, DoubleMatrix &Sy_matrix, DoubleMatrix &Sz_matrix, int N_events){
-    std::cout << "\nStarting event loop..." << std::endl;
+    std::cout << "\nStarting event loop for Lambda getter..." << std::endl;
     for(int i = 0; i < N_events; ++i){
         if (i % int (N_events * 0.1) == 0){ // Keeping track of the proccess for every 10% of the events
             std::cout << "Now on event " << i << " of " << N_events  << " (" << i * 1./N_events * 100 << "%)" << std::endl; // The 1. comes to represent the percentage as a double
@@ -536,7 +583,7 @@ void get_lambda(DoubleMatrix &y_matrix, DoubleMatrix &phi_matrix, DoubleMatrix &
         Sy_matrix.push_back(Sy);
         Sz_matrix.push_back(Sz);
     }
-    std::cout << "\nCompleted!" << std::endl;
+    // std::cout << "\nCompleted!" << std::endl;
 }
 
 // This function retrieves the same set of data that Vitor used in Pol_Analysis_Random_hist_ebe.C
