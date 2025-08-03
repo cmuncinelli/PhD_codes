@@ -117,6 +117,12 @@ int lambda_pol_toy_model(){
     TH3D *hLambdaAvgDotY_pT_y_phi = new TH3D("hLambdaAvgDotY_pT_y_phi", "hLambdaAvgDotY_pT_y_phi", N_bins_pT, 0, 3, N_bins_rap, -0.5, 0.5, N_bins_phi, 0, 2*PI);
     TH3D *hLambdaAvgDotZ_pT_y_phi = new TH3D("hLambdaAvgDotZ_pT_y_phi", "hLambdaAvgDotZ_pT_y_phi", N_bins_pT, 0, 3, N_bins_rap, -0.5, 0.5, N_bins_phi, 0, 2*PI);
 
+            // Weighting the observables by the multiplicity of each Lambda bin (the mult_matrix data) -- This is the actually right thing to do!
+    TH3D *hLambdaCounter_pT_y_phi_Weighted = new TH3D("hLambdaCounter_pT_y_phi_Weighted", "hLambdaCounter_pT_y_phi_Weighted", N_bins_pT, 0, 3, N_bins_rap, -0.5, 0.5, N_bins_phi, 0, 2*PI);
+    TH3D *hLambdaAvgDotX_pT_y_phi_Weighted = new TH3D("hLambdaAvgDotX_pT_y_phi_Weighted", "hLambdaAvgDotX_pT_y_phi_Weighted", N_bins_pT, 0, 3, N_bins_rap, -0.5, 0.5, N_bins_phi, 0, 2*PI);
+    TH3D *hLambdaAvgDotY_pT_y_phi_Weighted = new TH3D("hLambdaAvgDotY_pT_y_phi_Weighted", "hLambdaAvgDotY_pT_y_phi_Weighted", N_bins_pT, 0, 3, N_bins_rap, -0.5, 0.5, N_bins_phi, 0, 2*PI);
+    TH3D *hLambdaAvgDotZ_pT_y_phi_Weighted = new TH3D("hLambdaAvgDotZ_pT_y_phi_Weighted", "hLambdaAvgDotZ_pT_y_phi_Weighted", N_bins_pT, 0, 3, N_bins_rap, -0.5, 0.5, N_bins_phi, 0, 2*PI);
+
     TH3D *hLambdaPolStarX_pT_y_phiReco;
     TH3D *hLambdaPolStarY_pT_y_phiReco;
     TH3D *hLambdaPolStarZ_pT_y_phiReco;
@@ -140,6 +146,33 @@ int lambda_pol_toy_model(){
     TH1D *hLambdaPolX_phiReco = new TH1D("hLambdaPolX_phiReco", "hLambdaPolX_phiReco", N_bins_phi, 0, 2*PI);
     TH1D *hLambdaPolY_phiReco = new TH1D("hLambdaPolY_phiReco", "hLambdaPolY_phiReco", N_bins_phi, 0, 2*PI);
     TH1D *hLambdaPolZ_phiReco = new TH1D("hLambdaPolZ_phiReco", "hLambdaPolZ_phiReco", N_bins_phi, 0, 2*PI);
+
+    ///////////////////////////////////////////
+            // For the weighted histograms:
+    ///////////////////////////////////////////
+    TH3D *hLambdaPolStarX_pT_y_phiReco_Weighted;
+    TH3D *hLambdaPolStarY_pT_y_phiReco_Weighted;
+    TH3D *hLambdaPolStarZ_pT_y_phiReco_Weighted;
+
+        // The lab polarization histograms:
+    TH3D *hLambdaPolX_pT_y_phiReco_Weighted = new TH3D("hLambdaPolX_pT_y_phiReco_Weighted", "hLambdaPolX_pT_y_phiReco_Weighted", N_bins_pT, 0, 3, N_bins_rap, -0.5, 0.5, N_bins_phi, 0, 2*PI);
+    TH3D *hLambdaPolY_pT_y_phiReco_Weighted = new TH3D("hLambdaPolY_pT_y_phiReco_Weighted", "hLambdaPolY_pT_y_phiReco_Weighted", N_bins_pT, 0, 3, N_bins_rap, -0.5, 0.5, N_bins_phi, 0, 2*PI);
+    TH3D *hLambdaPolZ_pT_y_phiReco_Weighted = new TH3D("hLambdaPolZ_pT_y_phiReco_Weighted", "hLambdaPolZ_pT_y_phiReco_Weighted", N_bins_pT, 0, 3, N_bins_rap, -0.5, 0.5, N_bins_phi, 0, 2*PI);
+
+        // Some 2D lab polarization histograms to compare easily with hLambdaPolX_pT_y:
+    TH2D *hLambdaPolX_pT_yReco_Weighted = new TH2D("hLambdaPolX_pT_yReco_Weighted", "hLambdaPolX_pT_yReco_Weighted", N_bins_pT, 0, 3, N_bins_rap, -0.5, 0.5);
+    TH2D *hLambdaPolY_pT_yReco_Weighted = new TH2D("hLambdaPolY_pT_yReco_Weighted", "hLambdaPolY_pT_yReco_Weighted", N_bins_pT, 0, 3, N_bins_rap, -0.5, 0.5);
+    TH2D *hLambdaPolZ_pT_yReco_Weighted = new TH2D("hLambdaPolZ_pT_yReco_Weighted", "hLambdaPolZ_pT_yReco_Weighted", N_bins_pT, 0, 3, N_bins_rap, -0.5, 0.5);
+
+            // Other 2D histograms to compare with Vitor's paper:
+    TH2D *hLambdaPolX_phi_pTReco_Weighted = new TH2D("hLambdaPolX_phi_pTReco_Weighted", "hLambdaPolX_phi_pTReco_Weighted", N_bins_phi, 0, 2*PI, N_bins_pT, 0, 3);
+    TH2D *hLambdaPolY_phi_pTReco_Weighted = new TH2D("hLambdaPolY_phi_pTReco_Weighted", "hLambdaPolY_phi_pTReco_Weighted", N_bins_phi, 0, 2*PI, N_bins_pT, 0, 3);
+    TH2D *hLambdaPolZ_phi_pTReco_Weighted = new TH2D("hLambdaPolZ_phi_pTReco_Weighted", "hLambdaPolZ_phi_pTReco_Weighted", N_bins_phi, 0, 2*PI, N_bins_pT, 0, 3);
+
+        // Finally, 1D lab polarization histograms to compare with the plots in the paper:
+    TH1D *hLambdaPolX_phiReco_Weighted = new TH1D("hLambdaPolX_phiReco_Weighted", "hLambdaPolX_phiReco_Weighted", N_bins_phi, 0, 2*PI);
+    TH1D *hLambdaPolY_phiReco_Weighted = new TH1D("hLambdaPolY_phiReco_Weighted", "hLambdaPolY_phiReco_Weighted", N_bins_phi, 0, 2*PI);
+    TH1D *hLambdaPolZ_phiReco_Weighted = new TH1D("hLambdaPolZ_phiReco_Weighted", "hLambdaPolZ_phiReco_Weighted", N_bins_phi, 0, 2*PI);
 
     ////////////////////
     //// 1.1 - Defining randomized samplers for the loop -- It would make no sense to define them inside the loop, as they will not change:
@@ -180,7 +213,8 @@ int lambda_pol_toy_model(){
                 // 1 - Fetching particle information:
                 TLorentzVector Lambda_4_momentum_lab(px_matrix[ev_idx][particle_idx], py_matrix[ev_idx][particle_idx], pz_matrix[ev_idx][particle_idx], E_matrix[ev_idx][particle_idx]);
                 // TVector3 P_Lambda_lab(Sx_matrix[ev_idx][particle_idx], Sy_matrix[ev_idx][particle_idx], Sz_matrix[ev_idx][particle_idx]);
-                TLorentzVector P_Lambda_lab_4vec(Sx_matrix[ev_idx][particle_idx], Sy_matrix[ev_idx][particle_idx], Sz_matrix[ev_idx][particle_idx], St_matrix[ev_idx][particle_idx]); // You need the temporal component too!
+                    // Polarization is given by P = S/<S> in the case of Lambdas with spin-1/2, and as <S> = 1/2, you just need to multiply everything by 2.
+                TLorentzVector P_Lambda_lab_4vec(Sx_matrix[ev_idx][particle_idx] * 2, Sy_matrix[ev_idx][particle_idx] * 2, Sz_matrix[ev_idx][particle_idx] * 2, St_matrix[ev_idx][particle_idx] * 2); // You need the temporal component too!
                 hLambdaPolMag->Fill((P_Lambda_lab_4vec.Vect()).Mag()); // I just want the magnitude of the spatial part for this plot, so just grab the Vect() magnitude
 
                     // Filling the known polarizations:
@@ -253,6 +287,12 @@ int lambda_pol_toy_model(){
                 hLambdaAvgDotY_pT_y_phi->Fill(lambda_pT, lambda_y, lambda_phi, Y_dot);
                 hLambdaAvgDotZ_pT_y_phi->Fill(lambda_pT, lambda_y, lambda_phi, Z_dot);
 
+                    // Filling the weighted values:
+                hLambdaCounter_pT_y_phi_Weighted->Fill(lambda_pT, lambda_y, lambda_phi, mult_matrix[ev_idx][particle_idx]);
+                hLambdaAvgDotX_pT_y_phi_Weighted->Fill(lambda_pT, lambda_y, lambda_phi, X_dot * mult_matrix[ev_idx][particle_idx]); // Weighted averages
+                hLambdaAvgDotY_pT_y_phi_Weighted->Fill(lambda_pT, lambda_y, lambda_phi, Y_dot * mult_matrix[ev_idx][particle_idx]);
+                hLambdaAvgDotZ_pT_y_phi_Weighted->Fill(lambda_pT, lambda_y, lambda_phi, Z_dot * mult_matrix[ev_idx][particle_idx]);
+
                 // 8 - Filling the true values of the TH2D polarization histogram:
                 hLambdaPolX_pT_y->Fill(lambda_pT, lambda_y, Sx_matrix[ev_idx][particle_idx]);
                 hLambdaPolY_pT_y->Fill(lambda_pT, lambda_y, Sy_matrix[ev_idx][particle_idx]);
@@ -315,6 +355,25 @@ int lambda_pol_toy_model(){
     hLambdaPolStarX_pT_y_phiReco->Scale(3.0 / alpha_H);
     hLambdaPolStarY_pT_y_phiReco->Scale(3.0 / alpha_H);
     hLambdaPolStarZ_pT_y_phiReco->Scale(3.0 / alpha_H);
+
+
+        // Now for weighted averages:
+    hLambdaAvgDotX_pT_y_phi_Weighted->Divide(hLambdaCounter_pT_y_phi_Weighted);
+    hLambdaAvgDotY_pT_y_phi_Weighted->Divide(hLambdaCounter_pT_y_phi_Weighted);
+    hLambdaAvgDotZ_pT_y_phi_Weighted->Divide(hLambdaCounter_pT_y_phi_Weighted);
+
+    hLambdaPolStarX_pT_y_phiReco_Weighted = (TH3D*) hLambdaAvgDotX_pT_y_phi_Weighted->Clone("hLambdaPolStarX_pT_y_phiReco_Weighted");
+    hLambdaPolStarY_pT_y_phiReco_Weighted = (TH3D*) hLambdaAvgDotY_pT_y_phi_Weighted->Clone("hLambdaPolStarY_pT_y_phiReco_Weighted");
+    hLambdaPolStarZ_pT_y_phiReco_Weighted = (TH3D*) hLambdaAvgDotZ_pT_y_phi_Weighted->Clone("hLambdaPolStarZ_pT_y_phiReco_Weighted");
+
+    hLambdaPolStarX_pT_y_phiReco_Weighted->SetTitle("hLambdaPolStarX_pT_y_phiReco_Weighted");
+    hLambdaPolStarY_pT_y_phiReco_Weighted->SetTitle("hLambdaPolStarY_pT_y_phiReco_Weighted");
+    hLambdaPolStarZ_pT_y_phiReco_Weighted->SetTitle("hLambdaPolStarZ_pT_y_phiReco_Weighted");
+    
+        // Applying the transform that turns them into polarizations -- In the lambda rest frame!
+    hLambdaPolStarX_pT_y_phiReco_Weighted->Scale(3.0 / alpha_H);
+    hLambdaPolStarY_pT_y_phiReco_Weighted->Scale(3.0 / alpha_H);
+    hLambdaPolStarZ_pT_y_phiReco_Weighted->Scale(3.0 / alpha_H);
     ///////////////////////////////////////////////////////////////
 
         // Now boosting each of these into the lab rest frame by calculating a mean 4-vector of all Lambdas in each (pT, y) bin:
@@ -330,6 +389,11 @@ int lambda_pol_toy_model(){
                     // Getting the two other components, as the (pT, y) bin centers will be the same in all three cases:
                 double PolY_star_pTy_phi = hLambdaPolStarY_pT_y_phiReco->GetBinContent(pT_idx, y_idx, phi_idx);
                 double PolZ_star_pTy_phi = hLambdaPolStarZ_pT_y_phiReco->GetBinContent(pT_idx, y_idx, phi_idx);
+
+                        // Same for multiplicity-weighted averages:
+                double PolX_star_pTy_phi_Weighted = hLambdaPolStarX_pT_y_phiReco_Weighted->GetBinContent(pT_idx, y_idx, phi_idx);
+                double PolY_star_pTy_phi_Weighted = hLambdaPolStarX_pT_y_phiReco_Weighted->GetBinContent(pT_idx, y_idx, phi_idx);
+                double PolZ_star_pTy_phi_Weighted = hLambdaPolStarX_pT_y_phiReco_Weighted->GetBinContent(pT_idx, y_idx, phi_idx);
 
                 // Now calculating a mean 4-momentum of the Lambda in each bin:
                 double mean_px = pT_bin_center * std::cos(phi_bin_center);
@@ -349,10 +413,6 @@ int lambda_pol_toy_model(){
                 P_Lambda_lab_mean_4vec.Boost(beta);
                 TVector3 P_Lambda_lab_mean = P_Lambda_lab_mean_4vec.Vect();
 
-                hLambdaPolX_pT_y_phiReco->Fill(pT_bin_center, y_bin_center, phi_bin_center, P_Lambda_lab_mean.X());
-                hLambdaPolY_pT_y_phiReco->Fill(pT_bin_center, y_bin_center, phi_bin_center, P_Lambda_lab_mean.Y());
-                hLambdaPolZ_pT_y_phiReco->Fill(pT_bin_center, y_bin_center, phi_bin_center, P_Lambda_lab_mean.Z());
-
                 // Also doing a projection in 2D, averaging over phi bins:
                     // You also need to average over the number of bins that you are summing! If polarization = 1 in one, and 1 in another bin, then
                     // the sum would be 2, and polarization can't ever go up to that value! You need to properly average it by the number of N_phi bins.
@@ -369,6 +429,37 @@ int lambda_pol_toy_model(){
                 hLambdaPolX_phiReco->Fill(phi_bin_center, P_Lambda_lab_mean.X()/(N_bins_pT*N_bins_rap));
                 hLambdaPolY_phiReco->Fill(phi_bin_center, P_Lambda_lab_mean.Y()/(N_bins_pT*N_bins_rap));
                 hLambdaPolZ_phiReco->Fill(phi_bin_center, P_Lambda_lab_mean.Z()/(N_bins_pT*N_bins_rap));
+
+
+                    // Boosting the weighted polarization vector too:
+                TLorentzVector P_Lambda_star_mean_4vec_Weighted(PolX_star_pTy_phi_Weighted, PolY_star_pTy_phi_Weighted, PolZ_star_pTy_phi_Weighted, 0);
+                TLorentzVector P_Lambda_lab_mean_4vec_Weighted = P_Lambda_star_mean_4vec_Weighted;
+                P_Lambda_lab_mean_4vec_Weighted.Boost(beta);
+                TVector3 P_Lambda_lab_mean_Weighted = P_Lambda_lab_mean_4vec_Weighted.Vect();
+
+                        // For the weighted variation of the polarization:
+                hLambdaPolX_pT_y_phiReco_Weighted->Fill(pT_bin_center, y_bin_center, phi_bin_center, P_Lambda_lab_mean_Weighted.X());
+                hLambdaPolY_pT_y_phiReco_Weighted->Fill(pT_bin_center, y_bin_center, phi_bin_center, P_Lambda_lab_mean_Weighted.Y());
+                hLambdaPolZ_pT_y_phiReco_Weighted->Fill(pT_bin_center, y_bin_center, phi_bin_center, P_Lambda_lab_mean_Weighted.Z());
+
+                hLambdaPolX_pT_y_phiReco_Weighted->Fill(pT_bin_center, y_bin_center, phi_bin_center, P_Lambda_lab_mean_Weighted.X());
+                hLambdaPolY_pT_y_phiReco_Weighted->Fill(pT_bin_center, y_bin_center, phi_bin_center, P_Lambda_lab_mean_Weighted.Y());
+                hLambdaPolZ_pT_y_phiReco_Weighted->Fill(pT_bin_center, y_bin_center, phi_bin_center, P_Lambda_lab_mean_Weighted.Z());
+
+                // Also doing a projection in 2D, averaging over phi bins:
+                hLambdaPolX_pT_yReco_Weighted->Fill(pT_bin_center, y_bin_center, P_Lambda_lab_mean_Weighted.X()/N_bins_phi);
+                hLambdaPolY_pT_yReco_Weighted->Fill(pT_bin_center, y_bin_center, P_Lambda_lab_mean_Weighted.Y()/N_bins_phi);
+                hLambdaPolZ_pT_yReco_Weighted->Fill(pT_bin_center, y_bin_center, P_Lambda_lab_mean_Weighted.Z()/N_bins_phi);
+
+                    // A second 2D projection, in the same way it was plotted on Vitor's paper:
+                hLambdaPolX_phi_pTReco_Weighted->Fill(phi_bin_center, pT_bin_center, P_Lambda_lab_mean_Weighted.X()/N_bins_rap);
+                hLambdaPolY_phi_pTReco_Weighted->Fill(phi_bin_center, pT_bin_center, P_Lambda_lab_mean_Weighted.Y()/N_bins_rap);
+                hLambdaPolZ_phi_pTReco_Weighted->Fill(phi_bin_center, pT_bin_center, P_Lambda_lab_mean_Weighted.Z()/N_bins_rap);
+
+                // Finally, a 1D projection for the distribution in Phi only:
+                hLambdaPolX_phiReco_Weighted->Fill(phi_bin_center, P_Lambda_lab_mean_Weighted.X()/(N_bins_pT*N_bins_rap));
+                hLambdaPolY_phiReco_Weighted->Fill(phi_bin_center, P_Lambda_lab_mean_Weighted.Y()/(N_bins_pT*N_bins_rap));
+                hLambdaPolZ_phiReco_Weighted->Fill(phi_bin_center, P_Lambda_lab_mean_Weighted.Z()/(N_bins_pT*N_bins_rap));
             }
         }
     }
@@ -434,6 +525,27 @@ int lambda_pol_toy_model(){
     hLambdaPolX_phiReco->Write();
     hLambdaPolY_phiReco->Write();
     hLambdaPolZ_phiReco->Write();
+
+    // Weighted averages:
+    hLambdaPolStarX_pT_y_phiReco_Weighted->Write();
+    hLambdaPolStarY_pT_y_phiReco_Weighted->Write();
+    hLambdaPolStarZ_pT_y_phiReco_Weighted->Write();
+
+    hLambdaPolX_pT_y_phiReco_Weighted->Write();
+    hLambdaPolY_pT_y_phiReco_Weighted->Write();
+    hLambdaPolZ_pT_y_phiReco_Weighted->Write();
+
+    hLambdaPolX_pT_yReco_Weighted->Write();
+    hLambdaPolY_pT_yReco_Weighted->Write();
+    hLambdaPolZ_pT_yReco_Weighted->Write();
+
+    hLambdaPolX_phi_pTReco_Weighted->Write();
+    hLambdaPolY_phi_pTReco_Weighted->Write();
+    hLambdaPolZ_phi_pTReco_Weighted->Write();
+
+    hLambdaPolX_phiReco_Weighted->Write();
+    hLambdaPolY_phiReco_Weighted->Write();
+    hLambdaPolZ_phiReco_Weighted->Write();
 
     f.Close();
     std::cout << "\tDone!" << std::endl;
