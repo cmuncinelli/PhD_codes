@@ -125,7 +125,7 @@ int lambda_pol_toy_model(){
     TH2D *hLambdaPolZ_phi_pT = new TH2D("hLambdaPolZ_phi_pT", "hLambdaPolZ_phi_pT", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
 
         // Another version of these plots, properly weighted by the multiplicity of each bin:
-    TH2D *hLambdaCounter_phi_pT = new TH2D("hLambdaCounter_phi_pT", "hLambdaCounter_phi_pT", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
+    TH2D *hLambdaCounter_phi_pT_Weighted = new TH2D("hLambdaCounter_phi_pT_Weighted", "hLambdaCounter_phi_pT_Weighted", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
     TH2D *hLambdaPolX_phi_pT_Weighted = new TH2D("hLambdaPolX_phi_pT_Weighted", "hLambdaPolX_phi_pT_Weighted", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
     TH2D *hLambdaPolY_phi_pT_Weighted = new TH2D("hLambdaPolY_phi_pT_Weighted", "hLambdaPolY_phi_pT_Weighted", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
     TH2D *hLambdaPolZ_phi_pT_Weighted = new TH2D("hLambdaPolZ_phi_pT_Weighted", "hLambdaPolZ_phi_pT_Weighted", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
@@ -247,9 +247,9 @@ int lambda_pol_toy_model(){
     ////////////////////
     std::cout << "\nDecaying Lambdas and filling histograms" << std::endl;
         // Looping on all events and all particles of each event:
-    TVector3 x_hat(1, 0, 0);
-    TVector3 y_hat(0, 1, 0);
-    TVector3 z_hat(0, 0, 1);
+    // TVector3 x_hat(1, 0, 0);
+    // TVector3 y_hat(0, 1, 0);
+    // TVector3 z_hat(0, 0, 1);
 
     double average_dotX = 0;
     double average_dotY = 0;
@@ -270,6 +270,16 @@ int lambda_pol_toy_model(){
                     // Polarization is given by P = S/<S> in the case of Lambdas with spin-1/2, and as <S> = 1/2, you just need to multiply everything by 2.
                 TLorentzVector P_Lambda_lab_4vec(Sx_matrix[ev_idx][particle_idx] * 2, Sy_matrix[ev_idx][particle_idx] * 2, Sz_matrix[ev_idx][particle_idx] * 2, St_matrix[ev_idx][particle_idx] * 2); // You need the temporal component too!
                 hLambdaPolMag->Fill((P_Lambda_lab_4vec.Vect()).Mag()); // I just want the magnitude of the spatial part for this plot, so just grab the Vect() magnitude
+
+                ///////////////////////////////////////////
+                // // Making sure that the S^mu * P_mu product is zero.
+                // // Compute scalar product S.P
+                // double dotProduct = P_Lambda_lab_4vec * Lambda_4_momentum_lab;
+                //
+                // // Report
+                // std::cout << "S^mu * P_mu = " << dotProduct << std::endl;
+                // It was close enough to zero! (within float precision, which seems to be the format the data was previously stored in)
+                ///////////////////////////////////////////
 
                     // Filling the known polarizations:
                 hLambdaPolX->Fill(Sx_matrix[ev_idx][particle_idx] * 2);
@@ -297,7 +307,7 @@ int lambda_pol_toy_model(){
                     // In other words, I could've stopped at the sample_P_angle_proton function, and then just rotate those angles to the XYZ axes of the lab frame.
                     // This could turn out to be useful later on, if I intend on doing some background checks for the Lambda reconstructions or something like that.
                     // You won't even need the proton's momentum for the ring observable's reconstruction! But whatever...
-                auto [proton_4_momentum, proton_4_momentum_star] = Lambda_decay(Lambda_4_momentum_lab, P_Lambda_star, xi_star, phi_star);
+                auto [proton_4_momentum, proton_4_momentum_star] = Lambda_decay(Lambda_4_momentum_lab, P_Lambda_star, xi_star, phi_star); // Actually don't use the proton_4_momentum variable, but whatever
 
                 // 5 - Extracting useful variables from the 4-momentum of the Lambda:
                     // Earlier getters from the proton 4-momenta (not quite what I need right now)
@@ -321,9 +331,17 @@ int lambda_pol_toy_model(){
                 // TVector3 proton_unit_vector = (proton_4_momentum.Vect()).Unit();
                     // You actually need the proton vector in the Lambda frame of reference, and you will get a polarization vector on that frame, which will need to be boosted later.
                 TVector3 proton_star_unit_vector = (proton_4_momentum_star.Vect()).Unit();
-                double X_dot = proton_star_unit_vector.Dot(x_hat);
-                double Y_dot = proton_star_unit_vector.Dot(y_hat);
-                double Z_dot = proton_star_unit_vector.Dot(z_hat);
+                // double X_dot = proton_star_unit_vector.Dot(x_hat);
+                // double Y_dot = proton_star_unit_vector.Dot(y_hat);
+                // double Z_dot = proton_star_unit_vector.Dot(z_hat);
+                    // Instead of actually calculating dot products, you could just take proton_star_unit_vector.X(), proton_star_unit_vector.Y() and proton_star_unit_vector.Z() !!!
+                double X_dot = proton_star_unit_vector.X();
+                double Y_dot = proton_star_unit_vector.Y();
+                double Z_dot = proton_star_unit_vector.Z();
+                
+                ///////////////////////
+                // std::cout << "The (x_dot, y_dot, z_dot) values for the p_proton * hat vectors are (" << X_dot << ", " << Y_dot << ", " << Z_dot << ")" << std::endl; // Just checking the magnitude of the projections
+                ///////////////////////
 
                 average_dotX += X_dot;
                 average_dotY += Y_dot;
@@ -360,7 +378,7 @@ int lambda_pol_toy_model(){
                 hLambdaPolX_phi_pT_Weighted->Fill(lambda_phi, lambda_pT, Sx_matrix[ev_idx][particle_idx] * 2 * mult_matrix[ev_idx][particle_idx]);
                 hLambdaPolY_phi_pT_Weighted->Fill(lambda_phi, lambda_pT, Sy_matrix[ev_idx][particle_idx] * 2 * mult_matrix[ev_idx][particle_idx]);
                 hLambdaPolZ_phi_pT_Weighted->Fill(lambda_phi, lambda_pT, Sz_matrix[ev_idx][particle_idx] * 2 * mult_matrix[ev_idx][particle_idx]);
-                hLambdaCounter_phi_pT->Fill(lambda_phi, lambda_pT, mult_matrix[ev_idx][particle_idx]);
+                hLambdaCounter_phi_pT_Weighted->Fill(lambda_phi, lambda_pT, mult_matrix[ev_idx][particle_idx]);
 
                 // Another peace of mind, just in phi:
                 hLambdaCounter_phi->Fill(lambda_phi, mult_matrix[ev_idx][particle_idx]);
@@ -461,21 +479,28 @@ int lambda_pol_toy_model(){
                 double y_bin_center = hLambdaPolStarX_pT_y_phiReco->GetYaxis()->GetBinCenter(y_idx);
                 double phi_bin_center = hLambdaPolStarX_pT_y_phiReco->GetZaxis()->GetBinCenter(phi_idx);
 
+                // std::cout << "pT bin " << pT_idx << ", center (" << pT_bin_center << "), y: " << y_bin_center << " phi: " << phi_bin_center << std::endl;
+
                     // Getting the two other components, as the (pT, y) bin centers will be the same in all three cases:
                 double PolY_star_pTy_phi = hLambdaPolStarY_pT_y_phiReco->GetBinContent(pT_idx, y_idx, phi_idx);
                 double PolZ_star_pTy_phi = hLambdaPolStarZ_pT_y_phiReco->GetBinContent(pT_idx, y_idx, phi_idx);
 
                         // Same for multiplicity-weighted averages:
                 double PolX_star_pTy_phi_Weighted = hLambdaPolStarX_pT_y_phiReco_Weighted->GetBinContent(pT_idx, y_idx, phi_idx);
-                double PolY_star_pTy_phi_Weighted = hLambdaPolStarX_pT_y_phiReco_Weighted->GetBinContent(pT_idx, y_idx, phi_idx);
-                double PolZ_star_pTy_phi_Weighted = hLambdaPolStarX_pT_y_phiReco_Weighted->GetBinContent(pT_idx, y_idx, phi_idx);
+                double PolY_star_pTy_phi_Weighted = hLambdaPolStarY_pT_y_phiReco_Weighted->GetBinContent(pT_idx, y_idx, phi_idx);
+                double PolZ_star_pTy_phi_Weighted = hLambdaPolStarZ_pT_y_phiReco_Weighted->GetBinContent(pT_idx, y_idx, phi_idx);
 
                 // Now calculating a mean 4-momentum of the Lambda in each bin:
                 double mean_px = pT_bin_center * std::cos(phi_bin_center);
                 double mean_py = pT_bin_center * std::sin(phi_bin_center);
-                double mean_mT = std::sqrt(pT_bin_center * pT_bin_center + mL2);
-                double mean_pz = mean_mT * std::sinh(y_bin_center);
-                double mean_E  = mean_mT * std::cosh(y_bin_center);
+                // double mean_mT = std::sqrt(pT_bin_center * pT_bin_center + mL2);
+                // double mean_pz = mean_mT * std::sinh(y_bin_center);
+                // double mean_E  = mean_mT * std::cosh(y_bin_center);
+                    // Actually using a different definition of pz and E, as the provided variables from iSS seem to be (pT, y, phi),
+                    // not (px, py, pz) which are converted into those three variables. Thus, as y is not derived from tanh^-1 (pz/E),
+                    // and is an independently generated quantity, it is better to use the following:
+                double mean_pz = pT_bin_center * std::sinh(y_bin_center);
+                double mean_E  = std::sqrt(pT_bin_center*pT_bin_center * std::cosh(y_bin_center)*std::cosh(y_bin_center) + mL2);
 
                 TLorentzVector mean_Lambda_4vec_lab(mean_px, mean_py, mean_pz, mean_E);
 
@@ -487,6 +512,16 @@ int lambda_pol_toy_model(){
                 TLorentzVector P_Lambda_lab_mean_4vec = P_Lambda_star_mean_4vec;
                 P_Lambda_lab_mean_4vec.Boost(beta);
                 TVector3 P_Lambda_lab_mean = P_Lambda_lab_mean_4vec.Vect();
+
+                ///////////////////////////////////////////
+                // // Making sure that the S^mu * P_mu product is zero.
+                // // Compute scalar product S.P
+                // double dotProductReco = P_Lambda_lab_mean_4vec * mean_Lambda_4vec_lab;
+                //
+                // // Report
+                // std::cout << "Reconstructed pol: 2*S^mu * P_mu = " << dotProductReco << std::endl;
+                // It is also zero within machine precision!
+                // ///////////////////////////////////////////
 
                 // Also doing a projection in 2D, averaging over phi bins:
                     // You also need to average over the number of bins that you are summing! If polarization = 1 in one, and 1 in another bin, then
@@ -548,9 +583,11 @@ int lambda_pol_toy_model(){
                 hLambdaPolZ_phiReco_Weighted->Fill(phi_bin_center, P_Lambda_lab_mean_Weighted.Z() * current_pTyphi_bin_multiplicity);
 
                     // Experimenting with 2D projections for the true values to see if this process would work correctly:
-                hLambdaPolX_phi_pT_Weighted_ProjTEST->Fill(phi_bin_center, pT_bin_center, hLambdaPolX_pT_y_phi_Weighted->GetBinContent(pT_idx, y_idx, phi_idx) * current_pTyphi_bin_multiplicity);
-                hLambdaPolY_phi_pT_Weighted_ProjTEST->Fill(phi_bin_center, pT_bin_center, hLambdaPolY_pT_y_phi_Weighted->GetBinContent(pT_idx, y_idx, phi_idx) * current_pTyphi_bin_multiplicity);
-                hLambdaPolZ_phi_pT_Weighted_ProjTEST->Fill(phi_bin_center, pT_bin_center, hLambdaPolZ_pT_y_phi_Weighted->GetBinContent(pT_idx, y_idx, phi_idx) * current_pTyphi_bin_multiplicity);
+                // hLambdaPolX_phi_pT_Weighted_ProjTEST->Fill(phi_bin_center, pT_bin_center, hLambdaPolX_pT_y_phi_Weighted->GetBinContent(pT_idx, y_idx, phi_idx) * current_pTyphi_bin_multiplicity);
+                // The histograms where not yet divided by the number of counts in each bin, so you don't need to multiply by the current bins' multiplicity again!
+                hLambdaPolX_phi_pT_Weighted_ProjTEST->Fill(phi_bin_center, pT_bin_center, hLambdaPolX_pT_y_phi_Weighted->GetBinContent(pT_idx, y_idx, phi_idx));
+                hLambdaPolY_phi_pT_Weighted_ProjTEST->Fill(phi_bin_center, pT_bin_center, hLambdaPolY_pT_y_phi_Weighted->GetBinContent(pT_idx, y_idx, phi_idx));
+                hLambdaPolZ_phi_pT_Weighted_ProjTEST->Fill(phi_bin_center, pT_bin_center, hLambdaPolZ_pT_y_phi_Weighted->GetBinContent(pT_idx, y_idx, phi_idx));
             }
         }
     }
@@ -561,9 +598,9 @@ int lambda_pol_toy_model(){
     hLambdaPolZ_pT_y->Divide(hLambdaCounter_pT_y);
 
         // Peace of mind plots averaging:
-    hLambdaPolX_phi_pT_Weighted->Divide(hLambdaCounter_phi_pT);
-    hLambdaPolY_phi_pT_Weighted->Divide(hLambdaCounter_phi_pT);
-    hLambdaPolZ_phi_pT_Weighted->Divide(hLambdaCounter_phi_pT);
+    hLambdaPolX_phi_pT_Weighted->Divide(hLambdaCounter_phi_pT_Weighted);
+    hLambdaPolY_phi_pT_Weighted->Divide(hLambdaCounter_phi_pT_Weighted);
+    hLambdaPolZ_phi_pT_Weighted->Divide(hLambdaCounter_phi_pT_Weighted);
 
         // For the second type:
     hLambdaPolX_pT_y_phi_Weighted->Divide(hLambdaCounter_pT_y_phi_Weighted);
@@ -572,18 +609,18 @@ int lambda_pol_toy_model(){
 
             // For its projection test (look at the procedure employed in hLambdaPolX_phi_pTReco_Weighted):
             // Compare these with hLambdaPolX_phi_pT_Weighted
-    hLambdaPolX_phi_pT_Weighted_ProjTEST->Divide(hLambdaCounter_phi_pT);
-    hLambdaPolY_phi_pT_Weighted_ProjTEST->Divide(hLambdaCounter_phi_pT);
-    hLambdaPolZ_phi_pT_Weighted_ProjTEST->Divide(hLambdaCounter_phi_pT);
+    hLambdaPolX_phi_pT_Weighted_ProjTEST->Divide(hLambdaCounter_phi_pT_Weighted);
+    hLambdaPolY_phi_pT_Weighted_ProjTEST->Divide(hLambdaCounter_phi_pT_Weighted);
+    hLambdaPolZ_phi_pT_Weighted_ProjTEST->Divide(hLambdaCounter_phi_pT_Weighted);
 
     // Dividing by the total number of particles to properly do a weighted average using the current_pTyphi_bin_multiplicity values:
     hLambdaPolX_pT_yReco_Weighted->Divide(hLambdaCounter_pT_y);
     hLambdaPolY_pT_yReco_Weighted->Divide(hLambdaCounter_pT_y);
     hLambdaPolZ_pT_yReco_Weighted->Divide(hLambdaCounter_pT_y);
 
-    hLambdaPolX_phi_pTReco_Weighted->Divide(hLambdaCounter_phi_pT);
-    hLambdaPolY_phi_pTReco_Weighted->Divide(hLambdaCounter_phi_pT);
-    hLambdaPolZ_phi_pTReco_Weighted->Divide(hLambdaCounter_phi_pT);
+    hLambdaPolX_phi_pTReco_Weighted->Divide(hLambdaCounter_phi_pT_Weighted);
+    hLambdaPolY_phi_pTReco_Weighted->Divide(hLambdaCounter_phi_pT_Weighted);
+    hLambdaPolZ_phi_pTReco_Weighted->Divide(hLambdaCounter_phi_pT_Weighted);
 
     hLambdaPolX_phiReco_Weighted->Divide(hLambdaCounter_phi);
     hLambdaPolY_phiReco_Weighted->Divide(hLambdaCounter_phi);
@@ -671,7 +708,7 @@ int lambda_pol_toy_model(){
     hLambdaPolZ_phi_pT->Write();
 
         // Corrections on those plots:
-    hLambdaCounter_phi_pT->Write();
+    hLambdaCounter_phi_pT_Weighted->Write();
     hLambdaPolX_phi_pT_Weighted->Write();
     hLambdaPolY_phi_pT_Weighted->Write();
     hLambdaPolZ_phi_pT_Weighted->Write();
@@ -719,6 +756,11 @@ int lambda_pol_toy_model(){
 
     // Weighted averages:
     hLambdaCounter_pT_y_phi_Weighted->Write();
+
+    hLambdaAvgDotX_pT_y_phi_Weighted->Write();
+    hLambdaAvgDotY_pT_y_phi_Weighted->Write();
+    hLambdaAvgDotZ_pT_y_phi_Weighted->Write();
+
     hLambdaPolStarX_pT_y_phiReco_Weighted->Write();
     hLambdaPolStarY_pT_y_phiReco_Weighted->Write();
     hLambdaPolStarZ_pT_y_phiReco_Weighted->Write();
@@ -951,6 +993,11 @@ TVector3 boost_polarization_to_rest_frame(TLorentzVector Lambda_4_momentum_lab, 
     // Getting just the 3 needed components of this vector, in a shorter form for the function.
         // Also, only the spatial part is what matters in this case, because we are no longer doing any Lorentz transforms, so 'am converting it to a TVector3
     TVector3 P_Lambda_star = P_Lambda_star_4vec.Vect();
+
+    ////////////////////////////////////////////////////
+    // std::cout << P_Lambda_star_4vec.T() << std::endl; // This should be zero, as it is the polarization's time component in the rest frame!
+    // Also zero within machine precision (within the float precision of the provided .dat data, actually)
+    ////////////////////////////////////////////////////
     return P_Lambda_star;
 }
 
