@@ -51,6 +51,8 @@ void get_jet(std::vector<double> &n_event, std::vector<double> &n_random, std::v
     // Physics part functions
 std::pair<double, double> sample_P_angle_proton(double P_Lambda_star_mag, std::mt19937 rng, std::uniform_real_distribution<double> dist_x,
                                                 std::uniform_real_distribution<double> dist_y, std::uniform_real_distribution<double> dist_azimuth);
+std::pair<double, double> sample_P_angle_proton_from_cos_xi(double P_Lambda_star_mag, std::mt19937 rng, std::uniform_real_distribution<double> dist_unit,
+                                                               std::uniform_real_distribution<double> dist_azimuth);
 std::pair<TLorentzVector, TLorentzVector> Lambda_decay(TLorentzVector Lambda_4_momentum_lab, TVector3 P_Lambda_star, double xi_star, double phi_star);
 TVector3 boost_polarization_to_rest_frame(TLorentzVector Lambda_4_momentum_lab, TLorentzVector P_Lambda_lab_4vec);
 
@@ -223,7 +225,8 @@ int lambda_pol_toy_model(){
     std::mt19937 rng {std::random_device{}()};  // Creates a random_device object (temporary) with the uniform initialization on newer C++ (the "{}"),
                                                 // then calls it with () getting a random seed, and then that seed is passed to the random engine.
         // Uniform distribution for angle xi_star between 0 and pi:
-    std::uniform_real_distribution<double> dist_x(0.0, PI);
+    // std::uniform_real_distribution<double> dist_x(0.0, PI); // Deprecated!
+    std::uniform_real_distribution<double> dist_unit(0.0, 1.0);
     std::uniform_real_distribution<double> dist_azimuth(0.0, 2*PI); // Can still sample from 0 to 2pi instead of [phi_min, phi_max) because this is just a liberality within the histogram construction
 
     ////////////////////
@@ -257,7 +260,7 @@ int lambda_pol_toy_model(){
     double average_dotX = 0;
     double average_dotY = 0;
     double average_dotZ = 0;
-    int N_resamples = 500; // Goes through each particle N_resamples # of times. This is an attempt to see if the polarization estimate values become more stable!
+    int N_resamples = 5000; // Goes through each particle N_resamples # of times. This is an attempt to see if the polarization estimate values become more stable!
     for (int resample_idx = 0; resample_idx < N_resamples; resample_idx++){
         std::cout << "Now on resample " << std::to_string(resample_idx + 1) << " of " + std::to_string(N_resamples) << std::endl;
         for (int ev_idx = 0; ev_idx < N_events; ev_idx++){
@@ -300,16 +303,20 @@ int lambda_pol_toy_model(){
                 double P_Lambda_star_mag = P_Lambda_star.Mag();
 
                 // 3 - Sampling decay angles:
-                    // Calculating the P_max value for the rejection sampling:
-                    // Compute P_max (the maximum possible value of P(x))
-                    // This occurs at x = 0 or x = pi depending on sign of cos(x) term
-                double P_max = (1.0 / PI) * (1.0 + std::abs(alpha_H * P_Lambda_star_mag));
+                // // Older code that used rejection sampling:
+                //     // Calculating the P_max value for the rejection sampling:
+                //     // Compute P_max (the maximum possible value of P(x))
+                //     // This occurs at x = 0 or x = pi depending on sign of cos(x) term
+                // double P_max = (1.0 / PI) * (1.0 + std::abs(alpha_H * P_Lambda_star_mag));
 
-                    // Defining the uniform distribution dist_y for the sampling:
-                    // Uniform distribution for y between 0 and P_max
-                std::uniform_real_distribution<double> dist_y(0.0, P_max);
+                //     // Defining the uniform distribution dist_y for the sampling:
+                //     // Uniform distribution for y between 0 and P_max
+                // std::uniform_real_distribution<double> dist_y(0.0, P_max);
 
-                auto [xi_star, phi_star] = sample_P_angle_proton(P_Lambda_star_mag, rng, dist_x, dist_y, dist_azimuth); // Uses the new unpacking of C++17
+                // auto [xi_star, phi_star] = sample_P_angle_proton(P_Lambda_star_mag, rng, dist_x, dist_y, dist_azimuth); // Uses the new unpacking of C++17
+
+                // Newer code, that samples directly from the cos_xi distribution:
+                auto [xi_star, phi_star] = sample_P_angle_proton_from_cos_xi(P_Lambda_star_mag, rng, dist_unit, dist_azimuth); // Optimized version that does not require
                 
                 // 4 - Generating the proton 4-momentum from the decay:
                     // Actually, I just need the angles at which the proton would decay, not the whole 4-momentum of the decay, but whatever, let's keep it!
@@ -510,8 +517,13 @@ int lambda_pol_toy_model(){
                     // Actually using a different definition of pz and E, as the provided variables from iSS seem to be (pT, y, phi),
                     // not (px, py, pz) which are converted into those three variables. Thus, as y is not derived from tanh^-1 (pz/E),
                     // and is an independently generated quantity, it is better to use the following:
-                double mean_pz = pT_bin_center * std::sinh(y_bin_center);
-                double mean_E  = std::sqrt(pT_bin_center*pT_bin_center * std::cosh(y_bin_center)*std::cosh(y_bin_center) + mL2);
+                
+                    // Actually, forget these definitions: I will use what Vitor used:
+                // double mean_pz = pT_bin_center * std::sinh(y_bin_center);
+                // double mean_E  = std::sqrt(pT_bin_center*pT_bin_center * std::cosh(y_bin_center)*std::cosh(y_bin_center) + mL2);
+                double mean_mT = std::sqrt(mL2 + pT_bin_center * pT_bin_center);
+                double mean_pz = mean_mT * std::sinh(y_bin_center);
+                double mean_E = std::sqrt(mL2 + mean_px * mean_px + mean_py * mean_py + mean_pz * mean_pz);
 
                 TLorentzVector mean_Lambda_4vec_lab(mean_px, mean_py, mean_pz, mean_E);
 
@@ -554,12 +566,17 @@ int lambda_pol_toy_model(){
                 hLambdaPolY_phiReco->Fill(phi_bin_center, P_Lambda_lab_mean_4vec.Y());
                 hLambdaPolZ_phiReco->Fill(phi_bin_center, P_Lambda_lab_mean_4vec.Z());
 
-
                     // Boosting the weighted polarization vector too:
                 TLorentzVector P_Lambda_star_mean_4vec_Weighted(PolX_star_pTy_phi_Weighted, PolY_star_pTy_phi_Weighted, PolZ_star_pTy_phi_Weighted, 0);
                 TLorentzVector P_Lambda_lab_mean_4vec_Weighted = P_Lambda_star_mean_4vec_Weighted;
                 P_Lambda_lab_mean_4vec_Weighted.Boost(beta);
                 // TVector3 P_Lambda_lab_mean_Weighted = P_Lambda_lab_mean_4vec_Weighted.Vect(); // Don't need to convert this into a TVector3, actually! Those properties are readily available!
+
+                /////////////////////////////////////////////////////
+                // Checking if the boost is working and the polarization is properly being converted to the lab frame:
+                // std::cout << "Before (PolStar): " << "(PolX, PolY, PolZ, PolT) = (" << P_Lambda_star_mean_4vec.X() << ", " << P_Lambda_star_mean_4vec.Y() << ", " << P_Lambda_star_mean_4vec.Z() << ", " << P_Lambda_star_mean_4vec.T() << ")" << std::endl;
+                // std::cout << "After (PolLab):" << "(PolX, PolY, PolZ, PolT) = (" << P_Lambda_lab_mean_4vec.X() << ", " << P_Lambda_lab_mean_4vec.Y() << ", " << P_Lambda_lab_mean_4vec.Z() << ", " << P_Lambda_lab_mean_4vec.T() << ")" << std::endl;
+                /////////////////////////////////////////////////////
 
                         // For the weighted variation of the polarization:
                 hLambdaPolX_pT_y_phiReco_Weighted->Fill(pT_bin_center, y_bin_center, phi_bin_center, P_Lambda_lab_mean_4vec_Weighted.X());
@@ -785,12 +802,12 @@ int lambda_pol_toy_model(){
     hLambdaPolY_phi_pTReco_Weighted->Write();
     hLambdaPolZ_phi_pTReco_Weighted->Write();
 
+    hLambdaCounter_phi_Weighted->Write();
     hLambdaPolX_phiReco_Weighted->Write();
     hLambdaPolY_phiReco_Weighted->Write();
     hLambdaPolZ_phiReco_Weighted->Write();
 
     // For the phi-only averages and true values:
-    hLambdaCounter_phi_Weighted->Write();
     hLambdaPolX_phi_Weighted->Write();
     hLambdaPolY_phi_Weighted->Write();
     hLambdaPolZ_phi_Weighted->Write();
@@ -823,6 +840,11 @@ inline double P_angle_proton(double xi_star, double P_Lambda_star){
     return (1.0 / PI) * (1.0 + alpha_H * P_Lambda_star * std::cos(xi_star));
 }
 
+// Not quite necessary as a function (because I used its CDF, not the PDF by itself), but kept as a reference for sample_P_angle_proton_from_cos_xi
+inline double P_angle_proton_as_cos_func(double cos_xi_star, double P_Lambda_star){
+    return (1.0 / 2.0) * (1.0 + alpha_H * P_Lambda_star * cos_xi_star);
+}
+
 // Now the actual sampler function -- The goal is to sample an angle given a P(angle) function.
     // Will use a rejection sampling for quick samples!
     // Receives the Lambda polarization magnitude, already in the rest frame, and returns the two angles needed 
@@ -853,6 +875,36 @@ std::pair<double, double> sample_P_angle_proton(double P_Lambda_star_mag, std::m
         }
         // Otherwise, reject and try again
     }
+    return std::make_pair(xi_star, phi_star);
+}
+
+// A simpler implementation of sample_P_angle_proton, which samples a cos(xi_star) instead of xi_star directly.
+// As cosine is invertible in the (0, PI) interval we are analyzing, then we can just invert cos(xi_star) into xi_star later,
+// and the sampling procedure is far simpler for this case where there is no rejection sampling!
+// SEE LOG 471, PAGE 4 !!!
+std::pair<double, double> sample_P_angle_proton_from_cos_xi(double P_Lambda_star_mag, std::mt19937 rng, std::uniform_real_distribution<double> dist_unit,
+                                                               std::uniform_real_distribution<double> dist_azimuth){
+    // First sampling the azimuthal angle, which is really simple to do:
+    double phi_star = dist_azimuth(rng);
+    double u = dist_unit(rng); // The uniform unit sample
+    double A = P_Lambda_star_mag * alpha_H;
+
+    // Calculate the sample using the inverse CDF of P_angle_proton_as_cos_func:
+    double cos_xi_star;
+    if (P_Lambda_star_mag < 1e-9){ // If polarization is close to zero, should use the other formula for the resampling
+        // Special case for A ~ 0
+        // F_inv(u) = 2u - 1
+        cos_xi_star = 2.0 * u - 1.0;
+    }
+    else{
+        // General case using the quadratic formula solution
+        // F_inv(u) = (-1 + sqrt((1-A)^2 + 4au)) / A
+        cos_xi_star = (-1.0 + std::sqrt((1.0 - A) * (1.0 - A) + 4.0 * A * u))/A;
+    }
+
+    // Finally, converting cos_xi_star into xi_star, which is the variable we will use:
+    double xi_star = std::acos(cos_xi_star);
+
     return std::make_pair(xi_star, phi_star);
 }
 
@@ -968,7 +1020,7 @@ std::pair<TLorentzVector, TLorentzVector> Lambda_decay(TLorentzVector Lambda_4_m
 
 
         // Method 2 - Defining the vector straight in the laboratory's frame of reference:
-    TVector3 P_Lambda_star_unit = P_Lambda_star.Unit(); // The reference for our sampling
+    TVector3 P_Lambda_star_unit = P_Lambda_star.Unit(); // The reference for our sampling, i.e., the polarization vector in the rest frame, and in the laboratory's coordinate system.
 
     // Pick arbitrary vector not parallel to P_Lambda_star_unit:
     TVector3 T;
@@ -984,6 +1036,11 @@ std::pair<TLorentzVector, TLorentzVector> Lambda_decay(TLorentzVector Lambda_4_m
     TVector3 v_hat = (P_Lambda_star_unit.Cross(u_hat)).Unit();
 
     // Build p_star -- The proton's momentum vector in the usual XYZ axes of the laboratory:
+        // See Le Bellac's Fig. 10.1 for the idea of this rotation: we align the local Z axis (defined as the direction where P_Lambda_star_unit points) and
+        // align that with the usual Z direction of the laboratory (so we take fig. 10.1's z axis and shift it into \hat{n} = Z_lab)
+        // Even though u_hat and v_hat are defined in an arbitrary way for each particle's decay (and in a biased way, not a truly random way), 
+        // the phi_star sampling renders that bias harmless (it acts as just another layer of multiplicative constants on the random phi_star value!)
+        // See the document "Coordinate System Transformation for Lambda Polarization Studies.pdf" for more information on this discussion.
     TVector3 p_star = daughter_momentum * (std::cos(xi_star) * P_Lambda_star_unit + std::sin(xi_star) * (std::cos(phi_star) * u_hat + std::sin(phi_star) * v_hat));
 
     ////////////////////
