@@ -260,7 +260,7 @@ int lambda_pol_toy_model(){
     double average_dotX = 0;
     double average_dotY = 0;
     double average_dotZ = 0;
-    int N_resamples = 5000; // Goes through each particle N_resamples # of times. This is an attempt to see if the polarization estimate values become more stable!
+    int N_resamples = 1; // Goes through each particle N_resamples # of times. This is an attempt to see if the polarization estimate values become more stable!
     for (int resample_idx = 0; resample_idx < N_resamples; resample_idx++){
         std::cout << "Now on resample " << std::to_string(resample_idx + 1) << " of " + std::to_string(N_resamples) << std::endl;
         for (int ev_idx = 0; ev_idx < N_events; ev_idx++){
@@ -302,6 +302,11 @@ int lambda_pol_toy_model(){
                 TVector3 P_Lambda_star = boost_polarization_to_rest_frame(Lambda_4_momentum_lab, P_Lambda_lab_4vec); // todo: check if the temporal component is still preserved zero after the boost!
                 double P_Lambda_star_mag = P_Lambda_star.Mag();
 
+                ///////////////////////////////////////////
+                // // Verifying if the polarization magnitude is indeed close to one, or if I am dealing with excess polarizations already
+                // std::cout << "Current bin's P_lambda_star magnitude is: " << P_Lambda_star_mag << std::endl;
+                ///////////////////////////////////////////
+
                 // 3 - Sampling decay angles:
                 // // Older code that used rejection sampling:
                 //     // Calculating the P_max value for the rejection sampling:
@@ -317,7 +322,7 @@ int lambda_pol_toy_model(){
 
                 // Newer code, that samples directly from the cos_xi distribution:
                 auto [xi_star, phi_star] = sample_P_angle_proton_from_cos_xi(P_Lambda_star_mag, rng, dist_unit, dist_azimuth); // Optimized version that does not require
-                
+
                 // 4 - Generating the proton 4-momentum from the decay:
                     // Actually, I just need the angles at which the proton would decay, not the whole 4-momentum of the decay, but whatever, let's keep it!
                     // In other words, I could've stopped at the sample_P_angle_proton function, and then just rotate those angles to the XYZ axes of the lab frame.
@@ -888,6 +893,7 @@ std::pair<double, double> sample_P_angle_proton_from_cos_xi(double P_Lambda_star
     double phi_star = dist_azimuth(rng);
     double u = dist_unit(rng); // The uniform unit sample
     double A = P_Lambda_star_mag * alpha_H;
+    // double A = alpha_H; // Testing to see if Mike's distribution was correct (doesn't seem like it!)
 
     // Calculate the sample using the inverse CDF of P_angle_proton_as_cos_func:
     double cos_xi_star;
@@ -898,7 +904,7 @@ std::pair<double, double> sample_P_angle_proton_from_cos_xi(double P_Lambda_star
     }
     else{
         // General case using the quadratic formula solution
-        // F_inv(u) = (-1 + sqrt((1-A)^2 + 4au)) / A
+        // F_inv(u) = (-1 + sqrt((1-A)^2 + 4Au)) / A // Took the positive root to define xi_star in [0, pi]
         cos_xi_star = (-1.0 + std::sqrt((1.0 - A) * (1.0 - A) + 4.0 * A * u))/A;
     }
 
