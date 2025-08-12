@@ -24,13 +24,13 @@ true_cosine_mean = alpha/3.0 * P_mag
 A = alpha * P_mag
 
     # sample sizes to test:
-max_N_samples = 1e7
+max_N_samples = 1e8
 sample_sizes_array = np.arange(1,int(max_N_samples))
 
 print(sample_sizes_array)
 
 # number of independent repeats for each sample size to estimate average error
-repeats = 25
+repeats = 20 # Should I really be smoothening this out? That can be good if I want to have an estimate of the mean behavior of the error though...
 
 rel_errors = np.zeros((repeats, sample_sizes_array.size))
 abs_errors = np.zeros((repeats, sample_sizes_array.size))
@@ -48,9 +48,12 @@ for j, N in enumerate(sample_sizes_array): # j is an index to acess the vectors,
         u = rng.random() # Non-vectorized form
         # inverse CDF sampling for cos(theta)
         if A < 1e-9:
+            # Special case for A ~ 0
+            # F_inv(u) = 2u - 1
             cos_t = 2.0 * u - 1.0
         else:
-            # vectorized implementation of the provided formula
+            # General case using the quadratic formula solution
+            # F_inv(u) = (-1 + sqrt((1-A)^2 + 4Au)) / A // Took the positive root to define xi_star in [0, pi]
             sqrt_term = np.sqrt((1.0 - A)**2 + 4.0 * A * u)
             cos_t = (-1.0 + sqrt_term) / A
         
@@ -83,13 +86,15 @@ ax[0].set_xlabel('Number of samples N')
 ax[0].set_ylabel('Median value of sample mean')
 ax[0].grid(True, which='both', ls=':')
 ax[0].set_ylim(true_cosine_mean/2, 1)
+ax[0].tick_params(axis='y', right=True, labelright=True)
 ax[0].legend()
 
 ax[1].loglog(sample_sizes_array, median_rel_error, linestyle='-') # Skips the first value, which is a zero and is not needed.
 ax[1].axhline(0.01, linestyle='--', label='1% relative error')
 ax[1].set_xlabel('Number of samples N')
-ax[1].set_ylabel('Median relative error of sample mean')
+ax[1].set_ylabel('Median abs relative error of sample mean')
 ax[1].grid(True, which='both', ls=':')
+ax[1].tick_params(axis='y', right=True, labelright=True)
 ax[1].legend()
 
 fig.suptitle('Convergence of sampled <cos θ> to true mean (median over repeats) - P_mag = {:.1e}'.format(P_mag))
