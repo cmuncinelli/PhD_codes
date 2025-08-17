@@ -56,6 +56,31 @@ std::pair<double, double> sample_P_angle_proton_from_cos_xi(double P_Lambda_star
 std::pair<TLorentzVector, TLorentzVector> Lambda_decay(TLorentzVector Lambda_4_momentum_lab, TVector3 P_Lambda_star, double xi_star, double phi_star);
 TVector3 boost_polarization_to_rest_frame(TLorentzVector Lambda_4_momentum_lab, TLorentzVector P_Lambda_lab_4vec);
 
+///////////////////////////////////
+///////// Helper functions ////////
+///////////////////////////////////
+// Wrap an angle into [phi_min, phi_max) for the coordinate shift that redefines the phi angle as having phi = 0 pointing towards the jet direction.
+// This is useful to define a \hat{t} vector that is always pointing towards (1, 0, 0), making it easier to calculate the ring observable in the
+// "with bullet" case:
+// Fast wrapping into [phi_min, phi_max)
+// inline double wrapToInterval(double phi, double phi_min, double phi_max){
+inline double wrapToInterval(double phi){ // phi_min and phi_max should be 0 to 2pi in this case here...
+    double range = 2*PI;
+    // Use fmod to reduce directly
+    phi = std::fmod(phi, range);
+    if (phi < 0) phi += range;
+    return phi;
+}
+
+// Older, inefficient version:
+// double wrapToInterval(double phi, double phi_min, double phi_max){
+//     double range = phi_max - phi_min;
+//     while (phi < phi_min) phi += range;
+//     while (phi >= phi_max) phi -= range;
+//     return phi;
+// }
+
+
 // This code assumes we are in Jarvis4! Also, the getter functions are based on Pol_Analysis_Random_hist_ebe.C from the HadrEx_Ph repository
 int lambda_pol_toy_model(){
     ////////////////////
@@ -219,6 +244,12 @@ int lambda_pol_toy_model(){
     TH1D *hLambdaPolY_phiReco_Weighted = new TH1D("hLambdaPolY_phiReco_Weighted", "hLambdaPolY_phiReco_Weighted", N_bins_phi, phi_min, phi_max);
     TH1D *hLambdaPolZ_phiReco_Weighted = new TH1D("hLambdaPolZ_phiReco_Weighted", "hLambdaPolZ_phiReco_Weighted", N_bins_phi, phi_min, phi_max);
 
+        // Testing some ring observable calculations:    
+    TH1D *hRingObservable_TrueValue = new TH1D("hRingObservable_TrueValue", "hRingObservable_TrueValue", N_bins_phi, phi_min, phi_max);
+    TH1D *hRingObservable = new TH1D("hRingObservable", "hRingObservable", N_bins_phi, phi_min, phi_max);
+    TH1D *hRingObservable_proxy_from_daughter = new TH1D("hRingObservable_proxy_from_daughter", "hRingObservable_proxy_from_daughter", N_bins_phi, phi_min, phi_max);
+    TH1D *hRingObservable_proxy_from_daughter_eq_def_attempt = new TH1D("hRingObservable_proxy_from_daughter_eq_def_attempt", "hRingObservable_proxy_from_daughter_eq_def_attempt", N_bins_phi, phi_min, phi_max);
+
     ////////////////////
     //// 1.1 - Defining randomized samplers for the loop -- It would make no sense to define them inside the loop, as they will not change:
     ////////////////////
@@ -235,6 +266,30 @@ int lambda_pol_toy_model(){
     std::cout << "\nFetching data..." << std::endl;
     DoubleMatrix y_matrix, phi_matrix, px_matrix, py_matrix, pz_matrix, E_matrix, mult_matrix, St_matrix, Sx_matrix, Sy_matrix, Sz_matrix;
     get_lambda(y_matrix, phi_matrix, px_matrix, py_matrix, pz_matrix, E_matrix, mult_matrix, St_matrix, Sx_matrix, Sy_matrix, Sz_matrix, N_events, with_bullet);
+    std::vector<double> n_event, n_random, phi_random, momentum_x, momentum_y;
+    // if (with_bullet){
+        get_jet(n_event, n_random, phi_random, momentum_x, momentum_y);
+
+        // Transform each event's phi coordinates (convert phi_matrix into a (\phi - \phi_J) coordinate matrix):
+            // A transform that makes it so \hat{t} always points in (1, 0, 0). This makes the RingObservable calculation work across events, and the average polarization is defined
+            // in a coordinate system that is shared across all events properly.
+            
+            ///////////////////////////////////////////////////////////////////////////////////
+            // This should not cause any problems with the averaging of the no-bullet events, 
+            // and is even needed for the ring observable to average to zero in an EbE basis,
+            // because we need to make the v_2 expansion direction fluctuate!
+            // Essentially, this is what guarantees we have (\phi - \phi_J) for the Ring
+            // observable plots instead of just a meaningless \phi.
+            ///////////////////////////////////////////////////////////////////////////////////
+        for (size_t evt = 0; evt < phi_matrix.size(); ++evt){ // Event-level loop
+            double phi_jet = phi_random[evt];
+            for (size_t i = 0; i < phi_matrix[evt].size(); ++i){ // Particle-level loop
+                double shifted = phi_matrix[evt][i] - phi_jet;
+                // phi_matrix[evt][i] = wrapToInterval(shifted, phi_min, phi_max);
+                phi_matrix[evt][i] = wrapToInterval(shifted); // This function should actually just shift from 0 to 2pi. The bin edges might go from phi_min to phi_max, but the centers can be kept in the (0, 2pi) interval!
+            }
+        }
+    // }
     std::cout << "\tDone!" << std::endl;
 
         // Now converting the "multiplicity" matrix from 1/pT dN/dpTdydphi into actual multiplicity values, 
@@ -260,7 +315,7 @@ int lambda_pol_toy_model(){
     double average_dotX = 0;
     double average_dotY = 0;
     double average_dotZ = 0;
-    int N_resamples = 1; // Goes through each particle N_resamples # of times. This is an attempt to see if the polarization estimate values become more stable!
+    int N_resamples = 100; // Goes through each particle N_resamples # of times. This is an attempt to see if the polarization estimate values become more stable!
     for (int resample_idx = 0; resample_idx < N_resamples; resample_idx++){
         std::cout << "Now on resample " << std::to_string(resample_idx + 1) << " of " + std::to_string(N_resamples) << std::endl;
         for (int ev_idx = 0; ev_idx < N_events; ev_idx++){
@@ -299,7 +354,7 @@ int lambda_pol_toy_model(){
                 hLambdaPolZ->Fill(true_PolZ);
 
                 // 2 - Calculating the polarization in the Lambda rest frame:
-                TVector3 P_Lambda_star = boost_polarization_to_rest_frame(Lambda_4_momentum_lab, P_Lambda_lab_4vec); // todo: check if the temporal component is still preserved zero after the boost!
+                TVector3 P_Lambda_star = boost_polarization_to_rest_frame(Lambda_4_momentum_lab, P_Lambda_lab_4vec);
                 double P_Lambda_star_mag = P_Lambda_star.Mag();
 
                 ///////////////////////////////////////////
@@ -413,6 +468,32 @@ int lambda_pol_toy_model(){
                 hLambdaPolX_pT_y_phi_Weighted->Fill(lambda_pT, lambda_y, lambda_phi, true_PolX * current_particle_multiplicity);
                 hLambdaPolY_pT_y_phi_Weighted->Fill(lambda_pT, lambda_y, lambda_phi, true_PolY * current_particle_multiplicity);
                 hLambdaPolZ_pT_y_phi_Weighted->Fill(lambda_pT, lambda_y, lambda_phi, true_PolZ * current_particle_multiplicity);
+
+                // Calculating the Ring Observable proxy with the daughter particle's momentum instead of the polarization:
+                    // See the other RP_temp variable's surrounding lines for more information
+                const double x_trigger = 1; // Defined coordinate system so that this is always true
+                const double y_trigger = 0;
+                const double z_trigger = 0;
+                double cross_x = y_trigger*pz_matrix[ev_idx][particle_idx] - z_trigger*py_matrix[ev_idx][particle_idx];
+                double cross_y = z_trigger*px_matrix[ev_idx][particle_idx] - x_trigger*pz_matrix[ev_idx][particle_idx];
+                double cross_z = x_trigger*py_matrix[ev_idx][particle_idx] - y_trigger*px_matrix[ev_idx][particle_idx];
+                    
+                double RP_temp = ((proton_4_momentum.X()*cross_x + proton_4_momentum.Y()*cross_y + proton_4_momentum.Z()*cross_z)/
+                                    (std::sqrt(cross_x*cross_x + cross_y*cross_y + cross_z*cross_z)));
+                    // Another good implementation of this, that should be equivalent to the true Ring Observable value, is:
+                double proton_4_momentum_star_norm = std::sqrt(proton_4_momentum_star.X()*proton_4_momentum_star.X() + proton_4_momentum_star.Y()*proton_4_momentum_star.Y()
+                                                     + proton_4_momentum_star.Z()*proton_4_momentum_star.Z());
+                double RP_temp_eqv_def_attempt = 3./(alpha_H * proton_4_momentum_star_norm) * 
+                                                 ((proton_4_momentum.X()*cross_x + proton_4_momentum.Y()*cross_y + proton_4_momentum.Z()*cross_z)/
+                                                 (std::sqrt(cross_x*cross_x + cross_y*cross_y + cross_z*cross_z)));
+
+                hRingObservable_proxy_from_daughter->Fill(lambda_phi, RP_temp * current_particle_multiplicity);
+                hRingObservable_proxy_from_daughter_eq_def_attempt->Fill(lambda_phi, RP_temp_eqv_def_attempt * current_particle_multiplicity);
+
+                // Calculating the true value:
+                double RP_temp_true = ((true_PolX*cross_x + true_PolY*cross_y + true_PolZ*cross_z)/
+            					 (std::sqrt(cross_x*cross_x + cross_y*cross_y + cross_z*cross_z))); 
+                hRingObservable_TrueValue->Fill(lambda_phi, RP_temp_true * current_particle_multiplicity);
             }
         }
     }
@@ -592,7 +673,6 @@ int lambda_pol_toy_model(){
                 // hLambdaPolX_pT_yReco_Weighted->Fill(pT_bin_center, y_bin_center, P_Lambda_lab_mean_Weighted.X()/N_bins_phi);
                 // hLambdaPolX_pT_yReco_Weighted->Fill(pT_bin_center, y_bin_center, P_Lambda_lab_mean_Weighted.X()); // Don't need to average over bins!
                     // Correction -- When reducing dimensionality, you need to ponder the polarization by the multiplicity of the bin it belongs to (summing over all bins as if they were never there requires you to sum over particles):
-                    // todo: If this is not quite right, then it would be best to do the AvgDot processes in the reduced dimension histogram shape. Check if that would be necessary or just equivalent to what I am doing now!
                 double current_pTyphi_bin_multiplicity = hLambdaCounter_pT_y_phi_Weighted->GetBinContent(pT_idx, y_idx, phi_idx);
                 hLambdaPolX_pT_yReco_Weighted->Fill(pT_bin_center, y_bin_center, P_Lambda_lab_mean_4vec_Weighted.X() * current_pTyphi_bin_multiplicity); // Don't need to average over bins!
                 hLambdaPolY_pT_yReco_Weighted->Fill(pT_bin_center, y_bin_center, P_Lambda_lab_mean_4vec_Weighted.Y() * current_pTyphi_bin_multiplicity);
@@ -617,6 +697,23 @@ int lambda_pol_toy_model(){
                 hLambdaPolX_phi_pT_Weighted_ProjTEST->Fill(phi_bin_center, pT_bin_center, hLambdaPolX_pT_y_phi_Weighted->GetBinContent(pT_idx, y_idx, phi_idx));
                 hLambdaPolY_phi_pT_Weighted_ProjTEST->Fill(phi_bin_center, pT_bin_center, hLambdaPolY_pT_y_phi_Weighted->GetBinContent(pT_idx, y_idx, phi_idx));
                 hLambdaPolZ_phi_pT_Weighted_ProjTEST->Fill(phi_bin_center, pT_bin_center, hLambdaPolZ_pT_y_phi_Weighted->GetBinContent(pT_idx, y_idx, phi_idx));
+
+                // Calculating the ring observable:
+                    // Cross product (trigger X p)
+                        // todo: fix this in order to have a mean calculation for each event's trigger (i.e., getting a TH3D for each event or smth like that), or even do a
+                        // coordinate rotation so that all triggers are in the (1, 0, 0) direction.
+                        // This todo should be solved by now with the rotation of coordinates!
+                    const double x_trigger = 1; // Defined coordinate system so that this is always true
+                    const double y_trigger = 0;
+                    const double z_trigger = 0;
+                    double cross_x = y_trigger*mean_pz - z_trigger*mean_py;
+                    double cross_y = z_trigger*mean_px - x_trigger*mean_pz;
+                    double cross_z = x_trigger*mean_py - y_trigger*mean_px;
+		    			
+                    double RP_temp = ((P_Lambda_lab_mean_4vec_Weighted.X()*cross_x + P_Lambda_lab_mean_4vec_Weighted.Y()*cross_y + P_Lambda_lab_mean_4vec_Weighted.Z()*cross_z)/
+            					      (std::sqrt(cross_x*cross_x + cross_y*cross_y + cross_z*cross_z)));
+
+                    hRingObservable->Fill(phi_bin_center, RP_temp * current_pTyphi_bin_multiplicity);
             }
         }
     }
@@ -816,6 +913,12 @@ int lambda_pol_toy_model(){
     hLambdaPolX_phi_Weighted->Write();
     hLambdaPolY_phi_Weighted->Write();
     hLambdaPolZ_phi_Weighted->Write();
+
+    // For the ring observables:
+    hRingObservable_TrueValue->Write();
+    hRingObservable->Write();
+    hRingObservable_proxy_from_daughter->Write();
+    hRingObservable_proxy_from_daughter_eq_def_attempt->Write();
 
     // Deleting the Clone() histograms, which may still be kept in memory:
     delete hLambdaPolStarX_pT_yReco;
@@ -1180,6 +1283,7 @@ void get_lambda(DoubleMatrix &y_matrix, DoubleMatrix &phi_matrix, DoubleMatrix &
 // It modifies the provided vectors and stores the jet information.
 void get_jet(std::vector<double> &n_event, std::vector<double> &n_random, std::vector<double> &phi_random,
              std::vector<double> &momentum_x, std::vector<double> &momentum_y){
+    std::cout << "\nStarting event loop for Jet getter (even if the w/ jets flag is off, so that v_2 is averaged out!)..." << std::endl;
     
     // Getting a file that has jets in hydro set in a random direction for the jet momentum deposition:
     const char* file_random_jet_path = "/storage1/vribeiro/lumpy_events_40_50/random_parameters.dat";
@@ -1207,6 +1311,8 @@ void get_jet(std::vector<double> &n_event, std::vector<double> &n_random, std::v
         }
     }
     delete random_lines;
+
+    std::cout << "Done!" << std::endl;
 }
 
 // A generalization of previous code for passing multiple particles to be sampled at once.
