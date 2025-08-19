@@ -49,10 +49,10 @@ void get_jet(std::vector<double> &n_event, std::vector<double> &n_random, std::v
              std::vector<double> &momentum_x, std::vector<double> &momentum_y);
 
     // Physics part functions
-std::pair<double, double> sample_P_angle_proton(double P_Lambda_star_mag, std::mt19937 rng, std::uniform_real_distribution<double> dist_x,
-                                                std::uniform_real_distribution<double> dist_y, std::uniform_real_distribution<double> dist_azimuth);
-std::pair<double, double> sample_P_angle_proton_from_cos_xi(double P_Lambda_star_mag, std::mt19937 rng, std::uniform_real_distribution<double> dist_unit,
-                                                               std::uniform_real_distribution<double> dist_azimuth);
+std::pair<double, double> sample_P_angle_proton(double P_Lambda_star_mag, std::mt19937 &rng, std::uniform_real_distribution<double> dist_x,
+                                                std::uniform_real_distribution<double> dist_y, std::uniform_real_distribution<double> &dist_azimuth);
+std::pair<double, double> sample_P_angle_proton_from_cos_xi(double P_Lambda_star_mag, std::mt19937 &rng, std::uniform_real_distribution<double> &dist_unit,
+                                                               std::uniform_real_distribution<double> &dist_azimuth);
 std::pair<TLorentzVector, TLorentzVector> Lambda_decay(TLorentzVector Lambda_4_momentum_lab, TVector3 P_Lambda_star, double xi_star, double phi_star);
 TVector3 boost_polarization_to_rest_frame(TLorentzVector Lambda_4_momentum_lab, TLorentzVector P_Lambda_lab_4vec);
 
@@ -63,14 +63,22 @@ TVector3 boost_polarization_to_rest_frame(TLorentzVector Lambda_4_momentum_lab, 
 // This is useful to define a \hat{t} vector that is always pointing towards (1, 0, 0), making it easier to calculate the ring observable in the
 // "with bullet" case:
 // Fast wrapping into [phi_min, phi_max)
-// inline double wrapToInterval(double phi, double phi_min, double phi_max){
-inline double wrapToInterval(double phi){ // phi_min and phi_max should be 0 to 2pi in this case here...
-    double range = 2*PI;
+inline double wrapToInterval(double phi, double phi_min, double phi_max){
+    double range = phi_max - phi_min;
     // Use fmod to reduce directly
-    phi = std::fmod(phi, range);
+    phi = std::fmod(phi - phi_min, range);
     if (phi < 0) phi += range;
-    return phi;
+    return phi + phi_min;
 }
+
+// // Fast wrapping into [0, 2PI), fixed interval:
+// inline double wrapToInterval(double phi){
+//     double range = 2*PI;
+//     // Use fmod to reduce directly
+//     phi = std::fmod(phi, range);
+//     if (phi < 0) phi += range;
+//     return phi;
+// }
 
 // Older, inefficient version:
 // double wrapToInterval(double phi, double phi_min, double phi_max){
@@ -88,7 +96,7 @@ int lambda_pol_toy_model(){
     ////////////////////
     std::cout << "Initializing variables" << std::endl;
     int N_events = 250; // There are only 250 events in the desired folder (40_50 has 300 for the no_bullet case, for some reason). Possibly oversampled to get statistics.
-    bool with_bullet = false;
+    bool with_bullet = true;
 
     TH1D *hLambdaCounter = new TH1D ("hLambdaCounter", "", 1, -1, 1);
     
@@ -130,6 +138,8 @@ int lambda_pol_toy_model(){
     double phi_max = (2*PI - dphi) + dphi/2.; // The last step of the vector (2pi - bin_width, or the last bin center), summed with the size of the last bin to get the upper edge.
         // ALTERNATIVELY, YOU COULD JUST SUM dphi/2. TO EVERY PHI VALUE ON phi_matrix! It is probably better to do this than to use these weird phi_min--phi_max intervals.
         // todo: check if the angle convention is the same for the jet's phi angle!
+    double phi_min_Ring = phi_min - PI;
+    double phi_max_Ring = phi_max - PI;
 
         // These TH2Ds here will be defined as clones later, so it is clearer to the reader to show that they will not need full definitions:
         // (see below)
@@ -213,6 +223,9 @@ int lambda_pol_toy_model(){
     TH1D *hLambdaPolZ_phiReco = new TH1D("hLambdaPolZ_phiReco", "hLambdaPolZ_phiReco", N_bins_phi, phi_min, phi_max);
 
     TH1D *hLambdaCounter_phi_Weighted = new TH1D("hLambdaCounter_phi_Weighted", "hLambdaCounter_phi_Weighted", N_bins_phi, phi_min, phi_max);
+    TH1D *hLambdaCounter_phiRing_Weighted = new TH1D("hLambdaCounter_phiRing_Weighted", "hLambdaCounter_phiRing_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TH1D *hProtonCounter_phiRing_Weighted = new TH1D("hProtonCounter_phiRing_Weighted", "hProtonCounter_phiRing_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TH1D *hProtonStarCounter_phiRing_Weighted = new TH1D("hProtonStarCounter_phiRing_Weighted", "hProtonStarCounter_phiRing_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
     TH1D *hLambdaPolX_phi_Weighted = new TH1D("hLambdaPolX_phi_Weighted", "hLambdaPolX_phi_Weighted", N_bins_phi, phi_min, phi_max);
     TH1D *hLambdaPolY_phi_Weighted = new TH1D("hLambdaPolY_phi_Weighted", "hLambdaPolY_phi_Weighted", N_bins_phi, phi_min, phi_max);
     TH1D *hLambdaPolZ_phi_Weighted = new TH1D("hLambdaPolZ_phi_Weighted", "hLambdaPolZ_phi_Weighted", N_bins_phi, phi_min, phi_max);
@@ -244,11 +257,19 @@ int lambda_pol_toy_model(){
     TH1D *hLambdaPolY_phiReco_Weighted = new TH1D("hLambdaPolY_phiReco_Weighted", "hLambdaPolY_phiReco_Weighted", N_bins_phi, phi_min, phi_max);
     TH1D *hLambdaPolZ_phiReco_Weighted = new TH1D("hLambdaPolZ_phiReco_Weighted", "hLambdaPolZ_phiReco_Weighted", N_bins_phi, phi_min, phi_max);
 
-        // Testing some ring observable calculations:    
-    TH1D *hRingObservable_TrueValue = new TH1D("hRingObservable_TrueValue", "hRingObservable_TrueValue", N_bins_phi, phi_min, phi_max);
-    TH1D *hRingObservable = new TH1D("hRingObservable", "hRingObservable", N_bins_phi, phi_min, phi_max);
-    TH1D *hRingObservable_proxy_from_daughter = new TH1D("hRingObservable_proxy_from_daughter", "hRingObservable_proxy_from_daughter", N_bins_phi, phi_min, phi_max);
-    TH1D *hRingObservable_proxy_from_daughter_eq_def_attempt = new TH1D("hRingObservable_proxy_from_daughter_eq_def_attempt", "hRingObservable_proxy_from_daughter_eq_def_attempt", N_bins_phi, phi_min, phi_max);
+        // Testing some ring observable calculations:
+    TH1D *hRingObservable_TrueValue = new TH1D("hRingObservable_TrueValue", "hRingObservable_TrueValue", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TH1D *hRingObservable_TrueValuePtCuts = new TH1D("hRingObservable_TrueValuePtCuts", "hRingObservable_TrueValuePtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TH1D *hRingObservable = new TH1D("hRingObservable", "hRingObservable", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TH1D *hRingObservablePtCuts = new TH1D("hRingObservablePtCuts", "hRingObservablePtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TH1D *hRingObservable_proxy_from_daughter = new TH1D("hRingObservable_proxy_from_daughter", "hRingObservable_proxy_from_daughter", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TH1D *hRingObservable_proxy_from_daughter_eq_def = new TH1D("hRingObservable_proxy_from_daughter_eq_def", "hRingObservable_proxy_from_daughter_eq_def", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TH1D *hRingObservable_proxy_from_daughter_eq_defPtCuts = new TH1D("hRingObservable_proxy_from_daughter_eq_defPtCuts", "hRingObservable_proxy_from_daughter_eq_defPtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TH1D *hRingObservable_proxy_from_daughter_eq_def2PtCuts = new TH1D("hRingObservable_proxy_from_daughter_eq_def2PtCuts", "hRingObservable_proxy_from_daughter_eq_def2PtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TH1D *hRingObservable_proxy_from_daughter_star_eq_def = new TH1D("hRingObservable_proxy_from_daughter_star_eq_def", "hRingObservable_proxy_from_daughter_star_eq_def", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TH1D *hRingObservable_proxy_from_daughter_star_eq_defPtCuts = new TH1D("hRingObservable_proxy_from_daughter_star_eq_defPtCuts", "hRingObservable_proxy_from_daughter_star_eq_defPtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+
+    TH1D *hDebugCounter_phi_star_sampler = new TH1D("hDebugCounter_phi_star_sampler", "hDebugCounter_phi_star_sampler", N_bins_phi, phi_min_Ring, phi_max_Ring);
 
     ////////////////////
     //// 1.1 - Defining randomized samplers for the loop -- It would make no sense to define them inside the loop, as they will not change:
@@ -273,6 +294,7 @@ int lambda_pol_toy_model(){
         // Transform each event's phi coordinates (convert phi_matrix into a (\phi - \phi_J) coordinate matrix):
             // A transform that makes it so \hat{t} always points in (1, 0, 0). This makes the RingObservable calculation work across events, and the average polarization is defined
             // in a coordinate system that is shared across all events properly.
+            // todo: fix this rotation! Without it, the Ring Observable calculated through polarization is meaningless!
             
             ///////////////////////////////////////////////////////////////////////////////////
             // This should not cause any problems with the averaging of the no-bullet events, 
@@ -281,16 +303,26 @@ int lambda_pol_toy_model(){
             // Essentially, this is what guarantees we have (\phi - \phi_J) for the Ring
             // observable plots instead of just a meaningless \phi.
             ///////////////////////////////////////////////////////////////////////////////////
-        for (size_t evt = 0; evt < phi_matrix.size(); ++evt){ // Event-level loop
-            double phi_jet = phi_random[evt];
-            for (size_t i = 0; i < phi_matrix[evt].size(); ++i){ // Particle-level loop
-                double shifted = phi_matrix[evt][i] - phi_jet;
-                // phi_matrix[evt][i] = wrapToInterval(shifted, phi_min, phi_max);
-                phi_matrix[evt][i] = wrapToInterval(shifted); // This function should actually just shift from 0 to 2pi. The bin edges might go from phi_min to phi_max, but the centers can be kept in the (0, 2pi) interval!
-            }
-        }
+        // for (size_t evt = 0; evt < phi_matrix.size(); evt++){ // Event-level loop
+        //     double phi_jet = phi_random[evt];
+        //     phi_random[evt] = 0.; // Rotates the jet to zero for the formulae that depend on this value
+        //     for (size_t i = 0; i < phi_matrix[evt].size(); i++){ // Particle-level loop
+        //         double shifted = phi_matrix[evt][i] - phi_jet;
+        //         // phi_matrix[evt][i] = wrapToInterval(shifted, phi_min, phi_max);
+        //         // This function should actually just shift from 0 to 2pi.
+        //         // The bin edges might go from phi_min to phi_max, but the centers can be kept in the (0, 2pi) interval!
+        //         // Just for testing, tried changing the wrapping to phi_min, phi_max to see if the problem in the first bin vanishes. This should have no significant change, though
+        //         phi_matrix[evt][i] = wrapToInterval(shifted, phi_min, phi_max);
+
+        //         // Also, rotating the Sx and Sy spatial components to match the new angle definition (Sz should not be affect by rotations curling the Z axis):
+        //         // (as this is a rotation of the coordinate system, i.e., a passive rotation, the usual rotation matrix should be enough)
+        //         double temp_Sx = Sx_matrix[evt][i]; // Should use the same Sx value for the Sy_matrix rotation too, not the value from the line below after rotation!
+        //         Sx_matrix[evt][i] = std::cos(phi_jet) * Sx_matrix[evt][i] - std::sin(phi_jet) * Sy_matrix[evt][i];
+        //         Sy_matrix[evt][i] = std::sin(phi_jet) * temp_Sx + std::cos(phi_jet) * Sy_matrix[evt][i];
+        //     }
+        // }
     // }
-    std::cout << "\tDone!" << std::endl;
+    std::cout << "Done fetching data!" << std::endl;
 
         // Now converting the "multiplicity" matrix from 1/pT dN/dpTdydphi into actual multiplicity values, 
         // based on "h_Sz_delta_phi_pT_sum->Fill(delta_phi[ip], pT[ip], Sz[ip]*mult[ip]*pT[ip]*dy);" from Vitor's Pol_Analysis_One_Event_hist.C, line 263
@@ -315,12 +347,12 @@ int lambda_pol_toy_model(){
     double average_dotX = 0;
     double average_dotY = 0;
     double average_dotZ = 0;
-    int N_resamples = 100; // Goes through each particle N_resamples # of times. This is an attempt to see if the polarization estimate values become more stable!
+    int N_resamples = 10; // Goes through each particle N_resamples # of times. This is an attempt to see if the polarization estimate values become more stable!
     for (int resample_idx = 0; resample_idx < N_resamples; resample_idx++){
-        std::cout << "Now on resample " << std::to_string(resample_idx + 1) << " of " + std::to_string(N_resamples) << std::endl;
+        std::cout << "\tNow on resample " << std::to_string(resample_idx + 1) << " of " + std::to_string(N_resamples) << std::endl;
         for (int ev_idx = 0; ev_idx < N_events; ev_idx++){
             if (ev_idx % int (N_events * 0.1) == 0){ // Keeping track of the proccess for every 10% of the events
-                std::cout << "Now on event " << ev_idx << " of " << N_events  << " (" << ev_idx * 1./N_events * 100 << "%)" << std::endl; // The 1. comes to represent the percentage as a double
+                std::cout << "\t\tNow on event " << ev_idx << " of " << N_events  << " (" << ev_idx * 1./N_events * 100 << "%)" << std::endl; // The 1. comes to represent the percentage as a double
             }
             for (int particle_idx = 0; particle_idx < y_matrix[ev_idx].size(); particle_idx++){ // Not truly a particle loop: the data is pre-binned, so this is a loop on bins of each event, which can be treated as "mean particles" of each (pT, phi, y) bin/interval
                 hLambdaCounter->Fill(0);
@@ -377,6 +409,18 @@ int lambda_pol_toy_model(){
 
                 // Newer code, that samples directly from the cos_xi distribution:
                 auto [xi_star, phi_star] = sample_P_angle_proton_from_cos_xi(P_Lambda_star_mag, rng, dist_unit, dist_azimuth); // Optimized version that does not require
+
+                //////////////////////////////////////////////
+                /// DEBUG ONLY! Testing to see if xi_star = 0
+                /// (proton always decays in the direction of
+                /// the polarization) gives us a working result,
+                /// i.e., recovers the true Ring Observable
+                /// as it should from both the polarization
+                /// and the proton momentum proxy for the ring
+                /// observable
+                //////////////////////////////////////////////
+                // xi_star = 0;
+
 
                 // 4 - Generating the proton 4-momentum from the decay:
                     // Actually, I just need the angles at which the proton would decay, not the whole 4-momentum of the decay, but whatever, let's keep it!
@@ -460,6 +504,12 @@ int lambda_pol_toy_model(){
 
                 // Another peace of mind, just in phi:
                 hLambdaCounter_phi_Weighted->Fill(lambda_phi, current_particle_multiplicity);
+                hLambdaCounter_phiRing_Weighted->Fill(wrapToInterval(lambda_phi, phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // No the prettiest way to build a histogram that is essentially equivalent to the other counter, but works
+                hProtonCounter_phiRing_Weighted->Fill(wrapToInterval(proton_4_momentum.Phi(), phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // A counter for the proton's angular distribution too, for the other ring estimator!
+                hProtonStarCounter_phiRing_Weighted->Fill(wrapToInterval(proton_4_momentum_star.Phi(), phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // For the other proxy of the ring observable, which 
+                                                                                                                                                                    // should be normalized by the number of protons
+                hDebugCounter_phi_star_sampler->Fill(wrapToInterval(phi_star, phi_min_Ring, phi_max_Ring)); // A debug histogram, just to know if the sampling is being truly random in phi_star, before coordinate rotation
+
                 hLambdaPolX_phi_Weighted->Fill(lambda_phi, true_PolX * current_particle_multiplicity);
                 hLambdaPolY_phi_Weighted->Fill(lambda_phi, true_PolY * current_particle_multiplicity);
                 hLambdaPolZ_phi_Weighted->Fill(lambda_phi, true_PolZ * current_particle_multiplicity);
@@ -471,9 +521,11 @@ int lambda_pol_toy_model(){
 
                 // Calculating the Ring Observable proxy with the daughter particle's momentum instead of the polarization:
                     // See the other RP_temp variable's surrounding lines for more information
-                const double x_trigger = 1; // Defined coordinate system so that this is always true
-                const double y_trigger = 0;
+                // While the rotation formula is still not solved:
+                double x_trigger = std::cos(phi_random[ev_idx]); // Defined a coordinate system such that double x_trigger = 1 is always true, but kept it general where possible, so that code is flexible to changes
+		        double y_trigger = std::sin(phi_random[ev_idx]);
                 const double z_trigger = 0;
+
                 double cross_x = y_trigger*pz_matrix[ev_idx][particle_idx] - z_trigger*py_matrix[ev_idx][particle_idx];
                 double cross_y = z_trigger*px_matrix[ev_idx][particle_idx] - x_trigger*pz_matrix[ev_idx][particle_idx];
                 double cross_z = x_trigger*py_matrix[ev_idx][particle_idx] - y_trigger*px_matrix[ev_idx][particle_idx];
@@ -483,21 +535,42 @@ int lambda_pol_toy_model(){
                     // Another good implementation of this, that should be equivalent to the true Ring Observable value, is:
                 double proton_4_momentum_star_norm = std::sqrt(proton_4_momentum_star.X()*proton_4_momentum_star.X() + proton_4_momentum_star.Y()*proton_4_momentum_star.Y()
                                                      + proton_4_momentum_star.Z()*proton_4_momentum_star.Z());
-                double RP_temp_eqv_def_attempt = 3./(alpha_H * proton_4_momentum_star_norm) * 
+                double proton_4_momentum_norm = std::sqrt(proton_4_momentum.X()*proton_4_momentum.X() + proton_4_momentum.Y()*proton_4_momentum.Y()
+                                                     + proton_4_momentum.Z()*proton_4_momentum.Z());
+                double RP_temp_eqv_def = 3./(alpha_H * proton_4_momentum_star_norm) * 
                                                  ((proton_4_momentum.X()*cross_x + proton_4_momentum.Y()*cross_y + proton_4_momentum.Z()*cross_z)/
                                                  (std::sqrt(cross_x*cross_x + cross_y*cross_y + cross_z*cross_z)));
+                double RP_temp_eqv_def2 = 3./(alpha_H * proton_4_momentum_norm) * 
+                                                 ((proton_4_momentum.X()*cross_x + proton_4_momentum.Y()*cross_y + proton_4_momentum.Z()*cross_z)/
+                                                 (std::sqrt(cross_x*cross_x + cross_y*cross_y + cross_z*cross_z)));
+                    // Now for the observables that take into consideration the proton's momentum in the Lambda rest frame -- Even more closely related to the polarization vector:
+                double RP_temp_proton_star_eqv_def = 3./(alpha_H * proton_4_momentum_star_norm) * 
+                                                 ((proton_4_momentum_star.X()*cross_x + proton_4_momentum_star.Y()*cross_y + proton_4_momentum_star.Z()*cross_z)/
+                                                 (std::sqrt(cross_x*cross_x + cross_y*cross_y + cross_z*cross_z)));
 
-                hRingObservable_proxy_from_daughter->Fill(lambda_phi, RP_temp * current_particle_multiplicity);
-                hRingObservable_proxy_from_daughter_eq_def_attempt->Fill(lambda_phi, RP_temp_eqv_def_attempt * current_particle_multiplicity);
+                double delta_phi_J = lambda_phi - phi_random[ev_idx]; // Also a general formula: in case phi_random was rotated to 0, this does nothing, but it also works in case it was not rotated.
+                    // Making sure that the values are within 0 to 2*PI appropriately:
+                delta_phi_J = wrapToInterval(delta_phi_J, phi_min_Ring, phi_max_Ring);
+
+                hRingObservable_proxy_from_daughter->Fill(delta_phi_J, RP_temp * current_particle_multiplicity);
+                hRingObservable_proxy_from_daughter_eq_def->Fill(delta_phi_J, RP_temp_eqv_def * current_particle_multiplicity);
+                hRingObservable_proxy_from_daughter_star_eq_def->Fill(delta_phi_J, RP_temp_proton_star_eqv_def * current_particle_multiplicity);
 
                 // Calculating the true value:
                 double RP_temp_true = ((true_PolX*cross_x + true_PolY*cross_y + true_PolZ*cross_z)/
             					 (std::sqrt(cross_x*cross_x + cross_y*cross_y + cross_z*cross_z))); 
-                hRingObservable_TrueValue->Fill(lambda_phi, RP_temp_true * current_particle_multiplicity);
+                hRingObservable_TrueValue->Fill(delta_phi_J, RP_temp_true * current_particle_multiplicity);
+
+                if (lambda_pT > 0.5 && lambda_pT < 1.5){
+                    hRingObservable_TrueValuePtCuts->Fill(delta_phi_J, RP_temp_true * current_particle_multiplicity);
+                    hRingObservable_proxy_from_daughter_eq_defPtCuts->Fill(delta_phi_J, RP_temp_eqv_def * current_particle_multiplicity);
+                    hRingObservable_proxy_from_daughter_eq_def2PtCuts->Fill(delta_phi_J, RP_temp_eqv_def2 * current_particle_multiplicity);
+                    hRingObservable_proxy_from_daughter_star_eq_defPtCuts->Fill(delta_phi_J, RP_temp_proton_star_eqv_def * current_particle_multiplicity);
+                }
             }
         }
     }
-    std::cout << "\tDone!" << std::endl;
+    std::cout << "\tDone resampling!" << std::endl;
 
     // Finishing the average for the 3 global dot products:
     average_dotX /= hLambdaCounter->GetBinContent(1);
@@ -703,9 +776,9 @@ int lambda_pol_toy_model(){
                         // todo: fix this in order to have a mean calculation for each event's trigger (i.e., getting a TH3D for each event or smth like that), or even do a
                         // coordinate rotation so that all triggers are in the (1, 0, 0) direction.
                         // This todo should be solved by now with the rotation of coordinates!
-                    const double x_trigger = 1; // Defined coordinate system so that this is always true
-                    const double y_trigger = 0;
-                    const double z_trigger = 0;
+                    const double x_trigger = 1.; // Defined coordinate system so that this is always true
+                    const double y_trigger = 0.;
+                    const double z_trigger = 0.;
                     double cross_x = y_trigger*mean_pz - z_trigger*mean_py;
                     double cross_y = z_trigger*mean_px - x_trigger*mean_pz;
                     double cross_z = x_trigger*mean_py - y_trigger*mean_px;
@@ -713,7 +786,14 @@ int lambda_pol_toy_model(){
                     double RP_temp = ((P_Lambda_lab_mean_4vec_Weighted.X()*cross_x + P_Lambda_lab_mean_4vec_Weighted.Y()*cross_y + P_Lambda_lab_mean_4vec_Weighted.Z()*cross_z)/
             					      (std::sqrt(cross_x*cross_x + cross_y*cross_y + cross_z*cross_z)));
 
-                    hRingObservable->Fill(phi_bin_center, RP_temp * current_pTyphi_bin_multiplicity);
+                    double delta_phi_J = phi_bin_center; // In this coordinate definition after the phi_matrix rotation, the jet is always facing the x axis and phi is already a delta_phi_J
+                    delta_phi_J = wrapToInterval(delta_phi_J, phi_min_Ring, phi_max_Ring);
+
+                    hRingObservable->Fill(delta_phi_J, RP_temp * current_pTyphi_bin_multiplicity);
+
+                    if (pT_bin_center > 0.5 && pT_bin_center < 1.5){
+                        hRingObservablePtCuts->Fill(delta_phi_J, RP_temp * current_pTyphi_bin_multiplicity);
+                    }
             }
         }
     }
@@ -798,7 +878,20 @@ int lambda_pol_toy_model(){
     // // hLambdaPolY_phiReco->Scale(1./N_bins_rap);
     // // hLambdaPolZ_phiReco->Scale(1./N_bins_rap);
 
+    // Normalizing all ring observables by the particle weights to complete the averaging:
+    hRingObservable_TrueValue->Divide(hLambdaCounter_phiRing_Weighted);
+    hRingObservable_TrueValuePtCuts->Divide(hLambdaCounter_phiRing_Weighted);
+    hRingObservable->Divide(hLambdaCounter_phiRing_Weighted);
+    hRingObservablePtCuts->Divide(hLambdaCounter_phiRing_Weighted);
+        // These should be normalized by the number of protons in each phi angle, as they are weighted with that in mind:
+    hRingObservable_proxy_from_daughter->Divide(hProtonCounter_phiRing_Weighted);
+    hRingObservable_proxy_from_daughter_eq_def->Divide(hProtonCounter_phiRing_Weighted);
+    hRingObservable_proxy_from_daughter_eq_defPtCuts->Divide(hProtonCounter_phiRing_Weighted);
+    hRingObservable_proxy_from_daughter_eq_def2PtCuts->Divide(hProtonCounter_phiRing_Weighted);
 
+        // Another attempt (with proton momentum in the rest frame), which should be normalized by the angular counts with the proton_4_momentum_star angular coordinate:
+    hRingObservable_proxy_from_daughter_star_eq_def->Divide(hProtonStarCounter_phiRing_Weighted);
+    hRingObservable_proxy_from_daughter_star_eq_defPtCuts->Divide(hProtonStarCounter_phiRing_Weighted);
 
     ////////////////////
     //// 4 - Exporting into a .root file for later review
@@ -905,6 +998,11 @@ int lambda_pol_toy_model(){
     hLambdaPolZ_phi_pTReco_Weighted->Write();
 
     hLambdaCounter_phi_Weighted->Write();
+    hLambdaCounter_phiRing_Weighted->Write();
+    hProtonCounter_phiRing_Weighted->Write();
+    hProtonStarCounter_phiRing_Weighted->Write();
+    hDebugCounter_phi_star_sampler->Write();
+
     hLambdaPolX_phiReco_Weighted->Write();
     hLambdaPolY_phiReco_Weighted->Write();
     hLambdaPolZ_phiReco_Weighted->Write();
@@ -916,9 +1014,16 @@ int lambda_pol_toy_model(){
 
     // For the ring observables:
     hRingObservable_TrueValue->Write();
+    hRingObservable_TrueValuePtCuts->Write();
     hRingObservable->Write();
+    hRingObservablePtCuts->Write();
     hRingObservable_proxy_from_daughter->Write();
-    hRingObservable_proxy_from_daughter_eq_def_attempt->Write();
+    hRingObservable_proxy_from_daughter_eq_def->Write();
+    hRingObservable_proxy_from_daughter_eq_defPtCuts->Write();
+    hRingObservable_proxy_from_daughter_eq_def2PtCuts->Write();
+
+    hRingObservable_proxy_from_daughter_star_eq_def->Write();
+    hRingObservable_proxy_from_daughter_star_eq_defPtCuts->Write();
 
     // Deleting the Clone() histograms, which may still be kept in memory:
     delete hLambdaPolStarX_pT_yReco;
@@ -934,7 +1039,7 @@ int lambda_pol_toy_model(){
     delete hLambdaPolStarZ_pT_y_phiReco_Weighted;
 
     f.Close();
-    std::cout << "\tDone!" << std::endl;
+    std::cout << "Done exporting!" << std::endl;
 
     std::cout << "\n\nCode execution finished with code 0. Thank you!" << std::endl;
     return 0;
@@ -958,8 +1063,8 @@ inline double P_angle_proton_as_cos_func(double cos_xi_star, double P_Lambda_sta
     // Receives the Lambda polarization magnitude, already in the rest frame, and returns the two angles needed 
     // Usage example:
     // auto [xi_star, phi_star] = sample_P_angle_proton_for_each_PLambda(...);
-std::pair<double, double> sample_P_angle_proton(double P_Lambda_star_mag, std::mt19937 rng, std::uniform_real_distribution<double> dist_x,
-                                                std::uniform_real_distribution<double> dist_y, std::uniform_real_distribution<double> dist_azimuth){
+std::pair<double, double> sample_P_angle_proton(double P_Lambda_star_mag, std::mt19937 &rng, std::uniform_real_distribution<double> dist_x,
+                                                std::uniform_real_distribution<double> dist_y, std::uniform_real_distribution<double> &dist_azimuth){
     // First sampling the azimuthal angle, which is really simple to do:
     double phi_star = dist_azimuth(rng);
 
@@ -990,8 +1095,8 @@ std::pair<double, double> sample_P_angle_proton(double P_Lambda_star_mag, std::m
 // As cosine is invertible in the (0, PI) interval we are analyzing, then we can just invert cos(xi_star) into xi_star later,
 // and the sampling procedure is far simpler for this case where there is no rejection sampling!
 // SEE LOG 471, PAGE 4 !!!
-std::pair<double, double> sample_P_angle_proton_from_cos_xi(double P_Lambda_star_mag, std::mt19937 rng, std::uniform_real_distribution<double> dist_unit,
-                                                               std::uniform_real_distribution<double> dist_azimuth){
+std::pair<double, double> sample_P_angle_proton_from_cos_xi(double P_Lambda_star_mag, std::mt19937 &rng, std::uniform_real_distribution<double> &dist_unit,
+                                                               std::uniform_real_distribution<double> &dist_azimuth){ // Should pass rng as a reference! If not, it won't update and you will always sample the same values!
     // First sampling the azimuthal angle, which is really simple to do:
     double phi_star = dist_azimuth(rng);
     double u = dist_unit(rng); // The uniform unit sample
@@ -1201,10 +1306,10 @@ TVector3 boost_polarization_to_rest_frame(TLorentzVector Lambda_4_momentum_lab, 
 void get_lambda(DoubleMatrix &y_matrix, DoubleMatrix &phi_matrix, DoubleMatrix &px_matrix, DoubleMatrix &py_matrix,
                 DoubleMatrix &pz_matrix, DoubleMatrix &E_matrix, DoubleMatrix& mult_matrix, DoubleMatrix &St_matrix,
                 DoubleMatrix &Sx_matrix, DoubleMatrix &Sy_matrix, DoubleMatrix &Sz_matrix, int N_events, bool with_bullet){
-    std::cout << "\nStarting event loop for Lambda getter..." << std::endl;
+    std::cout << "\tStarting event loop for Lambda getter..." << std::endl;
     for(int i = 0; i < N_events; ++i){
         if (i % int (N_events * 0.1) == 0){ // Keeping track of the proccess for every 10% of the events
-            std::cout << "Now on event " << i << " of " << N_events  << " (" << i * 1./N_events * 100 << "%)" << std::endl; // The 1. comes to represent the percentage as a double
+            std::cout << "\tNow on event " << i << " of " << N_events  << " (" << i * 1./N_events * 100 << "%)" << std::endl; // The 1. comes to represent the percentage as a double
         }
 
         std::vector<double> y, phi, pT, mult, St, Sx, Sy, Sz; // Declaring variables that will store the Lambda information for the current event
@@ -1276,14 +1381,14 @@ void get_lambda(DoubleMatrix &y_matrix, DoubleMatrix &phi_matrix, DoubleMatrix &
         Sy_matrix.push_back(Sy);
         Sz_matrix.push_back(Sz);
     }
-    // std::cout << "\nCompleted!" << std::endl;
+    std::cout << "\tDone getting Lambda information!" << std::endl;
 }
 
 // This function retrieves the same set of data that Vitor used in Pol_Analysis_Random_hist_ebe.C
 // It modifies the provided vectors and stores the jet information.
 void get_jet(std::vector<double> &n_event, std::vector<double> &n_random, std::vector<double> &phi_random,
              std::vector<double> &momentum_x, std::vector<double> &momentum_y){
-    std::cout << "\nStarting event loop for Jet getter (even if the w/ jets flag is off, so that v_2 is averaged out!)..." << std::endl;
+    std::cout << "\n\tStarting event loop for Jet getter (even if the w/ jets flag is off, so that v_2 is averaged out!)..." << std::endl;
     
     // Getting a file that has jets in hydro set in a random direction for the jet momentum deposition:
     const char* file_random_jet_path = "/storage1/vribeiro/lumpy_events_40_50/random_parameters.dat";
@@ -1312,7 +1417,7 @@ void get_jet(std::vector<double> &n_event, std::vector<double> &n_random, std::v
     }
     delete random_lines;
 
-    std::cout << "Done!" << std::endl;
+    std::cout << "\tDone getting jet information!" << std::endl;
 }
 
 // A generalization of previous code for passing multiple particles to be sampled at once.
