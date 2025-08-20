@@ -71,15 +71,6 @@ inline double wrapToInterval(double phi, double phi_min, double phi_max){
     return phi + phi_min;
 }
 
-// // Fast wrapping into [0, 2PI), fixed interval:
-// inline double wrapToInterval(double phi){
-//     double range = 2*PI;
-//     // Use fmod to reduce directly
-//     phi = std::fmod(phi, range);
-//     if (phi < 0) phi += range;
-//     return phi;
-// }
-
 // Older, inefficient version:
 // double wrapToInterval(double phi, double phi_min, double phi_max){
 //     double range = phi_max - phi_min;
@@ -99,26 +90,8 @@ int lambda_pol_toy_model(){
     bool with_bullet = true;
 
     TH1D *hLambdaCounter = new TH1D ("hLambdaCounter", "", 1, -1, 1);
-    
-    // Histograms to compare the true magnitude of the Lambda polarizations and the reconstructed magnitude:
-    int N_bins_pol = 200;
-    TH1D *hLambdaPolMag = new TH1D("hLambdaPolMag", "hLambdaPolMag", N_bins_pol, 0, 1); // Should only go from -1 to 1, but I want to check it!
-    TH1D *hLambdaPolStarMagReco = new TH1D("hLambdaPolStarMagReco", "hLambdaPolStarMagReco", N_bins_pol, 0, 1);
 
-        // Checking component by component to see if we can properly reconstruct the average of polarization in each direction
-        // (in this first reconstruction method, I am not aiming to reconstruct the polarization around a jet, but to reconstruct
-        // the "global" polarization components in the XYZ axes. Thus, the Reco value will be a single entry, while the true values
-        // will actually give me distributions of polarizations that I ended up averaging on)
-    TH1D *hLambdaPolX = new TH1D("hLambdaPolX", "hLambdaPolX", N_bins_pol, -0.5, 0.5); // Polarization is normalized to 1, and usually does not go over 0.2 !
-    TH1D *hLambdaPolStarXReco = new TH1D("hLambdaPolStarXReco", "hLambdaPolStarXReco", N_bins_pol, -0.5, 0.5);
-
-    TH1D *hLambdaPolY = new TH1D("hLambdaPolY", "hLambdaPolY", N_bins_pol, -0.5, 0.5);
-    TH1D *hLambdaPolStarYReco = new TH1D("hLambdaPolStarYReco", "hLambdaPolStarYReco", N_bins_pol, -0.5, 0.5);
-
-    TH1D *hLambdaPolZ = new TH1D("hLambdaPolZ", "hLambdaPolZ", N_bins_pol, -0.5, 0.5);
-    TH1D *hLambdaPolStarZReco = new TH1D("hLambdaPolStarZReco", "hLambdaPolStarZReco", N_bins_pol, -0.5, 0.5);
-
-        // Now declaring 2D histograms that will have the average polarization in the Z axis, and (pT, y) in the plane:
+    // Declaring histogram-related variables:
         // Corrected with the values used in /home/vribeiro/vorticity/iSS-pol/src/spin_polarization.h
     const int N_bins_pT = 30;
     const int N_bins_rap = 10;
@@ -141,27 +114,9 @@ int lambda_pol_toy_model(){
     double phi_min_Ring = phi_min - PI;
     double phi_max_Ring = phi_max - PI;
 
-        // These TH2Ds here will be defined as clones later, so it is clearer to the reader to show that they will not need full definitions:
-        // (see below)
-    // TH2D *hLambdaPolX_pT_yReco = new TH2D("hLambdaPolX_pT_yReco", "hLambdaPolX_pT_yReco", N_bins_pT, 0, 5, N_bins_rap, -3, 3);
-    // TH2D *hLambdaPolY_pT_yReco = new TH2D("hLambdaPolY_pT_yReco", "hLambdaPolX_pT_yReco", N_bins_pT, 0, 5, N_bins_rap, -3, 3);
-    // TH2D *hLambdaPolZ_pT_yReco = new TH2D("hLambdaPolZ_pT_yReco", "hLambdaPolX_pT_yReco", N_bins_pT, 0, 5, N_bins_rap, -3, 3);
 
-    TH2D *hLambdaPolX_pT_y = new TH2D("hLambdaPolX_pT_y", "hLambdaPolX_pT_y", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max);
-    TH2D *hLambdaPolStarX_pT_yReco;
-
-    TH2D *hLambdaPolY_pT_y = new TH2D("hLambdaPolY_pT_y", "hLambdaPolX_pT_y", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max);
-    TH2D *hLambdaPolStarY_pT_yReco;
-
-    TH2D *hLambdaPolZ_pT_y = new TH2D("hLambdaPolZ_pT_y", "hLambdaPolX_pT_y", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max);
-    TH2D *hLambdaPolStarZ_pT_yReco;
-
-    // For peace of mind, the same plots that would appear on the paper, before any kind of reconstruction:
-    TH2D *hLambdaPolX_phi_pT = new TH2D("hLambdaPolX_phi_pT", "hLambdaPolX_phi_pT", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
-    TH2D *hLambdaPolY_phi_pT = new TH2D("hLambdaPolY_phi_pT", "hLambdaPolY_phi_pT", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
-    TH2D *hLambdaPolZ_phi_pT = new TH2D("hLambdaPolZ_phi_pT", "hLambdaPolZ_phi_pT", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
-
-        // Another version of these plots, properly weighted by the multiplicity of each bin:
+    // For peace of mind, the same plots that appear on the paper, before any kind of reconstruction:
+        // (Properly weighted by the multiplicity of each bin!)
     TH2D *hLambdaCounter_phi_pT_Weighted = new TH2D("hLambdaCounter_phi_pT_Weighted", "hLambdaCounter_phi_pT_Weighted", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
     TH2D *hLambdaPolX_phi_pT_Weighted = new TH2D("hLambdaPolX_phi_pT_Weighted", "hLambdaPolX_phi_pT_Weighted", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
     TH2D *hLambdaPolY_phi_pT_Weighted = new TH2D("hLambdaPolY_phi_pT_Weighted", "hLambdaPolY_phi_pT_Weighted", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
@@ -172,68 +127,33 @@ int lambda_pol_toy_model(){
     TH3D *hLambdaPolY_pT_y_phi_Weighted = new TH3D("hLambdaPolY_pT_y_phi_Weighted", "hLambdaPolY_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
     TH3D *hLambdaPolZ_pT_y_phi_Weighted = new TH3D("hLambdaPolZ_pT_y_phi_Weighted", "hLambdaPolZ_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
 
-            // Their projection test:
+            // A test to show that a projection from 3D to 2D works:
     TH2D *hLambdaPolX_phi_pT_Weighted_ProjTEST = new TH2D("hLambdaPolX_phi_pT_Weighted_ProjTEST", "hLambdaPolX_phi_pT_Weighted_ProjTEST", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
     TH2D *hLambdaPolY_phi_pT_Weighted_ProjTEST = new TH2D("hLambdaPolY_phi_pT_Weighted_ProjTEST", "hLambdaPolY_phi_pT_Weighted_ProjTEST", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
     TH2D *hLambdaPolZ_phi_pT_Weighted_ProjTEST = new TH2D("hLambdaPolZ_phi_pT_Weighted_ProjTEST", "hLambdaPolZ_phi_pT_Weighted_ProjTEST", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
 
             // Declaring a counter histogram and some summation-storing histograms to define polarization in each (pT, y) bin:
-    TH2D *hLambdaCounter_pT_y = new TH2D("hLambdaCounter_pT_y", "hLambdaCounter_pT_y", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max); // Counts the amount of Lambdas in each (pT, y) bin
     TH2D *hLambdaCounter_pT_y_Weighted = new TH2D("hLambdaCounter_pT_y_Weighted", "hLambdaCounter_pT_y_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max); // Properly weighted counts
 
-    TH2D *hLambdaAvgDotX_pT_y = new TH2D("hLambdaAvgDotX_pT_y", "hLambdaAvgDotX_pT_y", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max); // Receives the same sum as average_dotX, but for each (pT, y) bin
-    TH2D *hLambdaAvgDotY_pT_y = new TH2D("hLambdaAvgDotY_pT_y", "hLambdaAvgDotY_pT_y", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max);
-    TH2D *hLambdaAvgDotZ_pT_y = new TH2D("hLambdaAvgDotZ_pT_y", "hLambdaAvgDotZ_pT_y", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max);
-
         // Declaring some histograms to calculate the polarization in the lab frame -- You will need the phi information to build the full 4-vector of the "mean Lambda" in that bin:
-        // In a later version, I can just eliminate the 2D histogram and work with this one instead, even for the P* calculations only. Just sum on all phi values.
-    TH3D *hLambdaCounter_pT_y_phi = new TH3D("hLambdaCounter_pT_y_phi", "hLambdaCounter_pT_y_phi", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max); // Counts the amount of Lambdas in each (pT, y, phi) bin
-    TH3D *hLambdaAvgDotX_pT_y_phi = new TH3D("hLambdaAvgDotX_pT_y_phi", "hLambdaAvgDotX_pT_y_phi", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
-    TH3D *hLambdaAvgDotY_pT_y_phi = new TH3D("hLambdaAvgDotY_pT_y_phi", "hLambdaAvgDotY_pT_y_phi", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
-    TH3D *hLambdaAvgDotZ_pT_y_phi = new TH3D("hLambdaAvgDotZ_pT_y_phi", "hLambdaAvgDotZ_pT_y_phi", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
-
-            // Weighting the observables by the multiplicity of each Lambda bin (the mult_matrix data) -- This is the actually right thing to do!
+            // Weighting the observables by the multiplicity of each Lambda bin (the mult_matrix data):
     TH3D *hLambdaCounter_pT_y_phi_Weighted = new TH3D("hLambdaCounter_pT_y_phi_Weighted", "hLambdaCounter_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
     TH3D *hLambdaAvgDotX_pT_y_phi_Weighted = new TH3D("hLambdaAvgDotX_pT_y_phi_Weighted", "hLambdaAvgDotX_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
     TH3D *hLambdaAvgDotY_pT_y_phi_Weighted = new TH3D("hLambdaAvgDotY_pT_y_phi_Weighted", "hLambdaAvgDotY_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
     TH3D *hLambdaAvgDotZ_pT_y_phi_Weighted = new TH3D("hLambdaAvgDotZ_pT_y_phi_Weighted", "hLambdaAvgDotZ_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
 
-    TH3D *hLambdaPolStarX_pT_y_phiReco;
-    TH3D *hLambdaPolStarY_pT_y_phiReco;
-    TH3D *hLambdaPolStarZ_pT_y_phiReco;
-
-        // The lab polarization histograms:
-    TH3D *hLambdaPolX_pT_y_phiReco = new TH3D("hLambdaPolX_pT_y_phiReco", "hLambdaPolX_pT_y_phiReco", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
-    TH3D *hLambdaPolY_pT_y_phiReco = new TH3D("hLambdaPolY_pT_y_phiReco", "hLambdaPolY_pT_y_phiReco", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
-    TH3D *hLambdaPolZ_pT_y_phiReco = new TH3D("hLambdaPolZ_pT_y_phiReco", "hLambdaPolZ_pT_y_phiReco", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
-
-        // Some 2D lab polarization histograms to compare easily with hLambdaPolX_pT_y:
-    TH2D *hLambdaPolX_pT_yReco = new TH2D("hLambdaPolX_pT_yReco", "hLambdaPolX_pT_yReco", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max);
-    TH2D *hLambdaPolY_pT_yReco = new TH2D("hLambdaPolY_pT_yReco", "hLambdaPolY_pT_yReco", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max);
-    TH2D *hLambdaPolZ_pT_yReco = new TH2D("hLambdaPolZ_pT_yReco", "hLambdaPolZ_pT_yReco", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max);
-
-            // Other 2D histograms to compare with Vitor's paper:
-    TH2D *hLambdaPolX_phi_pTReco = new TH2D("hLambdaPolX_phi_pTReco", "hLambdaPolX_phi_pTReco", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
-    TH2D *hLambdaPolY_phi_pTReco = new TH2D("hLambdaPolY_phi_pTReco", "hLambdaPolY_phi_pTReco", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
-    TH2D *hLambdaPolZ_phi_pTReco = new TH2D("hLambdaPolZ_phi_pTReco", "hLambdaPolZ_phi_pTReco", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
-
-        // Finally, 1D lab polarization histograms to compare with the plots in the paper:
-    TH1D *hLambdaPolX_phiReco = new TH1D("hLambdaPolX_phiReco", "hLambdaPolX_phiReco", N_bins_phi, phi_min, phi_max);
-    TH1D *hLambdaPolY_phiReco = new TH1D("hLambdaPolY_phiReco", "hLambdaPolY_phiReco", N_bins_phi, phi_min, phi_max);
-    TH1D *hLambdaPolZ_phiReco = new TH1D("hLambdaPolZ_phiReco", "hLambdaPolZ_phiReco", N_bins_phi, phi_min, phi_max);
-
+        // A bunch of alternative counters that are useful from a debugging standpoint (other than the actually useful hLambdaCounter_DeltaphiJRing_Weighted normalizer):
     TH1D *hLambdaCounter_phi_Weighted = new TH1D("hLambdaCounter_phi_Weighted", "hLambdaCounter_phi_Weighted", N_bins_phi, phi_min, phi_max);
-    TH1D *hLambdaCounter_phiRing_Weighted = new TH1D("hLambdaCounter_phiRing_Weighted", "hLambdaCounter_phiRing_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TH1D *hLambdaCounter_phiRingAngles_Weighted = new TH1D("hLambdaCounter_phiRingAngles_Weighted", "hLambdaCounter_phiRingAngles_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
     TH1D *hLambdaCounter_DeltaphiJRing_Weighted = new TH1D("hLambdaCounter_DeltaphiJRing_Weighted", "hLambdaCounter_DeltaphiJRing_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
     TH1D *hProtonCounter_phiRing_Weighted = new TH1D("hProtonCounter_phiRing_Weighted", "hProtonCounter_phiRing_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
     TH1D *hProtonStarCounter_phiRing_Weighted = new TH1D("hProtonStarCounter_phiRing_Weighted", "hProtonStarCounter_phiRing_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
+
     TH1D *hLambdaPolX_phi_Weighted = new TH1D("hLambdaPolX_phi_Weighted", "hLambdaPolX_phi_Weighted", N_bins_phi, phi_min, phi_max);
     TH1D *hLambdaPolY_phi_Weighted = new TH1D("hLambdaPolY_phi_Weighted", "hLambdaPolY_phi_Weighted", N_bins_phi, phi_min, phi_max);
     TH1D *hLambdaPolZ_phi_Weighted = new TH1D("hLambdaPolZ_phi_Weighted", "hLambdaPolZ_phi_Weighted", N_bins_phi, phi_min, phi_max);
 
-    ///////////////////////////////////////////
-            // For the weighted histograms:
-    ///////////////////////////////////////////
+        // Now for the reconstructions in 3D:
     TH3D *hLambdaPolStarX_pT_y_phiReco_Weighted;
     TH3D *hLambdaPolStarY_pT_y_phiReco_Weighted;
     TH3D *hLambdaPolStarZ_pT_y_phiReco_Weighted;
@@ -243,7 +163,7 @@ int lambda_pol_toy_model(){
     TH3D *hLambdaPolY_pT_y_phiReco_Weighted = new TH3D("hLambdaPolY_pT_y_phiReco_Weighted", "hLambdaPolY_pT_y_phiReco_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
     TH3D *hLambdaPolZ_pT_y_phiReco_Weighted = new TH3D("hLambdaPolZ_pT_y_phiReco_Weighted", "hLambdaPolZ_pT_y_phiReco_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
 
-        // Some 2D lab polarization histograms to compare easily with hLambdaPolX_pT_y:
+        // Some 2D lab polarization histograms to compare easily:
     TH2D *hLambdaPolX_pT_yReco_Weighted = new TH2D("hLambdaPolX_pT_yReco_Weighted", "hLambdaPolX_pT_yReco_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max);
     TH2D *hLambdaPolY_pT_yReco_Weighted = new TH2D("hLambdaPolY_pT_yReco_Weighted", "hLambdaPolY_pT_yReco_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max);
     TH2D *hLambdaPolZ_pT_yReco_Weighted = new TH2D("hLambdaPolZ_pT_yReco_Weighted", "hLambdaPolZ_pT_yReco_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max);
@@ -261,8 +181,8 @@ int lambda_pol_toy_model(){
         // Testing some ring observable calculations:
     TH1D *hRingObservable_TrueValue = new TH1D("hRingObservable_TrueValue", "hRingObservable_TrueValue", N_bins_phi, phi_min_Ring, phi_max_Ring);
     TH1D *hRingObservable_TrueValuePtCuts = new TH1D("hRingObservable_TrueValuePtCuts", "hRingObservable_TrueValuePtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    TH1D *hRingObservable = new TH1D("hRingObservable", "hRingObservable", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    TH1D *hRingObservablePtCuts = new TH1D("hRingObservablePtCuts", "hRingObservablePtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TH1D *hRingObservableReco = new TH1D("hRingObservableReco", "hRingObservableReco", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TH1D *hRingObservableRecoPtCuts = new TH1D("hRingObservableRecoPtCuts", "hRingObservableRecoPtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
     TH1D *hRingObservable_proxy_from_daughter = new TH1D("hRingObservable_proxy_from_daughter", "hRingObservable_proxy_from_daughter", N_bins_phi, phi_min_Ring, phi_max_Ring);
     TH1D *hRingObservable_proxy_from_daughter_eq_def = new TH1D("hRingObservable_proxy_from_daughter_eq_def", "hRingObservable_proxy_from_daughter_eq_def", N_bins_phi, phi_min_Ring, phi_max_Ring);
     TH1D *hRingObservable_proxy_from_daughter_eq_defPtCuts = new TH1D("hRingObservable_proxy_from_daughter_eq_defPtCuts", "hRingObservable_proxy_from_daughter_eq_defPtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
@@ -344,15 +264,8 @@ int lambda_pol_toy_model(){
     //// 3 - Decaying Lambdas and filling histograms:
     ////////////////////
     std::cout << "\nDecaying Lambdas and filling histograms" << std::endl;
-        // Looping on all events and all particles of each event:
-    // TVector3 x_hat(1, 0, 0);
-    // TVector3 y_hat(0, 1, 0);
-    // TVector3 z_hat(0, 0, 1);
-
-    double average_dotX = 0;
-    double average_dotY = 0;
-    double average_dotZ = 0;
-    int N_resamples = 150; // Goes through each particle N_resamples # of times. This is an attempt to see if the polarization estimate values become more stable!
+        // Looping on all events and all bins(/particles with multiplicity) in each event:
+    int N_resamples = 1; // Goes through each particle N_resamples # of times. This is an attempt to see if the polarization estimate values become more stable!
     for (int resample_idx = 0; resample_idx < N_resamples; resample_idx++){
         std::cout << "\tNow on resample " << std::to_string(resample_idx + 1) << " of " + std::to_string(N_resamples) << std::endl;
         for (int ev_idx = 0; ev_idx < N_events; ev_idx++){
@@ -373,7 +286,6 @@ int lambda_pol_toy_model(){
                 // TVector3 P_Lambda_lab(Sx_matrix[ev_idx][particle_idx], Sy_matrix[ev_idx][particle_idx], Sz_matrix[ev_idx][particle_idx]);
                     // Polarization is given by P = S/<S> in the case of Lambdas with spin-1/2, and as <S> = 1/2, you just need to multiply everything by 2.
                 TLorentzVector P_Lambda_lab_4vec(true_PolX, true_PolY, true_PolZ, true_PolT); // You need the temporal component too!
-                hLambdaPolMag->Fill((P_Lambda_lab_4vec.Vect()).Mag()); // I just want the magnitude of the spatial part for this plot, so just grab the Vect() magnitude
 
                 ///////////////////////////////////////////
                 // // Making sure that the S^mu * P_mu product is zero.
@@ -384,11 +296,6 @@ int lambda_pol_toy_model(){
                 // std::cout << "S^mu * P_mu = " << dotProduct << std::endl;
                 // It was close enough to zero! (within float precision, which seems to be the format the data was previously stored in)
                 ///////////////////////////////////////////
-
-                    // Filling the known polarizations:
-                hLambdaPolX->Fill(true_PolX);
-                hLambdaPolY->Fill(true_PolY);
-                hLambdaPolZ->Fill(true_PolZ);
 
                 // 2 - Calculating the polarization in the Lambda rest frame:
                 TVector3 P_Lambda_star = boost_polarization_to_rest_frame(Lambda_4_momentum_lab, P_Lambda_lab_4vec);
@@ -468,22 +375,7 @@ int lambda_pol_toy_model(){
                 // std::cout << "The (x_dot, y_dot, z_dot) values for the p_proton * hat vectors are (" << X_dot << ", " << Y_dot << ", " << Z_dot << ")" << std::endl; // Just checking the magnitude of the projections
                 ///////////////////////
 
-                average_dotX += X_dot;
-                average_dotY += Y_dot;
-                average_dotZ += Z_dot;
-
                 // 7 - Summing to calculate polarization on subsets of the available Lambdas -- Bins of (pT, y):
-                hLambdaCounter_pT_y->Fill(lambda_pT, lambda_y);
-
-                hLambdaAvgDotX_pT_y->Fill(lambda_pT, lambda_y, X_dot);
-                hLambdaAvgDotY_pT_y->Fill(lambda_pT, lambda_y, Y_dot);
-                hLambdaAvgDotZ_pT_y->Fill(lambda_pT, lambda_y, Z_dot);
-
-                hLambdaCounter_pT_y_phi->Fill(lambda_pT, lambda_y, lambda_phi);
-                hLambdaAvgDotX_pT_y_phi->Fill(lambda_pT, lambda_y, lambda_phi, X_dot);
-                hLambdaAvgDotY_pT_y_phi->Fill(lambda_pT, lambda_y, lambda_phi, Y_dot);
-                hLambdaAvgDotZ_pT_y_phi->Fill(lambda_pT, lambda_y, lambda_phi, Z_dot);
-
                     // Filling the weighted values:
                 hLambdaCounter_pT_y_phi_Weighted->Fill(lambda_pT, lambda_y, lambda_phi, current_particle_multiplicity);
                 hLambdaAvgDotX_pT_y_phi_Weighted->Fill(lambda_pT, lambda_y, lambda_phi, X_dot * current_particle_multiplicity); // Weighted averages
@@ -492,16 +384,7 @@ int lambda_pol_toy_model(){
 
                 hLambdaCounter_pT_y_Weighted->Fill(lambda_pT, lambda_y, current_particle_multiplicity);
 
-                // 8 - Filling the true values of the TH2D polarization histogram:
-                hLambdaPolX_pT_y->Fill(lambda_pT, lambda_y, true_PolX);
-                hLambdaPolY_pT_y->Fill(lambda_pT, lambda_y, true_PolY);
-                hLambdaPolZ_pT_y->Fill(lambda_pT, lambda_y, true_PolZ);
-
                 // 9 - Filling a peace of mind plot (plot that has the true values of the MC):
-                hLambdaPolX_phi_pT->Fill(lambda_phi, lambda_pT, true_PolX);
-                hLambdaPolY_phi_pT->Fill(lambda_phi, lambda_pT, true_PolY);
-                hLambdaPolZ_phi_pT->Fill(lambda_phi, lambda_pT, true_PolZ);
-
                 hLambdaPolX_phi_pT_Weighted->Fill(lambda_phi, lambda_pT, true_PolX * current_particle_multiplicity);
                 hLambdaPolY_phi_pT_Weighted->Fill(lambda_phi, lambda_pT, true_PolY * current_particle_multiplicity);
                 hLambdaPolZ_phi_pT_Weighted->Fill(lambda_phi, lambda_pT, true_PolZ * current_particle_multiplicity);
@@ -509,7 +392,7 @@ int lambda_pol_toy_model(){
 
                 // Another peace of mind, just in phi:
                 hLambdaCounter_phi_Weighted->Fill(lambda_phi, current_particle_multiplicity);
-                hLambdaCounter_phiRing_Weighted->Fill(wrapToInterval(lambda_phi, phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // No the prettiest way to build a histogram that is essentially equivalent to the other counter yet going from -pi to pi, but works
+                hLambdaCounter_phiRingAngles_Weighted->Fill(wrapToInterval(lambda_phi, phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // No the prettiest way to build a histogram that is essentially equivalent to the other counter yet going from -pi to pi, but works
                 hLambdaCounter_DeltaphiJRing_Weighted->Fill(wrapToInterval(lambda_phi - phi_random[ev_idx], phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // You actually need to have this counter defined as lambda_phi - phi_random[ev_idx] because the ring observable has a coordinate shift!
                 hProtonCounter_phiRing_Weighted->Fill(wrapToInterval(proton_4_momentum.Phi(), phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // A counter for the proton's angular distribution too, for the other ring estimator!
                 hProtonStarCounter_phiRing_Weighted->Fill(wrapToInterval(proton_4_momentum_star.Phi(), phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // For the other proxy of the ring observable, which 
@@ -588,62 +471,8 @@ int lambda_pol_toy_model(){
     }
     std::cout << "\tDone resampling!" << std::endl;
 
-    // Finishing the average for the 3 global dot products:
-    average_dotX /= hLambdaCounter->GetBinContent(1);
-    average_dotY /= hLambdaCounter->GetBinContent(1);
-    average_dotZ /= hLambdaCounter->GetBinContent(1);
-
-    // Calculating the mean polarization in each of those three global axes -- IN THE LAMBDA REST FRAME!
-    double PolX_star = 3./alpha_H * average_dotX;
-    double PolY_star = 3./alpha_H * average_dotY;
-    double PolZ_star = 3./alpha_H * average_dotZ;
-
-    hLambdaPolStarXReco->Fill(PolX_star);
-    hLambdaPolStarYReco->Fill(PolY_star);
-    hLambdaPolStarZReco->Fill(PolZ_star);
-
-    hLambdaPolStarMagReco->Fill(std::sqrt(PolX_star*PolX_star + PolY_star*PolY_star + PolZ_star*PolZ_star));
-
-    // Averaging the TH2D histograms that collect the mean dot product, and then converting them into polarizations:
-    hLambdaAvgDotX_pT_y->Divide(hLambdaCounter_pT_y);
-    hLambdaAvgDotY_pT_y->Divide(hLambdaCounter_pT_y);
-    hLambdaAvgDotZ_pT_y->Divide(hLambdaCounter_pT_y);
-
-        // Cloning the histograms, to keep an average dot product histogram and a polarization histogram as separate entities:
-    hLambdaPolStarX_pT_yReco = (TH2D*) hLambdaAvgDotX_pT_y->Clone("hLambdaPolStarX_pT_yReco");
-    hLambdaPolStarY_pT_yReco = (TH2D*) hLambdaAvgDotY_pT_y->Clone("hLambdaPolStarY_pT_yReco");
-    hLambdaPolStarZ_pT_yReco = (TH2D*) hLambdaAvgDotZ_pT_y->Clone("hLambdaPolStarZ_pT_yReco");
-
-    hLambdaPolStarX_pT_yReco->SetTitle("hLambdaPolStarX_pT_yReco");
-    hLambdaPolStarY_pT_yReco->SetTitle("hLambdaPolStarY_pT_yReco");
-    hLambdaPolStarZ_pT_yReco->SetTitle("hLambdaPolStarZ_pT_yReco");
-    
-        // Applying the transform that turns them into polarizations -- In the lambda rest frame!
-    hLambdaPolStarX_pT_yReco->Scale(3.0 / alpha_H);
-    hLambdaPolStarY_pT_yReco->Scale(3.0 / alpha_H);
-    hLambdaPolStarZ_pT_yReco->Scale(3.0 / alpha_H);
-
-            // The same for the TH3D histograms:
-    ///////////////////////////////////////////////////////////////
-    hLambdaAvgDotX_pT_y_phi->Divide(hLambdaCounter_pT_y_phi);
-    hLambdaAvgDotY_pT_y_phi->Divide(hLambdaCounter_pT_y_phi);
-    hLambdaAvgDotZ_pT_y_phi->Divide(hLambdaCounter_pT_y_phi);
-
-    hLambdaPolStarX_pT_y_phiReco = (TH3D*) hLambdaAvgDotX_pT_y_phi->Clone("hLambdaPolStarX_pT_y_phiReco");
-    hLambdaPolStarY_pT_y_phiReco = (TH3D*) hLambdaAvgDotY_pT_y_phi->Clone("hLambdaPolStarY_pT_y_phiReco");
-    hLambdaPolStarZ_pT_y_phiReco = (TH3D*) hLambdaAvgDotZ_pT_y_phi->Clone("hLambdaPolStarZ_pT_y_phiReco");
-
-    hLambdaPolStarX_pT_y_phiReco->SetTitle("hLambdaPolStarX_pT_y_phiReco");
-    hLambdaPolStarY_pT_y_phiReco->SetTitle("hLambdaPolStarY_pT_y_phiReco");
-    hLambdaPolStarZ_pT_y_phiReco->SetTitle("hLambdaPolStarZ_pT_y_phiReco");
-    
-        // Applying the transform that turns them into polarizations -- In the lambda rest frame!
-    hLambdaPolStarX_pT_y_phiReco->Scale(3.0 / alpha_H);
-    hLambdaPolStarY_pT_y_phiReco->Scale(3.0 / alpha_H);
-    hLambdaPolStarZ_pT_y_phiReco->Scale(3.0 / alpha_H);
-
-
-        // Now for weighted averages:
+    // Finishing the average for the 3 global dot products -- In 3D:
+        // (For weighted averages)
     hLambdaAvgDotX_pT_y_phi_Weighted->Divide(hLambdaCounter_pT_y_phi_Weighted);
     hLambdaAvgDotY_pT_y_phi_Weighted->Divide(hLambdaCounter_pT_y_phi_Weighted);
     hLambdaAvgDotZ_pT_y_phi_Weighted->Divide(hLambdaCounter_pT_y_phi_Weighted);
@@ -666,19 +495,14 @@ int lambda_pol_toy_model(){
     for (int pT_idx = 1; pT_idx <= N_bins_pT; pT_idx++){ // bin index starts at 1 (not 0)
         for (int y_idx = 1; y_idx <= N_bins_rap; y_idx++){
             for (int phi_idx = 1; phi_idx <= N_bins_phi; phi_idx++){
-                // Getting all the needed values for all three components at once:
-                double PolX_star_pTy_phi = hLambdaPolStarX_pT_y_phiReco->GetBinContent(pT_idx, y_idx, phi_idx);
+                // Getting all the needed values for all three spatial components:
                 double pT_bin_center = hLambdaCounter_pT_y_phi_Weighted->GetXaxis()->GetBinCenter(pT_idx);
                 double y_bin_center = hLambdaCounter_pT_y_phi_Weighted->GetYaxis()->GetBinCenter(y_idx);
                 double phi_bin_center = hLambdaCounter_pT_y_phi_Weighted->GetZaxis()->GetBinCenter(phi_idx);
 
                 // std::cout << "pT bin " << pT_idx << ", center (" << pT_bin_center << "), y: " << y_bin_center << " phi: " << phi_bin_center << std::endl;
 
-                    // Getting the two other components, as the (pT, y) bin centers will be the same in all three cases:
-                double PolY_star_pTy_phi = hLambdaPolStarY_pT_y_phiReco->GetBinContent(pT_idx, y_idx, phi_idx);
-                double PolZ_star_pTy_phi = hLambdaPolStarZ_pT_y_phiReco->GetBinContent(pT_idx, y_idx, phi_idx);
-
-                        // Same for multiplicity-weighted averages:
+                    // For multiplicity-weighted averages of the polarization:
                 double PolX_star_pTy_phi_Weighted = hLambdaPolStarX_pT_y_phiReco_Weighted->GetBinContent(pT_idx, y_idx, phi_idx);
                 double PolY_star_pTy_phi_Weighted = hLambdaPolStarY_pT_y_phiReco_Weighted->GetBinContent(pT_idx, y_idx, phi_idx);
                 double PolZ_star_pTy_phi_Weighted = hLambdaPolStarZ_pT_y_phiReco_Weighted->GetBinContent(pT_idx, y_idx, phi_idx);
@@ -701,81 +525,49 @@ int lambda_pol_toy_model(){
                 double mean_E = std::sqrt(mL2 + mean_px * mean_px + mean_py * mean_py + mean_pz * mean_pz);
 
                 TLorentzVector mean_Lambda_4vec_lab(mean_px, mean_py, mean_pz, mean_E);
-
-                // Building the mean polarization 4-momentum, assuming that S^0 = 0 from orthogonality:
-                TLorentzVector P_Lambda_star_mean_4vec(PolX_star_pTy_phi, PolY_star_pTy_phi, PolZ_star_pTy_phi, 0);
-
-                // Boosting the polarization in this bin:
+                    // Building boost vector for the polarization in this bin:
                 TVector3 beta = mean_Lambda_4vec_lab.BoostVector(); // The boost that takes from the Lambda rest frame into the lab frame.
-                TLorentzVector P_Lambda_lab_mean_4vec = P_Lambda_star_mean_4vec;
-                P_Lambda_lab_mean_4vec.Boost(beta);
-                // TVector3 P_Lambda_lab_mean = P_Lambda_lab_mean_4vec.Vect(); // Don't need to convert this into a TVector3, actually! Those properties are readily available!
+
+                // Building the mean polarization 4-momentum, with the fact that S^0 = 0 in the particle's own rest frame (no temporal component of spin in the rest frame!):
+                TLorentzVector P_Lambda_star_mean_4vec_Weighted(PolX_star_pTy_phi_Weighted, PolY_star_pTy_phi_Weighted, PolZ_star_pTy_phi_Weighted, 0);
+                TLorentzVector P_Lambda_lab_mean_4vec_Weighted = P_Lambda_star_mean_4vec_Weighted;
+                P_Lambda_lab_mean_4vec_Weighted.Boost(beta);
 
                 ///////////////////////////////////////////
-                // // Making sure that the S^mu * P_mu product is zero.
+                // // Making sure that the S^mu * P_mu product is zero (as it should, because S^0 = 0 and the trimomentum of P_mu is zero in the Lambda rest frame).
                 // // Compute scalar product S.P
-                // double dotProductReco = P_Lambda_lab_mean_4vec * mean_Lambda_4vec_lab;
+                // double dotProductReco = P_Lambda_star_mean_4vec_Weighted * mean_Lambda_4vec_lab;
                 //
                 // // Report
                 // std::cout << "Reconstructed pol: 2*S^mu * P_mu = " << dotProductReco << std::endl;
                 // It is also zero within machine precision!
                 // ///////////////////////////////////////////
 
-                // Also doing a projection in 2D, averaging over phi bins:
-                    // You also need to average over the number of bins that you are summing! If polarization = 1 in one, and 1 in another bin, then
-                    // the sum would be 2, and polarization can't ever go up to that value! You need to properly average it by the number of N_phi bins.
-                // hLambdaPolX_pT_yReco->Fill(pT_bin_center, y_bin_center, P_Lambda_lab_mean.X()/N_bins_phi);
-                hLambdaPolX_pT_yReco->Fill(pT_bin_center, y_bin_center, P_Lambda_lab_mean_4vec.X());
-                hLambdaPolY_pT_yReco->Fill(pT_bin_center, y_bin_center, P_Lambda_lab_mean_4vec.Y());
-                hLambdaPolZ_pT_yReco->Fill(pT_bin_center, y_bin_center, P_Lambda_lab_mean_4vec.Z());
-
-                    // A second 2D projection, in the same way it was plotted on Vitor's paper:
-                // hLambdaPolX_phi_pTReco->Fill(phi_bin_center, pT_bin_center, P_Lambda_lab_mean.X()/N_bins_rap);
-                hLambdaPolX_phi_pTReco->Fill(phi_bin_center, pT_bin_center, P_Lambda_lab_mean_4vec.X());
-                hLambdaPolY_phi_pTReco->Fill(phi_bin_center, pT_bin_center, P_Lambda_lab_mean_4vec.Y());
-                hLambdaPolZ_phi_pTReco->Fill(phi_bin_center, pT_bin_center, P_Lambda_lab_mean_4vec.Z());
-
-                // Finally, a 1D projection for the distribution in Phi only:
-                // hLambdaPolX_phiReco->Fill(phi_bin_center, P_Lambda_lab_mean.X()/(N_bins_pT*N_bins_rap));
-                hLambdaPolX_phiReco->Fill(phi_bin_center, P_Lambda_lab_mean_4vec.X());
-                hLambdaPolY_phiReco->Fill(phi_bin_center, P_Lambda_lab_mean_4vec.Y());
-                hLambdaPolZ_phiReco->Fill(phi_bin_center, P_Lambda_lab_mean_4vec.Z());
-
-                    // Boosting the weighted polarization vector too:
-                TLorentzVector P_Lambda_star_mean_4vec_Weighted(PolX_star_pTy_phi_Weighted, PolY_star_pTy_phi_Weighted, PolZ_star_pTy_phi_Weighted, 0);
-                TLorentzVector P_Lambda_lab_mean_4vec_Weighted = P_Lambda_star_mean_4vec_Weighted;
-                P_Lambda_lab_mean_4vec_Weighted.Boost(beta);
-                // TVector3 P_Lambda_lab_mean_Weighted = P_Lambda_lab_mean_4vec_Weighted.Vect(); // Don't need to convert this into a TVector3, actually! Those properties are readily available!
-
                 /////////////////////////////////////////////////////
                 // Checking if the boost is working and the polarization is properly being converted to the lab frame:
-                // std::cout << "Before (PolStar): " << "(PolX, PolY, PolZ, PolT) = (" << P_Lambda_star_mean_4vec.X() << ", " << P_Lambda_star_mean_4vec.Y() << ", " << P_Lambda_star_mean_4vec.Z() << ", " << P_Lambda_star_mean_4vec.T() << ")" << std::endl;
-                // std::cout << "After (PolLab):" << "(PolX, PolY, PolZ, PolT) = (" << P_Lambda_lab_mean_4vec.X() << ", " << P_Lambda_lab_mean_4vec.Y() << ", " << P_Lambda_lab_mean_4vec.Z() << ", " << P_Lambda_lab_mean_4vec.T() << ")" << std::endl;
+                // std::cout << "Before (PolStar): " << "(PolX, PolY, PolZ, PolT) = (" << P_Lambda_star_mean_4vec_Weighted.X() << ", " << P_Lambda_star_mean_4vec_Weighted.Y() << ", " << P_Lambda_star_mean_4vec_Weighted.Z() << ", " << P_Lambda_star_mean_4vec_Weighted.T() << ")" << std::endl;
+                // std::cout << "After (PolLab):" << "(PolX, PolY, PolZ, PolT) = (" << P_Lambda_lab_mean_4vec_Weighted.X() << ", " << P_Lambda_lab_mean_4vec_Weighted.Y() << ", " << P_Lambda_lab_mean_4vec_Weighted.Z() << ", " << P_Lambda_lab_mean_4vec_Weighted.T() << ")" << std::endl;
                 /////////////////////////////////////////////////////
 
-                        // For the weighted variation of the polarization:
+                // For the weighted variation of the polarization:
                 hLambdaPolX_pT_y_phiReco_Weighted->Fill(pT_bin_center, y_bin_center, phi_bin_center, P_Lambda_lab_mean_4vec_Weighted.X());
                 hLambdaPolY_pT_y_phiReco_Weighted->Fill(pT_bin_center, y_bin_center, phi_bin_center, P_Lambda_lab_mean_4vec_Weighted.Y());
                 hLambdaPolZ_pT_y_phiReco_Weighted->Fill(pT_bin_center, y_bin_center, phi_bin_center, P_Lambda_lab_mean_4vec_Weighted.Z());
 
-                // Also doing a projection in 2D, averaging over phi bins:
-                // hLambdaPolX_pT_yReco_Weighted->Fill(pT_bin_center, y_bin_center, P_Lambda_lab_mean_Weighted.X()/N_bins_phi);
-                // hLambdaPolX_pT_yReco_Weighted->Fill(pT_bin_center, y_bin_center, P_Lambda_lab_mean_Weighted.X()); // Don't need to average over bins!
-                    // Correction -- When reducing dimensionality, you need to ponder the polarization by the multiplicity of the bin it belongs to (summing over all bins as if they were never there requires you to sum over particles):
+                // Also doing a projection in 2D over pT and y:
+                    // Correction -- When reducing dimensionality, you need to ponder the polarization by the multiplicity of the bin it belongs to!
+                    // (summing over all bins as if they were never there requires you to sum over particles and their appropriate weights):
                 double current_pTyphi_bin_multiplicity = hLambdaCounter_pT_y_phi_Weighted->GetBinContent(pT_idx, y_idx, phi_idx);
-                hLambdaPolX_pT_yReco_Weighted->Fill(pT_bin_center, y_bin_center, P_Lambda_lab_mean_4vec_Weighted.X() * current_pTyphi_bin_multiplicity); // Don't need to average over bins!
+                hLambdaPolX_pT_yReco_Weighted->Fill(pT_bin_center, y_bin_center, P_Lambda_lab_mean_4vec_Weighted.X() * current_pTyphi_bin_multiplicity); // Don't need to average over N_phi bins or anything like that!
                 hLambdaPolY_pT_yReco_Weighted->Fill(pT_bin_center, y_bin_center, P_Lambda_lab_mean_4vec_Weighted.Y() * current_pTyphi_bin_multiplicity);
                 hLambdaPolZ_pT_yReco_Weighted->Fill(pT_bin_center, y_bin_center, P_Lambda_lab_mean_4vec_Weighted.Z() * current_pTyphi_bin_multiplicity);
                 
-
                     // A second 2D projection, in the same way it was plotted on Vitor's paper:
-                // hLambdaPolX_phi_pTReco_Weighted->Fill(phi_bin_center, pT_bin_center, P_Lambda_lab_mean_Weighted.X()/N_bins_rap);
                 hLambdaPolX_phi_pTReco_Weighted->Fill(phi_bin_center, pT_bin_center, P_Lambda_lab_mean_4vec_Weighted.X() * current_pTyphi_bin_multiplicity); // Also with the multiplicity correction
                 hLambdaPolY_phi_pTReco_Weighted->Fill(phi_bin_center, pT_bin_center, P_Lambda_lab_mean_4vec_Weighted.Y() * current_pTyphi_bin_multiplicity);
                 hLambdaPolZ_phi_pTReco_Weighted->Fill(phi_bin_center, pT_bin_center, P_Lambda_lab_mean_4vec_Weighted.Z() * current_pTyphi_bin_multiplicity);
 
-                // Finally, a 1D projection for the distribution in Phi only:
-                // hLambdaPolX_phiReco_Weighted->Fill(phi_bin_center, P_Lambda_lab_mean_Weighted.X()/(N_bins_pT*N_bins_rap));
+                    // Finally, a 1D projection for the distribution in Phi only:
                 hLambdaPolX_phiReco_Weighted->Fill(phi_bin_center, P_Lambda_lab_mean_4vec_Weighted.X() * current_pTyphi_bin_multiplicity); // Also with the multiplicity correction
                 hLambdaPolY_phiReco_Weighted->Fill(phi_bin_center, P_Lambda_lab_mean_4vec_Weighted.Y() * current_pTyphi_bin_multiplicity);
                 hLambdaPolZ_phiReco_Weighted->Fill(phi_bin_center, P_Lambda_lab_mean_4vec_Weighted.Z() * current_pTyphi_bin_multiplicity);
@@ -789,10 +581,7 @@ int lambda_pol_toy_model(){
 
                 // Calculating the ring observable:
                     // Cross product (trigger X p)
-                        // todo: fix this in order to have a mean calculation for each event's trigger (i.e., getting a TH3D for each event or smth like that), or even do a
-                        // coordinate rotation so that all triggers are in the (1, 0, 0) direction.
-                        // This todo should be solved by now with the rotation of coordinates!
-                    const double x_trigger = 1.; // Defined coordinate system so that this is always true
+                    const double x_trigger = 1.; // Defined coordinate system so that this is always true, in a way that I can average over many events!
                     const double y_trigger = 0.;
                     const double z_trigger = 0.;
                     double cross_x = y_trigger*mean_pz - z_trigger*mean_py;
@@ -805,20 +594,16 @@ int lambda_pol_toy_model(){
                     double delta_phi_J = phi_bin_center; // In this coordinate definition after the phi_matrix rotation, the jet is always facing the x axis and phi is already a delta_phi_J
                     delta_phi_J = wrapToInterval(delta_phi_J, phi_min_Ring, phi_max_Ring);
 
-                    hRingObservable->Fill(delta_phi_J, RP_temp * current_pTyphi_bin_multiplicity);
+                    hRingObservableReco->Fill(delta_phi_J, RP_temp * current_pTyphi_bin_multiplicity);
 
                     if (pT_bin_center > 0.5 && pT_bin_center < 1.5){
-                        hRingObservablePtCuts->Fill(delta_phi_J, RP_temp * current_pTyphi_bin_multiplicity);
+                        hRingObservableRecoPtCuts->Fill(delta_phi_J, RP_temp * current_pTyphi_bin_multiplicity);
                     }
             }
         }
     }
 
     // Averaging the true values too -- This should already mask the arrays too:
-    hLambdaPolX_pT_y->Divide(hLambdaCounter_pT_y);
-    hLambdaPolY_pT_y->Divide(hLambdaCounter_pT_y);
-    hLambdaPolZ_pT_y->Divide(hLambdaCounter_pT_y);
-
         // Peace of mind plots averaging:
     hLambdaPolX_phi_pT_Weighted->Divide(hLambdaCounter_phi_pT_Weighted);
     hLambdaPolY_phi_pT_Weighted->Divide(hLambdaCounter_phi_pT_Weighted);
@@ -853,52 +638,11 @@ int lambda_pol_toy_model(){
     hLambdaPolY_phi_Weighted->Divide(hLambdaCounter_phi_Weighted);
     hLambdaPolZ_phi_Weighted->Divide(hLambdaCounter_phi_Weighted);
 
-    // Don't actually need to do what is below these lines here -- I don't want an average over rapidity, pT or phi! Just the sum of signals as if I never had split the particles in smaller bins!
-    // // Dividing by the number of phi, pT or y bins of each projection: summing over all phi values needs an averaging later on!
-    // hLambdaPolX_pT_y->Scale(1./N_bins_phi);
-    // hLambdaPolStarX_pT_yReco->Scale(1./N_bins_phi);
-    // hLambdaPolY_pT_y->Scale(1./N_bins_phi);
-    // hLambdaPolStarY_pT_yReco->Scale(1./N_bins_phi);
-    // hLambdaPolZ_pT_y->Scale(1./N_bins_phi);
-    // hLambdaPolStarZ_pT_yReco->Scale(1./N_bins_phi);
-
-    // hLambdaPolX_phi_pT->Scale(1./N_bins_rap);
-    // hLambdaPolY_phi_pT->Scale(1./N_bins_rap);
-    // hLambdaPolZ_phi_pT->Scale(1./N_bins_rap);
-    // hLambdaAvgDotX_pT_y->Scale(1./N_bins_phi); // These three aren't really needed, as I am already dividing their result later on, but whatever
-    // hLambdaAvgDotY_pT_y->Scale(1./N_bins_phi);
-    // hLambdaAvgDotZ_pT_y->Scale(1./N_bins_phi);
-
-    // hLambdaPolX_phi_pT_Weighted->Scale(1./N_bins_rap);
-    // hLambdaPolY_phi_pT_Weighted->Scale(1./N_bins_rap);
-    // hLambdaPolZ_phi_pT_Weighted->Scale(1./N_bins_rap);
-    // // hLambdaPolStarX_pT_y_phiReco // No averaging/projection of histograms going on here!
-    // // hLambdaPolStarY_pT_y_phiReco
-    // // hLambdaPolStarZ_pT_y_phiReco
-    // // hLambdaPolX_pT_y_phiReco
-    // // hLambdaPolY_pT_y_phiReco
-    // // hLambdaPolZ_pT_y_phiReco
-
-    // // Already implemented the scalings below in the definition of these histograms!
-    // // hLambdaPolX_pT_yReco->Scale(1./N_bins_phi);
-    // // hLambdaPolY_pT_yReco->Scale(1./N_bins_phi);
-    // // hLambdaPolZ_pT_yReco->Scale(1./N_bins_phi);
-    // // hLambdaPolX_phi_pTReco->Scale(1./N_bins_rap);
-    // // hLambdaPolY_phi_pTReco->Scale(1./N_bins_rap);
-    // // hLambdaPolZ_phi_pTReco->Scale(1./N_bins_rap);
-    // //     // These last ones need to be divided twice! Once for the pT bins, then another time for the rapidity bins that were summed over!
-    // // hLambdaPolX_phiReco->Scale(1./N_bins_pT);
-    // // hLambdaPolY_phiReco->Scale(1./N_bins_pT);
-    // // hLambdaPolZ_phiReco->Scale(1./N_bins_pT);
-    // // hLambdaPolX_phiReco->Scale(1./N_bins_rap);
-    // // hLambdaPolY_phiReco->Scale(1./N_bins_rap);
-    // // hLambdaPolZ_phiReco->Scale(1./N_bins_rap);
-
     // Normalizing all ring observables by the particle weights to complete the averaging:
-    hRingObservable_TrueValue->Divide(hLambdaCounter_DeltaphiJRing_Weighted); // Notice I'm using hLambdaCounter_DeltaphiJRing_Weighted, not hLambdaCounter_phiRing_Weighted, to have the proper counts in DeltaPhiJ coordinates!
+    hRingObservable_TrueValue->Divide(hLambdaCounter_DeltaphiJRing_Weighted); // Notice I'm using hLambdaCounter_DeltaphiJRing_Weighted, not hLambdaCounter_phiRingAngles_Weighted, to have the proper counts in DeltaPhiJ coordinates!
     hRingObservable_TrueValuePtCuts->Divide(hLambdaCounter_DeltaphiJRing_Weighted);
-    hRingObservable->Divide(hLambdaCounter_DeltaphiJRing_Weighted);
-    hRingObservablePtCuts->Divide(hLambdaCounter_DeltaphiJRing_Weighted);
+    hRingObservableReco->Divide(hLambdaCounter_DeltaphiJRing_Weighted);
+    hRingObservableRecoPtCuts->Divide(hLambdaCounter_DeltaphiJRing_Weighted);
         // Should these following proxies be normalized by the number of protons in each phi angle, as the weighted averages somewhat have that in mind?
         // Probably not, because I fill the histograms with the Lambda's phi angle, but it would be interesting to have a version filled with the proton's
         // angle and pondering the ring observable with the proton multiplicity on each bin.
@@ -922,31 +666,21 @@ int lambda_pol_toy_model(){
                            + ((with_bullet) ? "with_bullet_" : "no_bullet_") + std::to_string(N_events) + "ev.root"; // Used a ternary operator to symplify syntax, but beware of the proper encapsulation!
     TFile f(filename.c_str(), "RECREATE");
 
-    hLambdaCounter->Write();
-    hLambdaPolMag->Write();
-    hLambdaPolStarMagReco->Write();
-
-    hLambdaPolX->Write();
-    hLambdaPolStarXReco->Write();
-    hLambdaPolY->Write();
-    hLambdaPolStarYReco->Write();
-    hLambdaPolZ->Write();
-    hLambdaPolStarZReco->Write();
-    
-    hLambdaPolX_pT_y->Write();
-    hLambdaPolStarX_pT_yReco->Write();
-    hLambdaPolY_pT_y->Write();
-    hLambdaPolStarY_pT_yReco->Write();
-    hLambdaPolZ_pT_y->Write();
-    hLambdaPolStarZ_pT_yReco->Write();
-
-        // 3 peace of mind plots:
-    hLambdaPolX_phi_pT->Write();
-    hLambdaPolY_phi_pT->Write();
-    hLambdaPolZ_phi_pT->Write();
-
-        // Corrections on those plots:
+        // Saving some particle counters
+    hLambdaCounter->Write(); // An unweighted counter, just to know how many bins we have
+    hLambdaCounter_pT_y_phi_Weighted->Write();
     hLambdaCounter_phi_pT_Weighted->Write();
+    hLambdaCounter_pT_y_Weighted->Write();
+
+        // Some more counters, for the ring observables part:
+    hLambdaCounter_phi_Weighted->Write();
+    hLambdaCounter_phiRingAngles_Weighted->Write();
+    hLambdaCounter_DeltaphiJRing_Weighted->Write();
+    hProtonCounter_phiRing_Weighted->Write();
+    hProtonStarCounter_phiRing_Weighted->Write();
+    hDebugCounter_phi_star_sampler->Write();
+
+        // Peace-of-mind plots -- True values!
     hLambdaPolX_phi_pT_Weighted->Write();
     hLambdaPolY_phi_pT_Weighted->Write();
     hLambdaPolZ_phi_pT_Weighted->Write();
@@ -956,46 +690,18 @@ int lambda_pol_toy_model(){
     hLambdaPolY_pT_y_phi_Weighted->Write();
     hLambdaPolZ_pT_y_phi_Weighted->Write();
 
-            // Their 2D projection tests:
-            // To compare with "hLambdaPolX_phi_pT_Weighted" histograms
+        // Their 2D projection tests:
+        // To compare with "hLambdaPolX_phi_pT_Weighted" histograms
     hLambdaPolX_phi_pT_Weighted_ProjTEST->Write();
     hLambdaPolY_phi_pT_Weighted_ProjTEST->Write();
     hLambdaPolZ_phi_pT_Weighted_ProjTEST->Write();
 
-    hLambdaCounter_pT_y->Write();
-    hLambdaCounter_pT_y_Weighted->Write();
-    hLambdaAvgDotX_pT_y->Write();
-    hLambdaAvgDotY_pT_y->Write();
-    hLambdaAvgDotZ_pT_y->Write();
+    // For the phi-only averages and true values:
+    hLambdaPolX_phi_Weighted->Write();
+    hLambdaPolY_phi_Weighted->Write();
+    hLambdaPolZ_phi_Weighted->Write();
 
-    hLambdaCounter_pT_y_phi->Write();
-    hLambdaAvgDotX_pT_y_phi->Write();
-    hLambdaAvgDotY_pT_y_phi->Write();
-    hLambdaAvgDotZ_pT_y_phi->Write();
-
-    hLambdaPolStarX_pT_y_phiReco->Write();
-    hLambdaPolStarY_pT_y_phiReco->Write();
-    hLambdaPolStarZ_pT_y_phiReco->Write();
-
-    hLambdaPolX_pT_y_phiReco->Write();
-    hLambdaPolY_pT_y_phiReco->Write();
-    hLambdaPolZ_pT_y_phiReco->Write();
-
-    hLambdaPolX_pT_yReco->Write();
-    hLambdaPolY_pT_yReco->Write();
-    hLambdaPolZ_pT_yReco->Write();
-
-    hLambdaPolX_phi_pTReco->Write();
-    hLambdaPolY_phi_pTReco->Write();
-    hLambdaPolZ_phi_pTReco->Write();
-
-    hLambdaPolX_phiReco->Write();
-    hLambdaPolY_phiReco->Write();
-    hLambdaPolZ_phiReco->Write();
-
-    // Weighted averages:
-    hLambdaCounter_pT_y_phi_Weighted->Write();
-
+    // Weighted averages -- Reconstructed values:
     hLambdaAvgDotX_pT_y_phi_Weighted->Write();
     hLambdaAvgDotY_pT_y_phi_Weighted->Write();
     hLambdaAvgDotZ_pT_y_phi_Weighted->Write();
@@ -1016,27 +722,17 @@ int lambda_pol_toy_model(){
     hLambdaPolY_phi_pTReco_Weighted->Write();
     hLambdaPolZ_phi_pTReco_Weighted->Write();
 
-    hLambdaCounter_phi_Weighted->Write();
-    hLambdaCounter_phiRing_Weighted->Write();
-    hLambdaCounter_DeltaphiJRing_Weighted->Write();
-    hProtonCounter_phiRing_Weighted->Write();
-    hProtonStarCounter_phiRing_Weighted->Write();
-    hDebugCounter_phi_star_sampler->Write();
-
     hLambdaPolX_phiReco_Weighted->Write();
     hLambdaPolY_phiReco_Weighted->Write();
     hLambdaPolZ_phiReco_Weighted->Write();
 
-    // For the phi-only averages and true values:
-    hLambdaPolX_phi_Weighted->Write();
-    hLambdaPolY_phi_Weighted->Write();
-    hLambdaPolZ_phi_Weighted->Write();
-
     // For the ring observables:
     hRingObservable_TrueValue->Write();
     hRingObservable_TrueValuePtCuts->Write();
-    hRingObservable->Write();
-    hRingObservablePtCuts->Write();
+    
+    hRingObservableReco->Write();
+    hRingObservableRecoPtCuts->Write();
+
     hRingObservable_proxy_from_daughter->Write();
     hRingObservable_proxy_from_daughter_eq_def->Write();
     hRingObservable_proxy_from_daughter_eq_defPtCuts->Write();
@@ -1046,14 +742,6 @@ int lambda_pol_toy_model(){
     hRingObservable_proxy_from_daughter_star_eq_defPtCuts->Write();
 
     // Deleting the Clone() histograms, which may still be kept in memory:
-    delete hLambdaPolStarX_pT_yReco;
-    delete hLambdaPolStarY_pT_yReco;
-    delete hLambdaPolStarZ_pT_yReco;
-
-    delete hLambdaPolStarX_pT_y_phiReco;
-    delete hLambdaPolStarY_pT_y_phiReco;
-    delete hLambdaPolStarZ_pT_y_phiReco;
-
     delete hLambdaPolStarX_pT_y_phiReco_Weighted;
     delete hLambdaPolStarY_pT_y_phiReco_Weighted;
     delete hLambdaPolStarZ_pT_y_phiReco_Weighted;
