@@ -224,6 +224,7 @@ int lambda_pol_toy_model(){
 
     TH1D *hLambdaCounter_phi_Weighted = new TH1D("hLambdaCounter_phi_Weighted", "hLambdaCounter_phi_Weighted", N_bins_phi, phi_min, phi_max);
     TH1D *hLambdaCounter_phiRing_Weighted = new TH1D("hLambdaCounter_phiRing_Weighted", "hLambdaCounter_phiRing_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TH1D *hLambdaCounter_DeltaphiJRing_Weighted = new TH1D("hLambdaCounter_DeltaphiJRing_Weighted", "hLambdaCounter_DeltaphiJRing_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
     TH1D *hProtonCounter_phiRing_Weighted = new TH1D("hProtonCounter_phiRing_Weighted", "hProtonCounter_phiRing_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
     TH1D *hProtonStarCounter_phiRing_Weighted = new TH1D("hProtonStarCounter_phiRing_Weighted", "hProtonStarCounter_phiRing_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
     TH1D *hLambdaPolX_phi_Weighted = new TH1D("hLambdaPolX_phi_Weighted", "hLambdaPolX_phi_Weighted", N_bins_phi, phi_min, phi_max);
@@ -303,24 +304,28 @@ int lambda_pol_toy_model(){
             // Essentially, this is what guarantees we have (\phi - \phi_J) for the Ring
             // observable plots instead of just a meaningless \phi.
             ///////////////////////////////////////////////////////////////////////////////////
-        // for (size_t evt = 0; evt < phi_matrix.size(); evt++){ // Event-level loop
-        //     double phi_jet = phi_random[evt];
-        //     phi_random[evt] = 0.; // Rotates the jet to zero for the formulae that depend on this value
-        //     for (size_t i = 0; i < phi_matrix[evt].size(); i++){ // Particle-level loop
-        //         double shifted = phi_matrix[evt][i] - phi_jet;
-        //         // phi_matrix[evt][i] = wrapToInterval(shifted, phi_min, phi_max);
-        //         // This function should actually just shift from 0 to 2pi.
-        //         // The bin edges might go from phi_min to phi_max, but the centers can be kept in the (0, 2pi) interval!
-        //         // Just for testing, tried changing the wrapping to phi_min, phi_max to see if the problem in the first bin vanishes. This should have no significant change, though
-        //         phi_matrix[evt][i] = wrapToInterval(shifted, phi_min, phi_max);
+        for (size_t evt = 0; evt < phi_matrix.size(); evt++){ // Event-level loop
+            double phi_jet = phi_random[evt];
+            phi_random[evt] = 0.; // Rotates the jet to zero for the formulae that depend on this value
+            for (size_t i = 0; i < phi_matrix[evt].size(); i++){ // Particle-level loop
+                double shifted = phi_matrix[evt][i] - phi_jet;
+                
+                    // Then we should wrap the angles into the [phi_min, phi_max) interval, because that is the way in which the counting histograms are defined.
+                    // This avoids passing data into overflow or underflow bins, and properly converts it to the same range that was used for the iSS histograms.
+                phi_matrix[evt][i] = wrapToInterval(shifted, phi_min, phi_max);
 
-        //         // Also, rotating the Sx and Sy spatial components to match the new angle definition (Sz should not be affect by rotations curling the Z axis):
-        //         // (as this is a rotation of the coordinate system, i.e., a passive rotation, the usual rotation matrix should be enough)
-        //         double temp_Sx = Sx_matrix[evt][i]; // Should use the same Sx value for the Sy_matrix rotation too, not the value from the line below after rotation!
-        //         Sx_matrix[evt][i] = std::cos(phi_jet) * Sx_matrix[evt][i] - std::sin(phi_jet) * Sy_matrix[evt][i];
-        //         Sy_matrix[evt][i] = std::sin(phi_jet) * temp_Sx + std::cos(phi_jet) * Sy_matrix[evt][i];
-        //     }
-        // }
+                // Rotating the Px and Py matrices in a similar fashion to what will be done to the Sx and Sy matrices:
+                double temp_px = px_matrix[evt][i];
+                px_matrix[evt][i] = std::cos(-phi_jet) * px_matrix[evt][i] - std::sin(-phi_jet) * py_matrix[evt][i];
+                py_matrix[evt][i] = std::sin(-phi_jet) * temp_px + std::cos(-phi_jet) * py_matrix[evt][i];
+
+                // Also, rotating the Sx and Sy spatial components to match the new angle definition (Sz should not be affect by rotations curling the Z axis):
+                // (this has to be an active rotation because we are rotating the vectors into a new coordinate system, not the coordinate vectors but the physical vectors themselves!)
+                double temp_Sx = Sx_matrix[evt][i]; // Should use the same Sx value for the Sy_matrix rotation too, not the value from the line below after rotation!
+                Sx_matrix[evt][i] = std::cos(-phi_jet) * Sx_matrix[evt][i] - std::sin(-phi_jet) * Sy_matrix[evt][i];
+                Sy_matrix[evt][i] = std::sin(-phi_jet) * temp_Sx + std::cos(-phi_jet) * Sy_matrix[evt][i];
+            }
+        }
     // }
     std::cout << "Done fetching data!" << std::endl;
 
@@ -347,7 +352,7 @@ int lambda_pol_toy_model(){
     double average_dotX = 0;
     double average_dotY = 0;
     double average_dotZ = 0;
-    int N_resamples = 10; // Goes through each particle N_resamples # of times. This is an attempt to see if the polarization estimate values become more stable!
+    int N_resamples = 150; // Goes through each particle N_resamples # of times. This is an attempt to see if the polarization estimate values become more stable!
     for (int resample_idx = 0; resample_idx < N_resamples; resample_idx++){
         std::cout << "\tNow on resample " << std::to_string(resample_idx + 1) << " of " + std::to_string(N_resamples) << std::endl;
         for (int ev_idx = 0; ev_idx < N_events; ev_idx++){
@@ -418,8 +423,8 @@ int lambda_pol_toy_model(){
                 /// as it should from both the polarization
                 /// and the proton momentum proxy for the ring
                 /// observable
+                // xi_star = 0; // Also interesting to test with xi_star = PI/2, which properly gives us a zero ring observable signal!
                 //////////////////////////////////////////////
-                // xi_star = 0;
 
 
                 // 4 - Generating the proton 4-momentum from the decay:
@@ -504,7 +509,8 @@ int lambda_pol_toy_model(){
 
                 // Another peace of mind, just in phi:
                 hLambdaCounter_phi_Weighted->Fill(lambda_phi, current_particle_multiplicity);
-                hLambdaCounter_phiRing_Weighted->Fill(wrapToInterval(lambda_phi, phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // No the prettiest way to build a histogram that is essentially equivalent to the other counter, but works
+                hLambdaCounter_phiRing_Weighted->Fill(wrapToInterval(lambda_phi, phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // No the prettiest way to build a histogram that is essentially equivalent to the other counter yet going from -pi to pi, but works
+                hLambdaCounter_DeltaphiJRing_Weighted->Fill(wrapToInterval(lambda_phi - phi_random[ev_idx], phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // You actually need to have this counter defined as lambda_phi - phi_random[ev_idx] because the ring observable has a coordinate shift!
                 hProtonCounter_phiRing_Weighted->Fill(wrapToInterval(proton_4_momentum.Phi(), phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // A counter for the proton's angular distribution too, for the other ring estimator!
                 hProtonStarCounter_phiRing_Weighted->Fill(wrapToInterval(proton_4_momentum_star.Phi(), phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // For the other proxy of the ring observable, which 
                                                                                                                                                                     // should be normalized by the number of protons
@@ -567,6 +573,16 @@ int lambda_pol_toy_model(){
                     hRingObservable_proxy_from_daughter_eq_def2PtCuts->Fill(delta_phi_J, RP_temp_eqv_def2 * current_particle_multiplicity);
                     hRingObservable_proxy_from_daughter_star_eq_defPtCuts->Fill(delta_phi_J, RP_temp_proton_star_eqv_def * current_particle_multiplicity);
                 }
+
+                // // Checking/debugging the angles after the coordinate rotation:
+                // std::cout << "#Ev: " << ev_idx << ", phi_random[ev_idx]: " << phi_random[ev_idx] << ", std::cos(phi_random[ev_idx]): " << std::cos(phi_random[ev_idx]) << std::endl;
+                // // Checking /debugging the momenta, cross products and polarizations after the rotation of phi:
+                // if (ev_idx == 5 && particle_idx == 4){
+                //     std::cout << "(px, py, pz) = (" << px_matrix[ev_idx][particle_idx] << ", " << py_matrix[ev_idx][particle_idx] << ", " << pz_matrix[ev_idx][particle_idx] << ")" << std::endl;
+                //     std::cout << "(cross_x, cross_y, cross_z) = (" << cross_x << ", " << cross_y << ", " << cross_z << ")" << std::endl;
+                //     std::cout << "(true_PolX, true_PolY, true_PolZ) = (" << true_PolX << ", " << true_PolY << ", " << true_PolZ << ")" << std::endl;
+                //     std::cout << "RP_temp_true: " << RP_temp_true << std::endl;
+                // }
             }
         }
     }
@@ -879,19 +895,22 @@ int lambda_pol_toy_model(){
     // // hLambdaPolZ_phiReco->Scale(1./N_bins_rap);
 
     // Normalizing all ring observables by the particle weights to complete the averaging:
-    hRingObservable_TrueValue->Divide(hLambdaCounter_phiRing_Weighted);
-    hRingObservable_TrueValuePtCuts->Divide(hLambdaCounter_phiRing_Weighted);
-    hRingObservable->Divide(hLambdaCounter_phiRing_Weighted);
-    hRingObservablePtCuts->Divide(hLambdaCounter_phiRing_Weighted);
-        // These should be normalized by the number of protons in each phi angle, as they are weighted with that in mind:
-    hRingObservable_proxy_from_daughter->Divide(hProtonCounter_phiRing_Weighted);
-    hRingObservable_proxy_from_daughter_eq_def->Divide(hProtonCounter_phiRing_Weighted);
-    hRingObservable_proxy_from_daughter_eq_defPtCuts->Divide(hProtonCounter_phiRing_Weighted);
-    hRingObservable_proxy_from_daughter_eq_def2PtCuts->Divide(hProtonCounter_phiRing_Weighted);
+    hRingObservable_TrueValue->Divide(hLambdaCounter_DeltaphiJRing_Weighted); // Notice I'm using hLambdaCounter_DeltaphiJRing_Weighted, not hLambdaCounter_phiRing_Weighted, to have the proper counts in DeltaPhiJ coordinates!
+    hRingObservable_TrueValuePtCuts->Divide(hLambdaCounter_DeltaphiJRing_Weighted);
+    hRingObservable->Divide(hLambdaCounter_DeltaphiJRing_Weighted);
+    hRingObservablePtCuts->Divide(hLambdaCounter_DeltaphiJRing_Weighted);
+        // Should these following proxies be normalized by the number of protons in each phi angle, as the weighted averages somewhat have that in mind?
+        // Probably not, because I fill the histograms with the Lambda's phi angle, but it would be interesting to have a version filled with the proton's
+        // angle and pondering the ring observable with the proton multiplicity on each bin.
+        // todo: test an averaging weight based on the proton weight on each of its own phi bins maybe? Something like an alternative ring observable.
+    hRingObservable_proxy_from_daughter->Divide(hLambdaCounter_DeltaphiJRing_Weighted);
+    hRingObservable_proxy_from_daughter_eq_def->Divide(hLambdaCounter_DeltaphiJRing_Weighted);
+    hRingObservable_proxy_from_daughter_eq_defPtCuts->Divide(hLambdaCounter_DeltaphiJRing_Weighted);
+    hRingObservable_proxy_from_daughter_eq_def2PtCuts->Divide(hLambdaCounter_DeltaphiJRing_Weighted);
 
-        // Another attempt (with proton momentum in the rest frame), which should be normalized by the angular counts with the proton_4_momentum_star angular coordinate:
-    hRingObservable_proxy_from_daughter_star_eq_def->Divide(hProtonStarCounter_phiRing_Weighted);
-    hRingObservable_proxy_from_daughter_star_eq_defPtCuts->Divide(hProtonStarCounter_phiRing_Weighted);
+        // Another attempt (with proton momentum in the rest frame):
+    hRingObservable_proxy_from_daughter_star_eq_def->Divide(hLambdaCounter_DeltaphiJRing_Weighted);
+    hRingObservable_proxy_from_daughter_star_eq_defPtCuts->Divide(hLambdaCounter_DeltaphiJRing_Weighted);
 
     ////////////////////
     //// 4 - Exporting into a .root file for later review
@@ -999,6 +1018,7 @@ int lambda_pol_toy_model(){
 
     hLambdaCounter_phi_Weighted->Write();
     hLambdaCounter_phiRing_Weighted->Write();
+    hLambdaCounter_DeltaphiJRing_Weighted->Write();
     hProtonCounter_phiRing_Weighted->Write();
     hProtonStarCounter_phiRing_Weighted->Write();
     hDebugCounter_phi_star_sampler->Write();
