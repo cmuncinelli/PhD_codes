@@ -6,8 +6,6 @@
 #include "TH1D.h"
 #include "TH2.h"
 #include "TH2D.h"
-#include "TH3.h"
-#include "TH3D.h"
 #include "TProfile.h"
 #include "TLorentzVector.h"
 #include "TVector3.h"
@@ -19,7 +17,6 @@
 #include <random>
 // #include "math.h" // Same as cmath!
 #include "TString.h"
-#include "TObjString.h"
 #include "TObjArray.h"
 #include "TMath.h"
 
@@ -30,7 +27,9 @@
 
 // Parallelization capabilities -- Do notice the new style of ROOT headers used for the TThreadedObject class!
 #include "ROOT/TThreadedObject.hxx"
-#include <omp.h>
+#include "ROOT/TSeq.hxx"
+// #include "ROOT/EnableImplicitMT.hxx" // No need: probably already included in O2
+// #include <omp.h> // Not using this anymore -- Easier to just work with ROOT's threading
 
 typedef std::vector<std::vector<double>> DoubleMatrix; // An alias
 
@@ -89,8 +88,7 @@ inline double wrapToInterval(double phi, double phi_min, double phi_max){
 
 
 // This code assumes we are in Jarvis4! Also, the getter functions are based on Pol_Analysis_Random_hist_ebe.C from the HadrEx_Ph repository
-// int lambda_pol_toy_model(){
-int main(){ // Changed the code into a compiler-friendly way, that searches for a "main()" function instead of a main with the same name as the .cxx file that ROOT's .x compiler expects
+int lambda_pol_toy_model(){
     ////////////////////
     //// 1 - Initializing variables and histograms:
     ////////////////////
@@ -98,8 +96,7 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
     int N_events = 250; // There are only 250 events in the desired folder (40_50 has 300 for the no_bullet case, for some reason). Possibly oversampled to get statistics.
     bool with_bullet = true;
 
-    ROOT::EnableThreadSafety(); // THIS IS MANDATORY TO MAKE THREADING WORK!!!
-    ROOT::TThreadedObject<TH1D> hLambdaCounter = ROOT::TThreadedObject<TH1D>("hLambdaCounter", "", 1, -1, 1);
+    TH1D *hLambdaCounter = new TH1D ("hLambdaCounter", "", 1, -1, 1);
 
     // Declaring histogram-related variables:
         // Corrected with the values used in /home/vribeiro/vorticity/iSS-pol/src/spin_polarization.h
@@ -285,270 +282,264 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
     ////////////////////
     std::cout << "\nDecaying Lambdas and filling histograms" << std::endl;
         // Looping on all events and all bins(/particles with multiplicity) in each event:
-    int N_resamples = 50000; // Goes through each particle N_resamples # of times. This is an attempt to see if the polarization estimate values become more stable!
+    int N_resamples = 4; // Goes through each particle N_resamples # of times. This is an attempt to see if the polarization estimate values become more stable!
     
     // This resampling loop can be parallelized!
         // Defining variables for parallelization:
-    const int N_threads = 100;
-    omp_set_num_threads(N_threads);
+    ROOT::EnableImplicitMT(); // Enabling ROOT's TBB thread pool
+    const int N_threads = 4;
+    ROOT::GetThreadPool()->SetNumberOfThreads(N_threads);
+    ROOT::TSeqUL seq(N_resamples);
 
-    #pragma omp parallel
-    {
+        // Now actually declaring the parallelization loop:
+    // for (int resample_idx = 0; resample_idx < N_resamples; resample_idx++){
+    ROOT::ParallelFor(seq, [&](size_t resample_idx){ // The equivalent to the resample_idx loop
+        
         // Each thread should get its own RNG device, seeded differently, to avoid resamplings that share the same random numbers!
-        std::random_device rd; // Cleaner than the earlier method
-        std::mt19937 rng(rd() + omp_get_thread_num()); // Creates a random_device object then calls it with () getting a random seed (which is summed
-                                                     // to a number related to the current thread, to ensure each thread has a different seed), and
-                                                     // then that seed is passed to the random engine.
+        static thread_local std::mt19937 rng(std::random_device{}() + resample_idx);
             // Uniform distribution for sampling cos(xi_star) using the inverse CDF method:
-        std::uniform_real_distribution<double> dist_unit(0.0, 1.0);
+        static thread_local std::uniform_real_distribution<double> dist_unit(0.0, 1.0);
             // Azimuth distribution:
-        std::uniform_real_distribution<double> dist_azimuth(0.0, 2*PI); // Can still sample from 0 to 2pi instead of [phi_min, phi_max) because this is just a liberality within the histogram construction
+        static thread_local std::uniform_real_distribution<double> dist_azimuth(0.0, 2*PI); // Can still sample from 0 to 2pi instead of [phi_min, phi_max) because this is just a liberality within the histogram construction
 
-            // Now actually declaring the parallelization loop:
-        #pragma omp for
-        for (int resample_idx = 0; resample_idx < N_resamples; resample_idx++){
-            #pragma omp critical
-            {
-                std::cout << "\tNow on resample " << std::to_string(resample_idx + 1) << " of " + std::to_string(N_resamples) << std::endl;
-                // todo: fix this to print only once per resampling batch!
+
+        std::cout << "\tNow on resample " << std::to_string(resample_idx + 1) << " of " + std::to_string(N_resamples) << std::endl;
+        for (int ev_idx = 0; ev_idx < N_events; ev_idx++){
+            if (ev_idx % int (N_events * 0.1) == 0){ // Keeping track of the proccess for every 10% of the events
+                std::cout << "\t\tNow on event " << ev_idx << " of " << N_events  << " (" << ev_idx * 1./N_events * 100 << "%)" << std::endl; // The 1. comes to represent the percentage as a double
             }
-            for (int ev_idx = 0; ev_idx < N_events; ev_idx++){
-                // if (ev_idx % int (N_events * 0.1) == 0){ // Keeping track of the proccess for every 10% of the events
-                //     std::cout << "\t\tNow on event " << ev_idx << " of " << N_events  << " (" << ev_idx * 1./N_events * 100 << "%)" << std::endl; // The 1. comes to represent the percentage as a double
+            for (int particle_idx = 0; particle_idx < y_matrix[ev_idx].size(); particle_idx++){ // Not truly a particle loop: the data is pre-binned, so this is a loop on bins of each event, which can be treated as "mean particles" of each (pT, phi, y) bin/interval
+                hLambdaCounter.Fill(0);
+
+                double current_particle_multiplicity = mult_matrix[ev_idx][particle_idx];
+                double true_PolX = PolX_matrix[ev_idx][particle_idx];
+                double true_PolY = PolY_matrix[ev_idx][particle_idx];
+                double true_PolZ = PolZ_matrix[ev_idx][particle_idx];
+                double true_PolT = PolT_matrix[ev_idx][particle_idx];
+
+                // 1 - Fetching particle information:
+                TLorentzVector Lambda_4_momentum_lab(px_matrix[ev_idx][particle_idx], py_matrix[ev_idx][particle_idx], pz_matrix[ev_idx][particle_idx], E_matrix[ev_idx][particle_idx]);
+                // TVector3 P_Lambda_lab(Sx_matrix[ev_idx][particle_idx], Sy_matrix[ev_idx][particle_idx], Sz_matrix[ev_idx][particle_idx]);
+                    // Polarization is given by P = S/<S> in the case of Lambdas with spin-1/2, and as <S> = 1/2, you just need to multiply everything by 2.
+                TLorentzVector P_Lambda_lab_4vec(true_PolX, true_PolY, true_PolZ, true_PolT); // You need the temporal component too!
+
+                ///////////////////////////////////////////
+                // // Making sure that the S^mu * P_mu product is zero.
+                // // Compute scalar product S.P
+                // double dotProduct = P_Lambda_lab_4vec * Lambda_4_momentum_lab;
+                //
+                // // Report
+                // std::cout << "S^mu * P_mu = " << dotProduct << std::endl;
+                // It was close enough to zero! (within float precision, which seems to be the format the data was previously stored in)
+                ///////////////////////////////////////////
+
+                // 2 - Calculating the polarization in the Lambda rest frame:
+                TVector3 P_Lambda_star = boost_polarization_to_rest_frame(Lambda_4_momentum_lab, P_Lambda_lab_4vec);
+                double P_Lambda_star_mag = P_Lambda_star.Mag();
+
+                ///////////////////////////////////////////
+                // // Verifying if the polarization magnitude is indeed close to one, or if I am dealing with excess polarizations already
+                // std::cout << "Current bin's P_lambda_star magnitude is: " << P_Lambda_star_mag << std::endl;
+                ///////////////////////////////////////////
+
+                // 3 - Sampling decay angles:
+                // // Older code that used rejection sampling:
+                //     // Calculating the P_max value for the rejection sampling:
+                //     // Compute P_max (the maximum possible value of P(x))
+                //     // This occurs at x = 0 or x = pi depending on sign of cos(x) term
+                // double P_max = (1.0 / PI) * (1.0 + std::abs(alpha_H * P_Lambda_star_mag));
+
+                //     // Defining the uniform distribution dist_y for the sampling:
+                //     // Uniform distribution for y between 0 and P_max
+                // std::uniform_real_distribution<double> dist_y(0.0, P_max);
+
+                // auto [xi_star, phi_star] = sample_P_angle_proton(P_Lambda_star_mag, rng, dist_x, dist_y, dist_azimuth); // Uses the new unpacking of C++17
+
+                // Newer code, that samples directly from the cos_xi distribution:
+                auto [xi_star, phi_star] = sample_P_angle_proton_from_cos_xi(P_Lambda_star_mag, rng, dist_unit, dist_azimuth); // Optimized version that does not require
+
+                //////////////////////////////////////////////
+                /// DEBUG ONLY! Testing to see if xi_star = 0
+                /// (proton always decays in the direction of
+                /// the polarization) gives us a working result,
+                /// i.e., recovers the true Ring Observable
+                /// as it should from both the polarization
+                /// and the proton momentum proxy for the ring
+                /// observable
+                // xi_star = 0; // Also interesting to test with xi_star = PI/2, which properly gives us a zero ring observable signal!
+                //////////////////////////////////////////////
+
+
+                // 4 - Generating the proton 4-momentum from the decay:
+                    // Actually, I just need the angles at which the proton would decay, not the whole 4-momentum of the decay, but whatever, let's keep it!
+                    // In other words, I could've stopped at the sample_P_angle_proton function, and then just rotate those angles to the XYZ axes of the lab frame.
+                    // This could turn out to be useful later on, if I intend on doing some background checks for the Lambda reconstructions or something like that.
+                    // You won't even need the proton's momentum for the ring observable's reconstruction! But whatever...
+                auto [proton_4_momentum, proton_4_momentum_star] = Lambda_decay(Lambda_4_momentum_lab, P_Lambda_star, xi_star, phi_star); // Actually don't use the proton_4_momentum variable, but whatever
+
+                // 5 - Extracting useful variables from the 4-momentum of the Lambda:              
+                    // Don't need to calculate these numbers! They are already provided in the code! (But I checked and the results match)
+                double lambda_y = y_matrix[ev_idx][particle_idx];
+                double lambda_pT = pT_matrix[ev_idx][particle_idx];
+                double lambda_phi = phi_matrix[ev_idx][particle_idx];
+
+                // 6 - Summing to average the polarization vector -- Global polarization:
+                    // To do the average dot product between the proton momentum direction and \hat{n} when there are (pT, y) bins involved,
+                    // it would probably be easier to create a TH2D that collects the sums, and then normalize each bin by the number of times
+                    // I added values into it. The bins will not have counts, but the actual value of the sum. If I could just create a matrix
+                    // that has those summation values and the appropriate bin limits, then that would be equivalent.
+                    // A good idea would be to have a TH2D that has the sums for the averages, and another that has the number of particles in
+                    // that specific bin
+                // TVector3 proton_unit_vector = (proton_4_momentum.Vect()).Unit();
+                    // You actually need the proton vector in the Lambda frame of reference, and you will get a polarization vector on that frame, which will need to be boosted later.
+                TVector3 proton_star_unit_vector = (proton_4_momentum_star.Vect()).Unit();
+                // double X_dot = proton_star_unit_vector.Dot(x_hat);
+                // double Y_dot = proton_star_unit_vector.Dot(y_hat);
+                // double Z_dot = proton_star_unit_vector.Dot(z_hat);
+                    // Instead of actually calculating dot products, you could just take proton_star_unit_vector.X(), proton_star_unit_vector.Y() and proton_star_unit_vector.Z() !!!
+                double X_dot = proton_star_unit_vector.X();
+                double Y_dot = proton_star_unit_vector.Y();
+                double Z_dot = proton_star_unit_vector.Z();
+                
+                ///////////////////////
+                // std::cout << "The (x_dot, y_dot, z_dot) values for the p_proton * hat vectors are (" << X_dot << ", " << Y_dot << ", " << Z_dot << ")" << std::endl; // Just checking the magnitude of the projections
+                ///////////////////////
+
+                // 7 - Summing to calculate polarization on subsets of the available Lambdas -- Bins of (pT, y):
+                    // Filling the weighted values:
+                hLambdaCounter_pT_y_phi_Weighted.Fill(lambda_pT, lambda_y, lambda_phi, current_particle_multiplicity);
+                hLambdaAvgDotX_pT_y_phi_Weighted.Fill(lambda_pT, lambda_y, lambda_phi, X_dot * current_particle_multiplicity); // Weighted averages
+                hLambdaAvgDotY_pT_y_phi_Weighted.Fill(lambda_pT, lambda_y, lambda_phi, Y_dot * current_particle_multiplicity);
+                hLambdaAvgDotZ_pT_y_phi_Weighted.Fill(lambda_pT, lambda_y, lambda_phi, Z_dot * current_particle_multiplicity);
+
+                hLambdaCounter_pT_y_Weighted.Fill(lambda_pT, lambda_y, current_particle_multiplicity);
+
+                // 9 - Filling a peace of mind plot (plot that has the true values of the MC):
+                hLambdaPolX_phi_pT_Weighted.Fill(lambda_phi, lambda_pT, true_PolX * current_particle_multiplicity);
+                hLambdaPolY_phi_pT_Weighted.Fill(lambda_phi, lambda_pT, true_PolY * current_particle_multiplicity);
+                hLambdaPolZ_phi_pT_Weighted.Fill(lambda_phi, lambda_pT, true_PolZ * current_particle_multiplicity);
+                hLambdaCounter_phi_pT_Weighted.Fill(lambda_phi, lambda_pT, current_particle_multiplicity);
+
+                // Another peace of mind, just in phi:
+                hLambdaCounter_phi_Weighted.Fill(lambda_phi, current_particle_multiplicity);
+                hLambdaCounter_phiRingAngles_Weighted.Fill(wrapToInterval(lambda_phi, phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // No the prettiest way to build a histogram that is essentially equivalent to the other counter yet going from -pi to pi, but works
+                hLambdaCounter_DeltaphiJRing_Weighted.Fill(wrapToInterval(lambda_phi - phi_random[ev_idx], phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // You actually need to have this counter defined as lambda_phi - phi_random[ev_idx] because the ring observable has a coordinate shift!
+                hProtonCounter_phiRing_Weighted.Fill(wrapToInterval(proton_4_momentum.Phi(), phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // A counter for the proton's angular distribution too, for the other ring estimator!
+                hProtonStarCounter_phiRing_Weighted.Fill(wrapToInterval(proton_4_momentum_star.Phi(), phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // For the other proxy of the ring observable, which 
+                                                                                                                                                                    // should be normalized by the number of protons
+                hDebugCounter_phi_star_sampler.Fill(wrapToInterval(phi_star, phi_min_Ring, phi_max_Ring)); // A debug histogram, just to know if the sampling is being truly random in phi_star, before coordinate rotation
+
+                hLambdaPolX_phi_Weighted.Fill(lambda_phi, true_PolX * current_particle_multiplicity);
+                hLambdaPolY_phi_Weighted.Fill(lambda_phi, true_PolY * current_particle_multiplicity);
+                hLambdaPolZ_phi_Weighted.Fill(lambda_phi, true_PolZ * current_particle_multiplicity);
+
+                // A third plot, this time in all three dimensions, which will later be reduced to 2D to test if the 3D-->2D conversion was implemented correctly:
+                hLambdaPolX_pT_y_phi_Weighted.Fill(lambda_pT, lambda_y, lambda_phi, true_PolX * current_particle_multiplicity);
+                hLambdaPolY_pT_y_phi_Weighted.Fill(lambda_pT, lambda_y, lambda_phi, true_PolY * current_particle_multiplicity);
+                hLambdaPolZ_pT_y_phi_Weighted.Fill(lambda_pT, lambda_y, lambda_phi, true_PolZ * current_particle_multiplicity);
+
+                // Calculating the Ring Observable proxy with the daughter particle's momentum instead of the polarization:
+                    // See the other RP_temp variable's surrounding lines for more information
+                // While the rotation formula is still not solved:
+                double x_trigger = std::cos(phi_random[ev_idx]); // Defined a coordinate system such that double x_trigger = 1 is always true, but kept it general where possible, so that code is flexible to changes
+                double y_trigger = std::sin(phi_random[ev_idx]);
+                const double z_trigger = 0;
+
+                double cross_x = y_trigger*pz_matrix[ev_idx][particle_idx] - z_trigger*py_matrix[ev_idx][particle_idx];
+                double cross_y = z_trigger*px_matrix[ev_idx][particle_idx] - x_trigger*pz_matrix[ev_idx][particle_idx];
+                double cross_z = x_trigger*py_matrix[ev_idx][particle_idx] - y_trigger*px_matrix[ev_idx][particle_idx];
+
+                double cross_product_norm = std::sqrt(cross_x*cross_x + cross_y*cross_y + cross_z*cross_z);
+                    
+                double RP_temp = ((proton_4_momentum.X()*cross_x + proton_4_momentum.Y()*cross_y + proton_4_momentum.Z()*cross_z)/cross_product_norm);
+                
+                    // Another good implementation of this, that should be equivalent to the true Ring Observable value, is:
+                double proton_4_momentum_star_norm = std::sqrt(proton_4_momentum_star.X()*proton_4_momentum_star.X() + proton_4_momentum_star.Y()*proton_4_momentum_star.Y()
+                                                    + proton_4_momentum_star.Z()*proton_4_momentum_star.Z());
+                double proton_4_momentum_norm = std::sqrt(proton_4_momentum.X()*proton_4_momentum.X() + proton_4_momentum.Y()*proton_4_momentum.Y()
+                                                    + proton_4_momentum.Z()*proton_4_momentum.Z());    
+                double RP_temp_eqv_def = 3./(alpha_H * proton_4_momentum_star_norm) * 
+                                                ((proton_4_momentum.X()*cross_x + proton_4_momentum.Y()*cross_y + proton_4_momentum.Z()*cross_z)/cross_product_norm);
+                double RP_temp_eqv_def2 = 3./(alpha_H * proton_4_momentum_norm) * 
+                                                ((proton_4_momentum.X()*cross_x + proton_4_momentum.Y()*cross_y + proton_4_momentum.Z()*cross_z)/cross_product_norm);
+                    // Now for the observables that take into consideration the proton's momentum in the Lambda rest frame -- Even more closely related to the polarization vector:
+                double RP_temp_proton_star_eqv_def = 3./(alpha_H * proton_4_momentum_star_norm) * 
+                                                ((proton_4_momentum_star.X()*cross_x + proton_4_momentum_star.Y()*cross_y + proton_4_momentum_star.Z()*cross_z)/cross_product_norm);
+
+                double delta_phi_J = lambda_phi - phi_random[ev_idx]; // Also a general formula: in case phi_random was rotated to 0, this does nothing, but it also works in case it was not rotated.
+                    // Making sure that the values are within 0 to 2*PI appropriately:
+                delta_phi_J = wrapToInterval(delta_phi_J, phi_min_Ring, phi_max_Ring);
+
+                hRingObservable_proxy_from_daughter.Fill(delta_phi_J, RP_temp * current_particle_multiplicity);
+                hRingObservable_proxy_from_daughter_eq_def.Fill(delta_phi_J, RP_temp_eqv_def * current_particle_multiplicity);
+                hRingObservable_proxy_from_daughter_star_eq_def.Fill(delta_phi_J, RP_temp_proton_star_eqv_def * current_particle_multiplicity);
+
+                // Calculating the true value:
+                double RP_temp_true = ((true_PolX*cross_x + true_PolY*cross_y + true_PolZ*cross_z)/cross_product_norm); 
+                hRingObservable_TrueValue.Fill(delta_phi_J, RP_temp_true * current_particle_multiplicity);
+
+                if (lambda_pT > 0.5 && lambda_pT < 1.5){
+                    hRingObservable_TrueValuePtCuts.Fill(delta_phi_J, RP_temp_true * current_particle_multiplicity);
+                    hRingObservable_proxy_from_daughter_eq_defPtCuts.Fill(delta_phi_J, RP_temp_eqv_def * current_particle_multiplicity);
+                    hRingObservable_proxy_from_daughter_eq_def2PtCuts.Fill(delta_phi_J, RP_temp_eqv_def2 * current_particle_multiplicity);
+                    hRingObservable_proxy_from_daughter_star_eq_defPtCuts.Fill(delta_phi_J, RP_temp_proton_star_eqv_def * current_particle_multiplicity);
+                }
+
+                // // Checking/debugging the angles after the coordinate rotation:
+                // std::cout << "#Ev: " << ev_idx << ", phi_random[ev_idx]: " << phi_random[ev_idx] << ", std::cos(phi_random[ev_idx]): " << std::cos(phi_random[ev_idx]) << std::endl;
+                // // Checking /debugging the momenta, cross products and polarizations after the rotation of phi:
+                // if (ev_idx == 5 && particle_idx == 4){
+                //     std::cout << "(px, py, pz) = (" << px_matrix[ev_idx][particle_idx] << ", " << py_matrix[ev_idx][particle_idx] << ", " << pz_matrix[ev_idx][particle_idx] << ")" << std::endl;
+                //     std::cout << "(cross_x, cross_y, cross_z) = (" << cross_x << ", " << cross_y << ", " << cross_z << ")" << std::endl;
+                //     std::cout << "(true_PolX, true_PolY, true_PolZ) = (" << true_PolX << ", " << true_PolY << ", " << true_PolZ << ")" << std::endl;
+                //     std::cout << "RP_temp_true: " << RP_temp_true << std::endl;
                 // }
-                for (int particle_idx = 0; particle_idx < y_matrix[ev_idx].size(); particle_idx++){ // Not truly a particle loop: the data is pre-binned, so this is a loop on bins of each event, which can be treated as "mean particles" of each (pT, phi, y) bin/interval
-                    hLambdaCounter.Get()->Fill(0); // This also needs to be a TThreadedObject!
-
-                    double current_particle_multiplicity = mult_matrix[ev_idx][particle_idx];
-                    double true_PolX = PolX_matrix[ev_idx][particle_idx];
-                    double true_PolY = PolY_matrix[ev_idx][particle_idx];
-                    double true_PolZ = PolZ_matrix[ev_idx][particle_idx];
-                    double true_PolT = PolT_matrix[ev_idx][particle_idx];
-
-                    // 1 - Fetching particle information:
-                    TLorentzVector Lambda_4_momentum_lab(px_matrix[ev_idx][particle_idx], py_matrix[ev_idx][particle_idx], pz_matrix[ev_idx][particle_idx], E_matrix[ev_idx][particle_idx]);
-                    // TVector3 P_Lambda_lab(Sx_matrix[ev_idx][particle_idx], Sy_matrix[ev_idx][particle_idx], Sz_matrix[ev_idx][particle_idx]);
-                        // Polarization is given by P = S/<S> in the case of Lambdas with spin-1/2, and as <S> = 1/2, you just need to multiply everything by 2.
-                    TLorentzVector P_Lambda_lab_4vec(true_PolX, true_PolY, true_PolZ, true_PolT); // You need the temporal component too!
-
-                    ///////////////////////////////////////////
-                    // // Making sure that the S^mu * P_mu product is zero.
-                    // // Compute scalar product S.P
-                    // double dotProduct = P_Lambda_lab_4vec * Lambda_4_momentum_lab;
-                    //
-                    // // Report
-                    // std::cout << "S^mu * P_mu = " << dotProduct << std::endl;
-                    // It was close enough to zero! (within float precision, which seems to be the format the data was previously stored in)
-                    ///////////////////////////////////////////
-
-                    // 2 - Calculating the polarization in the Lambda rest frame:
-                    TVector3 P_Lambda_star = boost_polarization_to_rest_frame(Lambda_4_momentum_lab, P_Lambda_lab_4vec);
-                    double P_Lambda_star_mag = P_Lambda_star.Mag();
-
-                    ///////////////////////////////////////////
-                    // // Verifying if the polarization magnitude is indeed close to one, or if I am dealing with excess polarizations already
-                    // std::cout << "Current bin's P_lambda_star magnitude is: " << P_Lambda_star_mag << std::endl;
-                    ///////////////////////////////////////////
-
-                    // 3 - Sampling decay angles:
-                    // // Older code that used rejection sampling:
-                    //     // Calculating the P_max value for the rejection sampling:
-                    //     // Compute P_max (the maximum possible value of P(x))
-                    //     // This occurs at x = 0 or x = pi depending on sign of cos(x) term
-                    // double P_max = (1.0 / PI) * (1.0 + std::abs(alpha_H * P_Lambda_star_mag));
-
-                    //     // Defining the uniform distribution dist_y for the sampling:
-                    //     // Uniform distribution for y between 0 and P_max
-                    // std::uniform_real_distribution<double> dist_y(0.0, P_max);
-
-                    // auto [xi_star, phi_star] = sample_P_angle_proton(P_Lambda_star_mag, rng, dist_x, dist_y, dist_azimuth); // Uses the new unpacking of C++17
-
-                    // Newer code, that samples directly from the cos_xi distribution:
-                    auto [xi_star, phi_star] = sample_P_angle_proton_from_cos_xi(P_Lambda_star_mag, rng, dist_unit, dist_azimuth); // Optimized version that does not require
-
-                    //////////////////////////////////////////////
-                    /// DEBUG ONLY! Testing to see if xi_star = 0
-                    /// (proton always decays in the direction of
-                    /// the polarization) gives us a working result,
-                    /// i.e., recovers the true Ring Observable
-                    /// as it should from both the polarization
-                    /// and the proton momentum proxy for the ring
-                    /// observable
-                    // xi_star = 0; // Also interesting to test with xi_star = PI/2, which properly gives us a zero ring observable signal!
-                    //////////////////////////////////////////////
-
-
-                    // 4 - Generating the proton 4-momentum from the decay:
-                        // Actually, I just need the angles at which the proton would decay, not the whole 4-momentum of the decay, but whatever, let's keep it!
-                        // In other words, I could've stopped at the sample_P_angle_proton function, and then just rotate those angles to the XYZ axes of the lab frame.
-                        // This could turn out to be useful later on, if I intend on doing some background checks for the Lambda reconstructions or something like that.
-                        // You won't even need the proton's momentum for the ring observable's reconstruction! But whatever...
-                    auto [proton_4_momentum, proton_4_momentum_star] = Lambda_decay(Lambda_4_momentum_lab, P_Lambda_star, xi_star, phi_star); // Actually don't use the proton_4_momentum variable, but whatever
-
-                    // 5 - Extracting useful variables from the 4-momentum of the Lambda:              
-                        // Don't need to calculate these numbers! They are already provided in the code! (But I checked and the results match)
-                    double lambda_y = y_matrix[ev_idx][particle_idx];
-                    double lambda_pT = pT_matrix[ev_idx][particle_idx];
-                    double lambda_phi = phi_matrix[ev_idx][particle_idx];
-
-                    // 6 - Summing to average the polarization vector -- Global polarization:
-                        // To do the average dot product between the proton momentum direction and \hat{n} when there are (pT, y) bins involved,
-                        // it would probably be easier to create a TH2D that collects the sums, and then normalize each bin by the number of times
-                        // I added values into it. The bins will not have counts, but the actual value of the sum. If I could just create a matrix
-                        // that has those summation values and the appropriate bin limits, then that would be equivalent.
-                        // A good idea would be to have a TH2D that has the sums for the averages, and another that has the number of particles in
-                        // that specific bin
-                    // TVector3 proton_unit_vector = (proton_4_momentum.Vect()).Unit();
-                        // You actually need the proton vector in the Lambda frame of reference, and you will get a polarization vector on that frame, which will need to be boosted later.
-                    TVector3 proton_star_unit_vector = (proton_4_momentum_star.Vect()).Unit();
-                    // double X_dot = proton_star_unit_vector.Dot(x_hat);
-                    // double Y_dot = proton_star_unit_vector.Dot(y_hat);
-                    // double Z_dot = proton_star_unit_vector.Dot(z_hat);
-                        // Instead of actually calculating dot products, you could just take proton_star_unit_vector.X(), proton_star_unit_vector.Y() and proton_star_unit_vector.Z() !!!
-                    double X_dot = proton_star_unit_vector.X();
-                    double Y_dot = proton_star_unit_vector.Y();
-                    double Z_dot = proton_star_unit_vector.Z();
-                    
-                    ///////////////////////
-                    // std::cout << "The (x_dot, y_dot, z_dot) values for the p_proton * hat vectors are (" << X_dot << ", " << Y_dot << ", " << Z_dot << ")" << std::endl; // Just checking the magnitude of the projections
-                    ///////////////////////
-
-                    // 7 - Summing to calculate polarization on subsets of the available Lambdas -- Bins of (pT, y):
-                        // Filling the weighted values:
-                    hLambdaCounter_pT_y_phi_Weighted.Get()->Fill(lambda_pT, lambda_y, lambda_phi, current_particle_multiplicity);
-                    hLambdaAvgDotX_pT_y_phi_Weighted.Get()->Fill(lambda_pT, lambda_y, lambda_phi, X_dot * current_particle_multiplicity); // Weighted averages
-                    hLambdaAvgDotY_pT_y_phi_Weighted.Get()->Fill(lambda_pT, lambda_y, lambda_phi, Y_dot * current_particle_multiplicity);
-                    hLambdaAvgDotZ_pT_y_phi_Weighted.Get()->Fill(lambda_pT, lambda_y, lambda_phi, Z_dot * current_particle_multiplicity);
-
-                    hLambdaCounter_pT_y_Weighted.Get()->Fill(lambda_pT, lambda_y, current_particle_multiplicity);
-
-                    // 9 - Filling a peace of mind plot (plot that has the true values of the MC):
-                    hLambdaPolX_phi_pT_Weighted.Get()->Fill(lambda_phi, lambda_pT, true_PolX * current_particle_multiplicity);
-                    hLambdaPolY_phi_pT_Weighted.Get()->Fill(lambda_phi, lambda_pT, true_PolY * current_particle_multiplicity);
-                    hLambdaPolZ_phi_pT_Weighted.Get()->Fill(lambda_phi, lambda_pT, true_PolZ * current_particle_multiplicity);
-                    hLambdaCounter_phi_pT_Weighted.Get()->Fill(lambda_phi, lambda_pT, current_particle_multiplicity);
-
-                    // Another peace of mind, just in phi:
-                    hLambdaCounter_phi_Weighted.Get()->Fill(lambda_phi, current_particle_multiplicity);
-                    hLambdaCounter_phiRingAngles_Weighted.Get()->Fill(wrapToInterval(lambda_phi, phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // No the prettiest way to build a histogram that is essentially equivalent to the other counter yet going from -pi to pi, but works
-                    hLambdaCounter_DeltaphiJRing_Weighted.Get()->Fill(wrapToInterval(lambda_phi - phi_random[ev_idx], phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // You actually need to have this counter defined as lambda_phi - phi_random[ev_idx] because the ring observable has a coordinate shift!
-                    hProtonCounter_phiRing_Weighted.Get()->Fill(wrapToInterval(proton_4_momentum.Phi(), phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // A counter for the proton's angular distribution too, for the other ring estimator!
-                    hProtonStarCounter_phiRing_Weighted.Get()->Fill(wrapToInterval(proton_4_momentum_star.Phi(), phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // For the other proxy of the ring observable, which 
-                                                                                                                                                                        // should be normalized by the number of protons
-                    hDebugCounter_phi_star_sampler.Get()->Fill(wrapToInterval(phi_star, phi_min_Ring, phi_max_Ring)); // A debug histogram, just to know if the sampling is being truly random in phi_star, before coordinate rotation
-
-                    hLambdaPolX_phi_Weighted.Get()->Fill(lambda_phi, true_PolX * current_particle_multiplicity);
-                    hLambdaPolY_phi_Weighted.Get()->Fill(lambda_phi, true_PolY * current_particle_multiplicity);
-                    hLambdaPolZ_phi_Weighted.Get()->Fill(lambda_phi, true_PolZ * current_particle_multiplicity);
-
-                    // A third plot, this time in all three dimensions, which will later be reduced to 2D to test if the 3D-->2D conversion was implemented correctly:
-                    hLambdaPolX_pT_y_phi_Weighted.Get()->Fill(lambda_pT, lambda_y, lambda_phi, true_PolX * current_particle_multiplicity);
-                    hLambdaPolY_pT_y_phi_Weighted.Get()->Fill(lambda_pT, lambda_y, lambda_phi, true_PolY * current_particle_multiplicity);
-                    hLambdaPolZ_pT_y_phi_Weighted.Get()->Fill(lambda_pT, lambda_y, lambda_phi, true_PolZ * current_particle_multiplicity);
-
-                    // Calculating the Ring Observable proxy with the daughter particle's momentum instead of the polarization:
-                        // See the other RP_temp variable's surrounding lines for more information
-                    // While the rotation formula is still not solved:
-                    double x_trigger = std::cos(phi_random[ev_idx]); // Defined a coordinate system such that double x_trigger = 1 is always true, but kept it general where possible, so that code is flexible to changes
-                    double y_trigger = std::sin(phi_random[ev_idx]);
-                    const double z_trigger = 0;
-
-                    double cross_x = y_trigger*pz_matrix[ev_idx][particle_idx] - z_trigger*py_matrix[ev_idx][particle_idx];
-                    double cross_y = z_trigger*px_matrix[ev_idx][particle_idx] - x_trigger*pz_matrix[ev_idx][particle_idx];
-                    double cross_z = x_trigger*py_matrix[ev_idx][particle_idx] - y_trigger*px_matrix[ev_idx][particle_idx];
-
-                    double cross_product_norm = std::sqrt(cross_x*cross_x + cross_y*cross_y + cross_z*cross_z);
-                        
-                    double RP_temp = ((proton_4_momentum.X()*cross_x + proton_4_momentum.Y()*cross_y + proton_4_momentum.Z()*cross_z)/cross_product_norm);
-                    
-                        // Another good implementation of this, that should be equivalent to the true Ring Observable value, is:
-                    double proton_4_momentum_star_norm = std::sqrt(proton_4_momentum_star.X()*proton_4_momentum_star.X() + proton_4_momentum_star.Y()*proton_4_momentum_star.Y()
-                                                        + proton_4_momentum_star.Z()*proton_4_momentum_star.Z());
-                    double proton_4_momentum_norm = std::sqrt(proton_4_momentum.X()*proton_4_momentum.X() + proton_4_momentum.Y()*proton_4_momentum.Y()
-                                                        + proton_4_momentum.Z()*proton_4_momentum.Z());    
-                    double RP_temp_eqv_def = 3./(alpha_H * proton_4_momentum_star_norm) * 
-                                                    ((proton_4_momentum.X()*cross_x + proton_4_momentum.Y()*cross_y + proton_4_momentum.Z()*cross_z)/cross_product_norm);
-                    double RP_temp_eqv_def2 = 3./(alpha_H * proton_4_momentum_norm) * 
-                                                    ((proton_4_momentum.X()*cross_x + proton_4_momentum.Y()*cross_y + proton_4_momentum.Z()*cross_z)/cross_product_norm);
-                        // Now for the observables that take into consideration the proton's momentum in the Lambda rest frame -- Even more closely related to the polarization vector:
-                    double RP_temp_proton_star_eqv_def = 3./(alpha_H * proton_4_momentum_star_norm) * 
-                                                    ((proton_4_momentum_star.X()*cross_x + proton_4_momentum_star.Y()*cross_y + proton_4_momentum_star.Z()*cross_z)/cross_product_norm);
-
-                    double delta_phi_J = lambda_phi - phi_random[ev_idx]; // Also a general formula: in case phi_random was rotated to 0, this does nothing, but it also works in case it was not rotated.
-                        // Making sure that the values are within 0 to 2*PI appropriately:
-                    delta_phi_J = wrapToInterval(delta_phi_J, phi_min_Ring, phi_max_Ring);
-
-                    hRingObservable_proxy_from_daughter.Get()->Fill(delta_phi_J, RP_temp * current_particle_multiplicity);
-                    hRingObservable_proxy_from_daughter_eq_def.Get()->Fill(delta_phi_J, RP_temp_eqv_def * current_particle_multiplicity);
-                    hRingObservable_proxy_from_daughter_star_eq_def.Get()->Fill(delta_phi_J, RP_temp_proton_star_eqv_def * current_particle_multiplicity);
-
-                    // Calculating the true value:
-                    double RP_temp_true = ((true_PolX*cross_x + true_PolY*cross_y + true_PolZ*cross_z)/cross_product_norm); 
-                    hRingObservable_TrueValue.Get()->Fill(delta_phi_J, RP_temp_true * current_particle_multiplicity);
-
-                    if (lambda_pT > 0.5 && lambda_pT < 1.5){
-                        hRingObservable_TrueValuePtCuts.Get()->Fill(delta_phi_J, RP_temp_true * current_particle_multiplicity);
-                        hRingObservable_proxy_from_daughter_eq_defPtCuts.Get()->Fill(delta_phi_J, RP_temp_eqv_def * current_particle_multiplicity);
-                        hRingObservable_proxy_from_daughter_eq_def2PtCuts.Get()->Fill(delta_phi_J, RP_temp_eqv_def2 * current_particle_multiplicity);
-                        hRingObservable_proxy_from_daughter_star_eq_defPtCuts.Get()->Fill(delta_phi_J, RP_temp_proton_star_eqv_def * current_particle_multiplicity);
-                    }
-
-                    // // Checking/debugging the angles after the coordinate rotation:
-                    // std::cout << "#Ev: " << ev_idx << ", phi_random[ev_idx]: " << phi_random[ev_idx] << ", std::cos(phi_random[ev_idx]): " << std::cos(phi_random[ev_idx]) << std::endl;
-                    // // Checking /debugging the momenta, cross products and polarizations after the rotation of phi:
-                    // if (ev_idx == 5 && particle_idx == 4){
-                    //     std::cout << "(px, py, pz) = (" << px_matrix[ev_idx][particle_idx] << ", " << py_matrix[ev_idx][particle_idx] << ", " << pz_matrix[ev_idx][particle_idx] << ")" << std::endl;
-                    //     std::cout << "(cross_x, cross_y, cross_z) = (" << cross_x << ", " << cross_y << ", " << cross_z << ")" << std::endl;
-                    //     std::cout << "(true_PolX, true_PolY, true_PolZ) = (" << true_PolX << ", " << true_PolY << ", " << true_PolZ << ")" << std::endl;
-                    //     std::cout << "RP_temp_true: " << RP_temp_true << std::endl;
-                    // }
-                } // End of particle loop
-            } // End of event loop
-        } // End of resampling loop
-    } // End of #pragma omp parallel block
+            } // End of particle loop
+        } // End of event loop
+    }); // End of resampling loop (parallelized with ROOT's ParallelFor)
     std::cout << "\tDone resampling!" << std::endl;
 
     ////////////////////////////////////////////////////////////////////
     /// Merge histograms from all threads into one before proceeding:
     ////////////////////////////////////////////////////////////////////
-    auto hLambdaCounter_merged = hLambdaCounter.Merge().get(); // Using a .get() to extract the raw pointer from the std::shared_ptr<TH3D> that will be retrieved from Merge()
+    auto hFinal = hLambdaPolX_pT_y.Merge();
 
-    auto hLambdaCounter_pT_y_phi_Weighted_merged = hLambdaCounter_pT_y_phi_Weighted.Merge().get();
-    auto hLambdaAvgDotX_pT_y_phi_Weighted_merged = hLambdaAvgDotX_pT_y_phi_Weighted.Merge().get();
-    auto hLambdaAvgDotY_pT_y_phi_Weighted_merged = hLambdaAvgDotY_pT_y_phi_Weighted.Merge().get();
-    auto hLambdaAvgDotZ_pT_y_phi_Weighted_merged = hLambdaAvgDotZ_pT_y_phi_Weighted.Merge().get();
-    auto hLambdaCounter_pT_y_Weighted_merged = hLambdaCounter_pT_y_Weighted.Merge().get();
+    auto hLambdaCounter_pT_y_phi_Weighted_merged = hLambdaCounter_pT_y_phi_Weighted.Merge();
+    auto hLambdaAvgDotX_pT_y_phi_Weighted_merged = hLambdaAvgDotX_pT_y_phi_Weighted.Merge();
+    auto hLambdaAvgDotY_pT_y_phi_Weighted_merged = hLambdaAvgDotY_pT_y_phi_Weighted.Merge();
+    auto hLambdaAvgDotZ_pT_y_phi_Weighted_merged = hLambdaAvgDotZ_pT_y_phi_Weighted.Merge();
+    auto hLambdaCounter_pT_y_Weighted_merged = hLambdaCounter_pT_y_Weighted.Merge();
 
-    auto hLambdaCounter_phi_Weighted_merged = hLambdaCounter_phi_Weighted.Merge().get();
-    auto hLambdaCounter_phiRingAngles_Weighted_merged = hLambdaCounter_phiRingAngles_Weighted.Merge().get();
-    auto hLambdaCounter_DeltaphiJRing_Weighted_merged = hLambdaCounter_DeltaphiJRing_Weighted.Merge().get();
-    auto hProtonCounter_phiRing_Weighted_merged = hProtonCounter_phiRing_Weighted.Merge().get();
-    auto hProtonStarCounter_phiRing_Weighted_merged = hProtonStarCounter_phiRing_Weighted.Merge().get();
+    auto hLambdaCounter_phi_Weighted_merged = hLambdaCounter_phi_Weighted.Merge();
+    auto hLambdaCounter_phiRingAngles_Weighted_merged = hLambdaCounter_phiRingAngles_Weighted.Merge();
+    auto hLambdaCounter_DeltaphiJRing_Weighted_merged = hLambdaCounter_DeltaphiJRing_Weighted.Merge();
+    auto hProtonCounter_phiRing_Weighted_merged = hProtonCounter_phiRing_Weighted.Merge();
+    auto hProtonStarCounter_phiRing_Weighted_merged = hProtonStarCounter_phiRing_Weighted.Merge();
 
-    auto hLambdaPolX_phi_pT_Weighted_merged = hLambdaPolX_phi_pT_Weighted.Merge().get();
-    auto hLambdaPolY_phi_pT_Weighted_merged = hLambdaPolY_phi_pT_Weighted.Merge().get();
-    auto hLambdaPolZ_phi_pT_Weighted_merged = hLambdaPolZ_phi_pT_Weighted.Merge().get();
-    auto hLambdaCounter_phi_pT_Weighted_merged = hLambdaCounter_phi_pT_Weighted.Merge().get();
+    auto hLambdaPolX_phi_pT_Weighted_merged = hLambdaPolX_phi_pT_Weighted.Merge();
+    auto hLambdaPolY_phi_pT_Weighted_merged = hLambdaPolY_phi_pT_Weighted.Merge();
+    auto hLambdaPolZ_phi_pT_Weighted_merged = hLambdaPolZ_phi_pT_Weighted.Merge();
+    auto hLambdaCounter_phi_pT_Weighted_merged = hLambdaCounter_phi_pT_Weighted.Merge();
 
-    auto hDebugCounter_phi_star_sampler_merged = hDebugCounter_phi_star_sampler.Merge().get();
-    auto hLambdaPolX_phi_Weighted_merged = hLambdaPolX_phi_Weighted.Merge().get();
-    auto hLambdaPolY_phi_Weighted_merged = hLambdaPolY_phi_Weighted.Merge().get();
-    auto hLambdaPolZ_phi_Weighted_merged = hLambdaPolZ_phi_Weighted.Merge().get();
+    auto hDebugCounter_phi_star_sampler_merged = hDebugCounter_phi_star_sampler.Merge();
+    auto hLambdaPolX_phi_Weighted_merged = hLambdaPolX_phi_Weighted.Merge();
+    auto hLambdaPolY_phi_Weighted_merged = hLambdaPolY_phi_Weighted.Merge();
+    auto hLambdaPolZ_phi_Weighted_merged = hLambdaPolZ_phi_Weighted.Merge();
 
-    auto hLambdaPolX_pT_y_phi_Weighted_merged = hLambdaPolX_pT_y_phi_Weighted.Merge().get();
-    auto hLambdaPolY_pT_y_phi_Weighted_merged = hLambdaPolY_pT_y_phi_Weighted.Merge().get();
-    auto hLambdaPolZ_pT_y_phi_Weighted_merged = hLambdaPolZ_pT_y_phi_Weighted.Merge().get();
+    auto hLambdaPolX_pT_y_phi_Weighted_merged = hLambdaPolX_pT_y_phi_Weighted.Merge();
+    auto hLambdaPolY_pT_y_phi_Weighted_merged = hLambdaPolY_pT_y_phi_Weighted.Merge();
+    auto hLambdaPolZ_pT_y_phi_Weighted_merged = hLambdaPolZ_pT_y_phi_Weighted.Merge();
 
-    auto hRingObservable_proxy_from_daughter_merged = hRingObservable_proxy_from_daughter.Merge().get();
-    auto hRingObservable_proxy_from_daughter_eq_def_merged = hRingObservable_proxy_from_daughter_eq_def.Merge().get();
-    auto hRingObservable_proxy_from_daughter_star_eq_def_merged = hRingObservable_proxy_from_daughter_star_eq_def.Merge().get();
+    auto hRingObservable_proxy_from_daughter_merged = hRingObservable_proxy_from_daughter.Merge();
+    auto hRingObservable_proxy_from_daughter_eq_def_merged = hRingObservable_proxy_from_daughter_eq_def.Merge();
+    auto hRingObservable_proxy_from_daughter_star_eq_def_merged = hRingObservable_proxy_from_daughter_star_eq_def.Merge();
 
-    auto hRingObservable_TrueValue_merged = hRingObservable_TrueValue.Merge().get();
+    auto hRingObservable_TrueValue_merged = hRingObservable_TrueValue.Merge();
 
-    auto hRingObservable_TrueValuePtCuts_merged = hRingObservable_TrueValuePtCuts.Merge().get();
-    auto hRingObservable_proxy_from_daughter_eq_defPtCuts_merged = hRingObservable_proxy_from_daughter_eq_defPtCuts.Merge().get();
-    auto hRingObservable_proxy_from_daughter_eq_def2PtCuts_merged = hRingObservable_proxy_from_daughter_eq_def2PtCuts.Merge().get();
-    auto hRingObservable_proxy_from_daughter_star_eq_defPtCuts_merged = hRingObservable_proxy_from_daughter_star_eq_defPtCuts.Merge().get();
+    auto hRingObservable_TrueValuePtCuts_merged = hRingObservable_TrueValuePtCuts.Merge();
+    auto hRingObservable_proxy_from_daughter_eq_defPtCuts_merged = hRingObservable_proxy_from_daughter_eq_defPtCuts.Merge();
+    auto hRingObservable_proxy_from_daughter_eq_def2PtCuts_merged = hRingObservable_proxy_from_daughter_eq_def2PtCuts.Merge();
+    auto hRingObservable_proxy_from_daughter_star_eq_defPtCuts_merged = hRingObservable_proxy_from_daughter_star_eq_defPtCuts.Merge();
 
 
     // Finishing the average for the 3 global dot products -- In 3D:
@@ -749,7 +740,7 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
     TFile f(filename.c_str(), "RECREATE");
 
         // Saving some particle counters
-    hLambdaCounter_merged->Write(); // An unweighted counter, just to know how many bins we have
+    hLambdaCounter->Write(); // An unweighted counter, just to know how many bins we have
     hLambdaCounter_pT_y_phi_Weighted_merged->Write();
     hLambdaCounter_phi_pT_Weighted_merged->Write();
     hLambdaCounter_pT_y_Weighted_merged->Write();

@@ -1,0 +1,28 @@
+# Inside root, run:
+.x lambda_pol_toy_model.cxx
+
+# If you are using the OpenMP for parallelization purposes, you need ROOT to try and compile with g++:
+.x lambda_pol_toy_model.cxx+
+
+# You also need to install OpenMP:
+sudo apt-get install libomp-dev
+
+# Or actually, what really works is to do:
+g++ -fopenmp lambda_pol_toy_model.cxx -o lambda_pol_toy_model.exe `root-config --cflags --libs`
+
+
+####################
+### Some earlier problems caused by a lack of the "ROOT::EnableThreadSafety();" line.
+####################
+# In case compilation goes to shit due to:
+# "fatal error: malformed or corrupted AST file: 'Invalid abbrev number'
+# note: after modifying system headers, please delete the module cache at '/home/cicero/alice/sw/ubuntu2004_x86-64/ROOT/v6-32-06-alice7-local1/lib'
+# then do as follows:
+rm -rf /home/cicero/alice/sw/ubuntu2004_x86-64/ROOT/v6-32-06-alice7-local1/lib/.rootmap/
+rm -rf /home/cicero/alice/sw/ubuntu2004_x86-64/ROOT/v6-32-06-alice7-local1/lib/.rootcling/
+
+# Or even:
+rm -rf $ROOTSYS/lib/.rootmap/
+rm -rf $ROOTSYS/lib/.rootcling/
+rm -rf $HOME/.root/.cache
+# After which you must reopen your O2 session and ROOT session

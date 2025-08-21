@@ -6,8 +6,6 @@
 #include "TH1D.h"
 #include "TH2.h"
 #include "TH2D.h"
-#include "TH3.h"
-#include "TH3D.h"
 #include "TProfile.h"
 #include "TLorentzVector.h"
 #include "TVector3.h"
@@ -19,7 +17,6 @@
 #include <random>
 // #include "math.h" // Same as cmath!
 #include "TString.h"
-#include "TObjString.h"
 #include "TObjArray.h"
 #include "TMath.h"
 
@@ -31,6 +28,7 @@
 // Parallelization capabilities -- Do notice the new style of ROOT headers used for the TThreadedObject class!
 #include "ROOT/TThreadedObject.hxx"
 #include <omp.h>
+
 
 typedef std::vector<std::vector<double>> DoubleMatrix; // An alias
 
@@ -89,8 +87,7 @@ inline double wrapToInterval(double phi, double phi_min, double phi_max){
 
 
 // This code assumes we are in Jarvis4! Also, the getter functions are based on Pol_Analysis_Random_hist_ebe.C from the HadrEx_Ph repository
-// int lambda_pol_toy_model(){
-int main(){ // Changed the code into a compiler-friendly way, that searches for a "main()" function instead of a main with the same name as the .cxx file that ROOT's .x compiler expects
+int lambda_pol_toy_model(){
     ////////////////////
     //// 1 - Initializing variables and histograms:
     ////////////////////
@@ -98,8 +95,7 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
     int N_events = 250; // There are only 250 events in the desired folder (40_50 has 300 for the no_bullet case, for some reason). Possibly oversampled to get statistics.
     bool with_bullet = true;
 
-    ROOT::EnableThreadSafety(); // THIS IS MANDATORY TO MAKE THREADING WORK!!!
-    ROOT::TThreadedObject<TH1D> hLambdaCounter = ROOT::TThreadedObject<TH1D>("hLambdaCounter", "", 1, -1, 1);
+    TH1D *hLambdaCounter = new TH1D ("hLambdaCounter", "", 1, -1, 1);
 
     // Declaring histogram-related variables:
         // Corrected with the values used in /home/vribeiro/vorticity/iSS-pol/src/spin_polarization.h
@@ -127,15 +123,15 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
 
     // For peace of mind, the same plots that appear on the paper, before any kind of reconstruction:
         // (Properly weighted by the multiplicity of each bin!)
-    ROOT::TThreadedObject<TH2D> hLambdaCounter_phi_pT_Weighted = ROOT::TThreadedObject<TH2D>("hLambdaCounter_phi_pT_Weighted", "hLambdaCounter_phi_pT_Weighted", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
-    ROOT::TThreadedObject<TH2D> hLambdaPolX_phi_pT_Weighted = ROOT::TThreadedObject<TH2D>("hLambdaPolX_phi_pT_Weighted", "hLambdaPolX_phi_pT_Weighted", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
-    ROOT::TThreadedObject<TH2D> hLambdaPolY_phi_pT_Weighted = ROOT::TThreadedObject<TH2D>("hLambdaPolY_phi_pT_Weighted", "hLambdaPolY_phi_pT_Weighted", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
-    ROOT::TThreadedObject<TH2D> hLambdaPolZ_phi_pT_Weighted = ROOT::TThreadedObject<TH2D>("hLambdaPolZ_phi_pT_Weighted", "hLambdaPolZ_phi_pT_Weighted", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
+    TThreadedObject<TH2D> *hLambdaCounter_phi_pT_Weighted = new TThreadedObject<TH2D>("hLambdaCounter_phi_pT_Weighted", "hLambdaCounter_phi_pT_Weighted", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
+    TThreadedObject<TH2D> *hLambdaPolX_phi_pT_Weighted = new TThreadedObject<TH2D>("hLambdaPolX_phi_pT_Weighted", "hLambdaPolX_phi_pT_Weighted", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
+    TThreadedObject<TH2D> *hLambdaPolY_phi_pT_Weighted = new TThreadedObject<TH2D>("hLambdaPolY_phi_pT_Weighted", "hLambdaPolY_phi_pT_Weighted", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
+    TThreadedObject<TH2D> *hLambdaPolZ_phi_pT_Weighted = new TThreadedObject<TH2D>("hLambdaPolZ_phi_pT_Weighted", "hLambdaPolZ_phi_pT_Weighted", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
 
         // A third version of these plots, but now for 3D, to then convert into 2D -- Testing if the method of reducing the dimensionality through an averaging works, or if it is the source of the problem!
-    ROOT::TThreadedObject<TH3D> hLambdaPolX_pT_y_phi_Weighted = ROOT::TThreadedObject<TH3D>("hLambdaPolX_pT_y_phi_Weighted", "hLambdaPolX_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
-    ROOT::TThreadedObject<TH3D> hLambdaPolY_pT_y_phi_Weighted = ROOT::TThreadedObject<TH3D>("hLambdaPolY_pT_y_phi_Weighted", "hLambdaPolY_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
-    ROOT::TThreadedObject<TH3D> hLambdaPolZ_pT_y_phi_Weighted = ROOT::TThreadedObject<TH3D>("hLambdaPolZ_pT_y_phi_Weighted", "hLambdaPolZ_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    TThreadedObject<TH3D> *hLambdaPolX_pT_y_phi_Weighted = new TThreadedObject<TH3D>("hLambdaPolX_pT_y_phi_Weighted", "hLambdaPolX_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    TThreadedObject<TH3D> *hLambdaPolY_pT_y_phi_Weighted = new TThreadedObject<TH3D>("hLambdaPolY_pT_y_phi_Weighted", "hLambdaPolY_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    TThreadedObject<TH3D> *hLambdaPolZ_pT_y_phi_Weighted = new TThreadedObject<TH3D>("hLambdaPolZ_pT_y_phi_Weighted", "hLambdaPolZ_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
 
             // A test to show that a projection from 3D to 2D works:
     TH2D *hLambdaPolX_phi_pT_Weighted_ProjTEST = new TH2D("hLambdaPolX_phi_pT_Weighted_ProjTEST", "hLambdaPolX_phi_pT_Weighted_ProjTEST", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
@@ -143,25 +139,25 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
     TH2D *hLambdaPolZ_phi_pT_Weighted_ProjTEST = new TH2D("hLambdaPolZ_phi_pT_Weighted_ProjTEST", "hLambdaPolZ_phi_pT_Weighted_ProjTEST", N_bins_phi, phi_min, phi_max, N_bins_pT, pT_min, pT_max);
 
             // Declaring a counter histogram and some summation-storing histograms to define polarization in each (pT, y) bin:
-    ROOT::TThreadedObject<TH2D> hLambdaCounter_pT_y_Weighted = ROOT::TThreadedObject<TH2D>("hLambdaCounter_pT_y_Weighted", "hLambdaCounter_pT_y_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max); // Properly weighted counts
+    TThreadedObject<TH2D> *hLambdaCounter_pT_y_Weighted = new TThreadedObject<TH2D>("hLambdaCounter_pT_y_Weighted", "hLambdaCounter_pT_y_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max); // Properly weighted counts
 
         // Declaring some histograms to calculate the polarization in the lab frame -- You will need the phi information to build the full 4-vector of the "mean Lambda" in that bin:
             // Weighting the observables by the multiplicity of each Lambda bin (the mult_matrix data):
-    ROOT::TThreadedObject<TH3D> hLambdaCounter_pT_y_phi_Weighted = ROOT::TThreadedObject<TH3D>("hLambdaCounter_pT_y_phi_Weighted", "hLambdaCounter_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
-    ROOT::TThreadedObject<TH3D> hLambdaAvgDotX_pT_y_phi_Weighted = ROOT::TThreadedObject<TH3D>("hLambdaAvgDotX_pT_y_phi_Weighted", "hLambdaAvgDotX_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
-    ROOT::TThreadedObject<TH3D> hLambdaAvgDotY_pT_y_phi_Weighted = ROOT::TThreadedObject<TH3D>("hLambdaAvgDotY_pT_y_phi_Weighted", "hLambdaAvgDotY_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
-    ROOT::TThreadedObject<TH3D> hLambdaAvgDotZ_pT_y_phi_Weighted = ROOT::TThreadedObject<TH3D>("hLambdaAvgDotZ_pT_y_phi_Weighted", "hLambdaAvgDotZ_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    TThreadedObject<TH3D> *hLambdaCounter_pT_y_phi_Weighted = new TThreadedObject<TH3D>("hLambdaCounter_pT_y_phi_Weighted", "hLambdaCounter_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    TThreadedObject<TH3D> *hLambdaAvgDotX_pT_y_phi_Weighted = new TThreadedObject<TH3D>("hLambdaAvgDotX_pT_y_phi_Weighted", "hLambdaAvgDotX_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    TThreadedObject<TH3D> *hLambdaAvgDotY_pT_y_phi_Weighted = new TThreadedObject<TH3D>("hLambdaAvgDotY_pT_y_phi_Weighted", "hLambdaAvgDotY_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    TThreadedObject<TH3D> *hLambdaAvgDotZ_pT_y_phi_Weighted = new TThreadedObject<TH3D>("hLambdaAvgDotZ_pT_y_phi_Weighted", "hLambdaAvgDotZ_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
 
         // A bunch of alternative counters that are useful from a debugging standpoint (other than the actually useful hLambdaCounter_DeltaphiJRing_Weighted normalizer):
-    ROOT::TThreadedObject<TH1D> hLambdaCounter_phi_Weighted = ROOT::TThreadedObject<TH1D>("hLambdaCounter_phi_Weighted", "hLambdaCounter_phi_Weighted", N_bins_phi, phi_min, phi_max);
-    ROOT::TThreadedObject<TH1D> hLambdaCounter_phiRingAngles_Weighted = ROOT::TThreadedObject<TH1D>("hLambdaCounter_phiRingAngles_Weighted", "hLambdaCounter_phiRingAngles_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    ROOT::TThreadedObject<TH1D> hLambdaCounter_DeltaphiJRing_Weighted = ROOT::TThreadedObject<TH1D>("hLambdaCounter_DeltaphiJRing_Weighted", "hLambdaCounter_DeltaphiJRing_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    ROOT::TThreadedObject<TH1D> hProtonCounter_phiRing_Weighted = ROOT::TThreadedObject<TH1D>("hProtonCounter_phiRing_Weighted", "hProtonCounter_phiRing_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    ROOT::TThreadedObject<TH1D> hProtonStarCounter_phiRing_Weighted = ROOT::TThreadedObject<TH1D>("hProtonStarCounter_phiRing_Weighted", "hProtonStarCounter_phiRing_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TThreadedObject<TH1D> *hLambdaCounter_phi_Weighted = new TThreadedObject<TH1D>("hLambdaCounter_phi_Weighted", "hLambdaCounter_phi_Weighted", N_bins_phi, phi_min, phi_max);
+    TThreadedObject<TH1D> *hLambdaCounter_phiRingAngles_Weighted = new TThreadedObject<TH1D>("hLambdaCounter_phiRingAngles_Weighted", "hLambdaCounter_phiRingAngles_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TThreadedObject<TH1D> *hLambdaCounter_DeltaphiJRing_Weighted = new TThreadedObject<TH1D>("hLambdaCounter_DeltaphiJRing_Weighted", "hLambdaCounter_DeltaphiJRing_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TThreadedObject<TH1D> *hProtonCounter_phiRing_Weighted = new TThreadedObject<TH1D>("hProtonCounter_phiRing_Weighted", "hProtonCounter_phiRing_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TThreadedObject<TH1D> *hProtonStarCounter_phiRing_Weighted = new TThreadedObject<TH1D>("hProtonStarCounter_phiRing_Weighted", "hProtonStarCounter_phiRing_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
 
-    ROOT::TThreadedObject<TH1D> hLambdaPolX_phi_Weighted = ROOT::TThreadedObject<TH1D>("hLambdaPolX_phi_Weighted", "hLambdaPolX_phi_Weighted", N_bins_phi, phi_min, phi_max);
-    ROOT::TThreadedObject<TH1D> hLambdaPolY_phi_Weighted = ROOT::TThreadedObject<TH1D>("hLambdaPolY_phi_Weighted", "hLambdaPolY_phi_Weighted", N_bins_phi, phi_min, phi_max);
-    ROOT::TThreadedObject<TH1D> hLambdaPolZ_phi_Weighted = ROOT::TThreadedObject<TH1D>("hLambdaPolZ_phi_Weighted", "hLambdaPolZ_phi_Weighted", N_bins_phi, phi_min, phi_max);
+    TThreadedObject<TH1D> *hLambdaPolX_phi_Weighted = new TThreadedObject<TH1D>("hLambdaPolX_phi_Weighted", "hLambdaPolX_phi_Weighted", N_bins_phi, phi_min, phi_max);
+    TThreadedObject<TH1D> *hLambdaPolY_phi_Weighted = new TThreadedObject<TH1D>("hLambdaPolY_phi_Weighted", "hLambdaPolY_phi_Weighted", N_bins_phi, phi_min, phi_max);
+    TThreadedObject<TH1D> *hLambdaPolZ_phi_Weighted = new TThreadedObject<TH1D>("hLambdaPolZ_phi_Weighted", "hLambdaPolZ_phi_Weighted", N_bins_phi, phi_min, phi_max);
 
         // Now for the reconstructions in 3D:
     TH3D *hLambdaPolStarX_pT_y_phiReco_Weighted;
@@ -189,18 +185,18 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
     TH1D *hLambdaPolZ_phiReco_Weighted = new TH1D("hLambdaPolZ_phiReco_Weighted", "hLambdaPolZ_phiReco_Weighted", N_bins_phi, phi_min, phi_max);
 
         // Testing some ring observable calculations:
-    ROOT::TThreadedObject<TH1D> hRingObservable_TrueValue = ROOT::TThreadedObject<TH1D>("hRingObservable_TrueValue", "hRingObservable_TrueValue", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    ROOT::TThreadedObject<TH1D> hRingObservable_TrueValuePtCuts = ROOT::TThreadedObject<TH1D>("hRingObservable_TrueValuePtCuts", "hRingObservable_TrueValuePtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TThreadedObject<TH1D> *hRingObservable_TrueValue = new TThreadedObject<TH1D>("hRingObservable_TrueValue", "hRingObservable_TrueValue", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TThreadedObject<TH1D> *hRingObservable_TrueValuePtCuts = new TThreadedObject<TH1D>("hRingObservable_TrueValuePtCuts", "hRingObservable_TrueValuePtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
     TH1D *hRingObservableReco = new TH1D("hRingObservableReco", "hRingObservableReco", N_bins_phi, phi_min_Ring, phi_max_Ring); // This doesn't need threading!
     TH1D *hRingObservableRecoPtCuts = new TH1D("hRingObservableRecoPtCuts", "hRingObservableRecoPtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    ROOT::TThreadedObject<TH1D> hRingObservable_proxy_from_daughter = ROOT::TThreadedObject<TH1D>("hRingObservable_proxy_from_daughter", "hRingObservable_proxy_from_daughter", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    ROOT::TThreadedObject<TH1D> hRingObservable_proxy_from_daughter_eq_def = ROOT::TThreadedObject<TH1D>("hRingObservable_proxy_from_daughter_eq_def", "hRingObservable_proxy_from_daughter_eq_def", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    ROOT::TThreadedObject<TH1D> hRingObservable_proxy_from_daughter_eq_defPtCuts = ROOT::TThreadedObject<TH1D>("hRingObservable_proxy_from_daughter_eq_defPtCuts", "hRingObservable_proxy_from_daughter_eq_defPtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    ROOT::TThreadedObject<TH1D> hRingObservable_proxy_from_daughter_eq_def2PtCuts = ROOT::TThreadedObject<TH1D>("hRingObservable_proxy_from_daughter_eq_def2PtCuts", "hRingObservable_proxy_from_daughter_eq_def2PtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    ROOT::TThreadedObject<TH1D> hRingObservable_proxy_from_daughter_star_eq_def = ROOT::TThreadedObject<TH1D>("hRingObservable_proxy_from_daughter_star_eq_def", "hRingObservable_proxy_from_daughter_star_eq_def", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    ROOT::TThreadedObject<TH1D> hRingObservable_proxy_from_daughter_star_eq_defPtCuts = ROOT::TThreadedObject<TH1D>("hRingObservable_proxy_from_daughter_star_eq_defPtCuts", "hRingObservable_proxy_from_daughter_star_eq_defPtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TThreadedObject<TH1D> *hRingObservable_proxy_from_daughter = new TThreadedObject<TH1D>("hRingObservable_proxy_from_daughter", "hRingObservable_proxy_from_daughter", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TThreadedObject<TH1D> *hRingObservable_proxy_from_daughter_eq_def = new TThreadedObject<TH1D>("hRingObservable_proxy_from_daughter_eq_def", "hRingObservable_proxy_from_daughter_eq_def", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TThreadedObject<TH1D> *hRingObservable_proxy_from_daughter_eq_defPtCuts = new TThreadedObject<TH1D>("hRingObservable_proxy_from_daughter_eq_defPtCuts", "hRingObservable_proxy_from_daughter_eq_defPtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TThreadedObject<TH1D> *hRingObservable_proxy_from_daughter_eq_def2PtCuts = new TThreadedObject<TH1D>("hRingObservable_proxy_from_daughter_eq_def2PtCuts", "hRingObservable_proxy_from_daughter_eq_def2PtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TThreadedObject<TH1D> *hRingObservable_proxy_from_daughter_star_eq_def = new TThreadedObject<TH1D>("hRingObservable_proxy_from_daughter_star_eq_def", "hRingObservable_proxy_from_daughter_star_eq_def", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TThreadedObject<TH1D> *hRingObservable_proxy_from_daughter_star_eq_defPtCuts = new TThreadedObject<TH1D>("hRingObservable_proxy_from_daughter_star_eq_defPtCuts", "hRingObservable_proxy_from_daughter_star_eq_defPtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
 
-    ROOT::TThreadedObject<TH1D> hDebugCounter_phi_star_sampler = ROOT::TThreadedObject<TH1D>("hDebugCounter_phi_star_sampler", "hDebugCounter_phi_star_sampler", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TThreadedObject<TH1D> *hDebugCounter_phi_star_sampler = new TThreadedObject<TH1D>("hDebugCounter_phi_star_sampler", "hDebugCounter_phi_star_sampler", N_bins_phi, phi_min_Ring, phi_max_Ring);
 
     // The following block of code was moved inside the resamplings loop to take advantage of parallelization capabilities:
     // ////////////////////
@@ -273,10 +269,10 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
             // std::cout << "After: " << mult_matrix[ev_idx][particle_idx] << std::endl;
 
             // Now attributing the values of the polarization matrices (twice the spin)
-            PolX_matrix[ev_idx][particle_idx] = Sx_matrix[ev_idx][particle_idx] * 2;
-            PolY_matrix[ev_idx][particle_idx] = Sy_matrix[ev_idx][particle_idx] * 2;
-            PolZ_matrix[ev_idx][particle_idx] = Sz_matrix[ev_idx][particle_idx] * 2;
-            PolT_matrix[ev_idx][particle_idx] = St_matrix[ev_idx][particle_idx] * 2;
+            PolX_matrix = Sx_matrix[ev_idx][particle_idx] * 2;
+            PolY_matrix = Sy_matrix[ev_idx][particle_idx] * 2;
+            PolZ_matrix = Sz_matrix[ev_idx][particle_idx] * 2;
+            PolT_matrix = St_matrix[ev_idx][particle_idx] * 2;
         }
     }
 
@@ -285,18 +281,18 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
     ////////////////////
     std::cout << "\nDecaying Lambdas and filling histograms" << std::endl;
         // Looping on all events and all bins(/particles with multiplicity) in each event:
-    int N_resamples = 50000; // Goes through each particle N_resamples # of times. This is an attempt to see if the polarization estimate values become more stable!
+    int N_resamples = 4; // Goes through each particle N_resamples # of times. This is an attempt to see if the polarization estimate values become more stable!
     
     // This resampling loop can be parallelized!
         // Defining variables for parallelization:
-    const int N_threads = 100;
+    const int N_threads = 4;
     omp_set_num_threads(N_threads);
 
     #pragma omp parallel
     {
         // Each thread should get its own RNG device, seeded differently, to avoid resamplings that share the same random numbers!
         std::random_device rd; // Cleaner than the earlier method
-        std::mt19937 rng(rd() + omp_get_thread_num()); // Creates a random_device object then calls it with () getting a random seed (which is summed
+        std::mt19937 rng(rd + omp_get_thread_num()); // Creates a random_device object then calls it with () getting a random seed (which is summed
                                                      // to a number related to the current thread, to ensure each thread has a different seed), and
                                                      // then that seed is passed to the random engine.
             // Uniform distribution for sampling cos(xi_star) using the inverse CDF method:
@@ -307,17 +303,13 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
             // Now actually declaring the parallelization loop:
         #pragma omp for
         for (int resample_idx = 0; resample_idx < N_resamples; resample_idx++){
-            #pragma omp critical
-            {
-                std::cout << "\tNow on resample " << std::to_string(resample_idx + 1) << " of " + std::to_string(N_resamples) << std::endl;
-                // todo: fix this to print only once per resampling batch!
-            }
+            std::cout << "\tNow on resample " << std::to_string(resample_idx + 1) << " of " + std::to_string(N_resamples) << std::endl;
             for (int ev_idx = 0; ev_idx < N_events; ev_idx++){
-                // if (ev_idx % int (N_events * 0.1) == 0){ // Keeping track of the proccess for every 10% of the events
-                //     std::cout << "\t\tNow on event " << ev_idx << " of " << N_events  << " (" << ev_idx * 1./N_events * 100 << "%)" << std::endl; // The 1. comes to represent the percentage as a double
-                // }
+                if (ev_idx % int (N_events * 0.1) == 0){ // Keeping track of the proccess for every 10% of the events
+                    std::cout << "\t\tNow on event " << ev_idx << " of " << N_events  << " (" << ev_idx * 1./N_events * 100 << "%)" << std::endl; // The 1. comes to represent the percentage as a double
+                }
                 for (int particle_idx = 0; particle_idx < y_matrix[ev_idx].size(); particle_idx++){ // Not truly a particle loop: the data is pre-binned, so this is a loop on bins of each event, which can be treated as "mean particles" of each (pT, phi, y) bin/interval
-                    hLambdaCounter.Get()->Fill(0); // This also needs to be a TThreadedObject!
+                    hLambdaCounter->Fill(0);
 
                     double current_particle_multiplicity = mult_matrix[ev_idx][particle_idx];
                     double true_PolX = PolX_matrix[ev_idx][particle_idx];
@@ -415,36 +407,36 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
 
                     // 7 - Summing to calculate polarization on subsets of the available Lambdas -- Bins of (pT, y):
                         // Filling the weighted values:
-                    hLambdaCounter_pT_y_phi_Weighted.Get()->Fill(lambda_pT, lambda_y, lambda_phi, current_particle_multiplicity);
-                    hLambdaAvgDotX_pT_y_phi_Weighted.Get()->Fill(lambda_pT, lambda_y, lambda_phi, X_dot * current_particle_multiplicity); // Weighted averages
-                    hLambdaAvgDotY_pT_y_phi_Weighted.Get()->Fill(lambda_pT, lambda_y, lambda_phi, Y_dot * current_particle_multiplicity);
-                    hLambdaAvgDotZ_pT_y_phi_Weighted.Get()->Fill(lambda_pT, lambda_y, lambda_phi, Z_dot * current_particle_multiplicity);
+                    hLambdaCounter_pT_y_phi_Weighted->Fill(lambda_pT, lambda_y, lambda_phi, current_particle_multiplicity);
+                    hLambdaAvgDotX_pT_y_phi_Weighted->Fill(lambda_pT, lambda_y, lambda_phi, X_dot * current_particle_multiplicity); // Weighted averages
+                    hLambdaAvgDotY_pT_y_phi_Weighted->Fill(lambda_pT, lambda_y, lambda_phi, Y_dot * current_particle_multiplicity);
+                    hLambdaAvgDotZ_pT_y_phi_Weighted->Fill(lambda_pT, lambda_y, lambda_phi, Z_dot * current_particle_multiplicity);
 
-                    hLambdaCounter_pT_y_Weighted.Get()->Fill(lambda_pT, lambda_y, current_particle_multiplicity);
+                    hLambdaCounter_pT_y_Weighted->Fill(lambda_pT, lambda_y, current_particle_multiplicity);
 
                     // 9 - Filling a peace of mind plot (plot that has the true values of the MC):
-                    hLambdaPolX_phi_pT_Weighted.Get()->Fill(lambda_phi, lambda_pT, true_PolX * current_particle_multiplicity);
-                    hLambdaPolY_phi_pT_Weighted.Get()->Fill(lambda_phi, lambda_pT, true_PolY * current_particle_multiplicity);
-                    hLambdaPolZ_phi_pT_Weighted.Get()->Fill(lambda_phi, lambda_pT, true_PolZ * current_particle_multiplicity);
-                    hLambdaCounter_phi_pT_Weighted.Get()->Fill(lambda_phi, lambda_pT, current_particle_multiplicity);
+                    hLambdaPolX_phi_pT_Weighted->Fill(lambda_phi, lambda_pT, true_PolX * current_particle_multiplicity);
+                    hLambdaPolY_phi_pT_Weighted->Fill(lambda_phi, lambda_pT, true_PolY * current_particle_multiplicity);
+                    hLambdaPolZ_phi_pT_Weighted->Fill(lambda_phi, lambda_pT, true_PolZ * current_particle_multiplicity);
+                    hLambdaCounter_phi_pT_Weighted->Fill(lambda_phi, lambda_pT, current_particle_multiplicity);
 
                     // Another peace of mind, just in phi:
-                    hLambdaCounter_phi_Weighted.Get()->Fill(lambda_phi, current_particle_multiplicity);
-                    hLambdaCounter_phiRingAngles_Weighted.Get()->Fill(wrapToInterval(lambda_phi, phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // No the prettiest way to build a histogram that is essentially equivalent to the other counter yet going from -pi to pi, but works
-                    hLambdaCounter_DeltaphiJRing_Weighted.Get()->Fill(wrapToInterval(lambda_phi - phi_random[ev_idx], phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // You actually need to have this counter defined as lambda_phi - phi_random[ev_idx] because the ring observable has a coordinate shift!
-                    hProtonCounter_phiRing_Weighted.Get()->Fill(wrapToInterval(proton_4_momentum.Phi(), phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // A counter for the proton's angular distribution too, for the other ring estimator!
-                    hProtonStarCounter_phiRing_Weighted.Get()->Fill(wrapToInterval(proton_4_momentum_star.Phi(), phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // For the other proxy of the ring observable, which 
+                    hLambdaCounter_phi_Weighted->Fill(lambda_phi, current_particle_multiplicity);
+                    hLambdaCounter_phiRingAngles_Weighted->Fill(wrapToInterval(lambda_phi, phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // No the prettiest way to build a histogram that is essentially equivalent to the other counter yet going from -pi to pi, but works
+                    hLambdaCounter_DeltaphiJRing_Weighted->Fill(wrapToInterval(lambda_phi - phi_random[ev_idx], phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // You actually need to have this counter defined as lambda_phi - phi_random[ev_idx] because the ring observable has a coordinate shift!
+                    hProtonCounter_phiRing_Weighted->Fill(wrapToInterval(proton_4_momentum.Phi(), phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // A counter for the proton's angular distribution too, for the other ring estimator!
+                    hProtonStarCounter_phiRing_Weighted->Fill(wrapToInterval(proton_4_momentum_star.Phi(), phi_min_Ring, phi_max_Ring), current_particle_multiplicity); // For the other proxy of the ring observable, which 
                                                                                                                                                                         // should be normalized by the number of protons
-                    hDebugCounter_phi_star_sampler.Get()->Fill(wrapToInterval(phi_star, phi_min_Ring, phi_max_Ring)); // A debug histogram, just to know if the sampling is being truly random in phi_star, before coordinate rotation
+                    hDebugCounter_phi_star_sampler->Fill(wrapToInterval(phi_star, phi_min_Ring, phi_max_Ring)); // A debug histogram, just to know if the sampling is being truly random in phi_star, before coordinate rotation
 
-                    hLambdaPolX_phi_Weighted.Get()->Fill(lambda_phi, true_PolX * current_particle_multiplicity);
-                    hLambdaPolY_phi_Weighted.Get()->Fill(lambda_phi, true_PolY * current_particle_multiplicity);
-                    hLambdaPolZ_phi_Weighted.Get()->Fill(lambda_phi, true_PolZ * current_particle_multiplicity);
+                    hLambdaPolX_phi_Weighted->Fill(lambda_phi, true_PolX * current_particle_multiplicity);
+                    hLambdaPolY_phi_Weighted->Fill(lambda_phi, true_PolY * current_particle_multiplicity);
+                    hLambdaPolZ_phi_Weighted->Fill(lambda_phi, true_PolZ * current_particle_multiplicity);
 
                     // A third plot, this time in all three dimensions, which will later be reduced to 2D to test if the 3D-->2D conversion was implemented correctly:
-                    hLambdaPolX_pT_y_phi_Weighted.Get()->Fill(lambda_pT, lambda_y, lambda_phi, true_PolX * current_particle_multiplicity);
-                    hLambdaPolY_pT_y_phi_Weighted.Get()->Fill(lambda_pT, lambda_y, lambda_phi, true_PolY * current_particle_multiplicity);
-                    hLambdaPolZ_pT_y_phi_Weighted.Get()->Fill(lambda_pT, lambda_y, lambda_phi, true_PolZ * current_particle_multiplicity);
+                    hLambdaPolX_pT_y_phi_Weighted->Fill(lambda_pT, lambda_y, lambda_phi, true_PolX * current_particle_multiplicity);
+                    hLambdaPolY_pT_y_phi_Weighted->Fill(lambda_pT, lambda_y, lambda_phi, true_PolY * current_particle_multiplicity);
+                    hLambdaPolZ_pT_y_phi_Weighted->Fill(lambda_pT, lambda_y, lambda_phi, true_PolZ * current_particle_multiplicity);
 
                     // Calculating the Ring Observable proxy with the daughter particle's momentum instead of the polarization:
                         // See the other RP_temp variable's surrounding lines for more information
@@ -478,19 +470,19 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
                         // Making sure that the values are within 0 to 2*PI appropriately:
                     delta_phi_J = wrapToInterval(delta_phi_J, phi_min_Ring, phi_max_Ring);
 
-                    hRingObservable_proxy_from_daughter.Get()->Fill(delta_phi_J, RP_temp * current_particle_multiplicity);
-                    hRingObservable_proxy_from_daughter_eq_def.Get()->Fill(delta_phi_J, RP_temp_eqv_def * current_particle_multiplicity);
-                    hRingObservable_proxy_from_daughter_star_eq_def.Get()->Fill(delta_phi_J, RP_temp_proton_star_eqv_def * current_particle_multiplicity);
+                    hRingObservable_proxy_from_daughter->Fill(delta_phi_J, RP_temp * current_particle_multiplicity);
+                    hRingObservable_proxy_from_daughter_eq_def->Fill(delta_phi_J, RP_temp_eqv_def * current_particle_multiplicity);
+                    hRingObservable_proxy_from_daughter_star_eq_def->Fill(delta_phi_J, RP_temp_proton_star_eqv_def * current_particle_multiplicity);
 
                     // Calculating the true value:
                     double RP_temp_true = ((true_PolX*cross_x + true_PolY*cross_y + true_PolZ*cross_z)/cross_product_norm); 
-                    hRingObservable_TrueValue.Get()->Fill(delta_phi_J, RP_temp_true * current_particle_multiplicity);
+                    hRingObservable_TrueValue->Fill(delta_phi_J, RP_temp_true * current_particle_multiplicity);
 
                     if (lambda_pT > 0.5 && lambda_pT < 1.5){
-                        hRingObservable_TrueValuePtCuts.Get()->Fill(delta_phi_J, RP_temp_true * current_particle_multiplicity);
-                        hRingObservable_proxy_from_daughter_eq_defPtCuts.Get()->Fill(delta_phi_J, RP_temp_eqv_def * current_particle_multiplicity);
-                        hRingObservable_proxy_from_daughter_eq_def2PtCuts.Get()->Fill(delta_phi_J, RP_temp_eqv_def2 * current_particle_multiplicity);
-                        hRingObservable_proxy_from_daughter_star_eq_defPtCuts.Get()->Fill(delta_phi_J, RP_temp_proton_star_eqv_def * current_particle_multiplicity);
+                        hRingObservable_TrueValuePtCuts->Fill(delta_phi_J, RP_temp_true * current_particle_multiplicity);
+                        hRingObservable_proxy_from_daughter_eq_defPtCuts->Fill(delta_phi_J, RP_temp_eqv_def * current_particle_multiplicity);
+                        hRingObservable_proxy_from_daughter_eq_def2PtCuts->Fill(delta_phi_J, RP_temp_eqv_def2 * current_particle_multiplicity);
+                        hRingObservable_proxy_from_daughter_star_eq_defPtCuts->Fill(delta_phi_J, RP_temp_proton_star_eqv_def * current_particle_multiplicity);
                     }
 
                     // // Checking/debugging the angles after the coordinate rotation:
@@ -511,44 +503,44 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
     ////////////////////////////////////////////////////////////////////
     /// Merge histograms from all threads into one before proceeding:
     ////////////////////////////////////////////////////////////////////
-    auto hLambdaCounter_merged = hLambdaCounter.Merge().get(); // Using a .get() to extract the raw pointer from the std::shared_ptr<TH3D> that will be retrieved from Merge()
+    auto hFinal = hLambdaPolX_pT_y.Merge();
 
-    auto hLambdaCounter_pT_y_phi_Weighted_merged = hLambdaCounter_pT_y_phi_Weighted.Merge().get();
-    auto hLambdaAvgDotX_pT_y_phi_Weighted_merged = hLambdaAvgDotX_pT_y_phi_Weighted.Merge().get();
-    auto hLambdaAvgDotY_pT_y_phi_Weighted_merged = hLambdaAvgDotY_pT_y_phi_Weighted.Merge().get();
-    auto hLambdaAvgDotZ_pT_y_phi_Weighted_merged = hLambdaAvgDotZ_pT_y_phi_Weighted.Merge().get();
-    auto hLambdaCounter_pT_y_Weighted_merged = hLambdaCounter_pT_y_Weighted.Merge().get();
+    auto hLambdaCounter_pT_y_phi_Weighted_merged = hLambdaCounter_pT_y_phi_Weighted.Merge();
+    auto hLambdaAvgDotX_pT_y_phi_Weighted_merged = hLambdaAvgDotX_pT_y_phi_Weighted.Merge();
+    auto hLambdaAvgDotY_pT_y_phi_Weighted_merged = hLambdaAvgDotY_pT_y_phi_Weighted.Merge();
+    auto hLambdaAvgDotZ_pT_y_phi_Weighted_merged = hLambdaAvgDotZ_pT_y_phi_Weighted.Merge();
+    auto hLambdaCounter_pT_y_Weighted_merged = hLambdaCounter_pT_y_Weighted.Merge();
 
-    auto hLambdaCounter_phi_Weighted_merged = hLambdaCounter_phi_Weighted.Merge().get();
-    auto hLambdaCounter_phiRingAngles_Weighted_merged = hLambdaCounter_phiRingAngles_Weighted.Merge().get();
-    auto hLambdaCounter_DeltaphiJRing_Weighted_merged = hLambdaCounter_DeltaphiJRing_Weighted.Merge().get();
-    auto hProtonCounter_phiRing_Weighted_merged = hProtonCounter_phiRing_Weighted.Merge().get();
-    auto hProtonStarCounter_phiRing_Weighted_merged = hProtonStarCounter_phiRing_Weighted.Merge().get();
+    auto hLambdaCounter_phi_Weighted_merged = hLambdaCounter_phi_Weighted.Merge();
+    auto hLambdaCounter_phiRingAngles_Weighted_merged = hLambdaCounter_phiRingAngles_Weighted.Merge();
+    auto hLambdaCounter_DeltaphiJRing_Weighted_merged = hLambdaCounter_DeltaphiJRing_Weighted.Merge();
+    auto hProtonCounter_phiRing_Weighted_merged = hProtonCounter_phiRing_Weighted.Merge();
+    auto hProtonStarCounter_phiRing_Weighted_merged = hProtonStarCounter_phiRing_Weighted.Merge();
 
-    auto hLambdaPolX_phi_pT_Weighted_merged = hLambdaPolX_phi_pT_Weighted.Merge().get();
-    auto hLambdaPolY_phi_pT_Weighted_merged = hLambdaPolY_phi_pT_Weighted.Merge().get();
-    auto hLambdaPolZ_phi_pT_Weighted_merged = hLambdaPolZ_phi_pT_Weighted.Merge().get();
-    auto hLambdaCounter_phi_pT_Weighted_merged = hLambdaCounter_phi_pT_Weighted.Merge().get();
+    auto hLambdaPolX_phi_pT_Weighted_merged = hLambdaPolX_phi_pT_Weighted.Merge();
+    auto hLambdaPolY_phi_pT_Weighted_merged = hLambdaPolY_phi_pT_Weighted.Merge();
+    auto hLambdaPolZ_phi_pT_Weighted_merged = hLambdaPolZ_phi_pT_Weighted.Merge();
+    auto hLambdaCounter_phi_pT_Weighted_merged = hLambdaCounter_phi_pT_Weighted.Merge();
 
-    auto hDebugCounter_phi_star_sampler_merged = hDebugCounter_phi_star_sampler.Merge().get();
-    auto hLambdaPolX_phi_Weighted_merged = hLambdaPolX_phi_Weighted.Merge().get();
-    auto hLambdaPolY_phi_Weighted_merged = hLambdaPolY_phi_Weighted.Merge().get();
-    auto hLambdaPolZ_phi_Weighted_merged = hLambdaPolZ_phi_Weighted.Merge().get();
+    auto hDebugCounter_phi_star_sampler_merged = hDebugCounter_phi_star_sampler.Merge();
+    auto hLambdaPolX_phi_Weighted_merged = hLambdaPolX_phi_Weighted.Merge();
+    auto hLambdaPolY_phi_Weighted_merged = hLambdaPolY_phi_Weighted.Merge();
+    auto hLambdaPolZ_phi_Weighted_merged = hLambdaPolZ_phi_Weighted.Merge();
 
-    auto hLambdaPolX_pT_y_phi_Weighted_merged = hLambdaPolX_pT_y_phi_Weighted.Merge().get();
-    auto hLambdaPolY_pT_y_phi_Weighted_merged = hLambdaPolY_pT_y_phi_Weighted.Merge().get();
-    auto hLambdaPolZ_pT_y_phi_Weighted_merged = hLambdaPolZ_pT_y_phi_Weighted.Merge().get();
+    auto hLambdaPolX_pT_y_phi_Weighted_merged = hLambdaPolX_pT_y_phi_Weighted.Merge();
+    auto hLambdaPolY_pT_y_phi_Weighted_merged = hLambdaPolY_pT_y_phi_Weighted.Merge();
+    auto hLambdaPolZ_pT_y_phi_Weighted_merged = hLambdaPolZ_pT_y_phi_Weighted.Merge();
 
-    auto hRingObservable_proxy_from_daughter_merged = hRingObservable_proxy_from_daughter.Merge().get();
-    auto hRingObservable_proxy_from_daughter_eq_def_merged = hRingObservable_proxy_from_daughter_eq_def.Merge().get();
-    auto hRingObservable_proxy_from_daughter_star_eq_def_merged = hRingObservable_proxy_from_daughter_star_eq_def.Merge().get();
+    auto hRingObservable_proxy_from_daughter_merged = hRingObservable_proxy_from_daughter.Merge();
+    auto hRingObservable_proxy_from_daughter_eq_def_merged = hRingObservable_proxy_from_daughter_eq_def.Merge();
+    auto hRingObservable_proxy_from_daughter_star_eq_def_merged = hRingObservable_proxy_from_daughter_star_eq_def.Merge();
 
-    auto hRingObservable_TrueValue_merged = hRingObservable_TrueValue.Merge().get();
+    auto hRingObservable_TrueValue_merged = hRingObservable_TrueValue.Merge();
 
-    auto hRingObservable_TrueValuePtCuts_merged = hRingObservable_TrueValuePtCuts.Merge().get();
-    auto hRingObservable_proxy_from_daughter_eq_defPtCuts_merged = hRingObservable_proxy_from_daughter_eq_defPtCuts.Merge().get();
-    auto hRingObservable_proxy_from_daughter_eq_def2PtCuts_merged = hRingObservable_proxy_from_daughter_eq_def2PtCuts.Merge().get();
-    auto hRingObservable_proxy_from_daughter_star_eq_defPtCuts_merged = hRingObservable_proxy_from_daughter_star_eq_defPtCuts.Merge().get();
+    auto hRingObservable_TrueValuePtCuts_merged = hRingObservable_TrueValuePtCuts.Merge();
+    auto hRingObservable_proxy_from_daughter_eq_defPtCuts_merged = hRingObservable_proxy_from_daughter_eq_defPtCuts.Merge();
+    auto hRingObservable_proxy_from_daughter_eq_def2PtCuts_merged = hRingObservable_proxy_from_daughter_eq_def2PtCuts.Merge();
+    auto hRingObservable_proxy_from_daughter_star_eq_defPtCuts_merged = hRingObservable_proxy_from_daughter_star_eq_defPtCuts.Merge();
 
 
     // Finishing the average for the 3 global dot products -- In 3D:
@@ -749,7 +741,7 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
     TFile f(filename.c_str(), "RECREATE");
 
         // Saving some particle counters
-    hLambdaCounter_merged->Write(); // An unweighted counter, just to know how many bins we have
+    hLambdaCounter->Write(); // An unweighted counter, just to know how many bins we have
     hLambdaCounter_pT_y_phi_Weighted_merged->Write();
     hLambdaCounter_phi_pT_Weighted_merged->Write();
     hLambdaCounter_pT_y_Weighted_merged->Write();
