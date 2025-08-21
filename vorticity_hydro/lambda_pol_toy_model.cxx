@@ -278,8 +278,8 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
 
         // Calculating fetcher elapsed time:
     auto data_fetch_end_time = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> data_fetch_end_time = data_fecth_end_time - start_time;
-    std::cout << "Spent " << data_fetch_end_time.count() << " seconds fetching data." << std::endl;
+    std::chrono::duration<double> duration_fetch = data_fetch_end_time - start_time;
+    std::cout << "Spent " << duration_fetch.count() << " seconds fetching data." << std::endl;
 
     // A loop over all entries of the DoubleMatrix objects (multiplicity, defining polarization and the sorts) to clean and speed things up in the loop:
 
@@ -887,15 +887,16 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
 
     auto end_time = std::chrono::high_resolution_clock::now();
         // Calculate elapsed time in seconds:
-    std::chrono::duration<double> elapsed = end_time - start_time;
+    std::chrono::duration<double> total_elapsed = end_time - start_time;
+    std::chrono::duration<double> resampling_elapsed = end_time - start_time - duration_fetch; // Removes the time spent on fetching data
 
     std::cout << "\n////// TIME STATISTICS //////" << std::endl;
-    std::cout << "The program ran for: " << elapsed.count() << " seconds, with " << N_events << " resampled " << N_resamples << " times." << std::endl;
-    std::cout << "The code ran with " << N_threads << " parallel threads." << std::endl;
-    std::cout << "The average time was of " << elapsed.count() * 1./N_resamples << " seconds per sample, or " << elapsed.count() * 1./N_threads << " seconds per thread." << std::endl;
-    std::cout << "Time per sample, per thread, is: " << elapsed.count() * 1./(N_resamples * N_threads) << " seconds." << std::endl;
+    std::cout << "The program ran for: " << total_elapsed.count() << " seconds." << std::endl;
+    std::cout << "Of those, " << duration_fetch.count() << " seconds were used to fetch data and " << resampling_elapsed.count() << " seconds to sample distributions." << std::endl;
+    std::cout << "The code ran with " << N_threads << " parallel threads, through " << N_events << " events, which were resampled " << N_resamples << " times." << std::endl;
+    std::cout << "The average time of resampling was " << resampling_elapsed.count() * 1./N_resamples << " seconds per sample, or " << resampling_elapsed.count() * 1./N_threads << " seconds per thread." << std::endl;
+    std::cout << "Time per sample, per thread, is: " << resampling_elapsed.count() * 1./(N_resamples * N_threads) << " seconds." << std::endl;
     std::cout << "/////////////////////////////" << std::endl;
-
 
     std::cout << "\n\nCode execution finished with code 0. Thank you!" << std::endl;
     return 0;

@@ -11,8 +11,12 @@ sudo apt-get install libomp-dev
 g++ -fopenmp lambda_pol_toy_model.cxx -o lambda_pol_toy_model.exe `root-config --cflags --libs`
 
 # Now with the proper arguments (N_resamples N_threads with_bullet(int) force_DecayDist_mode(0=default, 1=AlongP, 2=PerpP)):
-./lambda_pol_toy_model.exe 100 10 1 0 & ./lambda_pol_toy_model.exe 100 10 1 1 & ./lambda_pol_toy_model.exe 100 10 1 2 & ./lambda_pol_toy_model.exe 100 10 0 0 
+    # Runs with 100 resamples, 10 threads each:
+        # In order: one default w/ jets, default w/o jets, forced decay along P, forced decay perpendicular to P.
+./lambda_pol_toy_model.exe 100 10 1 0 & ./lambda_pol_toy_model.exe 100 10 0 0 & ./lambda_pol_toy_model.exe 100 10 1 1 & ./lambda_pol_toy_model.exe 100 10 1 2 & wait
 
+    # High statistics runs - With ~ 1 minute for each resample (on small batches of parallelization, at least), 480-minute runs in 40 cores would give us 19200 resamples:
+./lambda_pol_toy_model.exe 19200 40 1 0 & ./lambda_pol_toy_model.exe 19200 40 0 0 & wait
 
 ####################
 ### Some earlier problems caused by a lack of the "ROOT::EnableThreadSafety();" line.
