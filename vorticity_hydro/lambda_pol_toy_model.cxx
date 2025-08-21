@@ -17,6 +17,7 @@
 #include <array>
 #include <cmath>
 #include <random>
+#include <chrono>
 // #include "math.h" // Same as cmath!
 #include "TString.h"
 #include "TObjString.h"
@@ -90,13 +91,26 @@ inline double wrapToInterval(double phi, double phi_min, double phi_max){
 
 // This code assumes we are in Jarvis4! Also, the getter functions are based on Pol_Analysis_Random_hist_ebe.C from the HadrEx_Ph repository
 // int lambda_pol_toy_model(){
-int main(){ // Changed the code into a compiler-friendly way, that searches for a "main()" function instead of a main with the same name as the .cxx file that ROOT's .x compiler expects
+int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly way, that searches for a "main()" function instead of a main with the same name as the .cxx file that ROOT's .x compiler expects
+    // Receiving useful values:
+    if (argc != 5) {
+        std::cerr << "Usage:" << argv[0] << " N_resamples N_threads with_bullet(int) force_DecayDist_mode(0=default, 1=AlongP, 2=PerpP)" << std::endl;
+        return 1; // Indicate an error. (This warning code block is chat-gpt made, by the way!)
+    }
+    int N_resamples = atoi(argv[1]);
+    int N_threads = atoi(argv[2]);
+    bool with_bullet = atoi(argv[3]);
+    int force_DecayDist_mode = atoi(argv[4]); // 0 for the usual, physical, decay. 1 for decays along Pol. 2 for decays perpendicular to Pol
+
     ////////////////////
     //// 1 - Initializing variables and histograms:
     ////////////////////
+    // A counter for the execution time:
+    auto start_time = std::chrono::high_resolution_clock::now();
+
     std::cout << "Initializing variables" << std::endl;
     int N_events = 250; // There are only 250 events in the desired folder (40_50 has 300 for the no_bullet case, for some reason). Possibly oversampled to get statistics.
-    bool with_bullet = true;
+    // bool with_bullet = false;
 
     ROOT::EnableThreadSafety(); // THIS IS MANDATORY TO MAKE THREADING WORK!!!
     ROOT::TThreadedObject<TH1D> hLambdaCounter = ROOT::TThreadedObject<TH1D>("hLambdaCounter", "", 1, -1, 1);
@@ -191,8 +205,10 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
         // Testing some ring observable calculations:
     ROOT::TThreadedObject<TH1D> hRingObservable_TrueValue = ROOT::TThreadedObject<TH1D>("hRingObservable_TrueValue", "hRingObservable_TrueValue", N_bins_phi, phi_min_Ring, phi_max_Ring);
     ROOT::TThreadedObject<TH1D> hRingObservable_TrueValuePtCuts = ROOT::TThreadedObject<TH1D>("hRingObservable_TrueValuePtCuts", "hRingObservable_TrueValuePtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    ROOT::TThreadedObject<TH1D> hRingObservable_NormPolTrueValuePtCuts = ROOT::TThreadedObject<TH1D>("hRingObservable_NormPolTrueValuePtCuts", "hRingObservable_NormPolTrueValuePtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
     TH1D *hRingObservableReco = new TH1D("hRingObservableReco", "hRingObservableReco", N_bins_phi, phi_min_Ring, phi_max_Ring); // This doesn't need threading!
     TH1D *hRingObservableRecoPtCuts = new TH1D("hRingObservableRecoPtCuts", "hRingObservableRecoPtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TH1D *hRingObservableNormPolRecoPtCuts = new TH1D("hRingObservableNormPolRecoPtCuts", "hRingObservableNormPolRecoPtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
     ROOT::TThreadedObject<TH1D> hRingObservable_proxy_from_daughter = ROOT::TThreadedObject<TH1D>("hRingObservable_proxy_from_daughter", "hRingObservable_proxy_from_daughter", N_bins_phi, phi_min_Ring, phi_max_Ring);
     ROOT::TThreadedObject<TH1D> hRingObservable_proxy_from_daughter_eq_def = ROOT::TThreadedObject<TH1D>("hRingObservable_proxy_from_daughter_eq_def", "hRingObservable_proxy_from_daughter_eq_def", N_bins_phi, phi_min_Ring, phi_max_Ring);
     ROOT::TThreadedObject<TH1D> hRingObservable_proxy_from_daughter_eq_defPtCuts = ROOT::TThreadedObject<TH1D>("hRingObservable_proxy_from_daughter_eq_defPtCuts", "hRingObservable_proxy_from_daughter_eq_defPtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
@@ -260,6 +276,11 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
     // }
     std::cout << "Done fetching data!" << std::endl;
 
+        // Calculating fetcher elapsed time:
+    auto data_fetch_end_time = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> data_fetch_end_time = data_fecth_end_time - start_time;
+    std::cout << "Spent " << data_fetch_end_time.count() << " seconds fetching data." << std::endl;
+
     // A loop over all entries of the DoubleMatrix objects (multiplicity, defining polarization and the sorts) to clean and speed things up in the loop:
 
     DoubleMatrix PolX_matrix = Sx_matrix, PolY_matrix = Sy_matrix, PolZ_matrix = Sz_matrix, PolT_matrix = St_matrix; // Declaring and initializing them in the same shape as the spin matrices
@@ -285,11 +306,12 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
     ////////////////////
     std::cout << "\nDecaying Lambdas and filling histograms" << std::endl;
         // Looping on all events and all bins(/particles with multiplicity) in each event:
-    int N_resamples = 50000; // Goes through each particle N_resamples # of times. This is an attempt to see if the polarization estimate values become more stable!
-    
+    // int N_resamples = 150; // Goes through each particle N_resamples # of times. This is an attempt to see if the polarization estimate values become more stable!
+                             // 55000 is 500 resamplings for each of the 110 threads, which should take about 450 minutes
+
     // This resampling loop can be parallelized!
         // Defining variables for parallelization:
-    const int N_threads = 100;
+    // const int N_threads = 1;
     omp_set_num_threads(N_threads);
 
     #pragma omp parallel
@@ -374,7 +396,13 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
                     /// as it should from both the polarization
                     /// and the proton momentum proxy for the ring
                     /// observable
-                    // xi_star = 0; // Also interesting to test with xi_star = PI/2, which properly gives us a zero ring observable signal!
+                    // force_DecayDist_mode == 0 for the usual, physical, decay.
+                    if (force_DecayDist_mode == 1){ // 1 for decays along Pol.
+                        xi_star = 0; // Should be so that the polarization vector and the proton trimomentum point in the same direction
+                    }
+                    else if (force_DecayDist_mode == 2){ // 2 for decays perpendicular to Pol
+                        xi_star = PI/2; // Should properly give us a zero ring observable signal!
+                    }
                     //////////////////////////////////////////////
 
 
@@ -483,11 +511,16 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
                     hRingObservable_proxy_from_daughter_star_eq_def.Get()->Fill(delta_phi_J, RP_temp_proton_star_eqv_def * current_particle_multiplicity);
 
                     // Calculating the true value:
-                    double RP_temp_true = ((true_PolX*cross_x + true_PolY*cross_y + true_PolZ*cross_z)/cross_product_norm); 
+                    double RP_temp_true = ((true_PolX*cross_x + true_PolY*cross_y + true_PolZ*cross_z)/cross_product_norm);
                     hRingObservable_TrueValue.Get()->Fill(delta_phi_J, RP_temp_true * current_particle_multiplicity);
+
+                        // An observable that carries only the direction of the polarization, not the magnitude:
+                    double Pol_norm = std::sqrt(true_PolX*true_PolX + true_PolY*true_PolY + true_PolZ*true_PolZ);
+                    double RP_temp_true_Norm = ((true_PolX*cross_x + true_PolY*cross_y + true_PolZ*cross_z)/cross_product_norm)/Pol_norm;
 
                     if (lambda_pT > 0.5 && lambda_pT < 1.5){
                         hRingObservable_TrueValuePtCuts.Get()->Fill(delta_phi_J, RP_temp_true * current_particle_multiplicity);
+                        hRingObservable_NormPolTrueValuePtCuts.Get()->Fill(delta_phi_J, RP_temp_true_Norm * current_particle_multiplicity);
                         hRingObservable_proxy_from_daughter_eq_defPtCuts.Get()->Fill(delta_phi_J, RP_temp_eqv_def * current_particle_multiplicity);
                         hRingObservable_proxy_from_daughter_eq_def2PtCuts.Get()->Fill(delta_phi_J, RP_temp_eqv_def2 * current_particle_multiplicity);
                         hRingObservable_proxy_from_daughter_star_eq_defPtCuts.Get()->Fill(delta_phi_J, RP_temp_proton_star_eqv_def * current_particle_multiplicity);
@@ -546,6 +579,7 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
     auto hRingObservable_TrueValue_merged = hRingObservable_TrueValue.Merge().get();
 
     auto hRingObservable_TrueValuePtCuts_merged = hRingObservable_TrueValuePtCuts.Merge().get();
+    auto hRingObservable_NormPolTrueValuePtCuts_merged = hRingObservable_NormPolTrueValuePtCuts.Merge().get();
     auto hRingObservable_proxy_from_daughter_eq_defPtCuts_merged = hRingObservable_proxy_from_daughter_eq_defPtCuts.Merge().get();
     auto hRingObservable_proxy_from_daughter_eq_def2PtCuts_merged = hRingObservable_proxy_from_daughter_eq_def2PtCuts.Merge().get();
     auto hRingObservable_proxy_from_daughter_star_eq_defPtCuts_merged = hRingObservable_proxy_from_daughter_star_eq_defPtCuts.Merge().get();
@@ -678,8 +712,16 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
 
                     hRingObservableReco->Fill(delta_phi_J, RP_temp * current_pTyphi_bin_multiplicity);
 
+                        // An observable that carries only the direction of the polarization, not the magnitude:
+                    double Pol_norm = std::sqrt(P_Lambda_lab_mean_4vec_Weighted.X()*P_Lambda_lab_mean_4vec_Weighted.X()
+                                                + P_Lambda_lab_mean_4vec_Weighted.Y()*P_Lambda_lab_mean_4vec_Weighted.Y()
+                                                + P_Lambda_lab_mean_4vec_Weighted.Z()*P_Lambda_lab_mean_4vec_Weighted.Z());
+                    double RP_temp_Norm = ((P_Lambda_lab_mean_4vec_Weighted.X()*cross_x + P_Lambda_lab_mean_4vec_Weighted.Y()*cross_y 
+                                            + P_Lambda_lab_mean_4vec_Weighted.Z()*cross_z)/cross_product_norm)/Pol_norm;
+
                     if (pT_bin_center > 0.5 && pT_bin_center < 1.5){
                         hRingObservableRecoPtCuts->Fill(delta_phi_J, RP_temp * current_pTyphi_bin_multiplicity);
+                        hRingObservableNormPolRecoPtCuts->Fill(delta_phi_J, RP_temp_Norm * current_pTyphi_bin_multiplicity);
                     }
             }
         }
@@ -723,8 +765,10 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
     // Normalizing all ring observables by the particle weights to complete the averaging:
     hRingObservable_TrueValue_merged->Divide(hLambdaCounter_DeltaphiJRing_Weighted_merged); // Notice I'm using hLambdaCounter_DeltaphiJRing_Weighted_merged, not hLambdaCounter_phiRingAngles_Weighted_merged, to have the proper counts in DeltaPhiJ coordinates!
     hRingObservable_TrueValuePtCuts_merged->Divide(hLambdaCounter_DeltaphiJRing_Weighted_merged);
+    hRingObservable_NormPolTrueValuePtCuts_merged->Divide(hLambdaCounter_DeltaphiJRing_Weighted_merged);
     hRingObservableReco->Divide(hLambdaCounter_DeltaphiJRing_Weighted_merged);
     hRingObservableRecoPtCuts->Divide(hLambdaCounter_DeltaphiJRing_Weighted_merged);
+    hRingObservableNormPolRecoPtCuts->Divide(hLambdaCounter_DeltaphiJRing_Weighted_merged);
         // Should these following proxies be normalized by the number of protons in each phi angle, as the weighted averages somewhat have that in mind?
         // Probably not, because I fill the histograms with the Lambda's phi angle, but it would be interesting to have a version filled with the proton's
         // angle and pondering the ring observable with the proton multiplicity on each bin.
@@ -745,7 +789,15 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
     // std::string filename = "/home/cicero/results/hydro_vorticity/LambdaPol_lumpy_events_40_50_" + std::to_string(N_events) + "ev.root";
     // std::string filename = "/home/cicero/results/hydro_vorticity/LambdaPol2_lumpy_events_40_50_" + std::to_string(N_events) + "ev.root"; // Having many different file names for comparison
     std::string filename = "/home/cicero/results/hydro_vorticity/LambdaPolResampled" + std::to_string(N_resamples) + "times_lumpy_events_40_50_" 
-                           + ((with_bullet) ? "with_bullet_" : "no_bullet_") + std::to_string(N_events) + "ev.root"; // Used a ternary operator to symplify syntax, but beware of the proper encapsulation!
+                           + ((with_bullet) ? "with_bullet_" : "no_bullet_") + std::to_string(N_events) + "ev"; // Used a ternary operator to symplify syntax, but beware of the proper encapsulation!
+    if (force_DecayDist_mode == 1){ // 0 for the usual, physical, decay. 1 for decays along Pol. 2 for decays perpendicular to Pol
+        filename += "_ForcedDecayAlongP";
+    }
+    else if (force_DecayDist_mode == 2){
+        filename += "_ForcedDecayPerpP";
+    }
+    filename+= ".root";
+
     TFile f(filename.c_str(), "RECREATE");
 
         // Saving some particle counters
@@ -811,9 +863,11 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
     // For the ring observables:
     hRingObservable_TrueValue_merged->Write();
     hRingObservable_TrueValuePtCuts_merged->Write();
+    hRingObservable_NormPolTrueValuePtCuts_merged->Write();
     
     hRingObservableReco->Write();
     hRingObservableRecoPtCuts->Write();
+    hRingObservableNormPolRecoPtCuts->Write();
 
     hRingObservable_proxy_from_daughter_merged->Write();
     hRingObservable_proxy_from_daughter_eq_def_merged->Write();
@@ -830,6 +884,18 @@ int main(){ // Changed the code into a compiler-friendly way, that searches for 
 
     f.Close();
     std::cout << "Done exporting!" << std::endl;
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+        // Calculate elapsed time in seconds:
+    std::chrono::duration<double> elapsed = end_time - start_time;
+
+    std::cout << "\n////// TIME STATISTICS //////" << std::endl;
+    std::cout << "The program ran for: " << elapsed.count() << " seconds, with " << N_events << " resampled " << N_resamples << " times." << std::endl;
+    std::cout << "The code ran with " << N_threads << " parallel threads." << std::endl;
+    std::cout << "The average time was of " << elapsed.count() * 1./N_resamples << " seconds per sample, or " << elapsed.count() * 1./N_threads << " seconds per thread." << std::endl;
+    std::cout << "Time per sample, per thread, is: " << elapsed.count() * 1./(N_resamples * N_threads) << " seconds." << std::endl;
+    std::cout << "/////////////////////////////" << std::endl;
+
 
     std::cout << "\n\nCode execution finished with code 0. Thank you!" << std::endl;
     return 0;

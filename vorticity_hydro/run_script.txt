@@ -10,6 +10,9 @@ sudo apt-get install libomp-dev
 # Or actually, what really works is to do:
 g++ -fopenmp lambda_pol_toy_model.cxx -o lambda_pol_toy_model.exe `root-config --cflags --libs`
 
+# Now with the proper arguments (N_resamples N_threads with_bullet(int) force_DecayDist_mode(0=default, 1=AlongP, 2=PerpP)):
+./lambda_pol_toy_model.exe 100 10 1 0 & ./lambda_pol_toy_model.exe 100 10 1 1 & ./lambda_pol_toy_model.exe 100 10 1 2 & ./lambda_pol_toy_model.exe 100 10 0 0 
+
 
 ####################
 ### Some earlier problems caused by a lack of the "ROOT::EnableThreadSafety();" line.
