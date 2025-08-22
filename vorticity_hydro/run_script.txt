@@ -10,6 +10,12 @@ sudo apt-get install libomp-dev
 # Or actually, what really works is to do:
 g++ -fopenmp lambda_pol_toy_model.cxx -o lambda_pol_toy_model.exe `root-config --cflags --libs`
 
+# To compile with memory error checks:
+g++ -fopenmp -fsanitize=address lambda_pol_toy_model.cxx -o lambda_pol_toy_model.exe `root-config --cflags --libs`
+    # To get the precise lines where we get fails:
+g++ -O1 -g -fsanitize=address -fno-omit-frame-pointer -fopenmp lambda_pol_toy_model.cxx -o lambda_pol_toy_model.exe `root-config --cflags --libs`
+
+
 # Now with the proper arguments (N_resamples N_threads with_bullet(int) force_DecayDist_mode(0=default, 1=AlongP, 2=PerpP)):
     # Runs with 100 resamples, 10 threads each:
         # In order: one default w/ jets, default w/o jets, forced decay along P, forced decay perpendicular to P.
