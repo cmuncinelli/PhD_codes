@@ -1,0 +1,46 @@
+# For tracking performance issues and speed problems with RAM:
+    # First lower the paranoid level of the current session from 4 to 1 (which should restart on system reboot, but you can also restart it by hand)
+sudo sh -c 'echo 1 > /proc/sys/kernel/perf_event_paranoid'
+
+        # Perf counters:
+perf stat -e cache-misses,cache-references,cycles,instructions,LLC-load-misses,LLC-store-misses ./lambda_pol_toy_model.exe 40 40 1 0
+    - High cache-miss rates: bad memory locality.
+    - Lots of LLC (last-level cache) misses: threads fighting over memory.
+    - If instructions-per-cycle (IPC) is very low (<1.0), you’re stalling on memory.
+
+    # Then return the paranoid level to usual for security purposes:
+sudo sh -c 'echo 1 > /proc/sys/kernel/perf_event_paranoid'
+
+####################################
+## ChatGPT summary of the results ##
+####################################
+Command run:
+---------------
+perf stat -e cache-misses,cache-references,cycles,instructions,LLC-load-misses,LLC-store-misses ./lambda_pol_toy_model.exe 40 40 1 0
+
+Key results:
+---------------
+cache-misses:      12,391,637,133
+cache-references:  67,148,113,140  (≈ 18.5% miss rate)
+cycles:            36,460,329,278,800
+instructions:      2,240,472,142,519
+instructions/cycle: 0.06  (very low)
+LLC-load-misses:   <not supported>
+LLC-store-misses:  <not supported>
+time elapsed:      281.67 s
+user CPU time:     8,862.27 s
+system CPU time:   4.30 s
+
+Interpretation:
+---------------
+- Instructions per cycle (IPC) of 0.06 indicates the CPU is mostly stalled waiting for memory.
+- High cache-miss rate (~18.5%) shows poor cache utilization, likely due to scattered memory accesses when filling histograms.
+- User CPU time divided by wall-clock time: 8862 / 281 ≈ 31.5 effective cores utilized.
+- Scaling is limited by memory bandwidth and cache misses, not by number of CPU cores.
+
+Conclusion:
+---------------
+The program is memory-bound. Adding more threads may not improve performance significantly. Optimizations should focus on:
+- Improving memory locality (contiguous bin updates, per-thread buffers)
+- Reducing histogram size or using coarser summaries
+- Staged merging to reduce bandwidth spikes
