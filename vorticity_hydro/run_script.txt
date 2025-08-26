@@ -14,6 +14,24 @@ g++ -fopenmp lambda_pol_toy_model.cxx -o lambda_pol_toy_model.exe `root-config -
 g++ -fopenmp -fsanitize=address lambda_pol_toy_model.cxx -o lambda_pol_toy_model.exe `root-config --cflags --libs`
     # To get the precise lines where we get fails:
 g++ -O1 -g -fsanitize=address -fno-omit-frame-pointer -fopenmp lambda_pol_toy_model.cxx -o lambda_pol_toy_model.exe `root-config --cflags --libs`
+    # Even more detail -- this will catch undefined behaviors like out-of-bounds accesses in vectors more reliably:
+g++ -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fopenmp lambda_pol_toy_model.cxx -o lambda_pol_toy_model.exe `root-config --cflags --libs`
+    # To do that and even catch out of bounds -- extra libstdc++ bounds checks (cheap, very useful):
+g++ -O0 -g -fno-omit-frame-pointer -fsanitize=address,undefined -D_GLIBCXX_ASSERTIONS -fopenmp lambda_pol_toy_model.cxx -o lambda_pol_toy_model.exe `root-config --cflags --libs`
+        # And if you'd like, run it with an extra environment variable:
+        export ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:alloc_dealloc_mismatch=1:strict_string_checks=1:detect_container_overflow=1:detect_stack_use_after_return=1"
+
+    # Compiling with "maximum screaming":
+g++ -O0 -g -fno-omit-frame-pointer \
+    -fsanitize=address,undefined,vptr \
+    -D_GLIBCXX_ASSERTIONS \
+    lambda_pol_toy_model.cxx `root-config --cflags --libs` -fopenmp -o app
+export ASAN_OPTIONS="halt_on_error=1:alloc_dealloc_mismatch=1:detect_container_overflow=1:strict_string_checks=1:detect_stack_use_after_return=1"
+        # Of course, run with ./app 1 1 1 0
+
+    # Compiling in a way that to pinpoint exactly the index where things went wrong:
+g++ -O0 -g -fno-omit-frame-pointer -fsanitize=address,undefined -D_GLIBCXX_DEBUG -fopenmp lambda_pol_toy_model.cxx -o lambda_pol_toy_model_tests.exe `root-config --cflags --libs`
+
 
 
 # Now with the proper arguments (N_resamples N_threads with_bullet(int) force_DecayDist_mode(0=default, 1=AlongP, 2=PerpP)):

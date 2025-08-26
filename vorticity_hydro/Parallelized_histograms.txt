@@ -1,6 +1,4 @@
 # Just a quick list of all the histograms that were parallelized, in case anything ever fails and you need to find the culprits quickly:
-hLambdaCounter
-
 hLambdaCounter_pT_y_phi_Weighted
 hLambdaAvgDotX_pT_y_phi_Weighted
 hLambdaAvgDotY_pT_y_phi_Weighted
