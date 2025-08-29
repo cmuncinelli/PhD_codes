@@ -32,6 +32,9 @@ export ASAN_OPTIONS="halt_on_error=1:alloc_dealloc_mismatch=1:detect_container_o
     # Compiling in a way that to pinpoint exactly the index where things went wrong:
 g++ -O0 -g -fno-omit-frame-pointer -fsanitize=address,undefined -D_GLIBCXX_DEBUG -fopenmp lambda_pol_toy_model.cxx -o lambda_pol_toy_model_tests.exe `root-config --cflags --libs`
 
+    # Or an intermediate way:
+g++ -O0 -g -fsanitize=address,undefined -fopenmp lambda_pol_toy_model.cxx -o lambda_pol_toy_model_tests.exe `root-config --cflags --libs`
+
 
 
 # Now with the proper arguments (N_resamples N_threads with_bullet(int) force_DecayDist_mode(0=default, 1=AlongP, 2=PerpP)):
@@ -41,6 +44,12 @@ g++ -O0 -g -fno-omit-frame-pointer -fsanitize=address,undefined -D_GLIBCXX_DEBUG
 
     # High statistics runs - With ~ 1 minute for each resample (on small batches of parallelization, at least), 480-minute runs in 40 cores would give us 19200 resamples:
 ./lambda_pol_toy_model.exe 19200 40 1 0 & ./lambda_pol_toy_model.exe 19200 40 0 0 & wait
+
+    # High statistics runs for the 4 types of possible execution -- To run in about 10 hours (~54.55 s to run 100 events):
+./lambda_pol_toy_model.exe 65700 30 0 0 & ./lambda_pol_toy_model.exe 65700 30 1 0 & ./lambda_pol_toy_model.exe 65700 30 1 1 & ./lambda_pol_toy_model.exe 65700 30 1 2 & wait
+
+    # Mid-stats run for the 4 types of possible execution:
+./lambda_pol_toy_model.exe 1000 30 0 0 & ./lambda_pol_toy_model.exe 1000 30 1 0 & ./lambda_pol_toy_model.exe 1000 30 1 1 & ./lambda_pol_toy_model.exe 1000 30 1 2 & wait
 
 ####################
 ### Some earlier problems caused by a lack of the "ROOT::EnableThreadSafety();" line.
