@@ -112,7 +112,7 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     int N_events = 250; // There are only 250 events in the desired folder (40_50 has 300 for the no_bullet case, for some reason). Possibly oversampled to get statistics.
     // bool with_bullet = false;
 
-    ROOT::EnableThreadSafety(); // THIS IS MANDATORY TO MAKE THREADING WORK!!!
+    // ROOT::EnableThreadSafety(); // THIS IS MANDATORY TO MAKE THREADING WORK!!!
     auto hLambdaCounter = new TH1D("hLambdaCounter", "", 1, -1, 1);
 
     // Declaring histogram-related variables:
@@ -426,14 +426,15 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     // This resampling loop can be parallelized!
     // const int N_threads = 1;
     omp_set_num_threads(N_threads);
+    int counter = 0;
 
         // Now actually declaring the parallelization loop:
     #pragma omp parallel for
     for (int resample_idx = 0; resample_idx < N_resamples; resample_idx++){
         #pragma omp critical
         {
-            std::cout << "\tNow on resample " << std::to_string(resample_idx + 1) << " of " + std::to_string(N_resamples) << std::endl;
-            // todo: fix this to print only once per resampling batch!
+            std::cout << "\tNow on resample " << std::to_string(counter + 1) << " of " + std::to_string(N_resamples) << " (" << (counter + 1) * 1./N_resamples * 100 << "%)" << std::endl;
+            counter++;
         }
 
         // Declaring thread-local variables:
