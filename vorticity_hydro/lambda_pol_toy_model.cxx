@@ -54,14 +54,16 @@ typedef std::vector<std::vector<double>> DoubleMatrix; // An alias
 const double PI = TMath::Pi();
     // Constant from Phys. Rev. D 110, 030001 - Published 1 August, 2024, i.e.: https://journals.aps.org/prd/pdf/10.1103/PhysRevD.110.030001
 const double alpha_H = 0.747; // Fixed as a constant, just for this toy model!
-const double mass_Lambda = 1115.683; // In MeV/c^2 (+/- 0.006)
-const double mass_proton = 938.27208816; // (+/- 0.00000029)
-const double mass_pi = 139.57039; // (+/- 0.00018), for both pi+ and pi-
+const double mass_Lambda = 1115.683/1000.; // Passed from MeV/c^2 (+/- 0.006) to GeV/c^2
+const double mass_proton = 938.27208816/1000.; // Passed from MeV/c^2 (+/- 0.00000029) to GeV/c^2
+const double mass_pi = 139.57039/1000.; // Passed from MeV/c^2 (+/- 0.00018), for both pi+ and pi-, to GeV/c^2
 const double mL2 = mass_Lambda * mass_Lambda;
 const double mp2 = mass_proton * mass_proton;
 const double mpi2 = mass_pi * mass_pi;
 const double mp_plus_mpi2 = std::pow(mass_proton + mass_pi, 2);
 const double mp_minus_mpi2 = std::pow(mass_proton - mass_pi, 2);
+const double daughter_momentum = std::sqrt((mL2 - mp_plus_mpi2) * (mL2 - mp_minus_mpi2))/ (2.0 * mass_Lambda);
+const double E_p_star = std::sqrt(mass_proton * mass_proton + daughter_momentum * daughter_momentum);
 
 // Function prototypes:
     // Getter functions:
@@ -1523,11 +1525,13 @@ std::pair<TLorentzVector, TLorentzVector> Lambda_decay(TLorentzVector Lambda_4_m
     // double daughter_momentum = std::sqrt((mass_Lambda*mass_Lambda - (mass_proton + mass_pi)*(mass_proton + mass_pi))*
     //                               (mass_Lambda*mass_Lambda - (mass_proton - mass_pi)*(mass_proton - mass_pi)))
     //                               /(2*mass_Lambda); // This momentum is the same for the proton and the pion, only with opposite directions
-        // Rewriting to use pre-calculated mass^2 values (and correcting a few parenthesis mistakes):
-    double daughter_momentum = std::sqrt((mL2 - mp_plus_mpi2) *
-                                         (mL2 - mp_minus_mpi2))
-                               / (2.0 * mass_Lambda);
-    double E_p_star = std::sqrt(mass_proton * mass_proton + daughter_momentum * daughter_momentum); // The proton energy, using the shared daughter momentum
+    
+    // These two values are always constant!
+    //     // Rewriting to use pre-calculated mass^2 values (and correcting a few parenthesis mistakes):
+    // double daughter_momentum = std::sqrt((mL2 - mp_plus_mpi2) *
+    //                                      (mL2 - mp_minus_mpi2))
+    //                            / (2.0 * mass_Lambda);
+    // double E_p_star = std::sqrt(mass_proton * mass_proton + daughter_momentum * daughter_momentum); // The proton energy, using the shared daughter momentum
 
     ////////////////////
     //// 3 - Now working with the angles and creating the proton_4_momentum:
@@ -1674,7 +1678,7 @@ void get_lambda(DoubleMatrix &y_matrix, DoubleMatrix &phi_matrix, DoubleMatrix &
         }
 
         std::vector<double> y, phi, pT, mult, St, Sx, Sy, Sz; // Declaring variables that will store the Lambda information for the current event
-        double const mass = 1.115683; // The Lambda hyperon mass
+        // double const mass_Lambda = 1.115683; // The Lambda hyperon mass // Already defined in the start of the program
 		
 		TString input_file_path;
         if (with_bullet){
@@ -1722,9 +1726,9 @@ void get_lambda(DoubleMatrix &y_matrix, DoubleMatrix &phi_matrix, DoubleMatrix &
 		for(int ip=0; ip<npoints;++ip){
 			px.push_back(pT[ip]*std::cos(phi[ip]));
             py.push_back(pT[ip]*std::sin(phi[ip]));
-            double mT = std::sqrt(mass*mass + pT[ip]*pT[ip]);
+            double mT = std::sqrt(mass_Lambda*mass_Lambda + pT[ip]*pT[ip]);
             pz.push_back(mT*std::sinh(y[ip])); 
-            E.push_back(std::sqrt(mass*mass + px[ip]*px[ip] + py[ip]*py[ip] + pz[ip]*pz[ip]));   
+            E.push_back(std::sqrt(mass_Lambda*mass_Lambda + px[ip]*px[ip] + py[ip]*py[ip] + pz[ip]*pz[ip]));   
         }
 
         // Finally, passing all these values into a larger array that contains all events:
