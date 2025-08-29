@@ -433,12 +433,6 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
         // Now actually declaring the parallelization loop:
     #pragma omp parallel for
     for (int resample_idx = 0; resample_idx < N_resamples; resample_idx++){
-        #pragma omp critical
-        {
-            std::cout << "\tNow on resample " << std::to_string(counter + 1) << " of " + std::to_string(N_resamples) << " (" << (counter + 1) * 1./N_resamples * 100 << "%)" << std::endl;
-            counter++;
-        }
-
         // Declaring thread-local variables:
             // Each thread should get its own RNG device, seeded differently, to avoid resamplings that share the same random numbers!
         std::random_device rd; // Cleaner than the earlier method
@@ -539,19 +533,19 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
                 int compact_bin_idx_phi_value = compact_bin_idx_phi[ev_idx_times_N_bins_total + particle_idx];
                 int compact_bin_idx_phiRing_value = compact_bin_idx_phiRing[ev_idx_times_N_bins_total + particle_idx];
 
-                if ((compact_bin_idx_pT_y_phi_value < 0 || compact_bin_idx_pT_y_phi_value >= N_bins_total) ||
-                    (compact_bin_idx_phi_pT_value < 0 || compact_bin_idx_phi_pT_value >= N_bins_phi*N_bins_pT) ||
-                    (compact_bin_idx_pT_y_value < 0 || compact_bin_idx_pT_y_value >= N_bins_pT*N_bins_rap) ||
-                    (compact_bin_idx_phi_value < 0 || compact_bin_idx_phi_value >= N_bins_phi) ||
-                    (compact_bin_idx_phiRing_value < 0 || compact_bin_idx_phiRing_value >= N_bins_phi)){
+                // if ((compact_bin_idx_pT_y_phi_value < 0 || compact_bin_idx_pT_y_phi_value >= N_bins_total) ||
+                //     (compact_bin_idx_phi_pT_value < 0 || compact_bin_idx_phi_pT_value >= N_bins_phi*N_bins_pT) ||
+                //     (compact_bin_idx_pT_y_value < 0 || compact_bin_idx_pT_y_value >= N_bins_pT*N_bins_rap) ||
+                //     (compact_bin_idx_phi_value < 0 || compact_bin_idx_phi_value >= N_bins_phi) ||
+                //     (compact_bin_idx_phiRing_value < 0 || compact_bin_idx_phiRing_value >= N_bins_phi)){
                     
-                    std::cout << "Testing compact bin indices:" << std::endl;
-                    std::cout << "compact_bin_idx_pT_y_phi_value: " << compact_bin_idx_pT_y_phi_value << " max should be " << N_bins_total << std::endl;
-                    std::cout << "compact_bin_idx_phi_pT_value: " << compact_bin_idx_phi_pT_value << " max should be " << N_bins_phi*N_bins_pT << std::endl;
-                    std::cout << "compact_bin_idx_pT_y_value: " << compact_bin_idx_pT_y_value << " max should be " << N_bins_pT*N_bins_rap << std::endl;
-                    std::cout << "compact_bin_idx_phi_value: " << compact_bin_idx_phi_value << " max should be " << N_bins_phi << std::endl;
-                    std::cout << "compact_bin_idx_phiRing_value: " << compact_bin_idx_phiRing_value << " max should be " << N_bins_phi << std::endl;
-                }
+                //     std::cout << "Testing compact bin indices:" << std::endl;
+                //     std::cout << "compact_bin_idx_pT_y_phi_value: " << compact_bin_idx_pT_y_phi_value << " max should be " << N_bins_total << std::endl;
+                //     std::cout << "compact_bin_idx_phi_pT_value: " << compact_bin_idx_phi_pT_value << " max should be " << N_bins_phi*N_bins_pT << std::endl;
+                //     std::cout << "compact_bin_idx_pT_y_value: " << compact_bin_idx_pT_y_value << " max should be " << N_bins_pT*N_bins_rap << std::endl;
+                //     std::cout << "compact_bin_idx_phi_value: " << compact_bin_idx_phi_value << " max should be " << N_bins_phi << std::endl;
+                //     std::cout << "compact_bin_idx_phiRing_value: " << compact_bin_idx_phiRing_value << " max should be " << N_bins_phi << std::endl;
+                // }
 
                 double current_particle_multiplicity = mult_matrix[ev_idx][particle_idx];
                 double true_PolX = PolX_matrix[ev_idx][particle_idx];
@@ -743,7 +737,7 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
 
                     // An observable that carries only the direction of the polarization, not the magnitude:
                 double Pol_norm = std::sqrt(true_PolX*true_PolX + true_PolY*true_PolY + true_PolZ*true_PolZ);
-                double RP_temp_true_Norm = ((true_PolX*cross_x + true_PolY*cross_y + true_PolZ*cross_z)/cross_product_norm)/Pol_norm;
+                double RP_temp_true_Norm = RP_temp_true/Pol_norm;
 
                 if (lambda_pT > 0.5 && lambda_pT < 1.5){
                     hRingObservable_TrueValuePtCuts_buffer[compact_bin_idx_phiRing_value] += RP_temp_true * current_particle_multiplicity;
@@ -836,6 +830,10 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
             hRingObservable_NormPolTrueValuePtCuts_integrated_bufferGlobal[0] += hRingObservable_NormPolTrueValuePtCuts_integrated_buffer[0];
             hRingObservable_proxy_from_daughter_eq_def2PtCuts_integrated_bufferGlobal[0] += hRingObservable_proxy_from_daughter_eq_def2PtCuts_integrated_buffer[0];
             hRingObservable_proxy_from_daughter_star_eq_defPtCuts_integrated_bufferGlobal[0] += hRingObservable_proxy_from_daughter_star_eq_defPtCuts_integrated_buffer[0];
+
+                // Moving the report on sample number to the end of the loop -- No need for two omp critical regions:
+            std::cout << "\tFinished resample " << std::to_string(counter + 1) << " of " + std::to_string(N_resamples) << " (" << (counter + 1) * 1./N_resamples * 100 << "%)" << std::endl;
+            counter++;
         }
     } // End of pragma parallel resampling loop
     std::cout << "\tDone resampling!" << std::endl;
