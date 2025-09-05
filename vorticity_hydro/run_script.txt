@@ -51,6 +51,9 @@ g++ -O0 -g -fsanitize=address,undefined -fopenmp lambda_pol_toy_model.cxx -o lam
     # Mid-stats run for the 4 types of possible execution:
 ./lambda_pol_toy_model.exe 1000 30 0 0 & ./lambda_pol_toy_model.exe 1000 30 1 0 & ./lambda_pol_toy_model.exe 1000 30 1 1 & ./lambda_pol_toy_model.exe 1000 30 1 2 & wait
 
+# Running over scales to eyeball the error bars:
+./lambda_pol_toy_model.exe 1 1 1 0 & ./lambda_pol_toy_model.exe 10 10 1 0 & ./lambda_pol_toy_model.exe 100 30 1 0 & ./lambda_pol_toy_model.exe 1000 30 1 0 & ./lambda_pol_toy_model.exe 10000 30 1 0 & wait
+
 ####################
 ### Some earlier problems caused by a lack of the "ROOT::EnableThreadSafety();" line.
 ####################

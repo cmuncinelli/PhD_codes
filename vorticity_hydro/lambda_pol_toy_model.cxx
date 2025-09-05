@@ -87,7 +87,10 @@ inline double wrapToInterval(double phi, double phi_min, double phi_max);
 void CheckBins(const char* name, const int* bins, int N_bins_total, TH1* hist);
 inline int mapGlobalToCompact(const TH1& h, int globalBin); // Receives the object itself, not the pointer!
 inline int mapCompactToGlobal(const TH1& h, int compactIndex); // The inverse transform
-TH3D* CopyTH3D(const TH3D* h);
+void CopyTH3D(const TH3D* source, TH3D* target);
+void SqrtHist(TH1* h);
+void SubtractScalar(TH3D* h, double scalar);
+void SetErrorsFromErrHist(TH1* data, const TH1* errors);
 
 
 
@@ -147,6 +150,11 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     std::vector<double> hLambdaAvgDotX_pT_y_phi_Weighted_bufferGlobal(N_bins_total, 0.0);
     std::vector<double> hLambdaAvgDotY_pT_y_phi_Weighted_bufferGlobal(N_bins_total, 0.0);
     std::vector<double> hLambdaAvgDotZ_pT_y_phi_Weighted_bufferGlobal(N_bins_total, 0.0);
+    std::vector<double> hLambdaCounterSquared_pT_y_phi_Weighted_bufferGlobal(N_bins_total, 0.0);
+    std::vector<double> hLambdaAvgDotXSquared_pT_y_phi_Weighted_bufferGlobal(N_bins_total, 0.0);
+    std::vector<double> hLambdaAvgDotYSquared_pT_y_phi_Weighted_bufferGlobal(N_bins_total, 0.0);
+    std::vector<double> hLambdaAvgDotZSquared_pT_y_phi_Weighted_bufferGlobal(N_bins_total, 0.0);
+
     std::vector<double> hLambdaCounter_pT_y_Weighted_bufferGlobal(N_bins_pT*N_bins_rap, 0.0); 
     std::vector<double> hLambdaPolX_phi_pT_Weighted_bufferGlobal(N_bins_phi*N_bins_pT, 0.0);
     std::vector<double> hLambdaPolY_phi_pT_Weighted_bufferGlobal(N_bins_phi*N_bins_pT, 0.0);
@@ -158,6 +166,11 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     std::vector<double> hProtonCounter_phiRing_Weighted_bufferGlobal(N_bins_phi, 0.0);
     std::vector<double> hProtonStarCounter_phiRing_Weighted_bufferGlobal(N_bins_phi, 0.0);
     std::vector<double> hDebugCounter_phi_star_sampler_bufferGlobal(N_bins_phi, 0.0);
+
+    std::vector<double> hLambdaCounter_phi_Weighted_PtCuts_bufferGlobal(N_bins_phi, 0.0);
+    std::vector<double> hLambdaCounter_phiRingAngles_Weighted_PtCuts_bufferGlobal(N_bins_phi, 0.0);
+    std::vector<double> hProtonCounter_phiRing_Weighted_PtCuts_bufferGlobal(N_bins_phi, 0.0);
+    std::vector<double> hProtonStarCounter_phiRing_Weighted_PtCuts_bufferGlobal(N_bins_phi, 0.0);
 
     std::vector<double> hLambdaPolX_phi_Weighted_bufferGlobal(N_bins_phi, 0.0);
     std::vector<double> hLambdaPolY_phi_Weighted_bufferGlobal(N_bins_phi, 0.0);
@@ -176,7 +189,7 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     std::vector<double> hRingObservable_proxy_from_daughter_eq_defPtCuts_bufferGlobal(N_bins_phi, 0.0);
     std::vector<double> hRingObservable_proxy_from_daughter_eq_def2PtCuts_bufferGlobal(N_bins_phi, 0.0);
     std::vector<double> hRingObservable_proxy_from_daughter_star_eq_defPtCuts_bufferGlobal(N_bins_phi, 0.0);
-    std::vector<double> hRingObservable_proxy_from_daughter_eq_def2PtCuts_integrated_bufferGlobal(N_bins_phi, 0.0);
+    std::vector<double> hRingObservable_proxy_from_daughter_eq_defPtCuts_integrated_bufferGlobal(N_bins_phi, 0.0);
     std::vector<double> hRingObservable_proxy_from_daughter_star_eq_defPtCuts_integrated_bufferGlobal(N_bins_phi, 0.0);
 
     // For peace of mind, the same plots that appear on the paper, before any kind of reconstruction:
@@ -206,6 +219,34 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     auto hLambdaAvgDotY_pT_y_phi_Weighted = new TH3D("hLambdaAvgDotY_pT_y_phi_Weighted", "hLambdaAvgDotY_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
     auto hLambdaAvgDotZ_pT_y_phi_Weighted = new TH3D("hLambdaAvgDotZ_pT_y_phi_Weighted", "hLambdaAvgDotZ_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
 
+            // For estimating the error of these averages
+                // Notice that this error will be the same for all of these four equivalent quantities:
+                    // - hRingObservable_proxy_from_daughter_eq_defPtCuts
+                    // - hRingObservable_proxy_from_daughter_star_eq_defPtCuts
+                    // - hRingObservableRecoPtCuts
+                    // - hRingObservableStarRecoPtCuts
+    auto hLambdaCounterSquared_pT_y_phi_Weighted = new TH3D("hLambdaCounterSquared_pT_y_phi_Weighted", "hLambdaCounterSquared_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    auto hLambdaAvgDotXSquared_pT_y_phi_Weighted = new TH3D("hLambdaAvgDotXSquared_pT_y_phi_Weighted", "hLambdaAvgDotXSquared_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    auto hLambdaAvgDotYSquared_pT_y_phi_Weighted = new TH3D("hLambdaAvgDotYSquared_pT_y_phi_Weighted", "hLambdaAvgDotYSquared_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    auto hLambdaAvgDotZSquared_pT_y_phi_Weighted = new TH3D("hLambdaAvgDotZSquared_pT_y_phi_Weighted", "hLambdaAvgDotZSquared_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+
+    auto hLambdaNeff_pT_y_phi_Weighted = new TH3D("hLambdaNeff_pT_y_phi_Weighted", "hLambdaNeff_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    auto hLambdaNeff_minus_1_pT_y_phi_Weighted = new TH3D("hLambdaNeff_minus_1_pT_y_phi_Weighted", "hLambdaNeff_minus_1_pT_y_phi_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    auto hLambdaAvgDotX_pT_y_phi_Weighted_Err = new TH3D("hLambdaAvgDotX_pT_y_phi_Weighted_Err", "hLambdaAvgDotX_pT_y_phi_Weighted_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    auto hLambdaAvgDotY_pT_y_phi_Weighted_Err = new TH3D("hLambdaAvgDotY_pT_y_phi_Weighted_Err", "hLambdaAvgDotY_pT_y_phi_Weighted_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    auto hLambdaAvgDotZ_pT_y_phi_Weighted_Err = new TH3D("hLambdaAvgDotZ_pT_y_phi_Weighted_Err", "hLambdaAvgDotZ_pT_y_phi_Weighted_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+
+        // The scaled version, that has the error on polarization included:
+    auto hLambdaPolStarX_pT_y_phiReco_Weighted_Err = new TH3D("hLambdaPolStarX_pT_y_phiReco_Weighted_Err", "hLambdaPolStarX_pT_y_phiReco_Weighted_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    auto hLambdaPolStarY_pT_y_phiReco_Weighted_Err = new TH3D("hLambdaPolStarY_pT_y_phiReco_Weighted_Err", "hLambdaPolStarY_pT_y_phiReco_Weighted_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    auto hLambdaPolStarZ_pT_y_phiReco_Weighted_Err = new TH3D("hLambdaPolStarZ_pT_y_phiReco_Weighted_Err", "hLambdaPolStarZ_pT_y_phiReco_Weighted_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+
+
+        // TH1D's that have the error for all of those 4 hRingObservable definitions:
+    auto hRingObservableRecoPtCuts_Err = new TH1D("hRingObservableRecoPtCuts_Err", "hRingObservableRecoPtCuts_Err", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    auto hRingObservableReco_Err = new TH1D("hRingObservableReco_Err", "hRingObservableReco_Err", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    auto hRingObservableRecoPtCuts_integrated_Err = new TH1D("hRingObservableRecoPtCuts_integrated_Err", "hRingObservableRecoPtCuts_integrated_Err", 1, phi_min_Ring, phi_max_Ring);
+
         // A bunch of alternative counters that are useful from a debugging standpoint (other than the actually useful hLambdaCounter_DeltaphiJRing_Weighted normalizer):
     auto hLambdaCounter_phi_Weighted = new TH1D("hLambdaCounter_phi_Weighted", "hLambdaCounter_phi_Weighted", N_bins_phi, phi_min, phi_max);
     auto hLambdaCounter_phiRingAngles_Weighted = new TH1D("hLambdaCounter_phiRingAngles_Weighted", "hLambdaCounter_phiRingAngles_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
@@ -214,15 +255,22 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     auto hProtonCounter_phiRing_Weighted = new TH1D("hProtonCounter_phiRing_Weighted", "hProtonCounter_phiRing_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
     auto hProtonStarCounter_phiRing_Weighted = new TH1D("hProtonStarCounter_phiRing_Weighted", "hProtonStarCounter_phiRing_Weighted", N_bins_phi, phi_min_Ring, phi_max_Ring);
 
+            // Counters for the PtCuts selection's normalization:
+    auto hLambdaCounter_phi_Weighted_PtCuts = new TH1D("hLambdaCounter_phi_Weighted_PtCuts", "hLambdaCounter_phi_Weighted_PtCuts", N_bins_phi, phi_min, phi_max);
+    auto hLambdaCounter_phiRingAngles_Weighted_PtCuts = new TH1D("hLambdaCounter_phiRingAngles_Weighted_PtCuts", "hLambdaCounter_phiRingAngles_Weighted_PtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    auto hProtonCounter_phiRing_Weighted_PtCuts = new TH1D("hProtonCounter_phiRing_Weighted_PtCuts", "hProtonCounter_phiRing_Weighted_PtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    auto hProtonStarCounter_phiRing_Weighted_PtCuts = new TH1D("hProtonStarCounter_phiRing_Weighted_PtCuts", "hProtonStarCounter_phiRing_Weighted_PtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+
 
     auto hLambdaPolX_phi_Weighted = new TH1D("hLambdaPolX_phi_Weighted", "hLambdaPolX_phi_Weighted", N_bins_phi, phi_min, phi_max);
     auto hLambdaPolY_phi_Weighted = new TH1D("hLambdaPolY_phi_Weighted", "hLambdaPolY_phi_Weighted", N_bins_phi, phi_min, phi_max);
     auto hLambdaPolZ_phi_Weighted = new TH1D("hLambdaPolZ_phi_Weighted", "hLambdaPolZ_phi_Weighted", N_bins_phi, phi_min, phi_max);
 
         // Now for the reconstructions in 3D:
-    TH3D *hLambdaPolStarX_pT_y_phiReco_Weighted;
-    TH3D *hLambdaPolStarY_pT_y_phiReco_Weighted;
-    TH3D *hLambdaPolStarZ_pT_y_phiReco_Weighted;
+            // With the new CopyTH3D version, these have to be properly initialized objects!
+    TH3D *hLambdaPolStarX_pT_y_phiReco_Weighted = new TH3D("hLambdaPolStarX_pT_y_phiReco_Weighted", "hLambdaPolStarX_pT_y_phiReco_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);;
+    TH3D *hLambdaPolStarY_pT_y_phiReco_Weighted = new TH3D("hLambdaPolStarY_pT_y_phiReco_Weighted", "hLambdaPolStarY_pT_y_phiReco_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);;
+    TH3D *hLambdaPolStarZ_pT_y_phiReco_Weighted = new TH3D("hLambdaPolStarZ_pT_y_phiReco_Weighted", "hLambdaPolStarZ_pT_y_phiReco_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);;
 
         // The lab polarization histograms:
     TH3D *hLambdaPolX_pT_y_phiReco_Weighted = new TH3D("hLambdaPolX_pT_y_phiReco_Weighted", "hLambdaPolX_pT_y_phiReco_Weighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
@@ -251,6 +299,8 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     TH1D *hRingObservableReco = new TH1D("hRingObservableReco", "hRingObservableReco", N_bins_phi, phi_min_Ring, phi_max_Ring); // This doesn't need threading!
     TH1D *hRingObservableRecoPtCuts = new TH1D("hRingObservableRecoPtCuts", "hRingObservableRecoPtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
     TH1D *hRingObservableNormPolRecoPtCuts = new TH1D("hRingObservableNormPolRecoPtCuts", "hRingObservableNormPolRecoPtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TH1D *hRingObservableStarRecoPtCuts = new TH1D("hRingObservableStarRecoPtCuts", "hRingObservableStarRecoPtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    TH1D *hRingObservableStarNormPolRecoPtCuts = new TH1D("hRingObservableStarNormPolRecoPtCuts", "hRingObservableStarNormPolRecoPtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
     auto hRingObservable_proxy_from_daughter = new TH1D("hRingObservable_proxy_from_daughter", "hRingObservable_proxy_from_daughter", N_bins_phi, phi_min_Ring, phi_max_Ring);
     auto hRingObservable_proxy_from_daughter_eq_def = new TH1D("hRingObservable_proxy_from_daughter_eq_def", "hRingObservable_proxy_from_daughter_eq_def", N_bins_phi, phi_min_Ring, phi_max_Ring);
     auto hRingObservable_proxy_from_daughter_eq_defPtCuts = new TH1D("hRingObservable_proxy_from_daughter_eq_defPtCuts", "hRingObservable_proxy_from_daughter_eq_defPtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
@@ -263,7 +313,7 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     auto hRingObservable_NormPolTrueValuePtCuts_integrated = new TH1D("hRingObservable_NormPolTrueValuePtCuts_integrated", "hRingObservable_NormPolTrueValuePtCuts_integrated", 1, phi_min_Ring, phi_max_Ring);
     TH1D *hRingObservableRecoPtCuts_integrated = new TH1D("hRingObservableRecoPtCuts_integrated", "hRingObservableRecoPtCuts_integrated", 1, phi_min_Ring, phi_max_Ring);
     TH1D *hRingObservableNormPolRecoPtCuts_integrated = new TH1D("hRingObservableNormPolRecoPtCuts_integrated", "hRingObservableNormPolRecoPtCuts_integrated", 1, phi_min_Ring, phi_max_Ring);
-    auto hRingObservable_proxy_from_daughter_eq_def2PtCuts_integrated = new TH1D("hRingObservable_proxy_from_daughter_eq_def2PtCuts_integrated", "hRingObservable_proxy_from_daughter_eq_def2PtCuts_integrated", 1, phi_min_Ring, phi_max_Ring);
+    auto hRingObservable_proxy_from_daughter_eq_defPtCuts_integrated = new TH1D("hRingObservable_proxy_from_daughter_eq_defPtCuts_integrated", "hRingObservable_proxy_from_daughter_eq_defPtCuts_integrated", 1, phi_min_Ring, phi_max_Ring);
     auto hRingObservable_proxy_from_daughter_star_eq_defPtCuts_integrated = new TH1D("hRingObservable_proxy_from_daughter_star_eq_defPtCuts_integrated", "hRingObservable_proxy_from_daughter_star_eq_defPtCuts_integrated", 1, phi_min_Ring, phi_max_Ring);
 
     auto hDebugCounter_phi_star_sampler = new TH1D("hDebugCounter_phi_star_sampler", "hDebugCounter_phi_star_sampler", N_bins_phi, phi_min_Ring, phi_max_Ring);
@@ -484,6 +534,11 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
         std::vector<double> hLambdaAvgDotX_pT_y_phi_Weighted_buffer(N_bins_total, 0.0);
         std::vector<double> hLambdaAvgDotY_pT_y_phi_Weighted_buffer(N_bins_total, 0.0);
         std::vector<double> hLambdaAvgDotZ_pT_y_phi_Weighted_buffer(N_bins_total, 0.0);
+        std::vector<double> hLambdaCounterSquared_pT_y_phi_Weighted_buffer(N_bins_total, 0.0);
+        std::vector<double> hLambdaAvgDotXSquared_pT_y_phi_Weighted_buffer(N_bins_total, 0.0);
+        std::vector<double> hLambdaAvgDotYSquared_pT_y_phi_Weighted_buffer(N_bins_total, 0.0);
+        std::vector<double> hLambdaAvgDotZSquared_pT_y_phi_Weighted_buffer(N_bins_total, 0.0);
+
         std::vector<double> hLambdaCounter_pT_y_Weighted_buffer(N_bins_pT*N_bins_rap, 0.0); 
         std::vector<double> hLambdaPolX_phi_pT_Weighted_buffer(N_bins_phi*N_bins_pT, 0.0);
         std::vector<double> hLambdaPolY_phi_pT_Weighted_buffer(N_bins_phi*N_bins_pT, 0.0);
@@ -495,6 +550,12 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
         std::vector<double> hProtonCounter_phiRing_Weighted_buffer(N_bins_phi, 0.0);
         std::vector<double> hProtonStarCounter_phiRing_Weighted_buffer(N_bins_phi, 0.0);
         std::vector<double> hDebugCounter_phi_star_sampler_buffer(N_bins_phi, 0.0);
+
+        std::vector<double> hLambdaCounter_phi_PtCuts_Weighted_buffer(N_bins_phi, 0.0);
+        std::vector<double> hLambdaCounter_phiRingAngles_PtCuts_Weighted_buffer(N_bins_phi, 0.0);
+        std::vector<double> hProtonCounter_phiRing_PtCuts_Weighted_buffer(N_bins_phi, 0.0);
+        std::vector<double> hProtonStarCounter_phiRing_PtCuts_Weighted_buffer(N_bins_phi, 0.0);
+
         std::vector<double> hLambdaPolX_phi_Weighted_buffer(N_bins_phi, 0.0);
         std::vector<double> hLambdaPolY_phi_Weighted_buffer(N_bins_phi, 0.0);
         std::vector<double> hLambdaPolZ_phi_Weighted_buffer(N_bins_phi, 0.0);
@@ -512,7 +573,7 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
         std::vector<double> hRingObservable_proxy_from_daughter_eq_defPtCuts_buffer(N_bins_phi, 0.0);
         std::vector<double> hRingObservable_proxy_from_daughter_eq_def2PtCuts_buffer(N_bins_phi, 0.0);
         std::vector<double> hRingObservable_proxy_from_daughter_star_eq_defPtCuts_buffer(N_bins_phi, 0.0);
-        std::vector<double> hRingObservable_proxy_from_daughter_eq_def2PtCuts_integrated_buffer(1, 0.0);
+        std::vector<double> hRingObservable_proxy_from_daughter_eq_defPtCuts_integrated_buffer(1, 0.0);
         std::vector<double> hRingObservable_proxy_from_daughter_star_eq_defPtCuts_integrated_buffer(1, 0.0);
         // std::cout << "DEBUG! Thread locals declared" << std::endl;
 
@@ -714,7 +775,7 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
                 double proton_4_momentum_star_norm = std::sqrt(proton_4_momentum_star.X()*proton_4_momentum_star.X() + proton_4_momentum_star.Y()*proton_4_momentum_star.Y()
                                                     + proton_4_momentum_star.Z()*proton_4_momentum_star.Z());
                 double proton_4_momentum_norm = std::sqrt(proton_4_momentum.X()*proton_4_momentum.X() + proton_4_momentum.Y()*proton_4_momentum.Y()
-                                                    + proton_4_momentum.Z()*proton_4_momentum.Z());    
+                                                    + proton_4_momentum.Z()*proton_4_momentum.Z());
                 double RP_temp_eqv_def = 3./(alpha_H * proton_4_momentum_star_norm) * 
                                                 ((proton_4_momentum.X()*cross_x + proton_4_momentum.Y()*cross_y + proton_4_momentum.Z()*cross_z)/cross_product_norm);
                 double RP_temp_eqv_def2 = 3./(alpha_H * proton_4_momentum_norm) * 
@@ -726,6 +787,20 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
                 // double delta_phi_J = lambda_phi - phi_random_thrd_copy[ev_idx]; // Also a general formula: in case phi_random was rotated to 0, this does nothing, but it also works in case it was not rotated.
                 //     // Making sure that the values are within 0 to 2*PI appropriately:
                 // delta_phi_J = wrapToInterval(delta_phi_J, phi_min_Ring, phi_max_Ring);
+
+
+                    // Calculating moments of the proton momentum distribution for the error estimation of these variables (in the current bin!):
+                double counter_squared = current_particle_multiplicity*current_particle_multiplicity;
+                // double square_norm_momentum_x_weighted = current_particle_multiplicity * proton_4_momentum.X()**2; // Will not estimate this error for now... not much to gain from it!
+                double X_dotSquared = current_particle_multiplicity * X_dot*X_dot; // Here X_dot is just the X component of the daughter unit vector in the rest frame.
+                double Y_dotSquared = current_particle_multiplicity * Y_dot*Y_dot;
+                double Z_dotSquared = current_particle_multiplicity * Z_dot*Z_dot;
+
+                hLambdaCounterSquared_pT_y_phi_Weighted_buffer[compact_bin_idx_pT_y_phi_value] += counter_squared;
+                hLambdaAvgDotXSquared_pT_y_phi_Weighted_buffer[compact_bin_idx_pT_y_phi_value] += X_dotSquared;
+                hLambdaAvgDotYSquared_pT_y_phi_Weighted_buffer[compact_bin_idx_pT_y_phi_value] += Y_dotSquared;
+                hLambdaAvgDotZSquared_pT_y_phi_Weighted_buffer[compact_bin_idx_pT_y_phi_value] += Z_dotSquared;
+
 
                 hRingObservable_proxy_from_daughter_buffer[compact_bin_idx_phiRing_value] += RP_temp * current_particle_multiplicity;
                 hRingObservable_proxy_from_daughter_eq_def_buffer[compact_bin_idx_phiRing_value] += RP_temp_eqv_def * current_particle_multiplicity;
@@ -750,8 +825,14 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
                     hRingObservable_proxy_from_daughter_eq_def2PtCuts_buffer[compact_bin_idx_phiRing_value] += RP_temp_eqv_def2 * current_particle_multiplicity;
                     hRingObservable_proxy_from_daughter_star_eq_defPtCuts_buffer[compact_bin_idx_phiRing_value] += RP_temp_proton_star_eqv_def * current_particle_multiplicity;
 
-                    hRingObservable_proxy_from_daughter_eq_def2PtCuts_integrated_buffer[0] += RP_temp_eqv_def2 * current_particle_multiplicity;
+                    hRingObservable_proxy_from_daughter_eq_defPtCuts_integrated_buffer[0] += RP_temp_eqv_def * current_particle_multiplicity;
                     hRingObservable_proxy_from_daughter_star_eq_defPtCuts_integrated_buffer[0] += RP_temp_proton_star_eqv_def * current_particle_multiplicity;
+
+                    // Incrementing counters which are influenced by PtCuts:
+                    hLambdaCounter_phi_PtCuts_Weighted_buffer[compact_bin_idx_phi_value] += current_particle_multiplicity;
+                    hLambdaCounter_phiRingAngles_PtCuts_Weighted_buffer[compact_bin_idx_phiRing_value] += current_particle_multiplicity;
+                    hProtonCounter_phiRing_PtCuts_Weighted_buffer[compact_bin_idx_phiRing_proton_phi_wrapped_value] += current_particle_multiplicity;
+                    hProtonStarCounter_phiRing_PtCuts_Weighted_buffer[compact_bin_idx_phiRing_proton_star_phi_wrapped_value] += current_particle_multiplicity;
                 }
 
                 // // Checking/debugging the angles after the coordinate rotation:
@@ -783,6 +864,11 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
                 hLambdaAvgDotX_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaAvgDotX_pT_y_phi_Weighted_buffer[CompactBinIndex_pT_y_phi];
                 hLambdaAvgDotY_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaAvgDotY_pT_y_phi_Weighted_buffer[CompactBinIndex_pT_y_phi];
                 hLambdaAvgDotZ_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaAvgDotZ_pT_y_phi_Weighted_buffer[CompactBinIndex_pT_y_phi];
+
+                hLambdaCounterSquared_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaCounterSquared_pT_y_phi_Weighted_buffer[CompactBinIndex_pT_y_phi];
+                hLambdaAvgDotXSquared_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaAvgDotXSquared_pT_y_phi_Weighted_buffer[CompactBinIndex_pT_y_phi];
+                hLambdaAvgDotYSquared_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaAvgDotYSquared_pT_y_phi_Weighted_buffer[CompactBinIndex_pT_y_phi];
+                hLambdaAvgDotZSquared_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaAvgDotZSquared_pT_y_phi_Weighted_buffer[CompactBinIndex_pT_y_phi];
 
                 hLambdaPolX_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaPolX_pT_y_phi_Weighted_buffer[CompactBinIndex_pT_y_phi];
                 hLambdaPolY_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaPolY_pT_y_phi_Weighted_buffer[CompactBinIndex_pT_y_phi];
@@ -824,11 +910,17 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
                 hRingObservable_proxy_from_daughter_eq_defPtCuts_bufferGlobal[CompactBinIndex_phi] += hRingObservable_proxy_from_daughter_eq_defPtCuts_buffer[CompactBinIndex_phi];
                 hRingObservable_proxy_from_daughter_eq_def2PtCuts_bufferGlobal[CompactBinIndex_phi] += hRingObservable_proxy_from_daughter_eq_def2PtCuts_buffer[CompactBinIndex_phi];
                 hRingObservable_proxy_from_daughter_star_eq_defPtCuts_bufferGlobal[CompactBinIndex_phi] += hRingObservable_proxy_from_daughter_star_eq_defPtCuts_buffer[CompactBinIndex_phi];
+
+                // For counters that were influenced by PtCuts:
+                hLambdaCounter_phi_Weighted_PtCuts_bufferGlobal[CompactBinIndex_phi] += hLambdaCounter_phi_PtCuts_Weighted_buffer[CompactBinIndex_phi];
+                hLambdaCounter_phiRingAngles_Weighted_PtCuts_bufferGlobal[CompactBinIndex_phi] += hLambdaCounter_phiRingAngles_PtCuts_Weighted_buffer[CompactBinIndex_phi];
+                hProtonCounter_phiRing_Weighted_PtCuts_bufferGlobal[CompactBinIndex_phi] += hProtonCounter_phiRing_PtCuts_Weighted_buffer[CompactBinIndex_phi];
+                hProtonStarCounter_phiRing_Weighted_PtCuts_bufferGlobal[CompactBinIndex_phi] += hProtonStarCounter_phiRing_PtCuts_Weighted_buffer[CompactBinIndex_phi];
             }
                 // Filling integrated buffers (0D):
             hRingObservable_TrueValuePtCuts_integrated_bufferGlobal[0] += hRingObservable_TrueValuePtCuts_integrated_buffer[0];
             hRingObservable_NormPolTrueValuePtCuts_integrated_bufferGlobal[0] += hRingObservable_NormPolTrueValuePtCuts_integrated_buffer[0];
-            hRingObservable_proxy_from_daughter_eq_def2PtCuts_integrated_bufferGlobal[0] += hRingObservable_proxy_from_daughter_eq_def2PtCuts_integrated_buffer[0];
+            hRingObservable_proxy_from_daughter_eq_defPtCuts_integrated_bufferGlobal[0] += hRingObservable_proxy_from_daughter_eq_defPtCuts_integrated_buffer[0];
             hRingObservable_proxy_from_daughter_star_eq_defPtCuts_integrated_bufferGlobal[0] += hRingObservable_proxy_from_daughter_star_eq_defPtCuts_integrated_buffer[0];
 
                 // Moving the report on sample number to the end of the loop -- No need for two omp critical regions:
@@ -854,6 +946,7 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     ////////////////////////////////////////////////////////////////////
     // Flushing the C++ vector buffers into the histogram objects:
     ////////////////////////////////////////////////////////////////////
+    std::cout << "\nFlushing buffers into histograms" << std::endl;
         // Will divide the flushing in 4 categories, one for each buffer size:
         // The buffers could all have the same N_bins_total size and work in the same loop, but that would be a wasteful use of RAM
         // 1 - Flushing 3D buffers, which have GlobalBinIndex going from 1 to N_bins_total:
@@ -868,6 +961,11 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
         hLambdaAvgDotX_pT_y_phi_Weighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaAvgDotX_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
         hLambdaAvgDotY_pT_y_phi_Weighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaAvgDotY_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
         hLambdaAvgDotZ_pT_y_phi_Weighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaAvgDotZ_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
+
+        hLambdaCounterSquared_pT_y_phi_Weighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaCounterSquared_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
+        hLambdaAvgDotXSquared_pT_y_phi_Weighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaAvgDotXSquared_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
+        hLambdaAvgDotYSquared_pT_y_phi_Weighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaAvgDotYSquared_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
+        hLambdaAvgDotZSquared_pT_y_phi_Weighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaAvgDotZSquared_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
 
         hLambdaPolX_pT_y_phi_Weighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaPolX_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
         hLambdaPolY_pT_y_phi_Weighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaPolY_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
@@ -915,13 +1013,21 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
         hRingObservable_proxy_from_daughter_eq_defPtCuts->AddBinContent(GlobalBinIndex_phiRingAngles, hRingObservable_proxy_from_daughter_eq_defPtCuts_bufferGlobal[CompactBinIndex_phi]);
         hRingObservable_proxy_from_daughter_eq_def2PtCuts->AddBinContent(GlobalBinIndex_phiRingAngles, hRingObservable_proxy_from_daughter_eq_def2PtCuts_bufferGlobal[CompactBinIndex_phi]);
         hRingObservable_proxy_from_daughter_star_eq_defPtCuts->AddBinContent(GlobalBinIndex_phiRingAngles, hRingObservable_proxy_from_daughter_star_eq_defPtCuts_bufferGlobal[CompactBinIndex_phi]);
+
+        // Flushing counters that were affected by PtCuts:
+        hLambdaCounter_phi_Weighted_PtCuts->AddBinContent(GlobalBinIndex_phi, hLambdaCounter_phi_Weighted_PtCuts_bufferGlobal[CompactBinIndex_phi]);
+        hLambdaCounter_phiRingAngles_Weighted_PtCuts->AddBinContent(GlobalBinIndex_phiRingAngles, hLambdaCounter_phiRingAngles_Weighted_PtCuts_bufferGlobal[CompactBinIndex_phi]);
+        hProtonCounter_phiRing_Weighted_PtCuts->AddBinContent(GlobalBinIndex_phiRingAngles, hProtonCounter_phiRing_Weighted_PtCuts_bufferGlobal[CompactBinIndex_phi]);
+        hProtonStarCounter_phiRing_Weighted_PtCuts->AddBinContent(GlobalBinIndex_phiRingAngles, hProtonStarCounter_phiRing_Weighted_PtCuts_bufferGlobal[CompactBinIndex_phi]);
     }
 
         // Filling integrated value histograms -- Just adding a value in 0. is enough, if done with the proper weight:
     hRingObservable_TrueValuePtCuts_integrated->Fill(0., hRingObservable_TrueValuePtCuts_integrated_bufferGlobal[0]);
     hRingObservable_NormPolTrueValuePtCuts_integrated->Fill(0., hRingObservable_NormPolTrueValuePtCuts_integrated_bufferGlobal[0]);
-    hRingObservable_proxy_from_daughter_eq_def2PtCuts_integrated->Fill(0., hRingObservable_proxy_from_daughter_eq_def2PtCuts_integrated_bufferGlobal[0]);
+    hRingObservable_proxy_from_daughter_eq_defPtCuts_integrated->Fill(0., hRingObservable_proxy_from_daughter_eq_defPtCuts_integrated_bufferGlobal[0]);
     hRingObservable_proxy_from_daughter_star_eq_defPtCuts_integrated->Fill(0., hRingObservable_proxy_from_daughter_star_eq_defPtCuts_integrated_bufferGlobal[0]);
+
+    std::cout << "Flushed!" << std::endl;
 
 
     // Finishing the average for the 3 global dot products -- In 3D:
@@ -930,13 +1036,15 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     hLambdaAvgDotY_pT_y_phi_Weighted->Divide(hLambdaCounter_pT_y_phi_Weighted);
     hLambdaAvgDotZ_pT_y_phi_Weighted->Divide(hLambdaCounter_pT_y_phi_Weighted);
 
-    // hLambdaPolStarX_pT_y_phiReco_Weighted = (TH3D*) hLambdaAvgDotX_pT_y_phi_Weighted->Clone("hLambdaPolStarX_pT_y_phiReco_Weighted");
-    // hLambdaPolStarY_pT_y_phiReco_Weighted = (TH3D*) hLambdaAvgDotY_pT_y_phi_Weighted->Clone("hLambdaPolStarY_pT_y_phiReco_Weighted");
-    // hLambdaPolStarZ_pT_y_phiReco_Weighted = (TH3D*) hLambdaAvgDotZ_pT_y_phi_Weighted->Clone("hLambdaPolStarZ_pT_y_phiReco_Weighted");
-    // Cloning everything by hand:
-    hLambdaPolStarX_pT_y_phiReco_Weighted = CopyTH3D(hLambdaAvgDotX_pT_y_phi_Weighted);
-    hLambdaPolStarY_pT_y_phiReco_Weighted = CopyTH3D(hLambdaAvgDotY_pT_y_phi_Weighted);
-    hLambdaPolStarZ_pT_y_phiReco_Weighted = CopyTH3D(hLambdaAvgDotZ_pT_y_phi_Weighted);
+        // Averaging the second momentum of this unit vector distribution too:
+    hLambdaAvgDotXSquared_pT_y_phi_Weighted->Divide(hLambdaCounter_pT_y_phi_Weighted);
+    hLambdaAvgDotYSquared_pT_y_phi_Weighted->Divide(hLambdaCounter_pT_y_phi_Weighted);
+    hLambdaAvgDotZSquared_pT_y_phi_Weighted->Divide(hLambdaCounter_pT_y_phi_Weighted);
+
+    // Cloning everything by hand (usually behaves better than ROOT's Clone()):
+    CopyTH3D(hLambdaAvgDotX_pT_y_phi_Weighted, hLambdaPolStarX_pT_y_phiReco_Weighted);
+    CopyTH3D(hLambdaAvgDotY_pT_y_phi_Weighted, hLambdaPolStarY_pT_y_phiReco_Weighted);
+    CopyTH3D(hLambdaAvgDotZ_pT_y_phi_Weighted, hLambdaPolStarZ_pT_y_phiReco_Weighted);
 
     hLambdaPolStarX_pT_y_phiReco_Weighted->SetTitle("hLambdaPolStarX_pT_y_phiReco_Weighted");
     hLambdaPolStarY_pT_y_phiReco_Weighted->SetTitle("hLambdaPolStarY_pT_y_phiReco_Weighted");
@@ -946,9 +1054,60 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     hLambdaPolStarX_pT_y_phiReco_Weighted->Scale(3.0 / alpha_H);
     hLambdaPolStarY_pT_y_phiReco_Weighted->Scale(3.0 / alpha_H);
     hLambdaPolStarZ_pT_y_phiReco_Weighted->Scale(3.0 / alpha_H);
+
+
+    //////// Calculating error bars for the polarization vectors (and for all the Ring Observable equivalent estimators too, as these are equivalent):
+        // Calculating the error bars using the methods of section 2 of "Error_propagation_discussion_of_Ring.pdf", "Small-N correction" section:
+    CopyTH3D(hLambdaAvgDotX_pT_y_phi_Weighted, hLambdaAvgDotX_pT_y_phi_Weighted_Err);
+    CopyTH3D(hLambdaAvgDotY_pT_y_phi_Weighted, hLambdaAvgDotY_pT_y_phi_Weighted_Err);
+    CopyTH3D(hLambdaAvgDotZ_pT_y_phi_Weighted, hLambdaAvgDotZ_pT_y_phi_Weighted_Err);
+
+            // Now taking the square to get \mu_w^2:
+    hLambdaAvgDotX_pT_y_phi_Weighted_Err->Multiply(hLambdaAvgDotX_pT_y_phi_Weighted_Err);
+    hLambdaAvgDotY_pT_y_phi_Weighted_Err->Multiply(hLambdaAvgDotY_pT_y_phi_Weighted_Err);
+    hLambdaAvgDotZ_pT_y_phi_Weighted_Err->Multiply(hLambdaAvgDotZ_pT_y_phi_Weighted_Err);
+
+            // Now replacing the contents with <p_i^2>_w - \mu_w^2
+    hLambdaAvgDotX_pT_y_phi_Weighted_Err->Add(hLambdaAvgDotXSquared_pT_y_phi_Weighted, hLambdaAvgDotX_pT_y_phi_Weighted_Err, 1., -1.);
+    hLambdaAvgDotY_pT_y_phi_Weighted_Err->Add(hLambdaAvgDotYSquared_pT_y_phi_Weighted, hLambdaAvgDotY_pT_y_phi_Weighted_Err, 1., -1.);
+    hLambdaAvgDotZ_pT_y_phi_Weighted_Err->Add(hLambdaAvgDotZSquared_pT_y_phi_Weighted, hLambdaAvgDotZ_pT_y_phi_Weighted_Err, 1., -1.);
+
+            // Calculating the effective sample size (N_{eff} = hLambdaCounter_pT_y_phi_Weighted^2/hLambdaCounterSquared_pT_y_phi_Weighted)
+    CopyTH3D(hLambdaCounter_pT_y_phi_Weighted, hLambdaNeff_pT_y_phi_Weighted);
+    hLambdaNeff_pT_y_phi_Weighted->Multiply(hLambdaNeff_pT_y_phi_Weighted);
+    hLambdaNeff_pT_y_phi_Weighted->Divide(hLambdaCounterSquared_pT_y_phi_Weighted);
+    
+    CopyTH3D(hLambdaNeff_pT_y_phi_Weighted, hLambdaNeff_minus_1_pT_y_phi_Weighted); // I actually need N_eff - 1 in a denominator!
+    SubtractScalar(hLambdaNeff_minus_1_pT_y_phi_Weighted, -1.);
+
+            // Finally, calculating Var(<p_D>) = sqrt(1/(N_eff - 1) * (<p_i^2>_w - \mu_w^2)) for each component of <\hat{p}_D>:
+    hLambdaAvgDotX_pT_y_phi_Weighted_Err->Divide(hLambdaNeff_minus_1_pT_y_phi_Weighted);
+    hLambdaAvgDotY_pT_y_phi_Weighted_Err->Divide(hLambdaNeff_minus_1_pT_y_phi_Weighted);
+    hLambdaAvgDotZ_pT_y_phi_Weighted_Err->Divide(hLambdaNeff_minus_1_pT_y_phi_Weighted);
+                // Taking the sqrt for each of them with an in-place method:
+    SqrtHist(hLambdaAvgDotX_pT_y_phi_Weighted_Err);
+    SqrtHist(hLambdaAvgDotY_pT_y_phi_Weighted_Err);
+    SqrtHist(hLambdaAvgDotZ_pT_y_phi_Weighted_Err);
+
+            // Scaling these errors to get the error on polarization:
+    CopyTH3D(hLambdaAvgDotX_pT_y_phi_Weighted_Err, hLambdaPolStarX_pT_y_phiReco_Weighted_Err);
+    CopyTH3D(hLambdaAvgDotY_pT_y_phi_Weighted_Err, hLambdaPolStarY_pT_y_phiReco_Weighted_Err);
+    CopyTH3D(hLambdaAvgDotZ_pT_y_phi_Weighted_Err, hLambdaPolStarZ_pT_y_phiReco_Weighted_Err);
+
+    hLambdaPolStarX_pT_y_phiReco_Weighted_Err->Scale(3.0 / alpha_H);
+    hLambdaPolStarY_pT_y_phiReco_Weighted_Err->Scale(3.0 / alpha_H);
+    hLambdaPolStarZ_pT_y_phiReco_Weighted_Err->Scale(3.0 / alpha_H);
+
+        // Setting these errors as the errors in the TH3D histograms
+    SetErrorsFromErrHist(hLambdaPolStarX_pT_y_phiReco_Weighted, hLambdaPolStarX_pT_y_phiReco_Weighted_Err);
+    SetErrorsFromErrHist(hLambdaPolStarY_pT_y_phiReco_Weighted, hLambdaPolStarY_pT_y_phiReco_Weighted_Err);
+    SetErrorsFromErrHist(hLambdaPolStarZ_pT_y_phiReco_Weighted, hLambdaPolStarZ_pT_y_phiReco_Weighted_Err);
+
     ///////////////////////////////////////////////////////////////
 
         // Now boosting each of these into the lab rest frame by calculating a mean 4-vector of all Lambdas in each (pT, y) bin:
+    double total_Lambdas = hLambdaCounter_phiRingAngles_Weighted->Integral();
+    double total_Lambdas_PtCuts = hLambdaCounter_phiRingAngles_Weighted_PtCuts->Integral();
     for (int pT_idx = 1; pT_idx <= N_bins_pT; pT_idx++){ // bin index starts at 1 (not 0)
         for (int y_idx = 1; y_idx <= N_bins_rap; y_idx++){
             for (int phi_idx = 1; phi_idx <= N_bins_phi; phi_idx++){
@@ -963,6 +1122,13 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
                 double PolX_star_pTy_phi_Weighted = hLambdaPolStarX_pT_y_phiReco_Weighted->GetBinContent(pT_idx, y_idx, phi_idx);
                 double PolY_star_pTy_phi_Weighted = hLambdaPolStarY_pT_y_phiReco_Weighted->GetBinContent(pT_idx, y_idx, phi_idx);
                 double PolZ_star_pTy_phi_Weighted = hLambdaPolStarZ_pT_y_phiReco_Weighted->GetBinContent(pT_idx, y_idx, phi_idx);
+
+                double PolX_star_pTy_phi_Weighted_Err = hLambdaPolStarX_pT_y_phiReco_Weighted_Err->GetBinContent(pT_idx, y_idx, phi_idx); // Or could just use a GetBinError() from hLambdaPolStarX_pT_y_phiReco_Weighted
+                double PolY_star_pTy_phi_Weighted_Err = hLambdaPolStarY_pT_y_phiReco_Weighted_Err->GetBinContent(pT_idx, y_idx, phi_idx);
+                double PolZ_star_pTy_phi_Weighted_Err = hLambdaPolStarZ_pT_y_phiReco_Weighted_Err->GetBinContent(pT_idx, y_idx, phi_idx);
+                double current_phiRing_bin_multiplicity = hLambdaCounter_phiRingAngles_Weighted->GetBinContent(phi_idx); // Useful as the W^2 in the error propagation of the ring observable
+                    // Introducing a variation that includes PtCuts weights only for the ring observable:
+                double current_phiRing_bin_multiplicity_PtCuts = hLambdaCounter_phiRingAngles_Weighted_PtCuts->GetBinContent(phi_idx);
 
                 // Now calculating a mean 4-momentum of the Lambda in each bin:
                 double mean_px = pT_bin_center * std::cos(phi_bin_center);
@@ -1038,40 +1204,93 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
 
                 // Calculating the ring observable:
                     // Cross product (trigger X p)
-                    const double x_trigger = 1.; // Defined coordinate system so that this is always true, in a way that I can average over many events!
-                    const double y_trigger = 0.;
-                    const double z_trigger = 0.;
-                    double cross_x = y_trigger*mean_pz - z_trigger*mean_py;
-                    double cross_y = z_trigger*mean_px - x_trigger*mean_pz;
-                    double cross_z = x_trigger*mean_py - y_trigger*mean_px;
+                const double x_trigger = 1.; // Defined coordinate system so that this is always true, in a way that I can average over many events!
+                const double y_trigger = 0.;
+                const double z_trigger = 0.;
+                double cross_x = y_trigger*mean_pz - z_trigger*mean_py;
+                double cross_y = z_trigger*mean_px - x_trigger*mean_pz;
+                double cross_z = x_trigger*mean_py - y_trigger*mean_px;
 
-                    double cross_product_norm = std::sqrt(cross_x*cross_x + cross_y*cross_y + cross_z*cross_z);
-		    			
-                    double RP_temp = ((P_Lambda_lab_mean_4vec_Weighted.X()*cross_x + P_Lambda_lab_mean_4vec_Weighted.Y()*cross_y + P_Lambda_lab_mean_4vec_Weighted.Z()*cross_z)/
-            					      cross_product_norm);
+                double cross_product_norm = std::sqrt(cross_x*cross_x + cross_y*cross_y + cross_z*cross_z);
+                    
+                double RP_temp = ((P_Lambda_lab_mean_4vec_Weighted.X()*cross_x + P_Lambda_lab_mean_4vec_Weighted.Y()*cross_y + P_Lambda_lab_mean_4vec_Weighted.Z()*cross_z)/
+                                    cross_product_norm);
 
-                    double delta_phi_J = phi_bin_center; // In this coordinate definition after the phi_matrix rotation, the jet is always facing the x axis and phi is already a delta_phi_J
-                    delta_phi_J = wrapToInterval(delta_phi_J, phi_min_Ring, phi_max_Ring);
+                double delta_phi_J = phi_bin_center; // In this coordinate definition after the phi_matrix rotation, the jet is always facing the x axis and phi is already a delta_phi_J
+                delta_phi_J = wrapToInterval(delta_phi_J, phi_min_Ring, phi_max_Ring);
 
-                    hRingObservableReco->Fill(delta_phi_J, RP_temp * current_pTyphi_bin_multiplicity);
+                hRingObservableReco->Fill(delta_phi_J, RP_temp * current_pTyphi_bin_multiplicity);
 
-                        // An observable that carries only the direction of the polarization, not the magnitude:
-                    double Pol_norm = std::sqrt(P_Lambda_lab_mean_4vec_Weighted.X()*P_Lambda_lab_mean_4vec_Weighted.X()
-                                                + P_Lambda_lab_mean_4vec_Weighted.Y()*P_Lambda_lab_mean_4vec_Weighted.Y()
-                                                + P_Lambda_lab_mean_4vec_Weighted.Z()*P_Lambda_lab_mean_4vec_Weighted.Z());
-                    double RP_temp_Norm = ((P_Lambda_lab_mean_4vec_Weighted.X()*cross_x + P_Lambda_lab_mean_4vec_Weighted.Y()*cross_y 
-                                            + P_Lambda_lab_mean_4vec_Weighted.Z()*cross_z)/cross_product_norm)/Pol_norm;
+                    // An observable that carries only the direction of the polarization, not the magnitude:
+                double Pol_norm = std::sqrt(P_Lambda_lab_mean_4vec_Weighted.X()*P_Lambda_lab_mean_4vec_Weighted.X()
+                                            + P_Lambda_lab_mean_4vec_Weighted.Y()*P_Lambda_lab_mean_4vec_Weighted.Y()
+                                            + P_Lambda_lab_mean_4vec_Weighted.Z()*P_Lambda_lab_mean_4vec_Weighted.Z());
+                double RP_temp_Norm = RP_temp/Pol_norm;
 
-                    if (pT_bin_center > 0.5 && pT_bin_center < 1.5){
-                        hRingObservableRecoPtCuts->Fill(delta_phi_J, RP_temp * current_pTyphi_bin_multiplicity);
-                        hRingObservableNormPolRecoPtCuts->Fill(delta_phi_J, RP_temp_Norm * current_pTyphi_bin_multiplicity);
+                    // Testing an alternative observable that uses the polarization on the rest frame instead of having to boost it:
+                double RP_temp_star = ((P_Lambda_star_mean_4vec_Weighted.X()*cross_x + P_Lambda_star_mean_4vec_Weighted.Y()*cross_y + P_Lambda_star_mean_4vec_Weighted.Z()*cross_z)/
+                                        cross_product_norm);
+                double Pol_norm_star = std::sqrt(P_Lambda_star_mean_4vec_Weighted.X()*P_Lambda_star_mean_4vec_Weighted.X()
+                    + P_Lambda_star_mean_4vec_Weighted.Y()*P_Lambda_star_mean_4vec_Weighted.Y()
+                    + P_Lambda_star_mean_4vec_Weighted.Z()*P_Lambda_star_mean_4vec_Weighted.Z());
+                double RP_temp_star_Norm = RP_temp_star/Pol_norm_star;
 
-                        hRingObservableRecoPtCuts_integrated->Fill(delta_phi_J, RP_temp * current_pTyphi_bin_multiplicity);
-                        hRingObservableNormPolRecoPtCuts_integrated->Fill(delta_phi_J, RP_temp_Norm * current_pTyphi_bin_multiplicity);
-                    }
+                // Calculating the current bin's error
+                    // -- Say the ring observable is a (weighted) average R = <P_i * A_i>_i where i is each bin, so that sigma(R) = sqrt(sum_i A_i^2 * sigma(P_i)^2 * w_i^2/W^2)
+                    // w_i is the current 3D bin's particle multiplicity, W is the current_phiRing_bin_multiplicity, P_i the polarization and A_i the rest of the ring observable.
+                    // Actually, notice that you have to combine the three spatial components here via the cross_x, cross_y, cross_z products too!
+                    // So instead of sigma(P_i), you will have sigma(P_i_k) * cross_k for each component, and then you just sum the 3 squares inside each i-th bin
+                double err_x = PolX_star_pTy_phi_Weighted_Err * cross_x;
+                double err_y = PolY_star_pTy_phi_Weighted_Err * cross_y;
+                double err_z = PolZ_star_pTy_phi_Weighted_Err * cross_z;
+                double current_RingObservableReco_Err_squared = (err_x*err_x + err_y*err_y + err_z*err_z)/(cross_product_norm*cross_product_norm) // Summing the errors of the three spatial components already weighted by their cross product component in err_i
+                                                                 * current_pTyphi_bin_multiplicity; // w_i --> Careful! This is not w_i^2! We are really just summing the square errors as if independent!
+                                                                // Just for testing, placed this normalization outside the loop:
+                                                                //  /(current_phiRing_bin_multiplicity*current_phiRing_bin_multiplicity); // 1/W^2
+                    // Notice that due to this error already being normalized here, I need to normalize it differently when I take the integrated error:
+                // double current_RingObservableReco_integrated_Err_squared = (err_x*err_x + err_y*err_y + err_z*err_z)/(cross_product_norm*cross_product_norm) // Summing the errors of the three spatial components already weighted by their cross product component in err_i
+                //                                                  * current_pTyphi_bin_multiplicity*current_pTyphi_bin_multiplicity // w_i^2
+                //                                                  /(total_Lambdas*total_Lambdas); // 1/W^2 --> And here this corresponds to the total amount of Lambdas because we integrate along all dimensions!
+                hRingObservableReco_Err->Fill(delta_phi_J, current_RingObservableReco_Err_squared); // This will need to receive a sqrt() later, after the averaging!
+
+                // Now for the PtCuts variant of error calculation:
+                double current_RingObservableReco_Err_squared_PtCuts = (err_x*err_x + err_y*err_y + err_z*err_z)/(cross_product_norm*cross_product_norm) // Summing the errors of the three spatial components already weighted by their cross product component in err_i
+                                                                 * current_pTyphi_bin_multiplicity; // w_i --> Careful! This is not w_i^2! We are really just summing the square errors as if independent!
+                                                                // Just for testing, placed this normalization outside the loop:
+                                                                //  /(current_phiRing_bin_multiplicity_PtCuts*current_phiRing_bin_multiplicity_PtCuts); // 1/W^2
+                double current_RingObservableReco_integrated_Err_squared_PtCuts = (err_x*err_x + err_y*err_y + err_z*err_z)/(cross_product_norm*cross_product_norm) // Summing the errors of the three spatial components already weighted by their cross product component in err_i
+                                                                 * current_pTyphi_bin_multiplicity; // w_i --> Careful! This is not w_i^2! We are really just summing the square errors as if independent!
+                                                                // Just for testing, placed this normalization outside the loop:
+                                                                //  /(total_Lambdas_PtCuts*total_Lambdas_PtCuts); // 1/W^2 --> And here this corresponds to the total amount of Lambdas because we integrate along all dimensions!
+
+                if (pT_bin_center > 0.5 && pT_bin_center < 1.5){
+                    hRingObservableRecoPtCuts->Fill(delta_phi_J, RP_temp * current_pTyphi_bin_multiplicity);
+                    hRingObservableNormPolRecoPtCuts->Fill(delta_phi_J, RP_temp_Norm * current_pTyphi_bin_multiplicity);
+
+                    hRingObservableStarRecoPtCuts->Fill(delta_phi_J, RP_temp_star * current_pTyphi_bin_multiplicity);
+                    hRingObservableStarNormPolRecoPtCuts->Fill(delta_phi_J, RP_temp_star_Norm * current_pTyphi_bin_multiplicity);
+
+                    hRingObservableRecoPtCuts_integrated->Fill(delta_phi_J, RP_temp * current_pTyphi_bin_multiplicity);
+                    hRingObservableNormPolRecoPtCuts_integrated->Fill(delta_phi_J, RP_temp_Norm * current_pTyphi_bin_multiplicity);
+
+                        // Now for the PtCuts variation of error:
+                    hRingObservableRecoPtCuts_Err->Fill(delta_phi_J, current_RingObservableReco_Err_squared_PtCuts); // This will need to receive a sqrt() later, after the averaging!
+                    hRingObservableRecoPtCuts_integrated_Err->Fill(delta_phi_J, current_RingObservableReco_integrated_Err_squared_PtCuts);
+                }
             }
         }
     }
+    // Taking the square root of the summed current_RingObservableReco_Err_squared components to properly get the error, and then setting that as the error of the ring TH1D's
+    SqrtHist(hRingObservableReco_Err);
+    SqrtHist(hRingObservableRecoPtCuts_Err);
+    SqrtHist(hRingObservableRecoPtCuts_integrated_Err);
+
+    // TESTING -- Reintroducing the three removed normalizations (AFTER the square root is taken!):
+    hRingObservableReco_Err->Divide(hLambdaCounter_phiRingAngles_Weighted);
+    hRingObservableRecoPtCuts_Err->Divide(hLambdaCounter_phiRingAngles_Weighted_PtCuts);
+    hRingObservableRecoPtCuts_integrated_Err->Scale(1./hLambdaCounter_phiRingAngles_Weighted_PtCuts->Integral());
+
+        // Will only set these errors into the related histograms after they've been averaged!
 
     // Averaging the true values too -- This should already mask the arrays too:
         // Peace of mind plots averaging:
@@ -1110,32 +1329,54 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
 
     // Normalizing all ring observables by the particle weights to complete the averaging:
     hRingObservable_TrueValue->Divide(hLambdaCounter_phiRingAngles_Weighted); // Notice I'm using hLambdaCounter_phiRingAngles_Weighted, not hLambdaCounter_DeltaphiJRing_Weighted_merged, because the DeltaPhiJ coordinates are equivalent to the Phi coordinates in this system where phi_random[ev_idx] is zero for all events!
-    hRingObservable_TrueValuePtCuts->Divide(hLambdaCounter_phiRingAngles_Weighted);
-    hRingObservable_NormPolTrueValuePtCuts->Divide(hLambdaCounter_phiRingAngles_Weighted);
-    hRingObservable_TrueValuePtCuts_integrated->Scale(1./hLambdaCounter_phiRingAngles_Weighted->Integral());
-    hRingObservable_NormPolTrueValuePtCuts_integrated->Scale(1./hLambdaCounter_phiRingAngles_Weighted->Integral());
+    hRingObservable_TrueValuePtCuts->Divide(hLambdaCounter_phiRingAngles_Weighted_PtCuts); // Using the PtCuts counter to properly average only on the bins which are involved in the actual signal (the difference should be small because most of the counts are in the PtCuts region though)
+    hRingObservable_NormPolTrueValuePtCuts->Divide(hLambdaCounter_phiRingAngles_Weighted_PtCuts);
+    hRingObservable_TrueValuePtCuts_integrated->Scale(1./hLambdaCounter_phiRingAngles_Weighted_PtCuts->Integral());
+    hRingObservable_NormPolTrueValuePtCuts_integrated->Scale(1./hLambdaCounter_phiRingAngles_Weighted_PtCuts->Integral());
 
     hRingObservableReco->Divide(hLambdaCounter_phiRingAngles_Weighted); // These three also need to be passed as references
-    hRingObservableRecoPtCuts->Divide(hLambdaCounter_phiRingAngles_Weighted);
-    hRingObservableNormPolRecoPtCuts->Divide(hLambdaCounter_phiRingAngles_Weighted);
+    hRingObservableRecoPtCuts->Divide(hLambdaCounter_phiRingAngles_Weighted_PtCuts);
+    hRingObservableNormPolRecoPtCuts->Divide(hLambdaCounter_phiRingAngles_Weighted_PtCuts);
 
-    hRingObservableRecoPtCuts_integrated->Scale(1./hLambdaCounter_phiRingAngles_Weighted->Integral());
-    hRingObservableNormPolRecoPtCuts_integrated->Scale(1./hLambdaCounter_phiRingAngles_Weighted->Integral());
+    hRingObservableStarRecoPtCuts->Divide(hLambdaCounter_phiRingAngles_Weighted_PtCuts);
+    hRingObservableStarNormPolRecoPtCuts->Divide(hLambdaCounter_phiRingAngles_Weighted_PtCuts);
+
+    hRingObservableRecoPtCuts_integrated->Scale(1./hLambdaCounter_phiRingAngles_Weighted_PtCuts->Integral());
+    hRingObservableNormPolRecoPtCuts_integrated->Scale(1./hLambdaCounter_phiRingAngles_Weighted_PtCuts->Integral());
         // Should these following proxies be normalized by the number of protons in each phi angle, as the weighted averages somewhat have that in mind?
         // Probably not, because I fill the histograms with the Lambda's phi angle, but it would be interesting to have a version filled with the proton's
         // angle and pondering the ring observable with the proton multiplicity on each bin.
         // todo: test an averaging weight based on the proton weight on each of its own phi bins maybe? Something like an alternative ring observable.
     hRingObservable_proxy_from_daughter->Divide(hLambdaCounter_phiRingAngles_Weighted);
     hRingObservable_proxy_from_daughter_eq_def->Divide(hLambdaCounter_phiRingAngles_Weighted);
-    hRingObservable_proxy_from_daughter_eq_defPtCuts->Divide(hLambdaCounter_phiRingAngles_Weighted);
-    hRingObservable_proxy_from_daughter_eq_def2PtCuts->Divide(hLambdaCounter_phiRingAngles_Weighted);
+    hRingObservable_proxy_from_daughter_eq_defPtCuts->Divide(hLambdaCounter_phiRingAngles_Weighted_PtCuts);
+    hRingObservable_proxy_from_daughter_eq_def2PtCuts->Divide(hLambdaCounter_phiRingAngles_Weighted_PtCuts);
 
-    hRingObservable_proxy_from_daughter_eq_def2PtCuts_integrated->Scale(1./hLambdaCounter_phiRingAngles_Weighted->Integral());
-    hRingObservable_proxy_from_daughter_star_eq_defPtCuts_integrated->Scale(1./hLambdaCounter_phiRingAngles_Weighted->Integral());
+    hRingObservable_proxy_from_daughter_eq_defPtCuts_integrated->Scale(1./hLambdaCounter_phiRingAngles_Weighted_PtCuts->Integral());
+    hRingObservable_proxy_from_daughter_star_eq_defPtCuts_integrated->Scale(1./hLambdaCounter_phiRingAngles_Weighted_PtCuts->Integral());
 
         // Another attempt (with proton momentum in the rest frame):
     hRingObservable_proxy_from_daughter_star_eq_def->Divide(hLambdaCounter_phiRingAngles_Weighted);
-    hRingObservable_proxy_from_daughter_star_eq_defPtCuts->Divide(hLambdaCounter_phiRingAngles_Weighted);
+    hRingObservable_proxy_from_daughter_star_eq_defPtCuts->Divide(hLambdaCounter_phiRingAngles_Weighted_PtCuts);
+
+
+    // Setting the error bars:
+        // Setting the errors for the 4 equivalent histograms:
+    SetErrorsFromErrHist(hRingObservable_proxy_from_daughter_eq_defPtCuts, hRingObservableRecoPtCuts_Err);
+    SetErrorsFromErrHist(hRingObservable_proxy_from_daughter_star_eq_defPtCuts, hRingObservableRecoPtCuts_Err);
+    SetErrorsFromErrHist(hRingObservableRecoPtCuts, hRingObservableRecoPtCuts_Err);
+    SetErrorsFromErrHist(hRingObservableStarRecoPtCuts, hRingObservableRecoPtCuts_Err);
+    
+        // Now for the non-pT cuts variations:
+    SetErrorsFromErrHist(hRingObservableReco, hRingObservableReco_Err);
+    SetErrorsFromErrHist(hRingObservable_proxy_from_daughter_eq_def, hRingObservableReco_Err);
+    SetErrorsFromErrHist(hRingObservable_proxy_from_daughter_star_eq_def, hRingObservableReco_Err);
+
+        // For the integrated plots:
+    SetErrorsFromErrHist(hRingObservableRecoPtCuts_integrated, hRingObservableRecoPtCuts_integrated_Err);
+    SetErrorsFromErrHist(hRingObservable_proxy_from_daughter_eq_defPtCuts_integrated, hRingObservableRecoPtCuts_integrated_Err);
+    SetErrorsFromErrHist(hRingObservable_proxy_from_daughter_star_eq_defPtCuts_integrated, hRingObservableRecoPtCuts_integrated_Err);
+    // Didn't include an hRingObservableStarRecoPtCuts_integrated here, but whatever: it should be equivalent to the previous three here already!
 
     ////////////////////
     //// 4 - Exporting into a .root file for later review
@@ -1168,6 +1409,12 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     hProtonCounter_phiRing_Weighted->Write();
     hProtonStarCounter_phiRing_Weighted->Write();
     hDebugCounter_phi_star_sampler->Write();
+
+        // The PtCuts counters:
+    hLambdaCounter_phi_Weighted_PtCuts->Write();
+    hLambdaCounter_phiRingAngles_Weighted_PtCuts->Write();
+    hProtonCounter_phiRing_Weighted_PtCuts->Write();
+    hProtonStarCounter_phiRing_Weighted_PtCuts->Write();
 
         // Peace-of-mind plots -- True values!
     hLambdaPolX_phi_pT_Weighted->Write();
@@ -1223,6 +1470,8 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     hRingObservableReco->Write();
     hRingObservableRecoPtCuts->Write();
     hRingObservableNormPolRecoPtCuts->Write();
+    hRingObservableStarRecoPtCuts->Write();
+    hRingObservableStarNormPolRecoPtCuts->Write();
 
     hRingObservable_proxy_from_daughter->Write();
     hRingObservable_proxy_from_daughter_eq_def->Write();
@@ -1237,8 +1486,27 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     hRingObservable_NormPolTrueValuePtCuts_integrated->Write();
     hRingObservableRecoPtCuts_integrated->Write();
     hRingObservableNormPolRecoPtCuts_integrated->Write();
-    hRingObservable_proxy_from_daughter_eq_def2PtCuts_integrated->Write();
+    hRingObservable_proxy_from_daughter_eq_defPtCuts_integrated->Write();
     hRingObservable_proxy_from_daughter_star_eq_defPtCuts_integrated->Write();
+
+    // The error-related histograms:
+    hLambdaCounterSquared_pT_y_phi_Weighted->Write();
+    hLambdaAvgDotXSquared_pT_y_phi_Weighted->Write();
+    hLambdaAvgDotYSquared_pT_y_phi_Weighted->Write();
+    hLambdaAvgDotZSquared_pT_y_phi_Weighted->Write();
+    hLambdaNeff_pT_y_phi_Weighted->Write();
+    hLambdaNeff_minus_1_pT_y_phi_Weighted->Write();
+    hLambdaAvgDotX_pT_y_phi_Weighted_Err->Write();
+    hLambdaAvgDotY_pT_y_phi_Weighted_Err->Write();
+    hLambdaAvgDotZ_pT_y_phi_Weighted_Err->Write();
+
+    hLambdaPolStarX_pT_y_phiReco_Weighted_Err->Write();
+    hLambdaPolStarY_pT_y_phiReco_Weighted_Err->Write();
+    hLambdaPolStarZ_pT_y_phiReco_Weighted_Err->Write();
+
+    hRingObservableRecoPtCuts_Err->Write();
+    hRingObservableReco_Err->Write();
+    hRingObservableRecoPtCuts_integrated_Err->Write();
 
     // Deleting the Clone() histograms, which may still be kept in memory:
     // delete hLambdaPolStarX_pT_y_phiReco_Weighted;
@@ -1378,31 +1646,110 @@ inline int mapCompactToGlobal(const TH1& h, int compactIndex){
 }
 
 // Copy contents of a TH3D into a new TH3D -- Better than the Clone() function...
-TH3D* CopyTH3D(const TH3D* h){
-    if (!h) return nullptr;
+void CopyTH3D(const TH3D* source, TH3D* target) {
+    if (!source || !target) return;
+    // std::cout << "Now copying " << source->GetTitle() << " into " << target->GetTitle() << std::endl;
 
-    // Create a new histogram with the same binning and axis titles
-    TH3D* hcopy = new TH3D(
-        Form("%s_copy", h->GetName()),
-        h->GetTitle(),
-        h->GetNbinsX(), h->GetXaxis()->GetXmin(), h->GetXaxis()->GetXmax(),
-        h->GetNbinsY(), h->GetYaxis()->GetXmin(), h->GetYaxis()->GetXmax(),
-        h->GetNbinsZ(), h->GetZaxis()->GetXmin(), h->GetZaxis()->GetXmax()
-    );
+    // Check binning matches
+    if (source->GetNbinsX() != target->GetNbinsX() || source->GetNbinsY() != target->GetNbinsY() || source->GetNbinsZ() != target->GetNbinsZ()){
+        printf("Error: Histograms have different binning!\n");
+        return;
+    }
 
     // Copy bin contents and errors
-    for (int ix = 0; ix <= h->GetNbinsX() + 1; ++ix) {
-        for (int iy = 0; iy <= h->GetNbinsY() + 1; ++iy) {
-            for (int iz = 0; iz <= h->GetNbinsZ() + 1; ++iz) {
-                int bin = h->GetBin(ix, iy, iz);
-                hcopy->SetBinContent(bin, h->GetBinContent(bin));
-                hcopy->SetBinError(bin, h->GetBinError(bin));
+    for (int ix = 0; ix <= source->GetNbinsX() + 1; ++ix){
+        for (int iy = 0; iy <= source->GetNbinsY() + 1; ++iy){
+            for (int iz = 0; iz <= source->GetNbinsZ() + 1; ++iz){
+                int bin = source->GetBin(ix, iy, iz);
+                target->SetBinContent(bin, source->GetBinContent(bin));
+                target->SetBinError(bin, source->GetBinError(bin));
             }
         }
     }
-
-    return hcopy;
 }
+
+// ROOT lacks a sqrt function for its histograms, thus implemented it here by hand.
+// This function modifies the histogram in-place, so no returns needed.
+void SqrtHist(TH1* h){
+    int dim = h->GetDimension();
+    int nbx = h->GetNbinsX();
+    int nby = (dim > 1) ? h->GetNbinsY() : 1;
+    int nbz = (dim > 2) ? h->GetNbinsZ() : 1;
+
+    // Loop over all bins including under/overflow
+    for (int ix = 0; ix <= nbx+1; ++ix) {
+        for (int iy = 0; iy <= nby+1; ++iy) {
+            for (int iz = 0; iz <= nbz+1; ++iz) {
+                int bin = (dim == 1) ? ix
+                        : (dim == 2) ? h->GetBin(ix, iy)
+                        : h->GetBin(ix, iy, iz);
+
+                double val = h->GetBinContent(bin);
+                h->SetBinContent(bin, (val >= 0.0) ? std::sqrt(val) : 0.0);
+            }
+        }
+    }
+}
+// Older TH3D only version:
+// void SqrtHist(TH3D* h){
+//   int nbx = h->GetNbinsX();
+//   int nby = h->GetNbinsY();
+//   int nbz = h->GetNbinsZ();
+
+//   for (int ix = 1; ix <= nbx; ++ix) {
+//     for (int iy = 1; iy <= nby; ++iy) {
+//       for (int iz = 1; iz <= nbz; ++iz) {
+//         double val = h->GetBinContent(ix, iy, iz);
+//         h->SetBinContent(ix, iy, iz, (val >= 0.0) ? std::sqrt(val) : 0.0);
+//       }
+//     }
+//   }
+// }
+
+// Function that subtracts given scalar from all bins in the histogram:
+void SubtractScalar(TH3D* h, double scalar){
+  int nbx = h->GetNbinsX();
+  int nby = h->GetNbinsY();
+  int nbz = h->GetNbinsZ();
+
+  for (int ix = 1; ix <= nbx; ++ix) {
+    for (int iy = 1; iy <= nby; ++iy) {
+      for (int iz = 1; iz <= nbz; ++iz) {
+        double val = h->GetBinContent(ix, iy, iz);
+        h->SetBinContent(ix, iy, iz, val - scalar);
+      }
+    }
+  }
+}
+
+// A quick helper to set the errors in one histogram from the values in an error-histogram:
+void SetErrorsFromErrHist(TH1* data, const TH1* errors) {
+    // Check dimension match
+    if (data->GetDimension() != errors->GetDimension()) {
+        printf("Error: Histograms have different dimensions!\n");
+        return;
+    }
+
+    int dim = data->GetDimension();
+    int nbx = data->GetNbinsX();
+    int nby = (dim > 1) ? data->GetNbinsY() : 1;
+    int nbz = (dim > 2) ? data->GetNbinsZ() : 1;
+
+    // Loop over all bins including under/overflow
+    for (int ix = 0; ix <= nbx+1; ++ix) {
+        for (int iy = 0; iy <= nby+1; ++iy) {
+            for (int iz = 0; iz <= nbz+1; ++iz) {
+                int bin = (dim == 1) ? ix
+                        : (dim == 2) ? data->GetBin(ix, iy)
+                        : data->GetBin(ix, iy, iz);
+
+                double err = errors->GetBinContent(bin);
+                data->SetBinError(bin, err);
+            }
+        }
+    }
+}
+
 
 
 ///////////////////////////////////
