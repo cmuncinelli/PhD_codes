@@ -89,8 +89,9 @@ inline int mapGlobalToCompact(const TH1& h, int globalBin); // Receives the obje
 inline int mapCompactToGlobal(const TH1& h, int compactIndex); // The inverse transform
 void CopyTH3D(const TH3D* source, TH3D* target);
 void SqrtHist(TH1* h);
-void SubtractScalar(TH3D* h, double scalar);
+void AddScalar(TH3D* h, double scalar);
 void SetErrorsFromErrHist(TH1* data, const TH1* errors);
+double IntegralAbsNoOverflow(const TH1* h);
 
 
 
@@ -154,6 +155,14 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     std::vector<double> hLambdaAvgDotXSquared_pT_y_phi_Weighted_bufferGlobal(N_bins_total, 0.0);
     std::vector<double> hLambdaAvgDotYSquared_pT_y_phi_Weighted_bufferGlobal(N_bins_total, 0.0);
     std::vector<double> hLambdaAvgDotZSquared_pT_y_phi_Weighted_bufferGlobal(N_bins_total, 0.0);
+
+        // Some unweighted estimator tests -- Should be equivalent to the weighted counterparts in each (pT, y, phi) bin (shares the same mult weight), but let's test it:
+    std::vector<double> hLambdaAvgDotX_pT_y_phi_Unweighted_bufferGlobal(N_bins_total, 0.0);
+    std::vector<double> hLambdaAvgDotY_pT_y_phi_Unweighted_bufferGlobal(N_bins_total, 0.0);
+    std::vector<double> hLambdaAvgDotZ_pT_y_phi_Unweighted_bufferGlobal(N_bins_total, 0.0);
+    std::vector<double> hLambdaAvgDotXSquared_pT_y_phi_Unweighted_bufferGlobal(N_bins_total, 0.0);
+    std::vector<double> hLambdaAvgDotYSquared_pT_y_phi_Unweighted_bufferGlobal(N_bins_total, 0.0);
+    std::vector<double> hLambdaAvgDotZSquared_pT_y_phi_Unweighted_bufferGlobal(N_bins_total, 0.0);
 
     std::vector<double> hLambdaCounter_pT_y_Weighted_bufferGlobal(N_bins_pT*N_bins_rap, 0.0); 
     std::vector<double> hLambdaPolX_phi_pT_Weighted_bufferGlobal(N_bins_phi*N_bins_pT, 0.0);
@@ -236,10 +245,27 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     auto hLambdaAvgDotY_pT_y_phi_Weighted_Err = new TH3D("hLambdaAvgDotY_pT_y_phi_Weighted_Err", "hLambdaAvgDotY_pT_y_phi_Weighted_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
     auto hLambdaAvgDotZ_pT_y_phi_Weighted_Err = new TH3D("hLambdaAvgDotZ_pT_y_phi_Weighted_Err", "hLambdaAvgDotZ_pT_y_phi_Weighted_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
 
-        // The scaled version, that has the error on polarization included:
+        // The scaled version, that has the error on polarization:
     auto hLambdaPolStarX_pT_y_phiReco_Weighted_Err = new TH3D("hLambdaPolStarX_pT_y_phiReco_Weighted_Err", "hLambdaPolStarX_pT_y_phiReco_Weighted_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
     auto hLambdaPolStarY_pT_y_phiReco_Weighted_Err = new TH3D("hLambdaPolStarY_pT_y_phiReco_Weighted_Err", "hLambdaPolStarY_pT_y_phiReco_Weighted_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
     auto hLambdaPolStarZ_pT_y_phiReco_Weighted_Err = new TH3D("hLambdaPolStarZ_pT_y_phiReco_Weighted_Err", "hLambdaPolStarZ_pT_y_phiReco_Weighted_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+
+            // Unweighted tests for error propagation:
+    auto hLambdaAvgDotX_pT_y_phi_Unweighted = new TH3D("hLambdaAvgDotX_pT_y_phi_Unweighted", "hLambdaAvgDotX_pT_y_phi_Unweighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    auto hLambdaAvgDotY_pT_y_phi_Unweighted = new TH3D("hLambdaAvgDotY_pT_y_phi_Unweighted", "hLambdaAvgDotY_pT_y_phi_Unweighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    auto hLambdaAvgDotZ_pT_y_phi_Unweighted = new TH3D("hLambdaAvgDotZ_pT_y_phi_Unweighted", "hLambdaAvgDotZ_pT_y_phi_Unweighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    auto hLambdaAvgDotXSquared_pT_y_phi_Unweighted = new TH3D("hLambdaAvgDotXSquared_pT_y_phi_Unweighted", "hLambdaAvgDotXSquared_pT_y_phi_Unweighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    auto hLambdaAvgDotYSquared_pT_y_phi_Unweighted = new TH3D("hLambdaAvgDotYSquared_pT_y_phi_Unweighted", "hLambdaAvgDotYSquared_pT_y_phi_Unweighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    auto hLambdaAvgDotZSquared_pT_y_phi_Unweighted = new TH3D("hLambdaAvgDotZSquared_pT_y_phi_Unweighted", "hLambdaAvgDotZSquared_pT_y_phi_Unweighted", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+
+        // Actual error histograms:
+    auto hLambdaAvgDotX_pT_y_phi_Unweighted_Err = new TH3D("hLambdaAvgDotX_pT_y_phi_Unweighted_Err", "hLambdaAvgDotX_pT_y_phi_Unweighted_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    auto hLambdaAvgDotY_pT_y_phi_Unweighted_Err = new TH3D("hLambdaAvgDotY_pT_y_phi_Unweighted_Err", "hLambdaAvgDotY_pT_y_phi_Unweighted_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    auto hLambdaAvgDotZ_pT_y_phi_Unweighted_Err = new TH3D("hLambdaAvgDotZ_pT_y_phi_Unweighted_Err", "hLambdaAvgDotZ_pT_y_phi_Unweighted_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+            // The scaled version, that has the error on polarization:
+    auto hLambdaPolStarX_pT_y_phiReco_Unweighted_Err = new TH3D("hLambdaPolStarX_pT_y_phiReco_Unweighted_Err", "hLambdaPolStarX_pT_y_phiReco_Unweighted_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    auto hLambdaPolStarY_pT_y_phiReco_Unweighted_Err = new TH3D("hLambdaPolStarY_pT_y_phiReco_Unweighted_Err", "hLambdaPolStarY_pT_y_phiReco_Unweighted_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
+    auto hLambdaPolStarZ_pT_y_phiReco_Unweighted_Err = new TH3D("hLambdaPolStarZ_pT_y_phiReco_Unweighted_Err", "hLambdaPolStarZ_pT_y_phiReco_Unweighted_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
 
 
         // TH1D's that have the error for all of those 4 hRingObservable definitions:
@@ -539,6 +565,14 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
         std::vector<double> hLambdaAvgDotYSquared_pT_y_phi_Weighted_buffer(N_bins_total, 0.0);
         std::vector<double> hLambdaAvgDotZSquared_pT_y_phi_Weighted_buffer(N_bins_total, 0.0);
 
+            // Unweighted tests:
+        std::vector<double> hLambdaAvgDotX_pT_y_phi_Unweighted_buffer(N_bins_total, 0.0);
+        std::vector<double> hLambdaAvgDotY_pT_y_phi_Unweighted_buffer(N_bins_total, 0.0);
+        std::vector<double> hLambdaAvgDotZ_pT_y_phi_Unweighted_buffer(N_bins_total, 0.0);
+        std::vector<double> hLambdaAvgDotXSquared_pT_y_phi_Unweighted_buffer(N_bins_total, 0.0);
+        std::vector<double> hLambdaAvgDotYSquared_pT_y_phi_Unweighted_buffer(N_bins_total, 0.0);
+        std::vector<double> hLambdaAvgDotZSquared_pT_y_phi_Unweighted_buffer(N_bins_total, 0.0);
+
         std::vector<double> hLambdaCounter_pT_y_Weighted_buffer(N_bins_pT*N_bins_rap, 0.0); 
         std::vector<double> hLambdaPolX_phi_pT_Weighted_buffer(N_bins_phi*N_bins_pT, 0.0);
         std::vector<double> hLambdaPolY_phi_pT_Weighted_buffer(N_bins_phi*N_bins_pT, 0.0);
@@ -795,11 +829,24 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
                 double X_dotSquared = current_particle_multiplicity * X_dot*X_dot; // Here X_dot is just the X component of the daughter unit vector in the rest frame.
                 double Y_dotSquared = current_particle_multiplicity * Y_dot*Y_dot;
                 double Z_dotSquared = current_particle_multiplicity * Z_dot*Z_dot;
+                
+                    // Test name REMOVE WEIGHTS -- This test tries to verify if removing the w_j weights will, as expected, have no effect as the N_particles weight is the same for the same (pT, y, phi) bin
+                double X_dotSquared_Unweighted = X_dot*X_dot; // Here X_dot is just the X component of the daughter unit vector in the rest frame.
+                double Y_dotSquared_Unweighted = Y_dot*Y_dot;
+                double Z_dotSquared_Unweighted = Z_dot*Z_dot;
 
                 hLambdaCounterSquared_pT_y_phi_Weighted_buffer[compact_bin_idx_pT_y_phi_value] += counter_squared;
                 hLambdaAvgDotXSquared_pT_y_phi_Weighted_buffer[compact_bin_idx_pT_y_phi_value] += X_dotSquared;
                 hLambdaAvgDotYSquared_pT_y_phi_Weighted_buffer[compact_bin_idx_pT_y_phi_value] += Y_dotSquared;
                 hLambdaAvgDotZSquared_pT_y_phi_Weighted_buffer[compact_bin_idx_pT_y_phi_value] += Z_dotSquared;
+
+                    // Unweighted variation:
+                hLambdaAvgDotX_pT_y_phi_Unweighted_buffer[compact_bin_idx_pT_y_phi_value] += X_dot;
+                hLambdaAvgDotY_pT_y_phi_Unweighted_buffer[compact_bin_idx_pT_y_phi_value] += Y_dot;
+                hLambdaAvgDotZ_pT_y_phi_Unweighted_buffer[compact_bin_idx_pT_y_phi_value] += Z_dot;
+                hLambdaAvgDotXSquared_pT_y_phi_Unweighted_buffer[compact_bin_idx_pT_y_phi_value] += X_dotSquared_Unweighted;
+                hLambdaAvgDotYSquared_pT_y_phi_Unweighted_buffer[compact_bin_idx_pT_y_phi_value] += Y_dotSquared_Unweighted;
+                hLambdaAvgDotZSquared_pT_y_phi_Unweighted_buffer[compact_bin_idx_pT_y_phi_value] += Z_dotSquared_Unweighted;
 
 
                 hRingObservable_proxy_from_daughter_buffer[compact_bin_idx_phiRing_value] += RP_temp * current_particle_multiplicity;
@@ -869,6 +916,14 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
                 hLambdaAvgDotXSquared_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaAvgDotXSquared_pT_y_phi_Weighted_buffer[CompactBinIndex_pT_y_phi];
                 hLambdaAvgDotYSquared_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaAvgDotYSquared_pT_y_phi_Weighted_buffer[CompactBinIndex_pT_y_phi];
                 hLambdaAvgDotZSquared_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaAvgDotZSquared_pT_y_phi_Weighted_buffer[CompactBinIndex_pT_y_phi];
+
+                // Unweighted variation:
+                hLambdaAvgDotX_pT_y_phi_Unweighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaAvgDotX_pT_y_phi_Unweighted_buffer[CompactBinIndex_pT_y_phi];
+                hLambdaAvgDotY_pT_y_phi_Unweighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaAvgDotY_pT_y_phi_Unweighted_buffer[CompactBinIndex_pT_y_phi];
+                hLambdaAvgDotZ_pT_y_phi_Unweighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaAvgDotZ_pT_y_phi_Unweighted_buffer[CompactBinIndex_pT_y_phi];
+                hLambdaAvgDotXSquared_pT_y_phi_Unweighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaAvgDotXSquared_pT_y_phi_Unweighted_buffer[CompactBinIndex_pT_y_phi];
+                hLambdaAvgDotYSquared_pT_y_phi_Unweighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaAvgDotYSquared_pT_y_phi_Unweighted_buffer[CompactBinIndex_pT_y_phi];
+                hLambdaAvgDotZSquared_pT_y_phi_Unweighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaAvgDotZSquared_pT_y_phi_Unweighted_buffer[CompactBinIndex_pT_y_phi];
 
                 hLambdaPolX_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaPolX_pT_y_phi_Weighted_buffer[CompactBinIndex_pT_y_phi];
                 hLambdaPolY_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi] += hLambdaPolY_pT_y_phi_Weighted_buffer[CompactBinIndex_pT_y_phi];
@@ -967,6 +1022,14 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
         hLambdaAvgDotYSquared_pT_y_phi_Weighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaAvgDotYSquared_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
         hLambdaAvgDotZSquared_pT_y_phi_Weighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaAvgDotZSquared_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
 
+            // Unweighted variation:
+        hLambdaAvgDotX_pT_y_phi_Unweighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaAvgDotX_pT_y_phi_Unweighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
+        hLambdaAvgDotY_pT_y_phi_Unweighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaAvgDotY_pT_y_phi_Unweighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
+        hLambdaAvgDotZ_pT_y_phi_Unweighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaAvgDotZ_pT_y_phi_Unweighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
+        hLambdaAvgDotXSquared_pT_y_phi_Unweighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaAvgDotXSquared_pT_y_phi_Unweighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
+        hLambdaAvgDotYSquared_pT_y_phi_Unweighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaAvgDotYSquared_pT_y_phi_Unweighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
+        hLambdaAvgDotZSquared_pT_y_phi_Unweighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaAvgDotZSquared_pT_y_phi_Unweighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
+
         hLambdaPolX_pT_y_phi_Weighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaPolX_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
         hLambdaPolY_pT_y_phi_Weighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaPolY_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
         hLambdaPolZ_pT_y_phi_Weighted->AddBinContent(GlobalBinIndex_pT_y_phi, hLambdaPolZ_pT_y_phi_Weighted_bufferGlobal[CompactBinIndex_pT_y_phi]);
@@ -1041,6 +1104,14 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     hLambdaAvgDotYSquared_pT_y_phi_Weighted->Divide(hLambdaCounter_pT_y_phi_Weighted);
     hLambdaAvgDotZSquared_pT_y_phi_Weighted->Divide(hLambdaCounter_pT_y_phi_Weighted);
 
+        // Test name REMOVE WEIGHTS -- This test tries to verify if removing the w_j weights will, as expected, have no effect as the N_particles weight is the same for the same (pT, y, phi) bin
+    hLambdaAvgDotX_pT_y_phi_Unweighted->Scale(1./(N_resamples*N_events));
+    hLambdaAvgDotY_pT_y_phi_Unweighted->Scale(1./(N_resamples*N_events));
+    hLambdaAvgDotZ_pT_y_phi_Unweighted->Scale(1./(N_resamples*N_events));
+    hLambdaAvgDotXSquared_pT_y_phi_Unweighted->Scale(1./(N_resamples*N_events));
+    hLambdaAvgDotYSquared_pT_y_phi_Unweighted->Scale(1./(N_resamples*N_events));
+    hLambdaAvgDotZSquared_pT_y_phi_Unweighted->Scale(1./(N_resamples*N_events));
+
     // Cloning everything by hand (usually behaves better than ROOT's Clone()):
     CopyTH3D(hLambdaAvgDotX_pT_y_phi_Weighted, hLambdaPolStarX_pT_y_phiReco_Weighted);
     CopyTH3D(hLambdaAvgDotY_pT_y_phi_Weighted, hLambdaPolStarY_pT_y_phiReco_Weighted);
@@ -1056,7 +1127,7 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     hLambdaPolStarZ_pT_y_phiReco_Weighted->Scale(3.0 / alpha_H);
 
 
-    //////// Calculating error bars for the polarization vectors (and for all the Ring Observable equivalent estimators too, as these are equivalent):
+    //////// Calculating error bars for the polarization vectors (and for all the Ring Observable equivalent estimators too, as these are equivalent error bars):
         // Calculating the error bars using the methods of section 2 of "Error_propagation_discussion_of_Ring.pdf", "Small-N correction" section:
     CopyTH3D(hLambdaAvgDotX_pT_y_phi_Weighted, hLambdaAvgDotX_pT_y_phi_Weighted_Err);
     CopyTH3D(hLambdaAvgDotY_pT_y_phi_Weighted, hLambdaAvgDotY_pT_y_phi_Weighted_Err);
@@ -1078,12 +1149,19 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     hLambdaNeff_pT_y_phi_Weighted->Divide(hLambdaCounterSquared_pT_y_phi_Weighted);
     
     CopyTH3D(hLambdaNeff_pT_y_phi_Weighted, hLambdaNeff_minus_1_pT_y_phi_Weighted); // I actually need N_eff - 1 in a denominator!
-    SubtractScalar(hLambdaNeff_minus_1_pT_y_phi_Weighted, -1.);
+    AddScalar(hLambdaNeff_minus_1_pT_y_phi_Weighted, -1.); // The number of particles is actually so big that this doesn't matter, but whatever...
 
             // Finally, calculating Var(<p_D>) = sqrt(1/(N_eff - 1) * (<p_i^2>_w - \mu_w^2)) for each component of <\hat{p}_D>:
-    hLambdaAvgDotX_pT_y_phi_Weighted_Err->Divide(hLambdaNeff_minus_1_pT_y_phi_Weighted);
-    hLambdaAvgDotY_pT_y_phi_Weighted_Err->Divide(hLambdaNeff_minus_1_pT_y_phi_Weighted);
-    hLambdaAvgDotZ_pT_y_phi_Weighted_Err->Divide(hLambdaNeff_minus_1_pT_y_phi_Weighted);
+    // hLambdaAvgDotX_pT_y_phi_Weighted_Err->Divide(hLambdaNeff_minus_1_pT_y_phi_Weighted);
+    // hLambdaAvgDotY_pT_y_phi_Weighted_Err->Divide(hLambdaNeff_minus_1_pT_y_phi_Weighted);
+    // hLambdaAvgDotZ_pT_y_phi_Weighted_Err->Divide(hLambdaNeff_minus_1_pT_y_phi_Weighted);
+
+        // Another test, where N_eff is actually just the number of resamplings done, whilst
+        // the averages are still being calculated and normalized with their own particle
+        // multiplicity weights. This should give me the right order of errors.
+    hLambdaAvgDotX_pT_y_phi_Weighted_Err->Scale(1./(N_resamples-1)); // Using N_resamples-1 as an unbiased error estimator for low resampling numbers.
+    hLambdaAvgDotY_pT_y_phi_Weighted_Err->Scale(1./(N_resamples-1));
+    hLambdaAvgDotZ_pT_y_phi_Weighted_Err->Scale(1./(N_resamples-1));
                 // Taking the sqrt for each of them with an in-place method:
     SqrtHist(hLambdaAvgDotX_pT_y_phi_Weighted_Err);
     SqrtHist(hLambdaAvgDotY_pT_y_phi_Weighted_Err);
@@ -1103,11 +1181,58 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     SetErrorsFromErrHist(hLambdaPolStarY_pT_y_phiReco_Weighted, hLambdaPolStarY_pT_y_phiReco_Weighted_Err);
     SetErrorsFromErrHist(hLambdaPolStarZ_pT_y_phiReco_Weighted, hLambdaPolStarZ_pT_y_phiReco_Weighted_Err);
 
+
+        // ALTERNATIVE VERSION -- Unweighted averaging to get only the error due to resampling, and thus weights and
+        // normalizations (Neff) only related to the actual number of resamplings done, not the weights related to the
+        // iSS oversampling of particles in each bin:
+    // Calculating the error bars using the methods of section 1 of "Error_propagation_discussion_of_Ring.pdf", the unweighted method:
+    // Notice all the comments have the _w subindex removed as these are no longer weighted observables
+    CopyTH3D(hLambdaAvgDotX_pT_y_phi_Unweighted, hLambdaAvgDotX_pT_y_phi_Unweighted_Err);
+    CopyTH3D(hLambdaAvgDotY_pT_y_phi_Unweighted, hLambdaAvgDotY_pT_y_phi_Unweighted_Err);
+    CopyTH3D(hLambdaAvgDotZ_pT_y_phi_Unweighted, hLambdaAvgDotZ_pT_y_phi_Unweighted_Err);
+
+            // Now taking the square to get \mu^2:
+    hLambdaAvgDotX_pT_y_phi_Unweighted_Err->Multiply(hLambdaAvgDotX_pT_y_phi_Unweighted_Err);
+    hLambdaAvgDotY_pT_y_phi_Unweighted_Err->Multiply(hLambdaAvgDotY_pT_y_phi_Unweighted_Err);
+    hLambdaAvgDotZ_pT_y_phi_Unweighted_Err->Multiply(hLambdaAvgDotZ_pT_y_phi_Unweighted_Err);
+
+            // Now replacing the contents with <p_i^2> - \mu^2
+    hLambdaAvgDotX_pT_y_phi_Unweighted_Err->Add(hLambdaAvgDotXSquared_pT_y_phi_Unweighted, hLambdaAvgDotX_pT_y_phi_Unweighted_Err, 1., -1.);
+    hLambdaAvgDotY_pT_y_phi_Unweighted_Err->Add(hLambdaAvgDotYSquared_pT_y_phi_Unweighted, hLambdaAvgDotY_pT_y_phi_Unweighted_Err, 1., -1.);
+    hLambdaAvgDotZ_pT_y_phi_Unweighted_Err->Add(hLambdaAvgDotZSquared_pT_y_phi_Unweighted, hLambdaAvgDotZ_pT_y_phi_Unweighted_Err, 1., -1.);
+
+    // (THERE IS NO EFFECTIVE SAMPLE SIZE HERE! JUST N_events*N_resamples !)
+
+            // Finally, calculating Var(<p_D>) = sqrt(1/(N_events*N_resamples) * (<p_i^2> - \mu^2)) for each component of <\hat{p}_D>:
+                // (actually, am trying to do this with 1/sqrt(N_resamples) alone now)
+    hLambdaAvgDotX_pT_y_phi_Unweighted_Err->Scale(1./(N_resamples-1)); // Notice you have to scale BEFORE the square root takes place
+    hLambdaAvgDotY_pT_y_phi_Unweighted_Err->Scale(1./(N_resamples-1)); // Using N_resamples-1 as an unbiased error estimator for low resampling numbers.
+    hLambdaAvgDotZ_pT_y_phi_Unweighted_Err->Scale(1./(N_resamples-1));
+                // Taking the sqrt for each of them with an in-place method:
+    SqrtHist(hLambdaAvgDotX_pT_y_phi_Unweighted_Err);
+    SqrtHist(hLambdaAvgDotY_pT_y_phi_Unweighted_Err);
+    SqrtHist(hLambdaAvgDotZ_pT_y_phi_Unweighted_Err);
+
+            // Scaling these errors to get the error on polarization:
+    CopyTH3D(hLambdaAvgDotX_pT_y_phi_Unweighted_Err, hLambdaPolStarX_pT_y_phiReco_Unweighted_Err);
+    CopyTH3D(hLambdaAvgDotY_pT_y_phi_Unweighted_Err, hLambdaPolStarY_pT_y_phiReco_Unweighted_Err);
+    CopyTH3D(hLambdaAvgDotZ_pT_y_phi_Unweighted_Err, hLambdaPolStarZ_pT_y_phiReco_Unweighted_Err);
+
+    hLambdaPolStarX_pT_y_phiReco_Unweighted_Err->Scale(3.0 / alpha_H);
+    hLambdaPolStarY_pT_y_phiReco_Unweighted_Err->Scale(3.0 / alpha_H);
+    hLambdaPolStarZ_pT_y_phiReco_Unweighted_Err->Scale(3.0 / alpha_H);
+
+        // Setting these errors as the errors in the TH3D histograms
+        // Will now use THESE errors as the correct estimates!
+    // SetErrorsFromErrHist(hLambdaPolStarX_pT_y_phiReco_Weighted, hLambdaPolStarX_pT_y_phiReco_Weighted_Err);
+    // SetErrorsFromErrHist(hLambdaPolStarY_pT_y_phiReco_Weighted, hLambdaPolStarY_pT_y_phiReco_Weighted_Err);
+    // SetErrorsFromErrHist(hLambdaPolStarZ_pT_y_phiReco_Weighted, hLambdaPolStarZ_pT_y_phiReco_Weighted_Err);
+
     ///////////////////////////////////////////////////////////////
 
         // Now boosting each of these into the lab rest frame by calculating a mean 4-vector of all Lambdas in each (pT, y) bin:
-    double total_Lambdas = hLambdaCounter_phiRingAngles_Weighted->Integral();
-    double total_Lambdas_PtCuts = hLambdaCounter_phiRingAngles_Weighted_PtCuts->Integral();
+    // double total_Lambdas = hLambdaCounter_phiRingAngles_Weighted->Integral();
+    // double total_Lambdas_PtCuts = hLambdaCounter_phiRingAngles_Weighted_PtCuts->Integral();
     for (int pT_idx = 1; pT_idx <= N_bins_pT; pT_idx++){ // bin index starts at 1 (not 0)
         for (int y_idx = 1; y_idx <= N_bins_rap; y_idx++){
             for (int phi_idx = 1; phi_idx <= N_bins_phi; phi_idx++){
@@ -1126,9 +1251,20 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
                 double PolX_star_pTy_phi_Weighted_Err = hLambdaPolStarX_pT_y_phiReco_Weighted_Err->GetBinContent(pT_idx, y_idx, phi_idx); // Or could just use a GetBinError() from hLambdaPolStarX_pT_y_phiReco_Weighted
                 double PolY_star_pTy_phi_Weighted_Err = hLambdaPolStarY_pT_y_phiReco_Weighted_Err->GetBinContent(pT_idx, y_idx, phi_idx);
                 double PolZ_star_pTy_phi_Weighted_Err = hLambdaPolStarZ_pT_y_phiReco_Weighted_Err->GetBinContent(pT_idx, y_idx, phi_idx);
-                double current_phiRing_bin_multiplicity = hLambdaCounter_phiRingAngles_Weighted->GetBinContent(phi_idx); // Useful as the W^2 in the error propagation of the ring observable
-                    // Introducing a variation that includes PtCuts weights only for the ring observable:
-                double current_phiRing_bin_multiplicity_PtCuts = hLambdaCounter_phiRingAngles_Weighted_PtCuts->GetBinContent(phi_idx);
+
+                    // Now trying with the unweighted errors:
+                // double PolX_star_pTy_phi_Unweighted_Err = hLambdaPolStarX_pT_y_phiReco_Unweighted_Err->GetBinContent(pT_idx, y_idx, phi_idx); // Or could just use a GetBinError() from hLambdaPolStarX_pT_y_phiReco_Weighted
+                // double PolY_star_pTy_phi_Unweighted_Err = hLambdaPolStarY_pT_y_phiReco_Unweighted_Err->GetBinContent(pT_idx, y_idx, phi_idx);
+                // double PolZ_star_pTy_phi_Unweighted_Err = hLambdaPolStarZ_pT_y_phiReco_Unweighted_Err->GetBinContent(pT_idx, y_idx, phi_idx);
+
+                // Now doing his part outside of the loop -- Still no clue to why this didn't work as expected (or even to why the hLambdaCounter_phiRingAngles_Weighted without the wrap didn't work)!
+                //     // Getting the Ring phi index (the angle is wrapped between -PI to PI instead of 0 to 2*PI, so these indexes change!)
+                // double phi_bin_center_wrapped = wrapToInterval(phi_bin_center, phi_min_Ring, phi_max_Ring);
+                // int phiRing_idx = hLambdaCounter_phiRingAngles_Weighted->FindBin(phi_bin_center_wrapped);
+                // double current_phiRing_bin_multiplicity = hLambdaCounter_phiRingAngles_Weighted->GetBinContent(phiRing_idx); // Useful as the W^2 in the error propagation of the ring observable
+                //     // Introducing a variation that includes PtCuts weights only for the ring observable:
+                // double current_phiRing_bin_multiplicity_PtCuts = hLambdaCounter_phiRingAngles_Weighted_PtCuts->GetBinContent(phiRing_idx);
+                double current_phi_bin_multiplicity = hLambdaCounter_phi_Weighted->GetBinContent(phi_idx); // A value integrated over the y and pT axes, also matching the phi definition (0 to 2*PI) of this particular phi_idx.
 
                 // Now calculating a mean 4-momentum of the Lambda in each bin:
                 double mean_px = pT_bin_center * std::cos(phi_bin_center);
@@ -1218,6 +1354,8 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
 
                 double delta_phi_J = phi_bin_center; // In this coordinate definition after the phi_matrix rotation, the jet is always facing the x axis and phi is already a delta_phi_J
                 delta_phi_J = wrapToInterval(delta_phi_J, phi_min_Ring, phi_max_Ring);
+                int phiRing_idx = hLambdaCounter_phiRingAngles_Weighted->FindBin(delta_phi_J);
+                double current_phiRing_bin_multiplicity_PtCuts = hLambdaCounter_phiRingAngles_Weighted_PtCuts->GetBinContent(phiRing_idx);
 
                 hRingObservableReco->Fill(delta_phi_J, RP_temp * current_pTyphi_bin_multiplicity);
 
@@ -1235,31 +1373,34 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
                     + P_Lambda_star_mean_4vec_Weighted.Z()*P_Lambda_star_mean_4vec_Weighted.Z());
                 double RP_temp_star_Norm = RP_temp_star/Pol_norm_star;
 
-                // Calculating the current bin's error
-                    // -- Say the ring observable is a (weighted) average R = <P_i * A_i>_i where i is each bin, so that sigma(R) = sqrt(sum_i A_i^2 * sigma(P_i)^2 * w_i^2/W^2)
+                // Calculating the current bin's error (following "Error_propagation_discussion_of_Ring.pdf")
+                    // -- Say the ring observable is a (weighted) average R = <P_i * A_i>_i where i is each bin, so that sigma(R) = sqrt(sum_i A_i^2 * sigma(P_i)^2 * w_i/W^2)
                     // w_i is the current 3D bin's particle multiplicity, W is the current_phiRing_bin_multiplicity, P_i the polarization and A_i the rest of the ring observable.
                     // Actually, notice that you have to combine the three spatial components here via the cross_x, cross_y, cross_z products too!
                     // So instead of sigma(P_i), you will have sigma(P_i_k) * cross_k for each component, and then you just sum the 3 squares inside each i-th bin
                 double err_x = PolX_star_pTy_phi_Weighted_Err * cross_x;
                 double err_y = PolY_star_pTy_phi_Weighted_Err * cross_y;
                 double err_z = PolZ_star_pTy_phi_Weighted_Err * cross_z;
+                // double err_x = PolX_star_pTy_phi_Unweighted_Err * cross_x;
+                // double err_y = PolY_star_pTy_phi_Unweighted_Err * cross_y;
+                // double err_z = PolZ_star_pTy_phi_Unweighted_Err * cross_z;
                 double current_RingObservableReco_Err_squared = (err_x*err_x + err_y*err_y + err_z*err_z)/(cross_product_norm*cross_product_norm) // Summing the errors of the three spatial components already weighted by their cross product component in err_i
-                                                                 * current_pTyphi_bin_multiplicity; // w_i --> Careful! This is not w_i^2! We are really just summing the square errors as if independent!
+                                                                 * current_pTyphi_bin_multiplicity/current_phi_bin_multiplicity; // w_i --> Careful! This is not w_i^2! We are really just summing the square errors as if independent!
                                                                 // Just for testing, placed this normalization outside the loop:
-                                                                //  /(current_phiRing_bin_multiplicity*current_phiRing_bin_multiplicity); // 1/W^2
+                                                                //  /(current_phi_bin_multiplicity*current_phi_bin_multiplicity); // 1/W^2
                     // Notice that due to this error already being normalized here, I need to normalize it differently when I take the integrated error:
-                // double current_RingObservableReco_integrated_Err_squared = (err_x*err_x + err_y*err_y + err_z*err_z)/(cross_product_norm*cross_product_norm) // Summing the errors of the three spatial components already weighted by their cross product component in err_i
-                //                                                  * current_pTyphi_bin_multiplicity*current_pTyphi_bin_multiplicity // w_i^2
+                // double current_RingObservableReco_integrated_Err_squared = (err_x*err_x + err_y*err_y + err_z*err_z)/(cross_product_norm*cross_product_norm) 
+                //                                                  * current_pTyphi_bin_multiplicity*current_pTyphi_bin_multiplicity // w_i
                 //                                                  /(total_Lambdas*total_Lambdas); // 1/W^2 --> And here this corresponds to the total amount of Lambdas because we integrate along all dimensions!
                 hRingObservableReco_Err->Fill(delta_phi_J, current_RingObservableReco_Err_squared); // This will need to receive a sqrt() later, after the averaging!
 
                 // Now for the PtCuts variant of error calculation:
-                double current_RingObservableReco_Err_squared_PtCuts = (err_x*err_x + err_y*err_y + err_z*err_z)/(cross_product_norm*cross_product_norm) // Summing the errors of the three spatial components already weighted by their cross product component in err_i
-                                                                 * current_pTyphi_bin_multiplicity; // w_i --> Careful! This is not w_i^2! We are really just summing the square errors as if independent!
+                double current_RingObservableReco_Err_squared_PtCuts = (err_x*err_x + err_y*err_y + err_z*err_z)/(cross_product_norm*cross_product_norm) 
+                                                                 * current_pTyphi_bin_multiplicity; // w_i
                                                                 // Just for testing, placed this normalization outside the loop:
-                                                                //  /(current_phiRing_bin_multiplicity_PtCuts*current_phiRing_bin_multiplicity_PtCuts); // 1/W^2
-                double current_RingObservableReco_integrated_Err_squared_PtCuts = (err_x*err_x + err_y*err_y + err_z*err_z)/(cross_product_norm*cross_product_norm) // Summing the errors of the three spatial components already weighted by their cross product component in err_i
-                                                                 * current_pTyphi_bin_multiplicity; // w_i --> Careful! This is not w_i^2! We are really just summing the square errors as if independent!
+                                                                //  /(current_phi_bin_multiplicity*current_phi_bin_multiplicity); // 1/W^2
+                double current_RingObservableReco_integrated_Err_squared_PtCuts = (err_x*err_x + err_y*err_y + err_z*err_z)/(cross_product_norm*cross_product_norm) 
+                                                                 * current_pTyphi_bin_multiplicity; // w_i
                                                                 // Just for testing, placed this normalization outside the loop:
                                                                 //  /(total_Lambdas_PtCuts*total_Lambdas_PtCuts); // 1/W^2 --> And here this corresponds to the total amount of Lambdas because we integrate along all dimensions!
 
@@ -1276,19 +1417,70 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
                         // Now for the PtCuts variation of error:
                     hRingObservableRecoPtCuts_Err->Fill(delta_phi_J, current_RingObservableReco_Err_squared_PtCuts); // This will need to receive a sqrt() later, after the averaging!
                     hRingObservableRecoPtCuts_integrated_Err->Fill(delta_phi_J, current_RingObservableReco_integrated_Err_squared_PtCuts);
+
+                    // std::cout << "\nDEBUG!" << std::endl;
+                    // std::cout << "Actual polarization value is P_Lambda_star_mean_4vec_Weighted.Z() = " << P_Lambda_star_mean_4vec_Weighted.Z() << std::endl;
+                    // std::cout << "PolZ_star_pTy_phi_Weighted_Err: " << PolZ_star_pTy_phi_Weighted_Err << std::endl;
+                    // // std::cout << "PolZ_star_pTy_phi_Unweighted_Err: " << PolZ_star_pTy_phi_Unweighted_Err << std::endl;
+                    // std::cout << "Matches with hLambdaPolStarZ_pT_y_phiReco_Weighted->GetBinError(pT_idx, y_idx, phi_idx) ? " << hLambdaPolStarZ_pT_y_phiReco_Weighted->GetBinError(pT_idx, y_idx, phi_idx) << std::endl; // Matches! No error on the SetErrorsFromErrHist
+                    // std::cout << "cross_z: " << cross_z << std::endl;
+                    // std::cout << "err_z: " << err_z << std::endl;
+                    // std::cout << "cross_product_norm: " << cross_product_norm << std::endl;
+                    // std::cout << "err_z/cross_product_norm: " << err_z/cross_product_norm << std::endl;
+                    // std::cout << "current_pTyphi_bin_multiplicity: " << current_pTyphi_bin_multiplicity << std::endl;
+
+                    // std::cout << "\nMultiplicity of the current bin is: current_phiRing_bin_multiplicity_PtCuts = " << current_phiRing_bin_multiplicity_PtCuts << std::endl;
+                    // std::cout << "Confirming, the expect bin center value is: " << delta_phi_J << " while the value we are accessing the multiplicity of is: " << hLambdaCounter_phiRingAngles_Weighted_PtCuts->GetBinCenter(phiRing_idx) << std::endl;
+                    // std::cout << "The total error^2 contribution here, already divided by the multiplicity of the current phi bin is: " << current_RingObservableReco_Err_squared_PtCuts/current_phiRing_bin_multiplicity_PtCuts << std::endl;
+                    // std::cout << "And the square root of that is: " << std::sqrt(current_RingObservableReco_Err_squared_PtCuts/current_phiRing_bin_multiplicity_PtCuts) << std::endl;
+                    // std::cout << "The current contribution to the ring observable would be: " << RP_temp_star * current_pTyphi_bin_multiplicity << std::endl;
+                    // std::cout << "Or if you normalize that by the multiplicity of the current bin (compare with the sqrt of the error above): " << RP_temp_star * current_pTyphi_bin_multiplicity/current_phiRing_bin_multiplicity_PtCuts << std::endl;
+
+                    // if (current_RingObservableReco_Err_squared_PtCuts < 0.){throw std::out_of_range("Error is smaller than 0 !!!");}
                 }
             }
         }
     }
     // Taking the square root of the summed current_RingObservableReco_Err_squared components to properly get the error, and then setting that as the error of the ring TH1D's
+    // std::cout << "DEBUG! The last bin's error before the square root is: " << hRingObservableRecoPtCuts_Err->GetBinContent(N_bins_phi) << std::endl;
+    // std::cout << "DEBUG! The integrated bin's error before the square root is: " << hRingObservableRecoPtCuts_integrated_Err->GetBinContent(1) << std::endl;
+    
     SqrtHist(hRingObservableReco_Err);
     SqrtHist(hRingObservableRecoPtCuts_Err);
     SqrtHist(hRingObservableRecoPtCuts_integrated_Err);
+
+    // std::cout << "DEBUG! The last bin's error after the square root is: " << hRingObservableRecoPtCuts_Err->GetBinContent(N_bins_phi) << std::endl;
+    // std::cout << "DEBUG! The integrated bin's error after the square root is: " << hRingObservableRecoPtCuts_integrated_Err->GetBinContent(1) << std::endl;
 
     // TESTING -- Reintroducing the three removed normalizations (AFTER the square root is taken!):
     hRingObservableReco_Err->Divide(hLambdaCounter_phiRingAngles_Weighted);
     hRingObservableRecoPtCuts_Err->Divide(hLambdaCounter_phiRingAngles_Weighted_PtCuts);
     hRingObservableRecoPtCuts_integrated_Err->Scale(1./hLambdaCounter_phiRingAngles_Weighted_PtCuts->Integral());
+
+        // The previous method of error propagation of the integral was not working. Will fix it by hand:
+    double integrated_err = 0;
+    for (int i = 1; i <= hRingObservableRecoPtCuts_Err->GetNbinsX(); i++){
+        double err_i = hRingObservableRecoPtCuts_Err->GetBinContent(i);
+        integrated_err += err_i*err_i;
+    }
+    integrated_err = std::sqrt(integrated_err);
+    hRingObservableRecoPtCuts_integrated_Err->SetBinContent(1, integrated_err);
+
+    // std::cout << "DEBUG! The last bin's error after the normalization is: " << hRingObservableRecoPtCuts_Err->GetBinContent(N_bins_phi) << std::endl;
+    // std::cout << "DEBUG! The integrated bin's error after the normalization is: " << hRingObservableRecoPtCuts_integrated_Err->GetBinContent(1) << std::endl;
+
+    // std::cout << "\nDEBUG! The integral of hLambdaPolStarZ_pT_y_phiReco_Weighted is " << hLambdaPolStarZ_pT_y_phiReco_Weighted->Integral() << std::endl;
+    // std::cout << "DEBUG! The integral of the modulus of hLambdaPolStarZ_pT_y_phiReco_Weighted is " << IntegralAbsNoOverflow(hLambdaPolStarZ_pT_y_phiReco_Weighted) << std::endl;
+    // std::cout << "DEBUG! The integral of its errors matrix is: " << hLambdaPolStarZ_pT_y_phiReco_Weighted_Err->Integral() << std::endl;
+    // std::cout << "DEBUG! The integral of its errors matrix (unweighted by particle multiplicity) is: " << hLambdaPolStarZ_pT_y_phiReco_Unweighted_Err->Integral() << std::endl;
+    // std::cout << "DEBUG! The integral of hLambdaCounter_phiRingAngles_Weighted_PtCuts is " << hLambdaCounter_phiRingAngles_Weighted_PtCuts->Integral() << std::endl;
+    // // std::cout << "DEBUG! The integral of hRingObservableStarRecoPtCuts (normalized) is " << hRingObservableStarRecoPtCuts->Integral()/hLambdaCounter_phiRingAngles_Weighted_PtCuts->Integral() << std::endl;
+    //     // The value above is wrong! The weights are not equal for all bins, so dividing a sum by another sum is not the same as sum_i a_i/b_i !
+    // // std::cout << "Just to make sure the multiplicities match:" << std::endl;
+    // // std::cout << "total_Lambdas: "  << total_Lambdas << std::endl;
+    // // std::cout << "total_Lambdas_PtCuts: "  << total_Lambdas_PtCuts << std::endl; // They match with N_entries on the Counter histograms.
+    // std::cout << "DEBUG! The integral of hRingObservableStarRecoPtCuts (normalized by the Divide() method) is " << hRingObservableStarRecoPtCuts->Integral() << std::endl;
+    // std::cout << "DEBUG! The integral of its errors matrix is: " << hRingObservableRecoPtCuts_Err->Integral() << std::endl;
 
         // Will only set these errors into the related histograms after they've been averaged!
 
@@ -1358,7 +1550,6 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
         // Another attempt (with proton momentum in the rest frame):
     hRingObservable_proxy_from_daughter_star_eq_def->Divide(hLambdaCounter_phiRingAngles_Weighted);
     hRingObservable_proxy_from_daughter_star_eq_defPtCuts->Divide(hLambdaCounter_phiRingAngles_Weighted_PtCuts);
-
 
     // Setting the error bars:
         // Setting the errors for the 4 equivalent histograms:
@@ -1504,8 +1695,20 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     hLambdaPolStarY_pT_y_phiReco_Weighted_Err->Write();
     hLambdaPolStarZ_pT_y_phiReco_Weighted_Err->Write();
 
-    hRingObservableRecoPtCuts_Err->Write();
+    // Unweighted error estimators:
+    hLambdaAvgDotXSquared_pT_y_phi_Weighted->Write();
+    hLambdaAvgDotYSquared_pT_y_phi_Weighted->Write();
+    hLambdaAvgDotZSquared_pT_y_phi_Weighted->Write();
+    hLambdaAvgDotX_pT_y_phi_Weighted_Err->Write();
+    hLambdaAvgDotY_pT_y_phi_Weighted_Err->Write();
+    hLambdaAvgDotZ_pT_y_phi_Weighted_Err->Write();
+    hLambdaPolStarX_pT_y_phiReco_Weighted_Err->Write();
+    hLambdaPolStarY_pT_y_phiReco_Weighted_Err->Write();
+    hLambdaPolStarZ_pT_y_phiReco_Weighted_Err->Write();
+
+    // Ring error estimators:
     hRingObservableReco_Err->Write();
+    hRingObservableRecoPtCuts_Err->Write();
     hRingObservableRecoPtCuts_integrated_Err->Write();
 
     // Deleting the Clone() histograms, which may still be kept in memory:
@@ -1670,26 +1873,65 @@ void CopyTH3D(const TH3D* source, TH3D* target) {
 
 // ROOT lacks a sqrt function for its histograms, thus implemented it here by hand.
 // This function modifies the histogram in-place, so no returns needed.
+// An uglier rewrite of this function, that discriminates all three possible dimensions instead of using shorter syntax.
 void SqrtHist(TH1* h){
     int dim = h->GetDimension();
-    int nbx = h->GetNbinsX();
-    int nby = (dim > 1) ? h->GetNbinsY() : 1;
-    int nbz = (dim > 2) ? h->GetNbinsZ() : 1;
 
-    // Loop over all bins including under/overflow
-    for (int ix = 0; ix <= nbx+1; ++ix) {
-        for (int iy = 0; iy <= nby+1; ++iy) {
-            for (int iz = 0; iz <= nbz+1; ++iz) {
-                int bin = (dim == 1) ? ix
-                        : (dim == 2) ? h->GetBin(ix, iy)
-                        : h->GetBin(ix, iy, iz);
-
-                double val = h->GetBinContent(bin);
-                h->SetBinContent(bin, (val >= 0.0) ? std::sqrt(val) : 0.0);
+    if (dim == 1) {
+        int nbx = h->GetNbinsX();
+        for (int ix = 0; ix <= nbx + 1; ++ix) {
+            double val = h->GetBinContent(ix);
+            if (val >= 0)
+                h->SetBinContent(ix, std::sqrt(val));
+            else {
+                std::cerr << "Warning: negative bin content in bin " << ix
+                          << ": " << val << std::endl;
+                h->SetBinContent(ix, 0.);
             }
         }
     }
+    else if (dim == 2) {
+        int nbx = h->GetNbinsX();
+        int nby = h->GetNbinsY();
+        for (int ix = 0; ix <= nbx + 1; ++ix) {
+            for (int iy = 0; iy <= nby + 1; ++iy) {
+                int bin = h->GetBin(ix, iy);
+                double val = h->GetBinContent(bin);
+                if (val >= 0)
+                    h->SetBinContent(bin, std::sqrt(val));
+                else {
+                    std::cerr << "Warning: negative bin content in bin (" << ix
+                              << "," << iy << "): " << val << std::endl;
+                    h->SetBinContent(bin, 0.);
+                }
+            }
+        }
+    }
+    else if (dim == 3) {
+        int nbx = h->GetNbinsX();
+        int nby = h->GetNbinsY();
+        int nbz = h->GetNbinsZ();
+        for (int ix = 0; ix <= nbx + 1; ++ix) {
+            for (int iy = 0; iy <= nby + 1; ++iy) {
+                for (int iz = 0; iz <= nbz + 1; ++iz) {
+                    int bin = h->GetBin(ix, iy, iz);
+                    double val = h->GetBinContent(bin);
+                    if (val >= 0)
+                        h->SetBinContent(bin, std::sqrt(val));
+                    else {
+                        std::cerr << "Warning: negative bin content in bin ("
+                                  << ix << "," << iy << "," << iz << "): " << val << std::endl;
+                        h->SetBinContent(bin, 0.);
+                    }
+                }
+            }
+        }
+    }
+    else {
+        std::cerr << "Error: unsupported histogram dimension " << dim << std::endl;
+    }
 }
+
 // Older TH3D only version:
 // void SqrtHist(TH3D* h){
 //   int nbx = h->GetNbinsX();
@@ -1707,7 +1949,7 @@ void SqrtHist(TH1* h){
 // }
 
 // Function that subtracts given scalar from all bins in the histogram:
-void SubtractScalar(TH3D* h, double scalar){
+void AddScalar(TH3D* h, double scalar){
   int nbx = h->GetNbinsX();
   int nby = h->GetNbinsY();
   int nbz = h->GetNbinsZ();
@@ -1716,40 +1958,73 @@ void SubtractScalar(TH3D* h, double scalar){
     for (int iy = 1; iy <= nby; ++iy) {
       for (int iz = 1; iz <= nbz; ++iz) {
         double val = h->GetBinContent(ix, iy, iz);
-        h->SetBinContent(ix, iy, iz, val - scalar);
+        h->SetBinContent(ix, iy, iz, val + scalar);
       }
     }
   }
 }
 
 // A quick helper to set the errors in one histogram from the values in an error-histogram:
-void SetErrorsFromErrHist(TH1* data, const TH1* errors) {
-    // Check dimension match
-    if (data->GetDimension() != errors->GetDimension()) {
-        printf("Error: Histograms have different dimensions!\n");
+// (safer rewrite with one check for each dimension. Seems I got something wrong in the previous
+// loop, even when replacing stuff like iz <= nbz+1 with iz <= (dim>2) ? nbz+1 : 0)
+void SetErrorsFromErrHist(TH1* data, const TH1* errors){
+    if (data->GetDimension() != errors->GetDimension()){
+        std::cerr << "Error: Histograms have different dimensions!" << std::endl;
         return;
     }
 
     int dim = data->GetDimension();
-    int nbx = data->GetNbinsX();
-    int nby = (dim > 1) ? data->GetNbinsY() : 1;
-    int nbz = (dim > 2) ? data->GetNbinsZ() : 1;
 
-    // Loop over all bins including under/overflow
-    for (int ix = 0; ix <= nbx+1; ++ix) {
-        for (int iy = 0; iy <= nby+1; ++iy) {
-            for (int iz = 0; iz <= nbz+1; ++iz) {
-                int bin = (dim == 1) ? ix
-                        : (dim == 2) ? data->GetBin(ix, iy)
-                        : data->GetBin(ix, iy, iz);
-
+    if (dim == 1){
+        int nbx = data->GetNbinsX();
+        for (int ix = 0; ix <= nbx + 1; ++ix) {
+            double err = errors->GetBinContent(ix);
+            data->SetBinError(ix, err);
+        }
+    } 
+    else if (dim == 2){
+        int nbx = data->GetNbinsX();
+        int nby = data->GetNbinsY();
+        for (int ix = 0; ix <= nbx + 1; ++ix) {
+            for (int iy = 0; iy <= nby + 1; ++iy) {
+                int bin = data->GetBin(ix, iy);
                 double err = errors->GetBinContent(bin);
                 data->SetBinError(bin, err);
             }
         }
     }
+    else if (dim == 3){
+        int nbx = data->GetNbinsX();
+        int nby = data->GetNbinsY();
+        int nbz = data->GetNbinsZ();
+        for (int ix = 0; ix <= nbx + 1; ++ix) {
+            for (int iy = 0; iy <= nby + 1; ++iy) {
+                for (int iz = 0; iz <= nbz + 1; ++iz) {
+                    int bin = data->GetBin(ix, iy, iz);
+                    double err = errors->GetBinContent(bin);
+                    data->SetBinError(bin, err);
+                }
+            }
+        }
+    }
+    else {
+        std::cerr << "Error: unsupported histogram dimension " << dim << std::endl;
+    }
 }
 
+double IntegralAbsNoOverflow(const TH1* h){
+    double sum = 0.0;
+    if (auto h1 = dynamic_cast<const TH1*>(h)) {
+        for (int ix = 1; ix <= h1->GetNbinsX(); ix++) {
+            for (int iy = 1; iy <= h1->GetNbinsY(); iy++) {
+                for (int iz = 1; iz <= h1->GetNbinsZ(); iz++) {
+                    sum += std::fabs(h->GetBinContent(ix, iy, iz));
+                }
+            }
+        }
+    }
+    return sum;
+}
 
 
 ///////////////////////////////////
