@@ -48,6 +48,11 @@ g++ -O0 -g -fsanitize=address,undefined -fopenmp lambda_pol_toy_model.cxx -o lam
     # High statistics runs for the 4 types of possible execution -- To run in about 10 hours (~54.55 s to run 100 events):
 ./lambda_pol_toy_model.exe 65700 30 0 0 & ./lambda_pol_toy_model.exe 65700 30 1 0 & ./lambda_pol_toy_model.exe 65700 30 1 1 & ./lambda_pol_toy_model.exe 65700 30 1 2 & wait
 
+        # Real high stats though:
+./lambda_pol_toy_model.exe 100000 30 0 0 & ./lambda_pol_toy_model.exe 100000 30 1 0 & ./lambda_pol_toy_model.exe 100000 30 1 1 & ./lambda_pol_toy_model.exe 100000 30 1 2 & wait
+            # Running only the ones I haven't run already:
+./lambda_pol_toy_model.exe 100000 40 0 0 & ./lambda_pol_toy_model.exe 100000 40 1 1 & ./lambda_pol_toy_model.exe 100000 40 1 2 & wait
+
     # Mid-stats run for the 4 types of possible execution:
 ./lambda_pol_toy_model.exe 1000 30 0 0 & ./lambda_pol_toy_model.exe 1000 30 1 0 & ./lambda_pol_toy_model.exe 1000 30 1 1 & ./lambda_pol_toy_model.exe 1000 30 1 2 & wait
 
