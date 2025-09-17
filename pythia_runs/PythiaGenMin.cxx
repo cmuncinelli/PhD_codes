@@ -1,7 +1,5 @@
 // Author: Gianni S. S. Liveraro, adapted by Cicero D. Muncinelli
-// Date: 10/09/24, adapted on 12/09/24 up to March/2025
-// #include "/home/daviddc/pythia8/include/Pythia8/Pythia.h"
-#include "/home/cicero/pythia8_3/include/Pythia8/Pythia.h" // Updated from the #include "/home/daviddc/pythia8/include/Pythia8/Pythia.h" installation from prof. David
+#include "Pythia.h"
 #include "TFile.h"
 #include "TTree.h"
 #include "TCanvas.h"
@@ -21,61 +19,18 @@ using namespace Pythia8;
 int main(int argc, char *argv[]){
     // (const char *output_folder, int hard_bool, int N_ev, double target_rapidity)
 
-    if (argc != 6) {
-        // std::cerr << "Usage:" << argv[0] << " output_folder hard_bool N_ev target_rapidity s_nn pseudorap_int input_card_path" << std::endl;
-		// std::cerr << "Usage:" << argv[0] << " output_folder card_input_folder simulation_idx s_nn target_rapidity pseudorap_int N_ev" << std::endl;
-		std::cerr << "Usage:" << argv[0] << " output_folder card_input_folder simulation_idx s_nn N_ev" << std::endl;
-        return 1; // Indicate an error. (This warning code block is chat-gpt made, by the way!)
+    if (argc != 6){
+		std::cerr << "Usage:" << argv[0] << " output_folder input_card_path simulation_idx s_nn N_ev" << std::endl;
+        return 1; // Indicate an error.
     }
 
-    const char *output_folder = (const char*) argv[1]; // Now this is the folder with all the runs in subfolders
+    const char *output_folder = (const char*) argv[1];
 	const char *card_input_folder = (const char*) argv[2];
 	int simulation_idx = atoi(argv[3]);
-	int s_nn = atoi(argv[4]); // Can receive this as int, as the units will be in GeV, not TeV
-    // double target_rapidity = std::stod((std::string) ((const char*) argv[5])); // Conversion to double is trickier...
-	// int pseudorap_int = atoi(argv[6]);
-	// bool experimental_intervals_bool = (bool) atoi(argv[6]); // Converts 0 or 1 to a bool
-	int N_ev = atoi(argv[5]);
-
-
-	std::string folder_path = (std::string) card_input_folder + "/"; // Had to include this extra "/" in order for it to work.
-    DIR *dir;
-    struct dirent *entry;
-
-
-	std::string input_card_path;
-	if ((dir = opendir(folder_path.c_str())) != nullptr){
-        std::cout << "Starting the loop on the input cards folder: " << folder_path << std::endl;
-
-        while ((entry = readdir(dir)) != nullptr){
-            std::string file_name = entry->d_name;
-            if (string(entry->d_name) == "." || string(entry->d_name) == ".."){
-                continue; // You have to skip these weird filenames that dirent will give you...
-            }
-            std::string file_path = folder_path + file_name; // Converting it into a string
-
-			size_t output_index = file_path.find(std::string("pythia_card") + std::to_string(simulation_idx) + "_"); // The cards can't have a preceding 0 on numbers such as 06. It will not be read appropriatelly.
-			if (output_index != string::npos){ // aka if the current file's simulation_idx is the one being searched on the loop
-				input_card_path = file_path;
-			}
-		}
-	}
-
-
-	
+    double N_ev_receiver = atof(argv[5]); // This receives input like 1e9 and converts it into a proper double.
+	long long N_ev = N_ev; // Using long long for real high statistics
 
   	Pythia pythia;
-	// pythia.readString("Beams:idA = 11"); // This is for an electron-positron collision
-	// pythia.readString("Beams:idB = -11");
-	// pythia.readString("Beams:eCM = 209.");
-	// pythia.readString("Next:numberShowEvent = 1");
-
-	pythia.readString("Beams:idA = 2212");
-	// pythia.readString("Beams:idB = -2212");
-	pythia.readString("Beams:idB = 2212");
-	std::string energy_string = "Beams:eCM = " + std::to_string(s_nn) + ".";
-	// pythia.readString("Beams:eCM = 7000."); // Running at s_nn GeV
-	pythia.readString(energy_string.c_str()); // Running at s_nn GeV
 	
 	// Some settings related to output in init(), next() and stat() that came from the Parnassus settings
 	pythia.readString("Init:showChangedSettings = on"); // list changed settings
@@ -85,24 +40,15 @@ int main(int argc, char *argv[]){
 	pythia.readString("Next:numberShowProcess = 1"); // print process record n times
 	pythia.readString("Next:numberShowEvent = 1"); // print event record n times
 
-	// 2 - Seeds:
-	pythia.readString("Random:setSeed = on"); 
+	// 1 - Seeds:
 	pythia.readString("Random:seed = 0"); // For random numbers on each run
 	// pythia.readString("Random:seed = 42"); // Kept for testing!
 
-	// 3 - Tunes settings:
-	// pythia.readString("Tune:preferLHAPDF = 2"); // Disabled to use PYTHIA 8.313. In David's code, this used to work... maybe it is internal in PYTHIA 8.313 now?
-	// Welp, that should only be necessary if LHAPDF is kept up-to-date in David's files, which it surely wasn't!
-	pythia.readString("Tune:pp = 14");
-
-	// 4 - Event settings:
+	// 2 - Event settings:
 	std::cout << "Reading from input file " << input_card_path << std::endl;
 	pythia.readFile(input_card_path);
 
-	// pythia.readString("");
-
 	pythia.init();
-
 
 	const Int_t kMaxTrack = 7000;
 	Int_t ntrack;
@@ -134,38 +80,24 @@ int main(int argc, char *argv[]){
 	Float_t y[kMaxTrack];
 	Float_t Phi[kMaxTrack];
 
-	TH1D *hEventCounter = new TH1D ( "hEventCounter", "", 1, -1, 1);
-	TH1D *hINELEventCounter = new TH1D ( "hINELEventCounter", "", 1, -1, 1);
-	TH1D *hEventCounterCharged = new TH1D ( "hEventCounterCharged", "", 1, -1, 1);
-	TH1D *hEventCounterPion = new TH1D ( "hEventCounterPion", "", 1, -1, 1);
-	TH1D *hEventCounterProton = new TH1D ( "hEventCounterProton", "", 1, -1, 1);
-	TH1D *hEventCounterKaon = new TH1D ( "hEventCounterKaon", "", 1, -1, 1);
+	TH1D *hEventCounter = new TH1D ("hEventCounter", "", 1, -1, 1);
+	TH1D *hINELEventCounter = new TH1D ("hINELEventCounter", "", 1, -1, 1);
+	TH1D *hEventCounterCharged = new TH1D ("hEventCounterCharged", "", 1, -1, 1);
+	TH1D *hEventCounterPion = new TH1D ("hEventCounterPion", "", 1, -1, 1);
+	TH1D *hEventCounterProton = new TH1D ("hEventCounterProton", "", 1, -1, 1);
+	TH1D *hEventCounterKaon = new TH1D ("hEventCounterKaon", "", 1, -1, 1);
 
 	std::string filename = (std::string) output_folder;
-	filename += "/Pythia_card" + std::to_string(simulation_idx) + "_";
+	filename += "/Input_card_";
 	filename += std::to_string(N_ev) + "events_";
-	// if(pseudorap_int == 1){
-	// 	filename += "pseudorap_selected_";
-	// }
 	filename += std::to_string(s_nn) + "GeV.root";
-	// These files DO NOT have anything related to the experimental_intervals_bool in their names as they only became more general with the new trees, with no damage to the previous structures of data
 
 	TFile f(filename.c_str(), "RECREATE");
 	TTree *t3 = new TTree("t3","Reconst ntuple");
 	
 	// TTree *event_pT_tree = new TTree("event_pT_tree","event_pT_tree"); // Careful! The name in the final file is the one inside the parenthesis!
-	int N_bins = 800;
-	double upper_limit = 50;
-	// TH1D *pointer_to_hist_for_filling = new TH1D("event_hist", "event_hist", N_bins, 0, upper_limit); // Before it was set as 700 bins from 0 to 7
-	// event_pT_tree->Branch("charged_branch", "TH1D", pointer_to_hist_for_filling, 32000, 0);
-	// event_pT_tree->Branch("pion_branch", "TH1D", pointer_to_hist_for_filling, 32000, 0);
-	// event_pT_tree->Branch("proton_branch", "TH1D", pointer_to_hist_for_filling, 32000, 0);
-	// event_pT_tree->Branch("kaon_branch", "TH1D", pointer_to_hist_for_filling, 32000, 0);
-
-	// TBranch *charged_branch = event_pT_tree->GetBranch("charged_branch");
-	// TBranch *pion_branch = event_pT_tree->GetBranch("pion_branch");
-	// TBranch *proton_branch = event_pT_tree->GetBranch("proton_branch");
-	// TBranch *kaon_branch = event_pT_tree->GetBranch("kaon_branch");
+	int N_bins_pT = 800;
+	double upper_limit_pT = 50;
 
 	t3->Branch("ntrack",&ntrack,"ntrack/I");
 	t3->Branch("ntrack_final",&ntrack_final,"ntrack_final/I");
@@ -197,11 +129,11 @@ int main(int argc, char *argv[]){
 	t3->Branch("y",y,"y[ntrack]/F");
 	t3->Branch("Phi",Phi,"Phi[ntrack]/F");
 
-	// Saving a global TH1D for each particle, just to see the information:
-	TH1D *total_hist_charged_final = new TH1D("total_hist_charged_final", "total_hist_charged_final", N_bins, 0, upper_limit);
-	TH1D *total_hist_pion_final = new TH1D("total_hist_pion_final", "total_hist_pion_final", N_bins, 0, upper_limit);
-	TH1D *total_hist_proton_final = new TH1D("total_hist_proton_final", "total_hist_proton_final", N_bins, 0, upper_limit);
-	TH1D *total_hist_kaon_final = new TH1D("total_hist_kaon_final", "total_hist_kaon_final", N_bins, 0, upper_limit);
+	// Saving a global TH1D for each particle, just to see the information on their pT:
+	TH1D *total_hist_charged_final = new TH1D("total_hist_charged_final", "total_hist_charged_final", N_bins_pT, 0, upper_limit_pT);
+	TH1D *total_hist_pion_final = new TH1D("total_hist_pion_final", "total_hist_pion_final", N_bins_pT, 0, upper_limit_pT);
+	TH1D *total_hist_proton_final = new TH1D("total_hist_proton_final", "total_hist_proton_final", N_bins_pT, 0, upper_limit_pT);
+	TH1D *total_hist_kaon_final = new TH1D("total_hist_kaon_final", "total_hist_kaon_final", N_bins_pT, 0, upper_limit_pT);
 
 	// Saving multiplicity information in a TH1I (which consumes at most 40 kB with this many bins!) -- Faster centrality/multiplicity class fetching:
 	int multiplicity_nbins = 10000; // The number of bins is also the number of entries, which gives one bin per possible multiplicity!
@@ -232,17 +164,6 @@ int main(int argc, char *argv[]){
 	TH1I *hINELev_Ntracks_final_charged_forward_Proton = new TH1I ("hINELev_Ntracks_final_charged_forward_Proton", "", multiplicity_nbins, 0, multiplicity_nbins);
 	TH1I *hINELev_Ntracks_final_charged_forward_Kaon = new TH1I ("hINELev_Ntracks_final_charged_forward_Kaon", "", multiplicity_nbins, 0, multiplicity_nbins);
 
-	// TH1D *event_hist_charged = new TH1D("event_hist_charged", "event_hist_charged", N_bins, 0, upper_limit);
-	// TH1D *event_hist_pion = new TH1D("event_hist_pion", "event_hist_pion", N_bins, 0, upper_limit);
-	// TH1D *event_hist_proton = new TH1D("event_hist_proton", "event_hist_proton", N_bins, 0, upper_limit);
-	// TH1D *event_hist_kaon = new TH1D("event_hist_kaon", "event_hist_kaon", N_bins, 0, upper_limit);
-
-	// pointer_to_hist_for_filling->Sumw2(); // Starting an error structure for this histogram
-	// event_hist_charged->Sumw2();
-	// event_hist_pion->Sumw2();
-	// event_hist_proton->Sumw2();
-	// event_hist_kaon->Sumw2();
-
 	// Event loop
 	for (int iEvent=0; iEvent<N_ev; ++iEvent){
 		pythia.next();
@@ -264,11 +185,6 @@ int main(int argc, char *argv[]){
 		Ntracks_final_charged = 0;
 		Ntracks_final_charged_center = 0;
 
-		// int Ntracks = 0; // Already accounted for and stored inside the TTree (ntrack variable)
-		// int Ntracks_final = 0; // Already accounted for and stored inside the TTree (ntrack_final variable)
-		// int Ntracks_final_forward = 0; // Already accounted for and stored inside the TTree (ntracks_in_back_forward_eta variable)
-		// int Ntracks_final_charged_forward = 0; // Already accounted for and stored inside the TTree (charged_in_back_forward_eta variable)
-
 		int n_charged_event = 0;
 		int n_pion_event = 0;
 		int n_proton_event = 0;
@@ -277,11 +193,6 @@ int main(int argc, char *argv[]){
 		// Track loop
 		for (int i = 0; i < pythia.event.size(); ++i){
 			bool isfinal = pythia.event[i].isFinal();
-				// Selects only final particles, not intermediate ones:
-			// if (!isfinal) continue;
-			// ntrack_final += 1;
-			// Am not skipping the final particles anymore! The mothers can be useful for studying strangeness!
-
 			// Checking if this particle has a carbon-copy daughter. If it does, then it isn't final, and it didn't decay: it just scattered. This is not what I want to look at!
 				// From PYTHIA: "daughter1 = daughter2 > 0: the particle has a "carbon copy" as its sole daughter, but with changed momentum as a "recoil" effect".
 			Int_t daughter1 = pythia.event[i].daughter1();
@@ -302,11 +213,6 @@ int main(int argc, char *argv[]){
 				// but a carbon-copy isn't even a physical particle, and it shouldn't be considered if you want to count the number of intermediate particles in your collision.
 				// It is best not to do an if ((daughter1 == daughter2) && (daughter1 > 0)){continue} if you are going to save these particles in a TTree, because the value on
 				// the i'th index of the vector that will be flushed into the TTree will still keep the previous iteration's particle data!
-				
-					// Now doing the trick to avoid saving these particles again:
-				// second_idx -= 1; // This will start as ntrack = pythia.event.size(), but will decrease with the iterations. Then for accessing the vectors you could use something like pt[pythia.event.size() - second_idx] = pT;
-				// // You will increase second_idx each time you restart the particle loop, thus the need to reduce it by one if you aren't actually going to consider that particle in your final state
-				// ntrack -= 1; // You have to subtract this in order to save one less particle in the TTree. You could possibly use this as part of your second index
 			}
 			
 
@@ -342,18 +248,6 @@ int main(int argc, char *argv[]){
 					Ntracks_charged_forward += 1; // Checking charged and forward, but non-final
 				}
 			}
-			// else if (isfinal && isCharged && (eta_rap > -1.0 && eta_rap < 1.0)){ // Used an "else" because they are complementary intervals in rapidity
-			// // if (isCharged && (eta_rap > -1.0 && eta_rap < 1.0)){ // Replaced the "else if" with a single "if" to be able to use superposing intervals for my quick quality checks
-			// 	charged_in_central_eta = true;
-			// }
-
-			// For the new formats, this kind of cut is done in the root_to_csv_custom_PYTHIA scripts, not in the generator-level scripts!
-			// if(pseudorap_int == 1){
-			// 	if (eta_rap < (-1) * target_rapidity || eta_rap > target_rapidity) continue;
-			// }
-			// else{ // Notice that this comes AFTER the multiplicity tracking in ntracks_in_back_forward_eta and charged_in_back_forward_eta, so it should NOT influence multiplicity calculations
-			// 	if (rapidity < (-1) * target_rapidity || rapidity > target_rapidity) continue; // Should not use particles out of the |y| < target_rapidity range
-			// }
 
 			int particle_PID = pythia.event[i].id();
 			ID[i] = particle_PID;
@@ -486,56 +380,11 @@ int main(int argc, char *argv[]){
 
 		t3->Fill();
 
-		// pointer_to_hist_for_filling->GetXaxis()->SetTitle("p_{T} (GeV/c)");
-        // pointer_to_hist_for_filling->GetYaxis()->SetTitle("d^{2}N/(dp_{T} dy) (GeV/c)^{-1}");
-		// std::string title = (std::string) "Event " + std::to_string(iEvent);
-		// pointer_to_hist_for_filling->SetTitle(title.c_str());
-
-		// // Now filling the histograms for each particle type:
+		// Now filling the histograms for each particle type:
 		if (n_charged_event != 0){hEventCounterCharged->Fill(0);}
 		if (n_pion_event != 0){hEventCounterPion->Fill(0);}
 		if (n_proton_event != 0){hEventCounterProton->Fill(0);}
 		if (n_kaon_event != 0){hEventCounterKaon->Fill(0);}
-
-		// if (event_hist_charged->GetEntries() != 0){
-		// 	hEventCounterCharged->Fill(0);
-
-		// 	// event_hist_charged->Scale(1./(event_hist_charged->GetBinWidth(1))); // This is done in a later part of the code
-		// 	histogram_copy(event_hist_charged, pointer_to_hist_for_filling, N_bins);
-		// }
-		// // Will fill the tree even if the histograms are totally empty. This is done in order to properly relate multiplicity to the histogram on later codes, but could be improved...
-		// 	// The hEventCounterPion-like histograms will report the actual number of events that had a non-zero count of the desired particle
-		// charged_branch->Fill(); // Have to fill this before entering the next loop, where the proton data will be inserted in pointer_to_hist_for_filling
-
-		// if (event_hist_pion->GetEntries() != 0){
-		// 	hEventCounterPion->Fill(0);
-
-		// 	// event_hist_pion->Scale(1./(event_hist_pion->GetBinWidth(1))); // This is done in a later part of the code
-		// 	histogram_copy(event_hist_pion, pointer_to_hist_for_filling, N_bins);
-		// }
-		// // Will fill the tree even if the histograms are totally empty. This is done in order to properly relate multiplicity to the histogram on later codes, but could be improved...
-		// 	// The hEventCounterPion-like histograms will report the actual number of events that had a non-zero count of the desired particle
-		// pion_branch->Fill(); // Have to fill this before entering the next loop, where the proton data will be inserted in pointer_to_hist_for_filling
-		
-		// if (event_hist_proton->GetEntries() != 0){
-		// 	hEventCounterProton->Fill(0);
-		// 	// event_hist_proton->Scale(1./(event_hist_proton->GetBinWidth(1)));
-		// 	histogram_copy(event_hist_proton, pointer_to_hist_for_filling, N_bins);
-		// }
-		// proton_branch->Fill();
-
-		// if (event_hist_kaon->GetEntries() != 0){
-		// 	hEventCounterKaon->Fill(0);
-		// 	// event_hist_kaon->Scale(1./(event_hist_kaon->GetBinWidth(1)));
-		// 	histogram_copy(event_hist_kaon, pointer_to_hist_for_filling, N_bins);
-		// }
-		// kaon_branch->Fill();
-
-		// pointer_to_hist_for_filling->Reset(); // Actually doesn't need this reset, but kept it anyways
-		// event_hist_charged->Reset();
-		// event_hist_pion->Reset();
-		// event_hist_proton->Reset();
-		// event_hist_kaon->Reset();
 	}
 
 	pythia.stat();
