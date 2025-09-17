@@ -1,11 +1,17 @@
-Old input scheme:
+# Old input scheme:
 ./PythiaGen.exe output_folder card_input_folder simulation_idx s_nn N_ev
 ./PythiaGen.exe "/hadrex1/storage2/cicero/systematic_pythia_pp_runs" "./systematic_cards" 71 7000 1000000
 
-Updated input scheme (saving in jarvis4's local storage):
-./PythiaGen.exe output_folder card_path N_ev N_cores
+# Updated input scheme (saving in jarvis4's local storage):
+./PythiaGen.exe output_folder input_card_path N_ev N_cores
 ./PythiaGen.exe "/storage2/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev.cfg" 1e9 120
 
 
-For compiling:
-(use the Makefile)
+# For compiling:
+g++ -O2 -std=c++17 PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 `root-config --cflags --libs`
+
+# Or if that does not work and you need something else for O2Physics:
+g++ -O2 -std=c++17 PythiaGenMin.cxx -o PythiaGenMin.exe \
+    -I$O2PHYSICS_ROOT/external/pythia8/include \
+    -L$O2PHYSICS_ROOT/external/pythia8/lib -lpythia8 \
+    `root-config --cflags --libs`

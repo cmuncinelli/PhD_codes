@@ -1,5 +1,5 @@
 // Author: Gianni S. S. Liveraro, adapted by Cicero D. Muncinelli
-#include "Pythia.h"
+#include "Pythia8/Pythia.h" // Not just Pythia.h. You have to take an extra step after the $PYTHIA8 folder.
 #include "TFile.h"
 #include "TTree.h"
 #include "TCanvas.h"
@@ -8,6 +8,8 @@
 #include "TH1I.h"
 
 #include <dirent.h>
+#include <random> // For the seed generation for each worker
+#include <filesystem> // Useful for manipulation of the input_card_path
 
 #include <iostream>
 
@@ -16,20 +18,7 @@ void multiplicity_to_centrality(TH1I *multiplicity_hist, TH1D *centrality_hist);
 
 using namespace Pythia8;
 
-int main(int argc, char *argv[]){
-    // (const char *output_folder, int hard_bool, int N_ev, double target_rapidity)
-
-    if (argc != 6){
-		std::cerr << "Usage:" << argv[0] << " output_folder input_card_path simulation_idx s_nn N_ev" << std::endl;
-        return 1; // Indicate an error.
-    }
-
-    const char *output_folder = (const char*) argv[1];
-	const char *card_input_folder = (const char*) argv[2];
-	int simulation_idx = atoi(argv[3]);
-    double N_ev_receiver = atof(argv[5]); // This receives input like 1e9 and converts it into a proper double.
-	long long N_ev = N_ev; // Using long long for real high statistics
-
+void RunWorker(int WorkerId, int N_ev, std::string output_folder, std::string input_card_path, std::string input_card_name){
   	Pythia pythia;
 	
 	// Some settings related to output in init(), next() and stat() that came from the Parnassus settings
@@ -40,13 +29,18 @@ int main(int argc, char *argv[]){
 	pythia.readString("Next:numberShowProcess = 1"); // print process record n times
 	pythia.readString("Next:numberShowEvent = 1"); // print event record n times
 
-	// 1 - Seeds:
-	pythia.readString("Random:seed = 0"); // For random numbers on each run
-	// pythia.readString("Random:seed = 42"); // Kept for testing!
-
-	// 2 - Event settings:
-	std::cout << "Reading from input file " << input_card_path << std::endl;
+	// Event settings:
 	pythia.readFile(input_card_path);
+
+	// Seeding each worker core differently, based on a clock+WorkerId mixing:
+		// If you just give seed = 0, it might get the same seed for all workers, based only on the starting clock for all of them!
+	std::random_device rd;
+	std::seed_seq seq{rd(), static_cast<unsigned int>(WorkerId)};
+	std::mt19937 rng(seq);
+	unsigned long seed = rng() % 900000000UL; // Pythia expects seeds only up to 900.000.000
+	pythia.readString("Random:seed = " + std::to_string(seed));
+
+	// pythia.readString("Random:seed = 42"); // Kept for testing!
 
 	pythia.init();
 
@@ -88,14 +82,11 @@ int main(int argc, char *argv[]){
 	TH1D *hEventCounterKaon = new TH1D ("hEventCounterKaon", "", 1, -1, 1);
 
 	std::string filename = (std::string) output_folder;
-	filename += "/Input_card_";
-	filename += std::to_string(N_ev) + "events_";
-	filename += std::to_string(s_nn) + "GeV.root";
+	filename += "/Input_card_" + input_card_name + "_core" + to_string(WorkerId) + ".root";
 
 	TFile f(filename.c_str(), "RECREATE");
 	TTree *t3 = new TTree("t3","Reconst ntuple");
 	
-	// TTree *event_pT_tree = new TTree("event_pT_tree","event_pT_tree"); // Careful! The name in the final file is the one inside the parenthesis!
 	int N_bins_pT = 800;
 	double upper_limit_pT = 50;
 
@@ -172,7 +163,7 @@ int main(int argc, char *argv[]){
 
 		hEventCounter->Fill(0);
 		if (iEvent % int(0.05 * N_ev) == 0){
-			std::cout << "Now on event " << iEvent << " of " << N_ev << " or " << iEvent * 1./N_ev * 100 << " %" << std::endl;
+			std::cout << "[Worker " << WorkerId << "] Now on event " << iEvent << " of " << N_ev << " (" << (100.0 * iEvent / N_ev) << "%)" << std::endl;
 		}
 
 		charged_in_central_eta = false; // Resetting the bool for the next event
@@ -260,7 +251,7 @@ int main(int argc, char *argv[]){
 			px[i]   = pythia.event[i].px();
 			py[i]   = pythia.event[i].py();
 			pz[i]   = pythia.event[i].pz();
-			
+
 			Float_t pT = pythia.event[i].pT();
 			pt[i]   = pT;
 			m[i]   = pythia.event[i].m();
@@ -300,42 +291,6 @@ int main(int argc, char *argv[]){
 			}
 
 			if (isfinal && (particle_PID == 211 or particle_PID == (-1)*211)){ // Could just use idAbs() == 211 too!
-				// Excluding all pions that came from weak decays, in a workaround to not having the ALIPhyisics' isSecondaryFromWeakDecay() in pure PYTHIA.
-					// Specifically, excluding pions from mothers with Tau0 > 10 mm/c (could have used particle.tau0() to do a general check too!),
-					// that are surely secondary!
-					// Did not use the ParticleDecays:limitTau0 with tau0Max = 10 mm/c because it would influence the overall event multiplicity in a different
-					// way from the experiment.
-				// int motherIdx = pythia.event[i].mother1();
-				if (motherIdx1 > 0 && motherIdx2 == 0){ // Has a mother. We will now check the mother particle's PID.
-					// int motherID = pythia.event[motherIdx].idAbs(); // Using the absolute mother index to select the mother.
-					int motherID = pythia.event[motherIdx1].id(); // Using the non-absolute index
-					// Exclude pions from weak decays
-					if (motherID == 310 ||  // K_S^0 -- Am considering its lifetime long enough to be discarded by the DCA cuts.
-					motherID == 130 ||  // K_L^0
-					motherID == 3122 || // Lambda
-					motherID == 3222 || // Sigma+
-					// motherID == 3212 || // Sigma0 // Maybe don't include this cut! Sigma0's products will, most of the time, be considered primary particles!
-					motherID == 3112 || // Sigma-
-					motherID == 3312 || // Xi-
-					motherID == 3334 || // Omega-
-					motherID == -310 ||  // Anti-K_S^0
-					motherID == -130 ||  // Anti-K_L^0
-					motherID == -3122 || // Anti-Lambda
-					motherID == -3222 || // Anti-Sigma+
-					// motherID == -3212 || // Anti-Sigma0 // Maybe don't include this cut! Sigma0's products will, most of the time, be considered primary particles!
-					motherID == -3112 || // Anti-Sigma-
-					motherID == -3312 || // Anti-Xi+
-					motherID == -3334){  // Anti-Omega+
-						IsPrimary[i] = false;
-						continue;  // Skip this pion and go to the next particle in the event.
-						// Always beware of such uses of "continue"! In this case, you would just not save this particle to the total_hist_pion_final event and not
-						// increase the n_pion_event variable, which is ok because those variables are legacy!
-						// It would be more accurate to use something like a IsPrimary[i] = false; here too, as this knowledge is deeper than the motherIdx1 > 0 && motherIdx2 == 0 case!
-							// Wait, is this really necessary with the above if check? That would already include this redundant check here, but whatever...
-							// TODO: Check if this could be removed altogether, speeding up the code! A simple check into the already defined IsPrimary would be enough to do the "continue" part.
-					}
-				}
-				// event_hist_pion->Fill((double) pT);
 				total_hist_pion_final->Fill((double) pT);
 				n_pion_event += 1;
 			}
@@ -387,9 +342,9 @@ int main(int argc, char *argv[]){
 		if (n_kaon_event != 0){hEventCounterKaon->Fill(0);}
 	}
 
-	pythia.stat();
+	// pythia.stat();
+	// t3->Print();
 
-	t3->Print();
 	f.cd();
 
 	std::cout << "Writing information into the .root file" << std::endl;
@@ -428,37 +383,152 @@ int main(int argc, char *argv[]){
 	hNtracks_final_charged_forward->Write();
 	hNtracks_final_charged_forward_INEL_l0->Write();
 
-	// Processing these multiplicity histograms into centrality histograms:
+	hINELev_Ntracks_final_charged_forward->Write();
+	hINELev_Ntracks_final_charged_forward_Charged->Write();
+	hINELev_Ntracks_final_charged_forward_Pion->Write();
+	hINELev_Ntracks_final_charged_forward_Proton->Write();
+	hINELev_Ntracks_final_charged_forward_Kaon->Write();
+
+	f.Close();
+
+	// Deleting all objects instatiated in heap:
+	delete hEventCounter;
+	delete hINELEventCounter;
+	delete hEventCounterCharged;
+	delete hEventCounterPion;
+	delete hEventCounterProton;
+	delete hEventCounterKaon;
+
+	delete t3;
+
+	delete total_hist_charged_final;
+	delete total_hist_pion_final;
+	delete total_hist_proton_final;
+	delete total_hist_kaon_final;
+
+	delete hNtracks;
+	delete hNtracks_charged_forward;
+	delete hNtracks_primary;
+	delete hNtracks_final;
+	delete hNtracks_final_forward;
+	delete hNtracks_final_forward_INEL_l0;
+	delete hNtracks_final_charged_center;
+	delete hNtracks_final_charged;
+	delete hNtracks_final_charged_INEL_l0;
+	delete hNtracks_final_charged_forward;
+	delete hNtracks_final_charged_forward_INEL_l0;
+
+	delete hINELev_Ntracks_final_charged_forward;
+	delete hINELev_Ntracks_final_charged_forward_Charged;
+	delete hINELev_Ntracks_final_charged_forward_Pion;
+	delete hINELev_Ntracks_final_charged_forward_Proton;
+	delete hINELev_Ntracks_final_charged_forward_Kaon;
+
+	return;
+}
+
+void doCentrality(std::string output_folder, int N_cores, std::string input_card_name){
 	std::cout << "\nProcessing centrality" << std::endl;
+	int multiplicity_nbins = 10000; // The number of bins is also the number of entries, which gives one bin per possible multiplicity!
+
+	std::string output_centrality_filename =(std::string) output_folder;
+	output_centrality_filename += "/Input_card_" + input_card_name + "_centrality_conversion.root";
+
+	TFile output_file(output_centrality_filename.c_str(), "RECREATE");
+
+	// Reading all N_cores worker data and summing the hNtracks histograms:
+		// First declaring histograms to receive the sums:
+	TH1I *hNtracks_sum = new TH1I("hNtracks_sum", "hNtracks_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1I *hNtracks_charged_forward_sum = new TH1I("hNtracks_charged_forward_sum", "hNtracks_charged_forward_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1I *hNtracks_primary_sum = new TH1I("hNtracks_primary_sum", "hNtracks_primary_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1I *hNtracks_final_sum = new TH1I("hNtracks_final_sum", "hNtracks_final_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1I *hNtracks_final_forward_sum = new TH1I("hNtracks_final_forward_sum", "hNtracks_final_forward_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1I *hNtracks_final_forward_INEL_l0_sum = new TH1I("hNtracks_final_forward_INEL_l0_sum", "hNtracks_final_forward_INEL_l0_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1I *hNtracks_final_charged_center_sum = new TH1I("hNtracks_final_charged_center_sum", "hNtracks_final_charged_center_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1I *hNtracks_final_charged_sum = new TH1I("hNtracks_final_charged_sum", "hNtracks_final_charged_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1I *hNtracks_final_charged_INEL_l0_sum = new TH1I("hNtracks_final_charged_INEL_l0_sum", "hNtracks_final_charged_INEL_l0_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1I *hNtracks_final_charged_forward_sum = new TH1I("hNtracks_final_charged_forward_sum", "hNtracks_final_charged_forward_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1I *hNtracks_final_charged_forward_INEL_l0_sum = new TH1I("hNtracks_final_charged_forward_INEL_l0_sum", "hNtracks_final_charged_forward_INEL_l0_sum", multiplicity_nbins, 0, multiplicity_nbins);
+
+    for (int WorkerId = 0; WorkerId < N_cores; ++WorkerId){
+        std::string data_filename = (std::string) output_folder;
+		data_filename += "/Input_card_" + input_card_name + "_core" + to_string(WorkerId) + ".root";
+
+		TFile *data_file = TFile::Open(data_filename.c_str(), "READ");
+
+			// Fetching from current file:
+		TH1I *hNtracks_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks"));
+		TH1I *hNtracks_charged_forward_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_charged_forward"));
+		TH1I *hNtracks_primary_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_primary"));
+		TH1I *hNtracks_final_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_final"));
+		TH1I *hNtracks_final_forward_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_final_forward"));
+		TH1I *hNtracks_final_forward_INEL_l0_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_final_forward_INEL_l0"));
+		TH1I *hNtracks_final_charged_center_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_final_charged_center"));
+		TH1I *hNtracks_final_charged_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_final_charged"));
+		TH1I *hNtracks_final_charged_INEL_l0_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_final_charged_INEL_l0"));
+		TH1I *hNtracks_final_charged_forward_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_final_charged_forward"));
+		TH1I *hNtracks_final_charged_forward_INEL_l0_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_final_charged_forward_INEL_l0"));
+
+			// Adding all histograms:
+		hNtracks_sum->Add(hNtracks_local);
+		hNtracks_charged_forward_sum->Add(hNtracks_charged_forward_local);
+		hNtracks_primary_sum->Add(hNtracks_primary_local);
+		hNtracks_final_sum->Add(hNtracks_final_local);
+		hNtracks_final_forward_sum->Add(hNtracks_final_forward_local);
+		hNtracks_final_forward_INEL_l0_sum->Add(hNtracks_final_forward_INEL_l0_local);
+		hNtracks_final_charged_center_sum->Add(hNtracks_final_charged_center_local);
+		hNtracks_final_charged_sum->Add(hNtracks_final_charged_local);
+		hNtracks_final_charged_INEL_l0_sum->Add(hNtracks_final_charged_INEL_l0_local);
+		hNtracks_final_charged_forward_sum->Add(hNtracks_final_charged_forward_local);
+		hNtracks_final_charged_forward_INEL_l0_sum->Add(hNtracks_final_charged_forward_INEL_l0_local);
+
+        data_file->Close();
+    }
+
+	output_file.cd();
+
+	// Processing these multiplicity histograms into centrality histograms:
 		// First, declaring the new histograms using the information of maximum and minimum multiplicity of the TH1I's:
 		// The number of bins is exactly the maximum number of multiplicity + 1 (the upper limit is non-inclusive!).
 		// Index 0 will be multiplicity [0, 1), index 1 will be [1, 2) and so on until the last index.
 		// If the maximum value (the last one) was 10, then we need 11 bins to get the [10, 11) bin as a regular bin, not as the overflow bin!
 	// TH1D *hNtracks_to_centrality = new TH1D("hNtracks_to_centrality", "hNtracks_to_centrality", hNtracks->GetMaximum() + 1, 0, hNtracks->GetMaximum() + 1);
 		// Updated to use FindLastBinAbove() instead of maximum value! I don't want the highest value in the TH1I, I want the highest bin with non-zero value!
-	TH1D *hNtracks_to_centrality = new TH1D("hNtracks_to_centrality", "hNtracks_to_centrality", hNtracks->FindLastBinAbove(0) + 1, 0, hNtracks->FindLastBinAbove(0) + 1);
-	TH1D *hNtracks_to_centrality_charged_forward = new TH1D("hNtracks_to_centrality_charged_forward", "hNtracks_to_centrality_charged_forward", hNtracks_charged_forward->FindLastBinAbove(0) + 1, 0, hNtracks_charged_forward->FindLastBinAbove(0) + 1);
-	TH1D *hNtracks_to_centrality_primary = new TH1D("hNtracks_to_centrality_primary", "hNtracks_to_centrality_primary", hNtracks_primary->FindLastBinAbove(0) + 1, 0, hNtracks_primary->FindLastBinAbove(0) + 1);
-	TH1D *hNtracks_to_centrality_final = new TH1D("hNtracks_to_centrality_final", "hNtracks_to_centrality_final", hNtracks_final->FindLastBinAbove(0) + 1, 0, hNtracks_final->FindLastBinAbove(0) + 1);
-	TH1D *hNtracks_to_centrality_final_forward = new TH1D("hNtracks_to_centrality_final_forward", "hNtracks_to_centrality_final_forward", hNtracks_final_forward->FindLastBinAbove(0) + 1, 0, hNtracks_final_forward->FindLastBinAbove(0) + 1);
-	TH1D *hNtracks_to_centrality_final_forward_INEL_l0 = new TH1D("hNtracks_to_centrality_final_forward_INEL_l0", "hNtracks_to_centrality_final_forward_INEL_l0", hNtracks_final_forward_INEL_l0->FindLastBinAbove(0) + 1, 0, hNtracks_final_forward_INEL_l0->FindLastBinAbove(0) + 1);
-	TH1D *hNtracks_to_centrality_final_charged_center = new TH1D("hNtracks_to_centrality_final_charged_center", "hNtracks_to_centrality_final_charged_center", hNtracks_final_charged_center->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_center->FindLastBinAbove(0) + 1);
-	TH1D *hNtracks_to_centrality_final_charged = new TH1D("hNtracks_to_centrality_final_charged", "hNtracks_to_centrality_final_charged", hNtracks_final_charged->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged->FindLastBinAbove(0) + 1);
-	TH1D *hNtracks_to_centrality_final_charged_INEL_l0 = new TH1D("hNtracks_to_centrality_final_charged_INEL_l0", "hNtracks_to_centrality_final_charged_INEL_l0", hNtracks_final_charged_INEL_l0->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_INEL_l0->FindLastBinAbove(0) + 1);
-	TH1D *hNtracks_to_centrality_final_charged_forward = new TH1D("hNtracks_to_centrality_final_charged_forward", "hNtracks_to_centrality_final_charged_forward", hNtracks_final_charged_forward->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_forward->FindLastBinAbove(0) + 1);
-	TH1D *hNtracks_to_centrality_final_charged_forward_INEL_l0 = new TH1D("hNtracks_to_centrality_final_charged_forward_INEL_l0", "hNtracks_to_centrality_final_charged_forward_INEL_l0", hNtracks_final_charged_forward_INEL_l0->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_forward_INEL_l0->FindLastBinAbove(0) + 1);
+	TH1D *hNtracks_to_centrality = new TH1D("hNtracks_to_centrality", "hNtracks_to_centrality", hNtracks_sum->FindLastBinAbove(0) + 1, 0, hNtracks_sum->FindLastBinAbove(0) + 1);
+	TH1D *hNtracks_to_centrality_charged_forward = new TH1D("hNtracks_to_centrality_charged_forward", "hNtracks_to_centrality_charged_forward", hNtracks_charged_forward_sum->FindLastBinAbove(0) + 1, 0, hNtracks_charged_forward_sum->FindLastBinAbove(0) + 1);
+	TH1D *hNtracks_to_centrality_primary = new TH1D("hNtracks_to_centrality_primary", "hNtracks_to_centrality_primary", hNtracks_primary_sum->FindLastBinAbove(0) + 1, 0, hNtracks_primary_sum->FindLastBinAbove(0) + 1);
+	TH1D *hNtracks_to_centrality_final = new TH1D("hNtracks_to_centrality_final", "hNtracks_to_centrality_final", hNtracks_final_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_sum->FindLastBinAbove(0) + 1);
+	TH1D *hNtracks_to_centrality_final_forward = new TH1D("hNtracks_to_centrality_final_forward", "hNtracks_to_centrality_final_forward", hNtracks_final_forward_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_forward_sum->FindLastBinAbove(0) + 1);
+	TH1D *hNtracks_to_centrality_final_forward_INEL_l0 = new TH1D("hNtracks_to_centrality_final_forward_INEL_l0", "hNtracks_to_centrality_final_forward_INEL_l0", hNtracks_final_forward_INEL_l0_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_forward_INEL_l0_sum->FindLastBinAbove(0) + 1);
+	TH1D *hNtracks_to_centrality_final_charged_center = new TH1D("hNtracks_to_centrality_final_charged_center", "hNtracks_to_centrality_final_charged_center", hNtracks_final_charged_center_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_center_sum->FindLastBinAbove(0) + 1);
+	TH1D *hNtracks_to_centrality_final_charged = new TH1D("hNtracks_to_centrality_final_charged", "hNtracks_to_centrality_final_charged", hNtracks_final_charged_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_sum->FindLastBinAbove(0) + 1);
+	TH1D *hNtracks_to_centrality_final_charged_INEL_l0 = new TH1D("hNtracks_to_centrality_final_charged_INEL_l0", "hNtracks_to_centrality_final_charged_INEL_l0", hNtracks_final_charged_INEL_l0_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_INEL_l0_sum->FindLastBinAbove(0) + 1);
+	TH1D *hNtracks_to_centrality_final_charged_forward = new TH1D("hNtracks_to_centrality_final_charged_forward", "hNtracks_to_centrality_final_charged_forward", hNtracks_final_charged_forward_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_forward_sum->FindLastBinAbove(0) + 1);
+	TH1D *hNtracks_to_centrality_final_charged_forward_INEL_l0 = new TH1D("hNtracks_to_centrality_final_charged_forward_INEL_l0", "hNtracks_to_centrality_final_charged_forward_INEL_l0", hNtracks_final_charged_forward_INEL_l0_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_forward_INEL_l0_sum->FindLastBinAbove(0) + 1);
 
-	multiplicity_to_centrality(hNtracks, hNtracks_to_centrality);
-	multiplicity_to_centrality(hNtracks_charged_forward, hNtracks_to_centrality_charged_forward);
-	multiplicity_to_centrality(hNtracks_primary, hNtracks_to_centrality_primary);
-	multiplicity_to_centrality(hNtracks_final, hNtracks_to_centrality_final);
-	multiplicity_to_centrality(hNtracks_final_forward, hNtracks_to_centrality_final_forward);
-	multiplicity_to_centrality(hNtracks_final_forward_INEL_l0, hNtracks_to_centrality_final_forward_INEL_l0);
-	multiplicity_to_centrality(hNtracks_final_charged_center, hNtracks_to_centrality_final_charged_center);
-	multiplicity_to_centrality(hNtracks_final_charged, hNtracks_to_centrality_final_charged);
-	multiplicity_to_centrality(hNtracks_final_charged_INEL_l0, hNtracks_to_centrality_final_charged_INEL_l0);
-	multiplicity_to_centrality(hNtracks_final_charged_forward, hNtracks_to_centrality_final_charged_forward);
-	multiplicity_to_centrality(hNtracks_final_charged_forward_INEL_l0, hNtracks_to_centrality_final_charged_forward_INEL_l0);
+	multiplicity_to_centrality(hNtracks_sum, hNtracks_to_centrality);
+	multiplicity_to_centrality(hNtracks_charged_forward_sum, hNtracks_to_centrality_charged_forward);
+	multiplicity_to_centrality(hNtracks_primary_sum, hNtracks_to_centrality_primary);
+	multiplicity_to_centrality(hNtracks_final_sum, hNtracks_to_centrality_final);
+	multiplicity_to_centrality(hNtracks_final_forward_sum, hNtracks_to_centrality_final_forward);
+	multiplicity_to_centrality(hNtracks_final_forward_INEL_l0_sum, hNtracks_to_centrality_final_forward_INEL_l0);
+	multiplicity_to_centrality(hNtracks_final_charged_center_sum, hNtracks_to_centrality_final_charged_center);
+	multiplicity_to_centrality(hNtracks_final_charged_sum, hNtracks_to_centrality_final_charged);
+	multiplicity_to_centrality(hNtracks_final_charged_INEL_l0_sum, hNtracks_to_centrality_final_charged_INEL_l0);
+	multiplicity_to_centrality(hNtracks_final_charged_forward_sum, hNtracks_to_centrality_final_charged_forward);
+	multiplicity_to_centrality(hNtracks_final_charged_forward_INEL_l0_sum, hNtracks_to_centrality_final_charged_forward_INEL_l0);
+
+	hNtracks_sum->Write();
+	hNtracks_charged_forward_sum->Write();
+	hNtracks_primary_sum->Write();
+	hNtracks_final_sum->Write();
+	hNtracks_final_forward_sum->Write();
+	hNtracks_final_forward_INEL_l0_sum->Write();
+	hNtracks_final_charged_center_sum->Write();
+	hNtracks_final_charged_sum->Write();
+	hNtracks_final_charged_INEL_l0_sum->Write();
+	hNtracks_final_charged_forward_sum->Write();
+	hNtracks_final_charged_forward_INEL_l0_sum->Write();
 
 	hNtracks_to_centrality->Write();
 	hNtracks_to_centrality_charged_forward->Write();
@@ -472,12 +542,60 @@ int main(int argc, char *argv[]){
 	hNtracks_to_centrality_final_charged_forward->Write();
 	hNtracks_to_centrality_final_charged_forward_INEL_l0->Write();
 
-	hINELev_Ntracks_final_charged_forward->Write();
-	hINELev_Ntracks_final_charged_forward_Charged->Write();
-	hINELev_Ntracks_final_charged_forward_Pion->Write();
-	hINELev_Ntracks_final_charged_forward_Proton->Write();
-	hINELev_Ntracks_final_charged_forward_Kaon->Write();
+	return;
+}
 
+
+int main(int argc, char *argv[]){
+    if (argc != 5){
+		std::cerr << "Usage:" << argv[0] << " output_folder input_card_path N_ev N_cores" << std::endl;
+        return 1; // Indicate an error.
+    }
+
+    const char *output_folder = (const char*) argv[1];
+	const char *input_card_path = (const char*) argv[2];
+    double N_ev_receiver = atof(argv[3]); // This receives input like 1e9 and converts it into a proper double.
+	long long N_ev = N_ev; // Using long long for real high statistics
+	int N_cores = std::atoi(argv[4]);
+
+	std::cout << "Now running " << argv[0] << " " << argv[1] << " " << argv[2] << " " << argv[3] << " " << argv[4] << std::endl;
+
+	namespace fs = std::filesystem;
+	fs::path p(input_card_path);
+	std::string input_card_name = p.stem().string(); // stem = filename without extension
+
+	// Creating a folder to contain all .root files generated by the workers, based on the total number of events to generate:
+	std::ostringstream ss;
+    ss << input_card_name << "_" << N_ev << "ev";
+	fs::path output_folder_for_current_card = fs::path(ss.str());
+
+	// Try to create folder (and parents if missing)
+	std::error_code ec;
+	fs::create_directories(output_folder_for_current_card, ec);
+	if (ec){
+    	std::cerr << "Warning: could not create directory " << output_folder_for_current_card << " (" << ec.message() << ")\n";
+	}
+
+	// Launch workers
+	PythiaParallel parallel(N_cores);
+
+	for (int WorkerId = 0; WorkerId < N_cores; WorkerId++){
+		// Calculating the number of events per worker, in a way that will give me exactly N_ev for whichever number of workers I use:
+		int base = N_ev / N_cores;
+    	int remainder = N_ev % N_cores;
+		int N_ev_current_worker = base + (WorkerId < remainder ? 1 : 0);
+
+		parallel.run([=](){ // Declared as a Lambda function, essentially
+			RunWorker(WorkerId, N_ev_current_worker, output_folder_for_current_card, input_card_path, input_card_name);
+		});
+	}
+
+	parallel.wait(); // wait for all workers to finish
+	std::cout << "\nPythia parallel loop ended!" << std::endl;
+
+	// Processing centrality for all files:
+	doCentrality(output_folder_for_current_card, N_cores, input_card_name);
+	
 	return 0;
 }
 
