@@ -1,5 +1,7 @@
 // Author: Gianni S. S. Liveraro, adapted by Cicero D. Muncinelli
 #include "Pythia8/Pythia.h" // Not just Pythia.h. You have to take an extra step after the $PYTHIA8 folder.
+#include "Pythia8/HeavyIons.h" // Needed for Angantyr
+
 #include "TFile.h"
 #include "TTree.h"
 #include "TCanvas.h"
@@ -20,7 +22,7 @@ void multiplicity_to_centrality(TH1I *multiplicity_hist, TH1D *centrality_hist);
 
 using namespace Pythia8;
 
-void RunWorker(int WorkerId, int N_ev, std::string output_folder, std::string input_card_path, std::string input_card_name){
+void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const std::string input_card_path, const std::string input_card_name){
   	Pythia pythia;
 	
 	// // Some settings related to output in init(), next() and stat() that came from the Parnassus settings
@@ -81,17 +83,17 @@ void RunWorker(int WorkerId, int N_ev, std::string output_folder, std::string in
 	Int_t Ntracks_final_charged_center;
 	Int_t Ntracks_final_charged;
 
-	Float_t px[kMaxTrack];
-	Float_t py[kMaxTrack];
-	Float_t pz[kMaxTrack];
+	// Float_t px[kMaxTrack]; // Already saving pT,y,phi,mass
+	// Float_t py[kMaxTrack];
+	// Float_t pz[kMaxTrack];
 	Float_t pt[kMaxTrack];
 	Float_t m[kMaxTrack];
-	Float_t e[kMaxTrack];
+	// Float_t e[kMaxTrack]; // No need for charge
 
 	Bool_t charged[kMaxTrack];
 	Bool_t charged_in_central_eta; // A single boolean that is reset at the start of each new event and marks that event as INEL>0 (or not).
 
-	Float_t Eta[kMaxTrack];
+	// Float_t Eta[kMaxTrack];
 	Float_t y[kMaxTrack];
 	Float_t Phi[kMaxTrack];
 
@@ -123,15 +125,15 @@ void RunWorker(int WorkerId, int N_ev, std::string output_folder, std::string in
 	t3->Branch("ID",&ID,"ID[ntrack]/I"); // A PID identifier
 	t3->Branch("Mother1_ID",&mother1_ID,"Mother1_ID[ntrack]/I");
 	t3->Branch("Mother2_ID",&mother2_ID,"Mother2_ID[ntrack]/I");
-	t3->Branch("px",px,"px[ntrack]/F");
-	t3->Branch("py",py,"py[ntrack]/F");
-	t3->Branch("pz",pz,"pz[ntrack]/F");
+	// t3->Branch("px",px,"px[ntrack]/F");
+	// t3->Branch("py",py,"py[ntrack]/F");
+	// t3->Branch("pz",pz,"pz[ntrack]/F");
 	t3->Branch("pt",pt,"pt[ntrack]/F");
 	t3->Branch("m",m,"m[ntrack]/F");
-	t3->Branch("e",e,"e[ntrack]/F");
+	// t3->Branch("e",e,"e[ntrack]/F");
 	t3->Branch("charged",charged,"charged[ntrack]/O");
 
-	t3->Branch("Eta",Eta,"Eta[ntrack]/F");
+	// t3->Branch("Eta",Eta,"Eta[ntrack]/F");
 	t3->Branch("y",y,"y[ntrack]/F");
 	t3->Branch("Phi",Phi,"Phi[ntrack]/F");
 
@@ -172,12 +174,15 @@ void RunWorker(int WorkerId, int N_ev, std::string output_folder, std::string in
 
 	// Event loop
 	for (int iEvent=0; iEvent<N_ev; ++iEvent){
-		pythia.next();
+		// pythia.next();
+		if (!pythia.next()) continue; // Skip failed events --> Angantyr can generate events that have no particles at all!
+
 		ntrack = pythia.event.size(); // This could be a bit problematic to estimate multiplicity: this includes non-final particles!
 		ntrack_final = 0; // Resetting for the next event
 
 		hEventCounter->Fill(0);
-		if ((WorkerId < 10) && (iEvent % int(0.05 * N_ev) == 0)){ // Printing for just 10 workers is already more than enough!
+		int five_percent_step = 0.05 * N_ev; // Defined this outside the check to avoid some divisions by zero that could happen when using low N_ev per worker.
+		if ((WorkerId < 10) && five_percent_step > 0 ? (iEvent % five_percent_step == 0) : false){ // Printing for just 10 workers is already more than enough!
 			std::cout << "[Worker " << WorkerId << "] Now on event " << iEvent << " of " << N_ev << " (" << (100.0 * iEvent / N_ev) << "%)" << std::endl;
 		}
 
@@ -259,21 +264,21 @@ void RunWorker(int WorkerId, int N_ev, std::string output_folder, std::string in
 			ID[i] = particle_PID;
 			int motherIdx1 = pythia.event[i].mother1(); // Doing this, I can access it only once and don't need to re-read this information for pions!
 			int motherIdx2 = pythia.event[i].mother2();
-			mother1_ID[i] = motherIdx1;
+			mother1_ID[i] = motherIdx1; // Not quite the PID of the mother. It is the Idx of the mother in Pythia's list of particles
 			mother2_ID[i] = motherIdx2;
 
 			IsFinal[i]   = isfinal;
-			px[i]   = pythia.event[i].px();
-			py[i]   = pythia.event[i].py();
-			pz[i]   = pythia.event[i].pz();
+			// px[i]   = pythia.event[i].px();
+			// py[i]   = pythia.event[i].py();
+			// pz[i]   = pythia.event[i].pz();
 
 			Float_t pT = pythia.event[i].pT();
 			pt[i]   = pT;
-			m[i]   = pythia.event[i].m();
-			e[i]   = pythia.event[i].e();
+			m[i]   = pythia.event[i].m(); // The actual simulated mass of the particle in the dynamic, so may be somewhat different from the PDG value. Thus the need to store it separately.
+			// e[i]   = pythia.event[i].e();
 			
 			Phi[i]   = pythia.event[i].phi();
-			Eta[i]   = eta_rap;
+			// Eta[i]   = eta_rap;
 			y[i]   = rapidity;
 
 			charged[i] = isCharged;
@@ -570,8 +575,8 @@ int main(int argc, char *argv[]){
     const char *output_folder = (const char*) argv[1];
 	const char *input_card_path = (const char*) argv[2];
     double N_ev_receiver = atof(argv[3]); // This receives input like 1e9 and converts it into a proper double.
-	long long N_ev = static_cast<long long>(N_ev_receiver); // Using long long for real high statistics (even uint would overflow at 1e10 or so!)
-	int N_cores = std::atoi(argv[4]);
+	uint N_ev = static_cast<int>(N_ev_receiver); // Should use long long for real high statistics (even uint would overflow at 1e10 or so!), but this is enough for now
+	uint N_cores = std::atoi(argv[4]);
 
 	std::cout << "\n\nNow running " << argv[0] << " " << argv[1] << " " << argv[2] << " " << N_ev << " " << argv[4] << std::endl;
 
@@ -598,6 +603,10 @@ int main(int argc, char *argv[]){
 		int base = N_ev / N_cores;
     	int remainder = N_ev % N_cores;
 		int N_ev_current_worker = base + (WorkerId < remainder ? 1 : 0);
+
+		// std::cout << base << std::endl;
+		// std::cout << remainder << std::endl;
+		// std::cout << N_ev_current_worker << std::endl;
 
 		RunWorker(WorkerId, N_ev_current_worker, output_folder_for_current_card, input_card_path, input_card_name);
 	}
