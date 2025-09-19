@@ -1,0 +1,11 @@
+# Compilation:
+g++ -std=c++17 lambda_pol_PYTHIA.cxx -o lambda_pol_PYTHIA.exe `root-config --cflags --libs`
+
+# Run:
+./lambda_pol_PYTHIA.exe input_card_name N_events
+
+    # For pp @ 13.6 TeV - 1.000 ev run:
+./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1000
+
+    # For pp @ 13.6 TeV - 100.000.000 ev run:
+./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 100000000

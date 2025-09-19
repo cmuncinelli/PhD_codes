@@ -11,7 +11,7 @@
 #include "TProfile.h"
 #include "TLorentzVector.h"
 #include "TVector3.h"
-#include "TRotation.h"
+// #include "TRotation.h"
 
 #include <vector>
 #include <array>
@@ -40,7 +40,7 @@ typedef std::vector<std::vector<double>> DoubleMatrix; // An alias
 // Useful debugging sequence:
 // #define SAFE_ADDBINCONTENT(h, bin, val)                  \
 //     do {                                                 \
-//         if ((bin) < 0 || (bin) > (h)->GetNcells()) {     \
+//         if ((bin) < 0 || (bin) > (h)->GetNcells()){     \
 //             std::cerr << "OOB bin access: " << bin       \
 //                       << " in hist " << (h)->GetName()   \
 //                       << std::endl;                      \
@@ -99,7 +99,7 @@ double IntegralAbsNoOverflow(const TH1* h);
 // int lambda_pol_toy_model(){
 int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly way, that searches for a "main()" function instead of a main with the same name as the .cxx file that ROOT's .x compiler expects
     // Receiving useful values:
-    if (argc != 5) {
+    if (argc != 5){
         std::cerr << "Usage:" << argv[0] << " N_resamples N_threads with_bullet(int) force_DecayDist_mode(0=default, 1=AlongP, 2=PerpP)" << std::endl;
         return 1; // Indicate an error. (This warning code block is chat-gpt made, by the way!)
     }
@@ -1526,7 +1526,7 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     hRingObservable_TrueValuePtCuts_integrated->Scale(1./hLambdaCounter_phiRingAngles_Weighted_PtCuts->Integral());
     hRingObservable_NormPolTrueValuePtCuts_integrated->Scale(1./hLambdaCounter_phiRingAngles_Weighted_PtCuts->Integral());
 
-    hRingObservableReco->Divide(hLambdaCounter_phiRingAngles_Weighted); // These three also need to be passed as references
+    hRingObservableReco->Divide(hLambdaCounter_phiRingAngles_Weighted);
     hRingObservableRecoPtCuts->Divide(hLambdaCounter_phiRingAngles_Weighted_PtCuts);
     hRingObservableNormPolRecoPtCuts->Divide(hLambdaCounter_phiRingAngles_Weighted_PtCuts);
 
@@ -1763,9 +1763,9 @@ inline double wrapToInterval(double phi, double phi_min, double phi_max){
 void CheckBins(const char* name, const int* bins, int N_bins_total, TH1* hist){ // Accepts TH1 because TH2D and TH3D internally run on TH1
     int nbins_total = hist->GetNcells(); // includes under/overflow
 
-    for (int i = 0; i < N_bins_total; i++) {
+    for (int i = 0; i < N_bins_total; i++){
         int bin = bins[i];
-        if (bin < 1 || bin > nbins_total - 2) { // 0 = underflow, nbins_total-1 = overflow
+        if (bin < 1 || bin > nbins_total - 2){ // 0 = underflow, nbins_total-1 = overflow
             std::cout << "[!] Out-of-range bin in " << name 
                     << " at index " << i 
                     << " → globalBin = " << bin 
@@ -1849,7 +1849,7 @@ inline int mapCompactToGlobal(const TH1& h, int compactIndex){
 }
 
 // Copy contents of a TH3D into a new TH3D -- Better than the Clone() function...
-void CopyTH3D(const TH3D* source, TH3D* target) {
+void CopyTH3D(const TH3D* source, TH3D* target){
     if (!source || !target) return;
     // std::cout << "Now copying " << source->GetTitle() << " into " << target->GetTitle() << std::endl;
 
@@ -1877,9 +1877,9 @@ void CopyTH3D(const TH3D* source, TH3D* target) {
 void SqrtHist(TH1* h){
     int dim = h->GetDimension();
 
-    if (dim == 1) {
+    if (dim == 1){
         int nbx = h->GetNbinsX();
-        for (int ix = 0; ix <= nbx + 1; ++ix) {
+        for (int ix = 0; ix <= nbx + 1; ++ix){
             double val = h->GetBinContent(ix);
             if (val >= 0)
                 h->SetBinContent(ix, std::sqrt(val));
@@ -1890,11 +1890,11 @@ void SqrtHist(TH1* h){
             }
         }
     }
-    else if (dim == 2) {
+    else if (dim == 2){
         int nbx = h->GetNbinsX();
         int nby = h->GetNbinsY();
-        for (int ix = 0; ix <= nbx + 1; ++ix) {
-            for (int iy = 0; iy <= nby + 1; ++iy) {
+        for (int ix = 0; ix <= nbx + 1; ++ix){
+            for (int iy = 0; iy <= nby + 1; ++iy){
                 int bin = h->GetBin(ix, iy);
                 double val = h->GetBinContent(bin);
                 if (val >= 0)
@@ -1907,13 +1907,13 @@ void SqrtHist(TH1* h){
             }
         }
     }
-    else if (dim == 3) {
+    else if (dim == 3){
         int nbx = h->GetNbinsX();
         int nby = h->GetNbinsY();
         int nbz = h->GetNbinsZ();
-        for (int ix = 0; ix <= nbx + 1; ++ix) {
-            for (int iy = 0; iy <= nby + 1; ++iy) {
-                for (int iz = 0; iz <= nbz + 1; ++iz) {
+        for (int ix = 0; ix <= nbx + 1; ++ix){
+            for (int iy = 0; iy <= nby + 1; ++iy){
+                for (int iz = 0; iz <= nbz + 1; ++iz){
                     int bin = h->GetBin(ix, iy, iz);
                     double val = h->GetBinContent(bin);
                     if (val >= 0)
@@ -1938,9 +1938,9 @@ void SqrtHist(TH1* h){
 //   int nby = h->GetNbinsY();
 //   int nbz = h->GetNbinsZ();
 
-//   for (int ix = 1; ix <= nbx; ++ix) {
-//     for (int iy = 1; iy <= nby; ++iy) {
-//       for (int iz = 1; iz <= nbz; ++iz) {
+//   for (int ix = 1; ix <= nbx; ++ix){
+//     for (int iy = 1; iy <= nby; ++iy){
+//       for (int iz = 1; iz <= nbz; ++iz){
 //         double val = h->GetBinContent(ix, iy, iz);
 //         h->SetBinContent(ix, iy, iz, (val >= 0.0) ? std::sqrt(val) : 0.0);
 //       }
@@ -1954,9 +1954,9 @@ void AddScalar(TH3D* h, double scalar){
   int nby = h->GetNbinsY();
   int nbz = h->GetNbinsZ();
 
-  for (int ix = 1; ix <= nbx; ++ix) {
-    for (int iy = 1; iy <= nby; ++iy) {
-      for (int iz = 1; iz <= nbz; ++iz) {
+  for (int ix = 1; ix <= nbx; ++ix){
+    for (int iy = 1; iy <= nby; ++iy){
+      for (int iz = 1; iz <= nbz; ++iz){
         double val = h->GetBinContent(ix, iy, iz);
         h->SetBinContent(ix, iy, iz, val + scalar);
       }
@@ -1977,7 +1977,7 @@ void SetErrorsFromErrHist(TH1* data, const TH1* errors){
 
     if (dim == 1){
         int nbx = data->GetNbinsX();
-        for (int ix = 0; ix <= nbx + 1; ++ix) {
+        for (int ix = 0; ix <= nbx + 1; ++ix){
             double err = errors->GetBinContent(ix);
             data->SetBinError(ix, err);
         }
@@ -1985,8 +1985,8 @@ void SetErrorsFromErrHist(TH1* data, const TH1* errors){
     else if (dim == 2){
         int nbx = data->GetNbinsX();
         int nby = data->GetNbinsY();
-        for (int ix = 0; ix <= nbx + 1; ++ix) {
-            for (int iy = 0; iy <= nby + 1; ++iy) {
+        for (int ix = 0; ix <= nbx + 1; ++ix){
+            for (int iy = 0; iy <= nby + 1; ++iy){
                 int bin = data->GetBin(ix, iy);
                 double err = errors->GetBinContent(bin);
                 data->SetBinError(bin, err);
@@ -1997,9 +1997,9 @@ void SetErrorsFromErrHist(TH1* data, const TH1* errors){
         int nbx = data->GetNbinsX();
         int nby = data->GetNbinsY();
         int nbz = data->GetNbinsZ();
-        for (int ix = 0; ix <= nbx + 1; ++ix) {
-            for (int iy = 0; iy <= nby + 1; ++iy) {
-                for (int iz = 0; iz <= nbz + 1; ++iz) {
+        for (int ix = 0; ix <= nbx + 1; ++ix){
+            for (int iy = 0; iy <= nby + 1; ++iy){
+                for (int iz = 0; iz <= nbz + 1; ++iz){
                     int bin = data->GetBin(ix, iy, iz);
                     double err = errors->GetBinContent(bin);
                     data->SetBinError(bin, err);
@@ -2014,10 +2014,10 @@ void SetErrorsFromErrHist(TH1* data, const TH1* errors){
 
 double IntegralAbsNoOverflow(const TH1* h){
     double sum = 0.0;
-    if (auto h1 = dynamic_cast<const TH1*>(h)) {
-        for (int ix = 1; ix <= h1->GetNbinsX(); ix++) {
-            for (int iy = 1; iy <= h1->GetNbinsY(); iy++) {
-                for (int iz = 1; iz <= h1->GetNbinsZ(); iz++) {
+    if (auto h1 = dynamic_cast<const TH1*>(h)){
+        for (int ix = 1; ix <= h1->GetNbinsX(); ix++){
+            for (int iy = 1; iy <= h1->GetNbinsY(); iy++){
+                for (int iz = 1; iz <= h1->GetNbinsZ(); iz++){
                     sum += std::fabs(h->GetBinContent(ix, iy, iz));
                 }
             }
@@ -2348,7 +2348,7 @@ void get_lambda(DoubleMatrix &y_matrix, DoubleMatrix &phi_matrix, DoubleMatrix &
             py.push_back(pT[ip]*std::sin(phi[ip]));
             double mT = std::sqrt(mass_Lambda*mass_Lambda + pT[ip]*pT[ip]);
             pz.push_back(mT*std::sinh(y[ip])); 
-            E.push_back(std::sqrt(mass_Lambda*mass_Lambda + px[ip]*px[ip] + py[ip]*py[ip] + pz[ip]*pz[ip]));   
+            E.push_back(std::sqrt(mass_Lambda*mass_Lambda + px[ip]*px[ip] + py[ip]*py[ip] + pz[ip]*pz[ip]));
         }
 
         // Finally, passing all these values into a larger array that contains all events:
