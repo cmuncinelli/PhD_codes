@@ -67,15 +67,17 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	TFile f(filename.c_str(), "RECREATE");
 	TTree *t3 = new TTree("t3","Reconst ntuple");
 
-	const Int_t kMaxTrack = 7000;
+	// const Int_t kMaxTrack = 7000; // This could be a problem for very large multiplicity pp events and PbPb events!
+	// (Memory corruption and the sort, if the vectors have more than 7000 particles, which may be final or intermediary states too!)
+	// Thus, changed to a C++ approach instead of the usual "Int_t ID[kMaxTrack];" C-style arrays for the branches.
 	Int_t ntrack;
 	Int_t ntrack_final;
-	Int_t ID[kMaxTrack];
-	Int_t mother1_ID[kMaxTrack];
-	Int_t mother2_ID[kMaxTrack];
-	Bool_t IsFinal[kMaxTrack];
-	Bool_t IsPrimary[kMaxTrack];
-	Bool_t IsCarbonCopy[kMaxTrack];
+	std::vector<Int_t> ID;
+	std::vector<Int_t> mother1_ID;
+	std::vector<Int_t> mother2_ID;
+	std::vector<Bool_t> IsFinal;
+	std::vector<Bool_t> IsPrimary;
+	std::vector<Bool_t> IsCarbonCopy;
 	Int_t charged_in_back_forward_eta; // The multiplicity indicator for 1807.11321 [nucl-ex]'s data
 	Int_t ntracks_in_back_forward_eta; // Another multiplicity indicator, trying to mimic the indirect charged particle production due to neutral's interactions with V0. Something finer than just Nch, and will also receive only final particles
 	Int_t Ntracks_charged_forward;
@@ -83,19 +85,19 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	Int_t Ntracks_final_charged_center;
 	Int_t Ntracks_final_charged;
 
-	// Float_t px[kMaxTrack]; // Already saving pT,y,phi,mass
-	// Float_t py[kMaxTrack];
-	// Float_t pz[kMaxTrack];
-	Float_t pt[kMaxTrack];
-	Float_t m[kMaxTrack];
-	// Float_t e[kMaxTrack]; // No need for charge
+	// std::vector<Float_t> px; // Already saving pT,y,phi,mass
+	// std::vector<Float_t> py;
+	// std::vector<Float_t> pz;
+	std::vector<Float_t> pt;
+	std::vector<Float_t> m;
+	// std::vector<Float_t> e; // No need for charge
 
-	Bool_t charged[kMaxTrack];
+	std::vector<Bool_t> charged;
 	Bool_t charged_in_central_eta; // A single boolean that is reset at the start of each new event and marks that event as INEL>0 (or not).
 
-	// Float_t Eta[kMaxTrack];
-	Float_t y[kMaxTrack];
-	Float_t Phi[kMaxTrack];
+	// std::vector<Float_t> Eta;
+	std::vector<Float_t> y;
+	std::vector<Float_t> Phi;
 
 	TH1D *hEventCounter = new TH1D ("hEventCounter", "", 1, -1, 1);
 	TH1D *hINELEventCounter = new TH1D ("hINELEventCounter", "", 1, -1, 1);
@@ -109,11 +111,13 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 	t3->Branch("ntrack",&ntrack,"ntrack/I");
 	t3->Branch("ntrack_final",&ntrack_final,"ntrack_final/I");
-	t3->Branch("IsFinal",IsFinal,"IsFinal[ntrack]/O"); // Actually don't need to pass this array by reference, as it is a C++ array and it would be passed by ref by default!
-	t3->Branch("IsPrimary",IsPrimary,"IsPrimary[ntrack]/O"); 
+	// t3->Branch("IsFinal",IsFinal,"IsFinal[ntrack]/O"); // Actually don't need to pass this array by reference, as it is a C++ array and it would be passed by ref by default!
+		// In the new declaration style, with C++ arrays, you don't need to declare types nor lengths! ROOT manages all that bookkeeping for you!
+	t3->Branch("IsFinal",&IsFinal);
+	t3->Branch("IsPrimary",&IsPrimary); 
 	// Do notice that the [ntrack] part is making it so that only the values from 0 up to ntrack - 1 will be stored in your TTree, so you don't need to reset IsPrimary for each new
 	// event in the loop!
-	t3->Branch("IsCarbonCopy",IsCarbonCopy,"IsCarbonCopy[ntrack]/O"); 
+	t3->Branch("IsCarbonCopy",&IsCarbonCopy); 
 	t3->Branch("charged_in_back_forward_eta",&charged_in_back_forward_eta,"charged_in_back_forward_eta/I");
 	t3->Branch("ntracks_in_back_forward_eta",&ntracks_in_back_forward_eta,"ntracks_in_back_forward_eta/I");
 	t3->Branch("charged_in_central_eta",&charged_in_central_eta,"charged_in_central_eta/O");
@@ -122,20 +126,20 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	t3->Branch("Ntracks_final_charged_center",&Ntracks_final_charged_center,"Ntracks_final_charged_center/I");
 	t3->Branch("Ntracks_final_charged",&Ntracks_final_charged,"Ntracks_final_charged/I");
 
-	t3->Branch("ID",ID,"ID[ntrack]/I"); // A PID identifier
-	t3->Branch("Mother1_ID",mother1_ID,"Mother1_ID[ntrack]/I");
-	t3->Branch("Mother2_ID",mother2_ID,"Mother2_ID[ntrack]/I");
-	// t3->Branch("px",px,"px[ntrack]/F");
-	// t3->Branch("py",py,"py[ntrack]/F");
-	// t3->Branch("pz",pz,"pz[ntrack]/F");
-	t3->Branch("pt",pt,"pt[ntrack]/F");
-	t3->Branch("m",m,"m[ntrack]/F");
-	// t3->Branch("e",e,"e[ntrack]/F");
-	t3->Branch("charged",charged,"charged[ntrack]/O");
+	t3->Branch("ID",&ID); // A PID identifier
+	t3->Branch("Mother1_ID",&mother1_ID);
+	t3->Branch("Mother2_ID",&mother2_ID);
+	// t3->Branch("px",&px);
+	// t3->Branch("py",&py);
+	// t3->Branch("pz",&pz);
+	t3->Branch("pt",&pt);
+	t3->Branch("m",&m);
+	// t3->Branch("e",&e);
+	t3->Branch("charged",&charged);
 
-	// t3->Branch("Eta",Eta,"Eta[ntrack]/F");
-	t3->Branch("y",y,"y[ntrack]/F");
-	t3->Branch("Phi",Phi,"Phi[ntrack]/F");
+	// t3->Branch("Eta",&Eta);
+	t3->Branch("y",&y);
+	t3->Branch("Phi",&Phi);
 
 	// Saving a global TH1D for each particle, just to see the information on their pT:
 	TH1D *pT_hist_charged_final = new TH1D("pT_hist_charged_final", "pT_hist_charged_final", N_bins_pT, 0, upper_limit_pT);
@@ -201,7 +205,24 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		int n_proton_event = 0;
 		int n_kaon_event = 0;
 		
-		// Track loop
+		// Track loop:
+			// Clearing all C++ arrays before the loop starts, so that you safely store only the information about the current event:
+		ID.clear();
+		mother1_ID.clear();
+		mother2_ID.clear();
+		IsFinal.clear();
+		IsPrimary.clear();
+		IsCarbonCopy.clear();
+		// px.clear();
+		// py.clear();
+		// pz.clear();
+		pt.clear();
+		m.clear();
+		// e.clear();
+		charged.clear();
+		// Eta.clear();
+		y.clear();
+		Phi.clear();
 		for (int i = 0; i < pythia.event.size(); ++i){
 			bool isfinal = pythia.event[i].isFinal();
 			// Checking if this particle has a carbon-copy daughter. If it does, then it isn't final, and it didn't decay: it just scattered. This is not what I want to look at!
@@ -218,15 +239,16 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 			// Final particles will never enter this category, but non-final particles will. To actually avoid saving this kind of particle, you would need to have two indexes:
 			// the first index will actually run through the event, and the second index will run through the vectors that will be exported to the TTree:
 			
-			IsCarbonCopy[i] = false; // This should be set as false by default for each particle! 
-									 // If you don't declare this for each particle, the vector 
-									 // won't be updated correctly and eventually will become full of trues!
+			Bool_t IsCarbonCopy_value = false; // This should be set as false by default for each particle! 
+											   // If you don't declare this for each particle, the vector 
+											   // won't be updated correctly and eventually will become full of trues!
 			if ((daughter1 == daughter2) && (daughter1 > 0)){
-				IsCarbonCopy[i] = true; // This will be a useful bool to consider, where you will skip the particle if it is simply a carbon-copy: it may not be a final state,
+				IsCarbonCopy_value = true; // This will be a useful bool to consider, where you will skip the particle if it is simply a carbon-copy: it may not be a final state,
 				// but a carbon-copy isn't even a physical particle, and it shouldn't be considered if you want to count the number of intermediate particles in your collision.
 				// It is best not to do an if ((daughter1 == daughter2) && (daughter1 > 0)){continue} if you are going to save these particles in a TTree, because the value on
 				// the i'th index of the vector that will be flushed into the TTree will still keep the previous iteration's particle data!
 			}
+			IsCarbonCopy.push_back(IsCarbonCopy_value);
 			
 
 			// if (isfinal){ntrack_final += 1;}
@@ -263,27 +285,28 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 			}
 
 			int particle_PID = pythia.event[i].id();
-			ID[i] = particle_PID;
+			// ID[i] = particle_PID;
+			ID.push_back(particle_PID); // New C++ style vector storing
 			int motherIdx1 = pythia.event[i].mother1(); // Doing this, I can access it only once and don't need to re-read this information for pions!
 			int motherIdx2 = pythia.event[i].mother2();
-			mother1_ID[i] = motherIdx1; // Not quite the PID of the mother. It is the Idx of the mother in Pythia's list of particles
-			mother2_ID[i] = motherIdx2;
+			mother1_ID.push_back(motherIdx1); // Not quite the PID of the mother. It is the Idx of the mother in Pythia's list of particles
+			mother2_ID.push_back(motherIdx2);
 
-			IsFinal[i]   = isfinal;
-			// px[i]   = pythia.event[i].px();
-			// py[i]   = pythia.event[i].py();
-			// pz[i]   = pythia.event[i].pz();
+			IsFinal.push_back(isfinal);
+			// px.push_back(pythia.event[i].px());
+			// py.push_back(pythia.event[i].py());
+			// pz.push_back(pythia.event[i].pz());
 
 			Float_t pT = pythia.event[i].pT();
-			pt[i]   = pT;
-			m[i]   = pythia.event[i].m(); // The actual simulated mass of the particle in the dynamic, so may be somewhat different from the PDG value. Thus the need to store it separately.
-			// e[i]   = pythia.event[i].e();
+			pt.push_back(pT);
+			m.push_back(pythia.event[i].m()); // The actual simulated mass of the particle in the dynamic, so may be somewhat different from the PDG value. Thus the need to store it separately.
+			// e.push_back(pythia.event[i].e());
 			
-			Phi[i]   = pythia.event[i].phi();
-			// Eta[i]   = eta_rap;
-			y[i]   = rapidity;
+			Phi.push_back(pythia.event[i].phi());
+			// Eta.push_back(eta_rap);
+			y.push_back(rapidity);
 
-			charged[i] = isCharged;
+			charged.push_back(isCharged);
 
 			// Checking if the particle would be considered primary or not
 				// The particle will be considered primary by default. If it has a mother with a long lifetime, then it will be considered secondary.
@@ -291,12 +314,12 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 				// Possible secondaries from 2 -> N processes and two partons becoming a single particle will be considered as primaries.
 				// A little bit of a MC cheat is that particles whose lifetime is smaller than 10 mm/c but came straight from the collision will be considered primary, 
 				// and in experimental data that would not be true.
-			IsPrimary[i] = true;
+			Bool_t IsPrimary_value = true;
 			// First, checking if it came from an actual decay:
 				// (I want to count all particles that didn't fall in both the loop's conditions with the Ntracks_primary, not the ones that checked one but didn't check the other if)
 			if (motherIdx1 > 0 && motherIdx2 == 0){
 				if (pythia.event[motherIdx1].tau0() >= 10.){ // Tau0 in mm/c. Reference is slide 112 of https://indico.cern.ch/event/666222/contributions/2768780/attachments/1551303/2437229/DPG_AnalysisTutorial_20171102.pdf
-					IsPrimary[i] = false;
+					IsPrimary_value = false;
 				}
 				else{
 					Ntracks_primary += 1;
@@ -305,6 +328,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 			else{
 				Ntracks_primary += 1; // This does not overcount the above check: they never happen simultaneuosly for the same particle!
 			}
+			IsPrimary.push_back(IsPrimary_value);
 
 			if (isfinal && isCharged){
 				// event_hist_charged->Fill((double) pT);
