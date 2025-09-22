@@ -12,6 +12,9 @@
 # High statistics run (~650 GB of data):
 ./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e8 120
 
+# Mid statistics run (~750 MB of data):
+./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e5 120
+
 # For compiling -- Notice I am using OpenMP for parallelization, so you need it installed (sudo apt-get install libomp-dev):
 g++ -O2 -std=c++17 PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 `root-config --cflags --libs` -fopenmp
 

@@ -351,7 +351,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 				n_kaon_event += 1;
 			}
 		}
-		t3->Fill(); // Filling the tree first thing
+		t3->Fill(); // Filling the tree first thing after the loop!
 
 		// Filling the event counters for INEL events for each multiplicity class:
 			// (This is actually just to sate my curiosity. It has no practical use, as the number of events is the same for all particle species in the ALICE standard normalization of pT spectra)
