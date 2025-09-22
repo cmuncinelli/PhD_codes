@@ -92,7 +92,8 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	std::vector<Float_t> m;
 	// std::vector<Float_t> e; // No need for charge
 
-	std::vector<Bool_t> charged;
+	// std::vector<Bool_t> charged; // Don't actually need to save this! This is purely a PDG-lookup information, so no need to store it when the
+									// PID is already enough to know it! The isCharged() will be useful inside the loop, but no need to store it!
 	Bool_t charged_in_central_eta; // A single boolean that is reset at the start of each new event and marks that event as INEL>0 (or not).
 
 	// std::vector<Float_t> Eta;
@@ -135,7 +136,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	t3->Branch("pt",&pt);
 	t3->Branch("m",&m);
 	// t3->Branch("e",&e);
-	t3->Branch("charged",&charged);
+	// t3->Branch("charged",&charged);
 
 	// t3->Branch("Eta",&Eta);
 	t3->Branch("y",&y);
@@ -219,7 +220,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		pt.clear();
 		m.clear();
 		// e.clear();
-		charged.clear();
+		// charged.clear();
 		// Eta.clear();
 		y.clear();
 		Phi.clear();
@@ -306,7 +307,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 			// Eta.push_back(eta_rap);
 			y.push_back(rapidity);
 
-			charged.push_back(isCharged);
+			// charged.push_back(isCharged); // Don't actually need to save this! This is purely a PDG-lookup information, so no need to store it when the PID is already enough to know it!
 
 			// Checking if the particle would be considered primary or not
 				// The particle will be considered primary by default. If it has a mother with a long lifetime, then it will be considered secondary.
