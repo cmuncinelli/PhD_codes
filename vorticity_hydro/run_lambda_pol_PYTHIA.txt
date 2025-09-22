@@ -1,11 +1,27 @@
 # Compilation:
-g++ -std=c++17 lambda_pol_PYTHIA.cxx -o lambda_pol_PYTHIA.exe `root-config --cflags --libs`
+g++ -O2 -std=c++17 lambda_pol_PYTHIA.cxx -o lambda_pol_PYTHIA.exe `root-config --cflags --libs`
 
 # Run:
-./lambda_pol_PYTHIA.exe input_card_name N_events
+./lambda_pol_PYTHIA.exe input_card_name N_events target_centrality_bin
+
 
     # For pp @ 13.6 TeV - 1.000 ev run:
-./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1000
+        # 0-5% (target_centrality_bin = 1):
+./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e3 1
+        # 40-50% (target_centrality_bin = 6):
+./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e3 6
+
+    # For pp @ 13.6 TeV - 100.000 ev run:
+        # 0-5% (target_centrality_bin = 1):
+./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e5 1
+        # 40-50% (target_centrality_bin = 6):
+./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e5 6
 
     # For pp @ 13.6 TeV - 100.000.000 ev run:
-./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 100000000
+        # 0-5% (target_centrality_bin = 1):
+./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1
+        # 40-50% (target_centrality_bin = 6):
+./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6
+
+# Chaining the two that take a longer time to run:
+./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1 & ./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6
