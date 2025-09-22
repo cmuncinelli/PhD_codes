@@ -109,11 +109,11 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 	t3->Branch("ntrack",&ntrack,"ntrack/I");
 	t3->Branch("ntrack_final",&ntrack_final,"ntrack_final/I");
-	t3->Branch("IsFinal",&IsFinal,"IsFinal[ntrack]/O"); // Actually don't need to pass this array by reference, as it is a C++ array and it would be passed by ref by default, but whatever...
-	t3->Branch("IsPrimary",&IsPrimary,"IsPrimary[ntrack]/O"); 
+	t3->Branch("IsFinal",IsFinal,"IsFinal[ntrack]/O"); // Actually don't need to pass this array by reference, as it is a C++ array and it would be passed by ref by default!
+	t3->Branch("IsPrimary",IsPrimary,"IsPrimary[ntrack]/O"); 
 	// Do notice that the [ntrack] part is making it so that only the values from 0 up to ntrack - 1 will be stored in your TTree, so you don't need to reset IsPrimary for each new
 	// event in the loop!
-	t3->Branch("IsCarbonCopy",&IsCarbonCopy,"IsCarbonCopy[ntrack]/O"); 
+	t3->Branch("IsCarbonCopy",IsCarbonCopy,"IsCarbonCopy[ntrack]/O"); 
 	t3->Branch("charged_in_back_forward_eta",&charged_in_back_forward_eta,"charged_in_back_forward_eta/I");
 	t3->Branch("ntracks_in_back_forward_eta",&ntracks_in_back_forward_eta,"ntracks_in_back_forward_eta/I");
 	t3->Branch("charged_in_central_eta",&charged_in_central_eta,"charged_in_central_eta/O");
@@ -122,9 +122,9 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	t3->Branch("Ntracks_final_charged_center",&Ntracks_final_charged_center,"Ntracks_final_charged_center/I");
 	t3->Branch("Ntracks_final_charged",&Ntracks_final_charged,"Ntracks_final_charged/I");
 
-	t3->Branch("ID",&ID,"ID[ntrack]/I"); // A PID identifier
-	t3->Branch("Mother1_ID",&mother1_ID,"Mother1_ID[ntrack]/I");
-	t3->Branch("Mother2_ID",&mother2_ID,"Mother2_ID[ntrack]/I");
+	t3->Branch("ID",ID,"ID[ntrack]/I"); // A PID identifier
+	t3->Branch("Mother1_ID",mother1_ID,"Mother1_ID[ntrack]/I");
+	t3->Branch("Mother2_ID",mother2_ID,"Mother2_ID[ntrack]/I");
 	// t3->Branch("px",px,"px[ntrack]/F");
 	// t3->Branch("py",py,"py[ntrack]/F");
 	// t3->Branch("pz",pz,"pz[ntrack]/F");
