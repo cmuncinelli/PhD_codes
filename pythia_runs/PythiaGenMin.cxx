@@ -218,7 +218,9 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 			// Final particles will never enter this category, but non-final particles will. To actually avoid saving this kind of particle, you would need to have two indexes:
 			// the first index will actually run through the event, and the second index will run through the vectors that will be exported to the TTree:
 			
-				// TODO: Implement the carbon-copy selection variable for studying non-final states!
+			IsCarbonCopy[i] = false; // This should be set as false by default for each particle! 
+									 // If you don't declare this for each particle, the vector 
+									 // won't be updated correctly and eventually will become full of trues!
 			if ((daughter1 == daughter2) && (daughter1 > 0)){
 				IsCarbonCopy[i] = true; // This will be a useful bool to consider, where you will skip the particle if it is simply a carbon-copy: it may not be a final state,
 				// but a carbon-copy isn't even a physical particle, and it shouldn't be considered if you want to count the number of intermediate particles in your collision.
@@ -325,6 +327,8 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 				n_kaon_event += 1;
 			}
 		}
+		t3->Fill(); // Filling the tree first thing
+
 		// Filling the event counters for INEL events for each multiplicity class:
 			// (This is actually just to sate my curiosity. It has no practical use, as the number of events is the same for all particle species in the ALICE standard normalization of pT spectra)
 		if (charged_in_central_eta){
@@ -352,8 +356,6 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		if(charged_in_central_eta){hNtracks_final_charged_INEL_l0->Fill(Ntracks_final_charged);} // This histogram should only be filled if the event is INEL>0, so it is more restrictive than the histogram above!
 		hNtracks_final_charged_forward->Fill(charged_in_back_forward_eta);
 		if(charged_in_central_eta){hNtracks_final_charged_forward_INEL_l0->Fill(charged_in_back_forward_eta);} // This histogram should only be filled if the event is INEL>0, so it is more restrictive than the histogram above!
-
-		t3->Fill();
 
 		// Now filling the histograms for each particle type:
 		if (n_charged_event != 0){hEventCounterCharged->Fill(0);}
