@@ -185,13 +185,13 @@ int main(int argc, char *argv[]){
 
     auto hRingObservable_PolStar = new TH1D("hRingObservable_PolStar", "hRingObservable_PolStar", N_bins_phi, phi_min_Ring, phi_max_Ring);
     auto hRingObservable_PolStar_PtCuts = new TH1D("hRingObservable_PolStar_PtCuts", "hRingObservable_PolStar_PtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    auto hRingObservable_PolStar_PtCuts_integrated = new TH1D("hRingObservable_PolStar_PtCuts_integrated", "hRingObservable_PolStar_PtCuts_integrated", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    auto hRingObservable_PolStar_PtCuts_integrated = new TH1D("hRingObservable_PolStar_PtCuts_integrated", "hRingObservable_PolStar_PtCuts_integrated", 1, phi_min_Ring, phi_max_Ring);
                 // A variation calculated with \hat{p}*_D instead of <\hat{p}*_D>:
                 // (A second test, where we multiply p_D * p_\Lambda directly, without the averaging -- should make no
                 // difference in this Pythia simulation where P_\Lambda = 0, but it is good to work out this structure)
     auto hRingObservable_daughter_no_avg = new TH1D("hRingObservable_daughter_no_avg", "hRingObservable_daughter_no_avg", N_bins_phi, phi_min_Ring, phi_max_Ring);
     auto hRingObservable_daughter_no_avg_PtCuts = new TH1D("hRingObservable_daughter_no_avg_PtCuts", "hRingObservable_daughter_no_avg_PtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    auto hRingObservable_daughter_no_avg_PtCuts_integrated = new TH1D("hRingObservable_daughter_no_avg_PtCuts_integrated", "hRingObservable_daughter_no_avg_PtCuts_integrated", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    auto hRingObservable_daughter_no_avg_PtCuts_integrated = new TH1D("hRingObservable_daughter_no_avg_PtCuts_integrated", "hRingObservable_daughter_no_avg_PtCuts_integrated", 1, phi_min_Ring, phi_max_Ring);
 
             // Error propagation histograms:
     auto hLambdaAvgDotX_pT_y_DeltaPhiJ_Err = new TH3D("hLambdaAvgDotX_pT_y_DeltaPhiJ_Err", "hLambdaAvgDotX_pT_y_DeltaPhiJ_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
@@ -631,7 +631,7 @@ int main(int argc, char *argv[]){
             hLambdaDeltaBetaJ_WithProtonFromLambda->Fill(DeltaBetaJ); // Not necessarily a useful event in the sense of |y|<0.5, but still a useful statistic to know
         }
         if (!contains_jet_in_midrapidity){continue;}
-        std::cout << "\tThis event contains a jet in midrapidity!" << std::endl;
+        // std::cout << "\tThis event contains a jet in midrapidity!" << std::endl;
 
         // N_useful_events += 1;
         hNUsefulEv->Fill(0);
@@ -645,7 +645,7 @@ int main(int argc, char *argv[]){
         hHighestMomentum_WithLambda_Midrap->Fill(highest_particle_momentum);
         hHighestMomentumPzOverNorm_WithLambda_Midrap->Fill(jet_trimomentum_unit.Z()); // How much of the unit vector is in z. Only for |y| < 0.5 jets
 
-        std::cout << "\t\tThis jet's momentum is " << highest_particle_momentum << std::endl;
+        // std::cout << "\t\tThis jet's momentum is " << highest_particle_momentum << std::endl;
 
         // Now summing the contribution to the polarization after we confirmed the event is usable:
         for (int i = 0; i < proton_4momenta.size(); i++){ // Goes over all protons and their trimomenta

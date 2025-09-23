@@ -17,11 +17,18 @@ g++ -O2 -std=c++17 lambda_pol_PYTHIA.cxx -o lambda_pol_PYTHIA.exe `root-config -
         # 40-50% (target_centrality_bin = 6):
 ./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e5 6
 
+        # Chaining both of them:
+./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e5 1 && ./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e5 6
+
     # For pp @ 13.6 TeV - 100.000.000 ev run:
         # 0-5% (target_centrality_bin = 1):
 ./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1
         # 40-50% (target_centrality_bin = 6):
 ./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6
 
-# Chaining the two that take a longer time to run:
-./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1 & ./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6
+        # Chaining the two that take a longer time to run:
+./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1 && ./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6
+
+
+        # For PbPb - 5.36 TeV - 100.000 ev run:
+./lambda_pol_PYTHIA.exe "pythia8_PbPb_536tev_AllowLambdaDecays" 1e5 6 && ./lambda_pol_PYTHIA.exe "pythia8_PbPb_536tev_AllowLambdaDecays" 1e5 6
