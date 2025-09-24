@@ -7,8 +7,8 @@
 # You also need to install OpenMP:
 sudo apt-get install libomp-dev
 
-# Or actually, what really works is to do:
-g++ -fopenmp lambda_pol_toy_model.cxx -o lambda_pol_toy_model.exe `root-config --cflags --libs`
+# Or actually, what really works is to do (notice the usage of the -O2 optimization flag too):
+g++ -O2 -fopenmp lambda_pol_toy_model.cxx -o lambda_pol_toy_model.exe `root-config --cflags --libs`
 
 # To compile with memory error checks:
 g++ -fopenmp -fsanitize=address lambda_pol_toy_model.cxx -o lambda_pol_toy_model.exe `root-config --cflags --libs`
