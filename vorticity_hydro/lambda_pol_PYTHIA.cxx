@@ -173,10 +173,10 @@ int main(int argc, char *argv[]){
     auto hLambdaCounter_DeltaPhiJ = new TH1D("hLambdaCounter_DeltaPhiJ", "hLambdaCounter_DeltaPhiJ", N_bins_phi, phi_min, phi_max);
     auto hLambdaCounter_DeltaPhiJRingAngles = new TH1D("hLambdaCounter_DeltaPhiJRingAngles", "hLambdaCounter_DeltaPhiJRingAngles", N_bins_phi, phi_min_Ring, phi_max_Ring);
     auto hProtonStarCounter_DeltaPhiJRing = new TH1D("hProtonStarCounter_DeltaPhiJRing", "hProtonStarCounter_DeltaPhiJRing", N_bins_phi, phi_min_Ring, phi_max_Ring);
-            // A variation that includes only the PtCuts counting:
-    auto hLambdaCounter_DeltaPhiJ_PtCuts = new TH1D("hLambdaCounter_DeltaPhiJ_PtCuts", "hLambdaCounter_DeltaPhiJ_PtCuts", N_bins_phi, phi_min, phi_max);
-    auto hLambdaCounter_DeltaPhiJRingAngles_PtCuts = new TH1D("hLambdaCounter_DeltaPhiJRingAngles_PtCuts", "hLambdaCounter_DeltaPhiJRingAngles_PtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    auto hProtonStarCounter_DeltaPhiJRing_PtCuts = new TH1D("hProtonStarCounter_DeltaPhiJRing_PtCuts", "hProtonStarCounter_DeltaPhiJRing_PtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+            // A variation that includes only the PtYCuts counting:
+    auto hLambdaCounter_DeltaPhiJ_PtYCuts = new TH1D("hLambdaCounter_DeltaPhiJ_PtYCuts", "hLambdaCounter_DeltaPhiJ_PtYCuts", N_bins_phi, phi_min, phi_max);
+    auto hLambdaCounter_DeltaPhiJRingAngles_PtYCuts = new TH1D("hLambdaCounter_DeltaPhiJRingAngles_PtYCuts", "hLambdaCounter_DeltaPhiJRingAngles_PtYCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    auto hProtonStarCounter_DeltaPhiJRing_PtYCuts = new TH1D("hProtonStarCounter_DeltaPhiJRing_PtYCuts", "hProtonStarCounter_DeltaPhiJRing_PtYCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
     
     auto hLambdaPolX_DeltaPhiJReco = new TH1D("hLambdaPolX_DeltaPhiJReco", "hLambdaPolX_DeltaPhiJReco", N_bins_phi, phi_min, phi_max);
     auto hLambdaPolY_DeltaPhiJReco = new TH1D("hLambdaPolY_DeltaPhiJReco", "hLambdaPolY_DeltaPhiJReco", N_bins_phi, phi_min, phi_max);
@@ -184,14 +184,14 @@ int main(int argc, char *argv[]){
     
 
     auto hRingObservable_PolStar = new TH1D("hRingObservable_PolStar", "hRingObservable_PolStar", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    auto hRingObservable_PolStar_PtCuts = new TH1D("hRingObservable_PolStar_PtCuts", "hRingObservable_PolStar_PtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    auto hRingObservable_PolStar_PtCuts_integrated = new TH1D("hRingObservable_PolStar_PtCuts_integrated", "hRingObservable_PolStar_PtCuts_integrated", 1, phi_min_Ring, phi_max_Ring);
+    auto hRingObservable_PolStar_PtYCuts = new TH1D("hRingObservable_PolStar_PtYCuts", "hRingObservable_PolStar_PtYCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    auto hRingObservable_PolStar_PtYCuts_integrated = new TH1D("hRingObservable_PolStar_PtYCuts_integrated", "hRingObservable_PolStar_PtYCuts_integrated", 1, phi_min_Ring, phi_max_Ring);
                 // A variation calculated with \hat{p}*_D instead of <\hat{p}*_D>:
                 // (A second test, where we multiply p_D * p_\Lambda directly, without the averaging -- should make no
                 // difference in this Pythia simulation where P_\Lambda = 0, but it is good to work out this structure)
     auto hRingObservable_daughter_no_avg = new TH1D("hRingObservable_daughter_no_avg", "hRingObservable_daughter_no_avg", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    auto hRingObservable_daughter_no_avg_PtCuts = new TH1D("hRingObservable_daughter_no_avg_PtCuts", "hRingObservable_daughter_no_avg_PtCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    auto hRingObservable_daughter_no_avg_PtCuts_integrated = new TH1D("hRingObservable_daughter_no_avg_PtCuts_integrated", "hRingObservable_daughter_no_avg_PtCuts_integrated", 1, phi_min_Ring, phi_max_Ring);
+    auto hRingObservable_daughter_no_avg_PtYCuts = new TH1D("hRingObservable_daughter_no_avg_PtYCuts", "hRingObservable_daughter_no_avg_PtYCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    auto hRingObservable_daughter_no_avg_PtYCuts_integrated = new TH1D("hRingObservable_daughter_no_avg_PtYCuts_integrated", "hRingObservable_daughter_no_avg_PtYCuts_integrated", 1, phi_min_Ring, phi_max_Ring);
 
             // Error propagation histograms:
     auto hLambdaAvgDotX_pT_y_DeltaPhiJ_Err = new TH3D("hLambdaAvgDotX_pT_y_DeltaPhiJ_Err", "hLambdaAvgDotX_pT_y_DeltaPhiJ_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
@@ -204,8 +204,8 @@ int main(int argc, char *argv[]){
     auto hLambdaPolStarZ_pT_y_DeltaPhiJReco_Err = new TH3D("hLambdaPolStarZ_pT_y_DeltaPhiJReco_Err", "hLambdaPolStarZ_pT_y_DeltaPhiJReco_Err", N_bins_pT, pT_min, pT_max, N_bins_rap, -rap_max, rap_max, N_bins_phi, phi_min, phi_max);
 
     auto hRingObservable_PolStar_Err = new TH1D("hRingObservable_PolStar_Err", "hRingObservable_PolStar_Err", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    auto hRingObservable_PolStar_PtCuts_Err = new TH1D("hRingObservable_PolStar_PtCuts_Err", "hRingObservable_PolStar_PtCuts_Err", N_bins_phi, phi_min_Ring, phi_max_Ring);
-    auto hRingObservable_PolStar_PtCuts_integrated_Err = new TH1D("hRingObservable_PolStar_PtCuts_integrated_Err", "hRingObservable_PolStar_PtCuts_integrated_Err", 1, phi_min_Ring, phi_max_Ring);
+    auto hRingObservable_PolStar_PtYCuts_Err = new TH1D("hRingObservable_PolStar_PtYCuts_Err", "hRingObservable_PolStar_PtYCuts_Err", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    auto hRingObservable_PolStar_PtYCuts_integrated_Err = new TH1D("hRingObservable_PolStar_PtYCuts_integrated_Err", "hRingObservable_PolStar_PtYCuts_integrated_Err", 1, phi_min_Ring, phi_max_Ring);
 
 
     // Histograms to know about the overall kinematics and production rates of the events:
@@ -230,16 +230,21 @@ int main(int argc, char *argv[]){
     auto hHighestMomentumPzOverNorm_WithLambda_Midrap = new TH1D("hHighestMomentumPzOverNorm_WithLambda_Midrap", "hHighestMomentumPzOverNorm_WithLambda_Midrap", 100, -1, 1); // Tells me how much of the momentum of the highest momentum particles is in Z (in normalized vector units)
 
         // Kinematic information of the produced jets, in the same three categories as above:
-    auto hJetProxyY_all_jets = new TH1D("hJetProxyY_all_jets", "hJetProxyY_all_jets", 100, -5, 5);
-    auto hJetProxyPt_all_jets = new TH1D("hJetProxyPt_all_jets", "hJetProxyPt_all_jets", 100, 0, 10);
+        // (changed the limits to agree with the new selection intervals, where |y|_max is 1.0, and pT_min is 2.0 GeV/c)
+        // (no need to keep plotting |y|<2.5 nor pT starting from 0.0)
+    auto hJetProxyY_all_jets = new TH1D("hJetProxyY_all_jets", "hJetProxyY_all_jets", 100, -1.0, 1.0);
+    auto hJetProxyPt_all_jets = new TH1D("hJetProxyPt_all_jets", "hJetProxyPt_all_jets", 100, 2, 10);
+    auto hJetProxyPtY_all_jets = new TH2D("hJetProxyPtY_all_jets", "hJetProxyPtY_all_jets", 40, 2, 10, 20, -1.0, 1.0);
     auto hJetProxyPhi_all_jets = new TH1D("hJetProxyPhi_all_jets", "hJetProxyPhi_all_jets", 100, -PI, PI); // Pythia gives us Phi from -PI to PI!
 
-    auto hJetProxyY_ProtonFromLambda_events = new TH1D("hJetProxyY_ProtonFromLambda_events", "hJetProxyY_ProtonFromLambda_events", 100, -5, 5);
-    auto hJetProxyPt_ProtonFromLambda_events = new TH1D("hJetProxyPt_ProtonFromLambda_events", "hJetProxyPt_ProtonFromLambda_events", 100, 0, 10);
+    auto hJetProxyY_ProtonFromLambda_events = new TH1D("hJetProxyY_ProtonFromLambda_events", "hJetProxyY_ProtonFromLambda_events", 100, -1.0, 1.0);
+    auto hJetProxyPt_ProtonFromLambda_events = new TH1D("hJetProxyPt_ProtonFromLambda_events", "hJetProxyPt_ProtonFromLambda_events", 100, 2, 10);
+    auto hJetProxyPtY_ProtonFromLambda_events = new TH2D("hJetProxyPtY_ProtonFromLambda_events", "hJetProxyPtY_ProtonFromLambda_events", 40, 2, 10, 20, -1.0, 1.0);
     auto hJetProxyPhi_ProtonFromLambda_events = new TH1D("hJetProxyPhi_ProtonFromLambda_events", "hJetProxyPhi_ProtonFromLambda_events", 100, -PI, PI);
 
-    auto hJetProxyY_UsefulEvent = new TH1D("hJetProxyY_UsefulEvent", "hJetProxyY_UsefulEvent", 100, -5, 5);
-    auto hJetProxyPt_UsefulEvent = new TH1D("hJetProxyPt_UsefulEvent", "hJetProxyPt_UsefulEvent", 100, 0, 10);
+    auto hJetProxyY_UsefulEvent = new TH1D("hJetProxyY_UsefulEvent", "hJetProxyY_UsefulEvent", 100, -1.0, 1.0);
+    auto hJetProxyPt_UsefulEvent = new TH1D("hJetProxyPt_UsefulEvent", "hJetProxyPt_UsefulEvent", 100, 2, 10);
+    auto hJetProxyPtY_UsefulEvent = new TH2D("hJetProxyPtY_UsefulEvent", "hJetProxyPtY_UsefulEvent", 40, 2, 10, 20, -1.0, 1.0);
     auto hJetProxyPhi_UsefulEvent = new TH1D("hJetProxyPhi_UsefulEvent", "hJetProxyPhi_UsefulEvent", 100, -PI, PI);
 
         // To know all of the produced Lambdas:
@@ -279,15 +284,24 @@ int main(int argc, char *argv[]){
     hLambdaPt->Sumw2();
     hLambdaY->Sumw2();
     hLambdaPhi->Sumw2();
+    
     hLambdaDeltaBetaJ_WithProtonFromLambda->Sumw2();
-
     hLambdaDeltaBetaJ_AllLambdaDecayModes->Sumw2();
 
     hLambdaPt_proton_mothers->Sumw2();
     hLambdaY_proton_mothers->Sumw2();
     hLambdaPhi_proton_mothers->Sumw2();
-    
-    
+
+    hProtonStarCounter_DeltaPhiJRing_PtYCuts->Sumw2();
+    hProtonStarCounter_DeltaPhiJRing->Sumw2();
+
+    hLambdaCounter_DeltaPhiJ->Sumw2();
+    hLambdaCounter_DeltaPhiJRingAngles->Sumw2();
+
+    hLambdaCounter_DeltaPhiJ_PtYCuts->Sumw2();
+    hLambdaCounter_DeltaPhiJRingAngles_PtYCuts->Sumw2();
+
+
     // In case you want to speed the code execution up:
     //     // Buffer vector declarations:
     // std::vector<double> hLambdaCounter_pT_y_DeltaPhiJ_bufferGlobal(N_bins_total, 0.0);
@@ -307,9 +321,9 @@ int main(int argc, char *argv[]){
     // std::vector<double> hLambdaCounter_DeltaPhiJ_bufferGlobal(N_bins_phi, 0.0);
 
     // std::vector<double> hLambdaCounter_DeltaPhiJRingAngles_bufferGlobal(N_bins_phi, 0.0);
-    // std::vector<double> hLambdaCounter_DeltaPhiJ_PtCuts_bufferGlobal(N_bins_phi, 0.0);
-    // std::vector<double> hLambdaCounter_DeltaPhiJRingAngles_PtCuts_bufferGlobal(N_bins_phi, 0.0);
-    // std::vector<double> hProtonStarCounter_DeltaPhiJRing_PtCuts_bufferGlobal(N_bins_phi, 0.0);
+    // std::vector<double> hLambdaCounter_DeltaPhiJ_PtYCuts_bufferGlobal(N_bins_phi, 0.0);
+    // std::vector<double> hLambdaCounter_DeltaPhiJRingAngles_PtYCuts_bufferGlobal(N_bins_phi, 0.0);
+    // std::vector<double> hProtonStarCounter_DeltaPhiJRing_PtYCuts_bufferGlobal(N_bins_phi, 0.0);
 
     // std::vector<double> hLambdaPolX_DeltaPhiJ_bufferGlobal(N_bins_phi, 0.0);
     // std::vector<double> hLambdaPolY_DeltaPhiJ_bufferGlobal(N_bins_phi, 0.0);
@@ -318,10 +332,10 @@ int main(int argc, char *argv[]){
     // std::vector<double> hLambdaPolY_pT_y_DeltaPhiJ_bufferGlobal(N_bins_total, 0.0);
     // std::vector<double> hLambdaPolZ_pT_y_DeltaPhiJ_bufferGlobal(N_bins_total, 0.0);
 
-    // std::vector<double> hRingObservable_PolStar_PtCuts_bufferGlobal(N_bins_phi, 0.0);
-    // std::vector<double> hRingObservable_PolStar_PtCuts_integrated_bufferGlobal(N_bins_phi, 0.0);
-    // std::vector<double> hRingObservable_daughter_no_avg_PtCuts_bufferGlobal(N_bins_phi, 0.0);
-    // std::vector<double> hRingObservable_daughter_no_avg_PtCuts_integrated_bufferGlobal(N_bins_phi, 0.0);
+    // std::vector<double> hRingObservable_PolStar_PtYCuts_bufferGlobal(N_bins_phi, 0.0);
+    // std::vector<double> hRingObservable_PolStar_PtYCuts_integrated_bufferGlobal(N_bins_phi, 0.0);
+    // std::vector<double> hRingObservable_daughter_no_avg_PtYCuts_bufferGlobal(N_bins_phi, 0.0);
+    // std::vector<double> hRingObservable_daughter_no_avg_PtYCuts_integrated_bufferGlobal(N_bins_phi, 0.0);
 
     /////////////////////////////////////////////////////////////////////
     std::cout << "Estimating centrality" << std::endl;
@@ -465,6 +479,7 @@ int main(int argc, char *argv[]){
         Int_t highest_particle_momentum_Idx = -1; // Saving this to be able to recover
         
             // Checks for increasingly restrictive conditions necessary for the event to be useful:
+        Bool_t found_jet_candidate = false; // A bool that needs to be tracked: if the event does not haven even a single jet candidate (highest_particle_momentum stays 0 and Idx stays -1), it should not be considered valid!
         Bool_t contains_lambda = false;
         // Bool_t jet_Pt_leq_2 = false; // These two can be checked after the event
         // Bool_t jet_Pt_leq_2_contains_Lambda = false;
@@ -511,11 +526,15 @@ int main(int argc, char *argv[]){
             
             // Updating the proxy to see if this particle has the highest momentum of the produced particles (jet direction!):
             // (Notice that this comes BEFORE excluding this particle if it is not a proton! It can be a jet proxy, yet not be the particle that came from the Lambda decay!)
+            // Changed this preselection to a tighter cut (|y|<2.5 would be ~ 10°<theta<170°) of |y|<1 and included a minimum requirement in pT for the jet!
+            // I want transverse-only jet candidates, so the |y|<2.5 estimate with no pT
+            // Could also do this with a selection that is based on the transverse momentum of the particles, i.e., highest_particle_pT instead of highest_particle_momentum
             Float_t particle_momentum = std::sqrt(particle_momentum_squared);
-            if (std::fabs(particle_y) < 2.5 && (highest_particle_momentum < particle_momentum)){
+            if (std::fabs(particle_y) < 1.0 && particle_pT > 2.0 && (highest_particle_momentum < particle_momentum)){
                 highest_particle_momentum = particle_momentum;
                 highest_particle_momentum_Idx = particle_idx;
                 // std::cout << "Particle momentum is " << highest_particle_momentum << std::endl;
+                found_jet_candidate = true; // At least one possible candidate in this event!
             }
 
             //////////////////////////////////////
@@ -567,6 +586,13 @@ int main(int argc, char *argv[]){
             lambda_y_array.push_back(lambda_y);
             lambda_pT_array.push_back(lambda_pT);
         }
+        if (!found_jet_candidate){ // i.e., this event is not useful as there was not even a single transverse jet candidate in the |y|<1.0 region, with pT > 2 GeV/c!
+            // First, whould increment the variables that don't require this event to have a jet:
+                // (The event may have a Lambda, and may have a Lambda that decayed into a proton, even if it does not have a jet!)
+            if (contains_lambda){hNEv_WithLambda->Fill(0);}
+            if (contains_particle){hNEv_proton_from_Lambda->Fill(0);}
+            continue;
+        }
         // Getting the jet variables:
         Float_t jet_phi = Phi[highest_particle_momentum_Idx];
         Float_t jet_px = pt[highest_particle_momentum_Idx]*std::cos(jet_phi);
@@ -578,6 +604,7 @@ int main(int argc, char *argv[]){
             // Saving the jet distribution before the coordinate shift:
         hJetProxyY_all_jets->Fill(y[highest_particle_momentum_Idx]);
         hJetProxyPt_all_jets->Fill(pt[highest_particle_momentum_Idx]);
+        hJetProxyPtY_all_jets->Fill(pt[highest_particle_momentum_Idx], y[highest_particle_momentum_Idx]);
         hJetProxyPhi_all_jets->Fill(jet_phi);
 
         TVector3 jet_trimomentum(jet_px, jet_py, jet_pz);
@@ -609,6 +636,7 @@ int main(int argc, char *argv[]){
 
         hJetProxyY_ProtonFromLambda_events->Fill(y[highest_particle_momentum_Idx]);
         hJetProxyPt_ProtonFromLambda_events->Fill(pt[highest_particle_momentum_Idx]);
+        hJetProxyPtY_ProtonFromLambda_events->Fill(pt[highest_particle_momentum_Idx], y[highest_particle_momentum_Idx]);
         hJetProxyPhi_ProtonFromLambda_events->Fill(jet_phi);
 
         if (pt[highest_particle_momentum_Idx] >= 2.){
@@ -638,6 +666,7 @@ int main(int argc, char *argv[]){
 
         hJetProxyY_UsefulEvent->Fill(y[highest_particle_momentum_Idx]);
         hJetProxyPt_UsefulEvent->Fill(pt[highest_particle_momentum_Idx]);
+        hJetProxyPtY_UsefulEvent->Fill(pt[highest_particle_momentum_Idx], y[highest_particle_momentum_Idx]);
         hJetProxyPhi_UsefulEvent->Fill(jet_phi);
         
             // Saving this useful jet for the Ring Observable calculation:
@@ -709,13 +738,13 @@ int main(int argc, char *argv[]){
                                                             + proton_star_unit_vector.Z()*cross_z)/cross_product_norm);
             hRingObservable_daughter_no_avg->Fill(delta_phi_J, no_avg_ring_observable);
 
-            if (lambda_pT > 0.5 && lambda_pT < 1.5){
-                hRingObservable_daughter_no_avg_PtCuts->Fill(no_avg_ring_observable);
-                hRingObservable_daughter_no_avg_PtCuts_integrated->Fill(no_avg_ring_observable);
+            if ((lambda_pT > 0.5 && lambda_pT < 1.5) && (lambda_y > -0.5 && lambda_y < 0.5)){ // Corrected to properly introduce the rapidity cuts too!
+                hRingObservable_daughter_no_avg_PtYCuts->Fill(delta_phi_J, no_avg_ring_observable);
+                hRingObservable_daughter_no_avg_PtYCuts_integrated->Fill(delta_phi_J, no_avg_ring_observable);
 
-                hLambdaCounter_DeltaPhiJ_PtCuts->Fill(rotated_lambda_phi);
-                hLambdaCounter_DeltaPhiJRingAngles_PtCuts->Fill(delta_phi_J);
-                hProtonStarCounter_DeltaPhiJRing_PtCuts->Fill(delta_phi_J); // Should use delta_phi_J because the angle goes from ~-PI to PI here
+                hLambdaCounter_DeltaPhiJ_PtYCuts->Fill(rotated_lambda_phi);
+                hLambdaCounter_DeltaPhiJRingAngles_PtYCuts->Fill(delta_phi_J);
+                hProtonStarCounter_DeltaPhiJRing_PtYCuts->Fill(delta_phi_J); // Should use delta_phi_J because the angle goes from ~-PI to PI here
             }
         }
     }
@@ -765,7 +794,7 @@ int main(int argc, char *argv[]){
     hLambdaAvgDotZ_pT_y_DeltaPhiJ_Err->Add(hLambdaAvgDotZSquared_pT_y_DeltaPhiJ, hLambdaAvgDotZ_pT_y_DeltaPhiJ_Err, 1., -1.);
 
     // Finally, calculating Var(<p_D>) = sqrt(1/(N_particles-1) * (<p_i^2> - \mu^2)) for each component of <\hat{p}_D>:
-        // (This is different from the original lambda_pol_toy_model.cxx case. There, we only had N_resamples things that
+        // (This is different from the original lambda_pol_toy_model.cxx case. There, we only had N_resamples entities that
         // behaved like particles, i.e., N_resamples protons with their own angles and that had been sampled from the
         // angular distribution of the decay. Here, though, each particle is an individual object, not an average as in iSS!)
             // First, calculating the N_particles-1 part, only for the bins that have a non-zero number of particles:
@@ -875,7 +904,7 @@ int main(int argc, char *argv[]){
                 double delta_phi_J = phi_bin_center; // In this coordinate definition, the transverse part of the jet is always facing \hat{x}, and phi is already a delta_phi_J
                 delta_phi_J = wrapToInterval(delta_phi_J, phi_min_Ring, phi_max_Ring);
                 int phiRing_idx = hLambdaCounter_DeltaPhiJRingAngles->FindBin(delta_phi_J);
-                double current_DeltaPhiJRing_bin_multiplicity_PtCuts = hLambdaCounter_DeltaPhiJRingAngles_PtCuts->GetBinContent(phiRing_idx);
+                double current_DeltaPhiJRing_bin_multiplicity_PtYCuts = hLambdaCounter_DeltaPhiJRingAngles_PtYCuts->GetBinContent(phiRing_idx);
 
                 double RP_star = (PolX_star_pTy_DeltaPhiJ*cross_x + PolY_star_pTy_DeltaPhiJ*cross_y + PolZ_star_pTy_DeltaPhiJ*cross_z)/cross_product_norm;
                 hRingObservable_PolStar->Fill(delta_phi_J, RP_star * current_pTyphi_bin_multiplicity);
@@ -889,18 +918,20 @@ int main(int argc, char *argv[]){
                 double err_y = PolY_star_pTy_DeltaPhiJ_Err * cross_y;
                 double err_z = PolZ_star_pTy_DeltaPhiJ_Err * cross_z;
                 double current_RingObservableReco_Err_squared = (err_x*err_x + err_y*err_y + err_z*err_z)/(cross_product_norm*cross_product_norm) // Summing the errors of the three spatial components already weighted by their cross product component in err_i
-                                                                 * current_pTyphi_bin_multiplicity/current_DeltaPhiJ_bin_multiplicity; // w_i --> Careful! This is not w_i^2! We are really just summing the square errors as if independent!
+                                                                 * current_pTyphi_bin_multiplicity; // /current_DeltaPhiJ_bin_multiplicity; // w_i --> Careful! This is not w_i^2! We are really just summing the square errors as if independent!
+                                                                // (fixed an error where we were dividing by the bin multiplicity once here, and once outside of the loop!)
+
                                                                 // Just for testing, placed this normalization outside the loop:
                                                                 //  /(current_DeltaPhiJ_bin_multiplicity*current_DeltaPhiJ_bin_multiplicity); // 1/W^2
                 hRingObservable_PolStar_Err->Fill(delta_phi_J, current_RingObservableReco_Err_squared); // This will need to receive a sqrt() later, after the averaging!
 
-                if (pT_bin_center > 0.5 && pT_bin_center < 1.5){
-                    hRingObservable_PolStar_PtCuts->Fill(delta_phi_J, RP_star * current_pTyphi_bin_multiplicity);
-                    hRingObservable_PolStar_PtCuts_integrated->Fill(delta_phi_J, RP_star * current_pTyphi_bin_multiplicity);
+                if ((pT_bin_center > 0.5 && pT_bin_center < 1.5) && (y_bin_center > -0.5 && y_bin_center < 0.5)){ // Corrected to introduce the rapidity cuts too!
+                    hRingObservable_PolStar_PtYCuts->Fill(delta_phi_J, RP_star * current_pTyphi_bin_multiplicity);
+                    hRingObservable_PolStar_PtYCuts_integrated->Fill(delta_phi_J, RP_star * current_pTyphi_bin_multiplicity);
 
-                    // Now for the PtCuts variation of error:
-                    hRingObservable_PolStar_PtCuts_Err->Fill(delta_phi_J, current_RingObservableReco_Err_squared); // This will need to receive a sqrt() later, after the averaging!
-                    hRingObservable_PolStar_PtCuts_integrated_Err->Fill(delta_phi_J, current_RingObservableReco_Err_squared);
+                    // Now for the PtYCuts variation of error:
+                    hRingObservable_PolStar_PtYCuts_Err->Fill(delta_phi_J, current_RingObservableReco_Err_squared); // This will need to receive a sqrt() later, after the averaging!
+                    hRingObservable_PolStar_PtYCuts_integrated_Err->Fill(delta_phi_J, current_RingObservableReco_Err_squared);
                 }
             }
         }
@@ -908,22 +939,22 @@ int main(int argc, char *argv[]){
     std::cout << "Loop finished. Starting error histogram operations" << std::endl;
     // Taking the square root of the summed current_RingObservableReco_Err_squared components to properly get the error, and then setting that as the error of the ring TH1D's
     SqrtHist(hRingObservable_PolStar_Err);
-    SqrtHist(hRingObservable_PolStar_PtCuts_Err);
-    SqrtHist(hRingObservable_PolStar_PtCuts_integrated_Err);
+    SqrtHist(hRingObservable_PolStar_PtYCuts_Err);
+    SqrtHist(hRingObservable_PolStar_PtYCuts_integrated_Err);
 
     // Reintroducing the three removed normalizations (AFTER the square root is taken!):
     hRingObservable_PolStar_Err->Divide(hLambdaCounter_DeltaPhiJRingAngles);
-    hRingObservable_PolStar_PtCuts_Err->Divide(hLambdaCounter_DeltaPhiJRingAngles_PtCuts);
-    hRingObservable_PolStar_PtCuts_integrated_Err->Scale(1./hLambdaCounter_DeltaPhiJRingAngles_PtCuts->Integral());
+    hRingObservable_PolStar_PtYCuts_Err->Divide(hLambdaCounter_DeltaPhiJRingAngles_PtYCuts);
+    hRingObservable_PolStar_PtYCuts_integrated_Err->Scale(1./hLambdaCounter_DeltaPhiJRingAngles_PtYCuts->Integral());
 
     // The previous method of error propagation of the integral was not working. Will fix it by hand:
     double integrated_err = 0;
-    for (int i = 1; i <= hRingObservable_PolStar_PtCuts_Err->GetNbinsX(); i++){
-        double err_i = hRingObservable_PolStar_PtCuts_Err->GetBinContent(i);
+    for (int i = 1; i <= hRingObservable_PolStar_PtYCuts_Err->GetNbinsX(); i++){
+        double err_i = hRingObservable_PolStar_PtYCuts_Err->GetBinContent(i);
         integrated_err += err_i*err_i;
     }
     integrated_err = std::sqrt(integrated_err);
-    hRingObservable_PolStar_PtCuts_integrated_Err->SetBinContent(1, integrated_err);
+    hRingObservable_PolStar_PtYCuts_integrated_Err->SetBinContent(1, integrated_err);
 
     // Normalizing the polarization histograms that correspond to lower dimensional projections of the TH3D's of pT,y,phi polarization:
     hLambdaPolX_DeltaPhiJ_pTReco->Divide(hLambdaCounter_DeltaPhiJ_pT);
@@ -937,12 +968,12 @@ int main(int argc, char *argv[]){
     // Normalizing all ring observables by the particle weights to complete the averaging:
         // (Same normalization as done with the errors, but without the SqrtHist part)
     hRingObservable_PolStar->Divide(hLambdaCounter_DeltaPhiJRingAngles);
-    hRingObservable_PolStar_PtCuts->Divide(hLambdaCounter_DeltaPhiJRingAngles_PtCuts);
-    hRingObservable_PolStar_PtCuts_integrated->Scale(1./hLambdaCounter_DeltaPhiJRingAngles_PtCuts->Integral());
+    hRingObservable_PolStar_PtYCuts->Divide(hLambdaCounter_DeltaPhiJRingAngles_PtYCuts);
+    hRingObservable_PolStar_PtYCuts_integrated->Scale(1./hLambdaCounter_DeltaPhiJRingAngles_PtYCuts->Integral());
 
     SetErrorsFromErrHist(hRingObservable_PolStar, hRingObservable_PolStar_Err);
-    SetErrorsFromErrHist(hRingObservable_PolStar_PtCuts, hRingObservable_PolStar_PtCuts_Err);
-    SetErrorsFromErrHist(hRingObservable_PolStar_PtCuts_integrated, hRingObservable_PolStar_PtCuts_integrated_Err);
+    SetErrorsFromErrHist(hRingObservable_PolStar_PtYCuts, hRingObservable_PolStar_PtYCuts_Err);
+    SetErrorsFromErrHist(hRingObservable_PolStar_PtYCuts_integrated, hRingObservable_PolStar_PtYCuts_integrated_Err);
 
     /////////////////////////////////////
     //// Exporting into a .root file ////
@@ -980,17 +1011,20 @@ int main(int argc, char *argv[]){
     // Jet kinematics:
     hJetProxyY_all_jets->Write();
     hJetProxyPt_all_jets->Write();
+    hJetProxyPtY_all_jets->Write();
     hJetProxyPhi_all_jets->Write();
 
     hJetProxyY_ProtonFromLambda_events->Write();
     hJetProxyPt_ProtonFromLambda_events->Write();
+    hJetProxyPtY_ProtonFromLambda_events->Write();
     hJetProxyPhi_ProtonFromLambda_events->Write();
 
     hJetProxyY_UsefulEvent->Write();
     hJetProxyPt_UsefulEvent->Write();
+    hJetProxyPtY_UsefulEvent->Write();
     hJetProxyPhi_UsefulEvent->Write();
 
-    hProtonStarCounter_DeltaPhiJRing_PtCuts->Write();
+    hProtonStarCounter_DeltaPhiJRing_PtYCuts->Write();
 
         // Polarization measurements:
     hLambdaCounter_pT_y_DeltaPhiJ->Write();
@@ -1014,19 +1048,19 @@ int main(int argc, char *argv[]){
     hLambdaCounter_DeltaPhiJRingAngles->Write();
     hProtonStarCounter_DeltaPhiJRing->Write();
 
-    hLambdaCounter_DeltaPhiJ_PtCuts->Write();
-    hLambdaCounter_DeltaPhiJRingAngles_PtCuts->Write();
+    hLambdaCounter_DeltaPhiJ_PtYCuts->Write();
+    hLambdaCounter_DeltaPhiJRingAngles_PtYCuts->Write();
 
     hLambdaPolX_DeltaPhiJReco->Write();
     hLambdaPolY_DeltaPhiJReco->Write();
     hLambdaPolZ_DeltaPhiJReco->Write();
     hRingObservable_PolStar->Write();
-    hRingObservable_PolStar_PtCuts->Write();
-    hRingObservable_PolStar_PtCuts_integrated->Write();
+    hRingObservable_PolStar_PtYCuts->Write();
+    hRingObservable_PolStar_PtYCuts_integrated->Write();
 
     hRingObservable_daughter_no_avg->Write();
-    hRingObservable_daughter_no_avg_PtCuts->Write();
-    hRingObservable_daughter_no_avg_PtCuts_integrated->Write();
+    hRingObservable_daughter_no_avg_PtYCuts->Write();
+    hRingObservable_daughter_no_avg_PtYCuts_integrated->Write();
     // TODO: Implement error bars for these no_avg estimates!
 
     hLambdaAvgDotX_pT_y_DeltaPhiJ_Err->Write();
@@ -1038,8 +1072,8 @@ int main(int argc, char *argv[]){
     hLambdaPolStarY_pT_y_DeltaPhiJReco_Err->Write();
     hLambdaPolStarZ_pT_y_DeltaPhiJReco_Err->Write();
     hRingObservable_PolStar_Err->Write();
-    hRingObservable_PolStar_PtCuts_Err->Write();
-    hRingObservable_PolStar_PtCuts_integrated_Err->Write();
+    hRingObservable_PolStar_PtYCuts_Err->Write();
+    hRingObservable_PolStar_PtYCuts_integrated_Err->Write();
 
     f.Close();
     std::cout << "Done exporting!" << std::endl;

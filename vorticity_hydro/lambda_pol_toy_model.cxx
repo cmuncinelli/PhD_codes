@@ -1385,7 +1385,9 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
                 // double err_y = PolY_star_pTy_phi_Unweighted_Err * cross_y;
                 // double err_z = PolZ_star_pTy_phi_Unweighted_Err * cross_z;
                 double current_RingObservableReco_Err_squared = (err_x*err_x + err_y*err_y + err_z*err_z)/(cross_product_norm*cross_product_norm) // Summing the errors of the three spatial components already weighted by their cross product component in err_i
-                                                                 * current_pTyphi_bin_multiplicity/current_phi_bin_multiplicity; // w_i --> Careful! This is not w_i^2! We are really just summing the square errors as if independent!
+                                                                 * current_pTyphi_bin_multiplicity; // /current_phi_bin_multiplicity; // w_i --> Careful! This is not w_i^2! We are really just summing the square errors as if independent!
+                                                                // (fixed an error here were I was dividing by the current phi_bin multiplicity twice: once here, and once outside the code!)
+
                                                                 // Just for testing, placed this normalization outside the loop:
                                                                 //  /(current_phi_bin_multiplicity*current_phi_bin_multiplicity); // 1/W^2
                     // Notice that due to this error already being normalized here, I need to normalize it differently when I take the integrated error:

@@ -32,3 +32,7 @@ g++ -O2 -std=c++17 lambda_pol_PYTHIA.cxx -o lambda_pol_PYTHIA.exe `root-config -
 
         # For PbPb - 5.36 TeV - 100.000 ev run:
 ./lambda_pol_PYTHIA.exe "pythia8_PbPb_536tev_AllowLambdaDecays" 1e5 6 && ./lambda_pol_PYTHIA.exe "pythia8_PbPb_536tev_AllowLambdaDecays" 1e5 6
+
+
+# Chaining these two simulation types:
+./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e5 1 && ./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e5 6 && ./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1 && ./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6 && ./lambda_pol_PYTHIA.exe "pythia8_PbPb_536tev_AllowLambdaDecays" 1e5 6 && ./lambda_pol_PYTHIA.exe "pythia8_PbPb_536tev_AllowLambdaDecays" 1e5 6
