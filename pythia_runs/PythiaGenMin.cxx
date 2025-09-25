@@ -1,6 +1,7 @@
 // Author: Gianni S. S. Liveraro, adapted by Cicero D. Muncinelli
 #include "Pythia8/Pythia.h" // Not just Pythia.h. You have to take an extra step after the $PYTHIA8 folder.
 #include "Pythia8/HeavyIons.h" // Needed for Angantyr
+#include "Pythia8Plugins/FastJet3.h"
 
 #include "TFile.h"
 #include "TTree.h"
@@ -8,6 +9,9 @@
 #include "TH1.h"
 #include "TH1D.h"
 #include "TH1I.h"
+#include "TH2.h"
+#include "TH2D.h"
+#include "TMath.h"
 
 #include <dirent.h>
 #include <random> // For the seed generation for each worker
@@ -16,6 +20,8 @@
 #include <TROOT.h> // Necessary for the EnableThreadSafety() part of ROOT
 
 #include <iostream>
+
+const double PI = TMath::Pi();
 
 // void histogram_copy(TH1D *origin_hist, TH1D *destiny_hist, int N_bins);
 void multiplicity_to_centrality(TH1I *multiplicity_hist, TH1D *centrality_hist);
@@ -59,6 +65,15 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 	pythia.init();
 
+	// Setting up FastJet finder with anti-kT method:
+
+	// Set up FastJet jet finder.
+	double R = 0.4;
+	double jet_min_pT = 2.0;
+	double jet_max_eta = 1.0; // To make the code even more optimized, this should probably be a cut in |y|<0.5, which is what we actually use for the Ring!
+    fastjet::JetDefinition jetDef(fastjet::antikt_algorithm, R);
+  	std::vector <fastjet::PseudoJet> FastJetInputs;
+
 		// Creating the file to link associate all current histograms and trees to the current gDirectory
 		// (i.e., the current folder) instead of the global ROOT gDirectory.
 	std::string filename = (std::string) output_folder;
@@ -100,13 +115,26 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	std::vector<Float_t> y;
 	std::vector<Float_t> Phi;
 
-	TH1D *hEventCounter = new TH1D ("hEventCounter", "", 1, -1, 1);
+	//////////////////////////////////////////////////////////////////////
+	// Including FastJet-estimated jet kinematic variables:
+	// (CAUTION! Do notice that I expect to save only one jet per event!)
+	Float_t pt_jet;
+	Float_t m_jet;
+	Float_t y_jet;
+	Float_t Phi_jet;
+	//////////////////////////////////////////////////////////////////////
+
+	TH1D *hEventCounter = new TH1D ("hEventCounter", "Total number of simulated events", 1, -1, 1);
+	TH1D *hEventCounterWithLambdaOrBar = new TH1D ("hEventCounterWithLambdaOrBar", "hEventCounterWithLambdaOrBar", 1, -1, 1);
+	TH1D *hEventCounterWithJets_pTleq2_EtaCuts = new TH1D ("hEventCounterWithJets_pTleq2_EtaCuts", "hEventCounter(jets w/ pT>2,|eta|<1)", 1, -1, 1); // Jets in the interval pT > 2 GeV/c and |eta| < 1.0
+	TH1D *hEventCounterWithLambdaOrBarWithJets_pTleq2_EtaCuts = new TH1D ("hEventCounterWithLambdaOrBarWithJets_pTleq2_EtaCuts", "hEventCounter(jets w/ pT>2,|eta|<1),hasLambdaorLambdaBar", 1, -1, 1);
+	TH1D *hEventCounterUsefulEventForRing = new TH1D ("hEventCounterUsefulEventForRing", "hEventCounter(jets w/ pT>2,|eta|<1),hasLambda in pTandYcuts", 1, -1, 1); // Contains Lambda in the desired pT and |y| range, contains a jet in the desired range
 	TH1D *hINELEventCounter = new TH1D ("hINELEventCounter", "", 1, -1, 1);
 	TH1D *hEventCounterCharged = new TH1D ("hEventCounterCharged", "", 1, -1, 1);
 	TH1D *hEventCounterPion = new TH1D ("hEventCounterPion", "", 1, -1, 1);
 	TH1D *hEventCounterProton = new TH1D ("hEventCounterProton", "", 1, -1, 1);
 	TH1D *hEventCounterKaon = new TH1D ("hEventCounterKaon", "", 1, -1, 1);
-	
+
 	int N_bins_pT = 800;
 	double upper_limit_pT = 50;
 
@@ -141,6 +169,12 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	// t3->Branch("Eta",&Eta);
 	t3->Branch("y",&y);
 	t3->Branch("Phi",&Phi);
+
+		// Including FastJet-estimated jet kinematic variables:
+	t3->Branch("pt_jet", &pt_jet, "pt_jet/F");
+	t3->Branch("m_jet", &m_jet, "m_jet/F");
+	t3->Branch("y_jet", &y_jet, "y_jet/F");
+	t3->Branch("Phi_jet", &Phi_jet, "Phi_jet/F");
 
 	// Saving a global TH1D for each particle, just to see the information on their pT:
 	TH1D *pT_hist_charged_final = new TH1D("pT_hist_charged_final", "pT_hist_charged_final", N_bins_pT, 0, upper_limit_pT);
@@ -177,19 +211,56 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	TH1I *hINELev_Ntracks_final_charged_forward_Proton = new TH1I ("hINELev_Ntracks_final_charged_forward_Proton", "", multiplicity_nbins, 0, multiplicity_nbins);
 	TH1I *hINELev_Ntracks_final_charged_forward_Kaon = new TH1I ("hINELev_Ntracks_final_charged_forward_Kaon", "", multiplicity_nbins, 0, multiplicity_nbins);
 
+		// Some values for the Jet kinematic analysis histograms:
+	int N_bins_phi = 100;
+    double dphi = 2*PI * 1./N_bins_phi; // Bin width
+    double phi_min = -dphi/2.; // The lower edge is defined in such a way that phi = 0 is the bin center.
+    double phi_max = (2*PI - dphi) + dphi/2.;
+    double phi_min_Ring = phi_min - PI;
+    double phi_max_Ring = phi_max - PI;
+
+		// All jets with minimum pT threshold:
+		// (This might include jets with a larger pT than the one jet we selected as the leading jet!
+		// This will help to identify if we are discarding a large number of jets before we get to the
+		// ideal leading jet! In other words, this is a counter that includes the selected leading jet,
+		// but also includes all other jets with pT > pT_selected_leading_jet that did not pass the
+		// maximum jet_max_eta selection.)
+	auto hLeadJetY_DiscardedUntilLead_pTleq2 = new TH1D("hLeadJetY_DiscardedUntilLead_pTleq2", "Jets w/ min_pT threshold, and pT>=selected_lead_jet", 100, -1.0, 1.0);
+    auto hLeadJetPt_DiscardedUntilLead_pTleq2 = new TH1D("hLeadJetPt_DiscardedUntilLead_pTleq2", "Jets w/ min_pT threshold, and pT>=selected_lead_jet", 100, 2, 50);
+    auto hLeadJetPtY_DiscardedUntilLead_pTleq2 = new TH2D("hLeadJetPtY_DiscardedUntilLead_pTleq2", "Jets w/ min_pT threshold, and pT>=selected_lead_jet", 40, 2, 50, 20, -1.0, 1.0);
+    auto hLeadJetPhi_DiscardedUntilLead_pTleq2 = new TH1D("hLeadJetPhi_DiscardedUntilLead_pTleq2", "Jets w/ min_pT threshold, and pT>=selected_lead_jet", 100, -PI, PI); // Pythia gives us Phi from -PI to PI! (thus also got the phi_std from FastJet)
+
+    auto hLeadJetY_pTleq2_eta_cut = new TH1D("hLeadJetY_pTleq2_eta_cut", "(minpT and maxEta OK)", 100, -1.0, 1.0);
+    auto hLeadJetPt_pTleq2_eta_cut = new TH1D("hLeadJetPt_pTleq2_eta_cut", "(minpT and maxEta OK)", 100, 2, 50);
+    auto hLeadJetPtY_pTleq2_eta_cut = new TH2D("hLeadJetPtY_pTleq2_eta_cut", "(minpT and maxEta OK)", 40, 2, 50, 20, -1.0, 1.0);
+    auto hLeadJetPhi_pTleq2_eta_cut = new TH1D("hLeadJetPhi_pTleq2_eta_cut", "(minpT and maxEta OK)", 100, -PI, PI);
+
+	auto hJetProxyY_pTleq2_eta_cut_WithLambdaOrBar = new TH1D("hJetProxyY_pTleq2_eta_cut_WithLambdaOrBar", "(minpT, maxY OK, contains LambdaOrLBar)", 100, -1.0, 1.0);
+    auto hJetProxyPt_pTleq2_eta_cut_WithLambdaOrBar = new TH1D("hJetProxyPt_pTleq2_eta_cut_WithLambdaOrBar", "(minpT, maxY OK, contains LambdaOrLBar)", 100, 2, 50);
+    auto hJetProxyPtY_pTleq2_eta_cut_WithLambdaOrBar = new TH2D("hJetProxyPtY_pTleq2_eta_cut_WithLambdaOrBar", "(minpT, maxY OK, contains LambdaOrLBar)", 40, 2, 50, 20, -1.0, 1.0);
+    auto hJetProxyPhi_pTleq2_eta_cut_WithLambdaOrBar = new TH1D("hJetProxyPhi_pTleq2_eta_cut_WithLambdaOrBar", "(minpT, maxY OK, contains LambdaOrLBar)", 100, -PI, PI);
+
+    auto hJetProxyY_UsefulEvent = new TH1D("hJetProxyY_UsefulEvent", "(minpT and maxY OK, contains LambdaOrLBar)", 100, -1.0, 1.0);
+    auto hJetProxyPt_UsefulEvent = new TH1D("hJetProxyPt_UsefulEvent", "(minpT and maxY OK, contains LambdaOrLBar)", 100, 2, 50);
+    auto hJetProxyPtY_UsefulEvent = new TH2D("hJetProxyPtY_UsefulEvent", "(minpT and maxY OK, contains LambdaOrLBar)", 40, 2, 50, 20, -1.0, 1.0);
+    auto hJetProxyPhi_UsefulEvent = new TH1D("hJetProxyPhi_UsefulEvent", "(minpT and maxY OK, contains LambdaOrLBar)", 100, -PI, PI);
+
 	// Event loop
 	for (int iEvent=0; iEvent<N_ev; ++iEvent){
 		// pythia.next();
-		if (!pythia.next()) continue; // Skip failed events --> Angantyr can generate events that have no particles at all!
-
-		ntrack = pythia.event.size(); // This could be a bit problematic to estimate multiplicity: this includes non-final particles!
-		ntrack_final = 0; // Resetting for the next event
+		if (!pythia.next()){ // Skip failed events --> Angantyr can generate events that have no particles at all!
+			iEvent--; // Before skipping, will reset the counter increase of this non-generated event: we need EXACTLY N_ev to be generated
+			continue;
+		}
 
 		hEventCounter->Fill(0);
 		int five_percent_step = 0.05 * N_ev; // Defined this outside the check to avoid some divisions by zero that could happen when using low N_ev per worker.
 		if ((WorkerId < 10) && five_percent_step > 0 ? (iEvent % five_percent_step == 0) : false){ // Printing for just 10 workers is already more than enough!
 			std::cout << "[Worker " << WorkerId << "] Now on event " << iEvent << " of " << N_ev << " (" << (100.0 * iEvent / N_ev) << "%)" << std::endl;
 		}
+
+		ntrack = pythia.event.size(); // This could be a bit problematic to estimate multiplicity: this includes non-final particles!
+		ntrack_final = 0; // Resetting for the next event
 
 		charged_in_central_eta = false; // Resetting the bool for the next event
 		charged_in_back_forward_eta = 0; // Actually ""charged_in_back_forward_eta_FINAL" cause it only gets final particles
@@ -205,7 +276,14 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		int n_pion_event = 0;
 		int n_proton_event = 0;
 		int n_kaon_event = 0;
-		
+
+		// Information for the jet loop and needed initializations for FastJet:
+		pt_jet = 0; // Reinitializing these values as well, even though this shouldn't be necessary
+		m_jet = 0;
+		y_jet = 0;
+		Phi_jet = 0;
+		Bool_t contains_lambda_or_lambdabar = false; // In this new code, will exclude events that have neither a Lambda nor a Lambda bar
+
 		// Track loop:
 			// Clearing all C++ arrays before the loop starts, so that you safely store only the information about the current event:
 		ID.clear();
@@ -224,6 +302,9 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// Eta.clear();
 		y.clear();
 		Phi.clear();
+
+			// Clearing the list of FastJet candidates for this loop:
+		FastJetInputs.clear();
 		for (int i = 0; i < pythia.event.size(); ++i){
 			bool isfinal = pythia.event[i].isFinal();
 			// Checking if this particle has a carbon-copy daughter. If it does, then it isn't final, and it didn't decay: it just scattered. This is not what I want to look at!
@@ -286,6 +367,13 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 			}
 
 			int particle_PID = pythia.event[i].id();
+
+				// Updating the "has Lambda or Lambda Bar" flag:
+				// (do notice that this does not depend on the particle being a carbon copy nor being final!
+				// If a carbon copy was a Lambda, it still counts, and no Lambda should ever be final in this
+				// simulation where I allow it to decay!)
+			if (particle_PID == 3122 || particle_PID == -3122){contains_lambda_or_lambdabar = true;}
+
 			// ID[i] = particle_PID;
 			ID.push_back(particle_PID); // New C++ style vector storing
 			int motherIdx1 = pythia.event[i].mother1(); // Doing this, I can access it only once and don't need to re-read this information for pions!
@@ -351,9 +439,19 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 				pT_hist_kaon_final->Fill((double) pT);
 				n_kaon_event += 1;
 			}
-		}
-		t3->Fill(); // Filling the tree first thing after the loop!
 
+
+			// Finally, introducing this particle to the jet candidate list if a certain number of criteria are obeyed:
+			if (isfinal && !IsCarbonCopy_value){ // Particle should be physical and a final state only! (could even enforce IsVisible() for a more realistic case)
+				// Create a PseudoJet from the complete Pythia particle:
+      			fastjet::PseudoJet particleTemp = pythia.event[i];
+				FastJetInputs.push_back(particleTemp);
+			}
+		}
+		///////////////////////////////////////////////////////////
+		// First, filling the centrality estimators to have an unbiased estimation
+		// (If we defined centrality from jet-only events, we would have higher centrality events
+		// by construction, wouldn't we?)
 		// Filling the event counters for INEL events for each multiplicity class:
 			// (This is actually just to sate my curiosity. It has no practical use, as the number of events is the same for all particle species in the ALICE standard normalization of pT spectra)
 		if (charged_in_central_eta){
@@ -387,6 +485,79 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		if (n_pion_event != 0){hEventCounterPion->Fill(0);}
 		if (n_proton_event != 0){hEventCounterProton->Fill(0);}
 		if (n_kaon_event != 0){hEventCounterKaon->Fill(0);}
+		///////////////////////////////////////////////////////////
+
+
+		// Now applying the jet cuts:
+		if(contains_lambda_or_lambdabar){hEventCounterWithLambdaOrBar->Fill(0);}
+
+		// Checking the Jet information to see if this event will be excluded or not:
+			// Run Fastjet algorithm and sort jets in pT order.
+		vector <fastjet::PseudoJet> inclusiveJets, sortedJets;
+		fastjet::ClusterSequence clustSeq(FastJetInputs, jetDef); // Clusters the jet candidates
+		inclusiveJets = clustSeq.inclusive_jets(jet_min_pT); // Gets all the jets with pT above this minimum threshold
+		sortedJets = fastjet::sorted_by_pt(inclusiveJets); // Sort from highest to lowest pT
+
+			// Now applying the eta cut for the jets (if they don't pass |eta|<jet_max_eta, then the jet is not selected)
+		fastjet::PseudoJet leadingJet;
+		Bool_t foundJet = false; // A bool to verify if there is any jet with pT > 2 GeV/c AND |eta| < 1.0 (or jet_max_eta, to be more general)
+		for (const auto& jet : sortedJets){
+			// A pre-selection that is necessary to pick leading Jets that actually point in the midrapidity region, 
+			// properly using events even if we have to pick a leading jet that does not have the largest pT of the 
+			// event! In other words, we can discard the largest pT jet of the event in some cases, to pick only the
+			// most transverse jet.
+			hLeadJetY_DiscardedUntilLead_pTleq2->Fill(jet.rap()); // Will fill for all the jets, ordered by pT, even if they are not the selected leading jet of this event!
+			hLeadJetPt_DiscardedUntilLead_pTleq2->Fill(jet.pt());
+			hLeadJetPtY_DiscardedUntilLead_pTleq2->Fill(jet.pt(), jet.rap());
+			hLeadJetPhi_DiscardedUntilLead_pTleq2->Fill(jet.phi_std());
+			if (std::abs(jet.eta()) < jet_max_eta){
+				leadingJet = jet;
+				foundJet = true;
+				break; // Stop at first jet, since it is all sorted by pT (in other words, selects only the jet with the highest pT in the event)
+			}
+		}
+		if (!foundJet){ // Should restart the whole loop, as we are not saving events that don't have the minimum jets necessary for my analysis!
+			iEvent--;
+			continue;
+		}
+		hEventCounterWithJets->Fill(0); // Notice you don't need an "else" statement here
+
+		// Setting the pT, m, y, phi values for the jet before filling the tree:		
+		pt_jet = leadingJet.pt();
+		m_jet = leadingJet.m();
+		y_jet = leadingJet.rap();
+		Phi_jet = leadingJet.phi_std(); // Used phi_std instead of phi(), to stay in agreement with Pythia's phi angles from -PI to PI
+
+		hLeadJetY_pTleq2_eta_cut->Fill(y_jet);
+		hLeadJetPt_pTleq2_eta_cut->Fill(pt_jet);
+		hLeadJetPtY_pTleq2_eta_cut->Fill(pt_jet, y_jet);
+		hLeadJetPhi_pTleq2_eta_cut->Fill(Phi_jet);
+
+		if(!contains_lambda_or_lambdabar){
+			iEvent--;
+			continue;
+		}
+		hEventCounterWithLambdaOrBarWithJets->Fill(0);
+
+		hJetProxyY_pTleq2_eta_cut_WithLambdaOrBar->Fill(y_jet);
+		hJetProxyPt_pTleq2_eta_cut_WithLambdaOrBar->Fill(pt_jet);
+		hJetProxyPtY_pTleq2_eta_cut_WithLambdaOrBar->Fill(pt_jet, y_jet);
+		hJetProxyPhi_pTleq2_eta_cut_WithLambdaOrBar->Fill(Phi_jet);
+
+		if (std::fabs(leadingJet.rap()) < 0.5){ // If the event contains a lambda, we will do a final, less restrictive check: does this event's leading jet stay in the |y|<0.5 region?
+			hEventCounterUsefulEventForRing->Fill(0);
+		}
+		else{ // I am only going to save events that have jets in the interval which is useful to my Ring analysis!
+			iEvent--;
+			continue;
+		}
+
+		hJetProxyY_UsefulEvent->Fill(y_jet);
+		hJetProxyPt_UsefulEvent->Fill(pt_jet);
+		hJetProxyPtY_UsefulEvent->Fill(pt_jet, y_jet);
+		hJetProxyPhi_UsefulEvent->Fill(Phi_jet);
+
+		t3->Fill(); // Filling the tree first thing after the loop!
 	}
 
 	// pythia.stat();
@@ -398,6 +569,10 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	t3->Write();
 
 	hEventCounter->Write();
+	hEventCounterWithLambdaOrBar->Write();
+	hEventCounterWithJets->Write();
+	hEventCounterWithLambdaOrBarWithJets->Write();
+	hEventCounterUsefulEventForRing->Write();
 	hINELEventCounter->Write();
 	hEventCounterCharged->Write();
 	hEventCounterPion->Write();
@@ -434,6 +609,26 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	hINELev_Ntracks_final_charged_forward_Pion->Write();
 	hINELev_Ntracks_final_charged_forward_Proton->Write();
 	hINELev_Ntracks_final_charged_forward_Kaon->Write();
+
+	hLeadJetY_DiscardedUntilLead_pTleq2->Write();
+	hLeadJetPt_DiscardedUntilLead_pTleq2->Write();
+	hLeadJetPtY_DiscardedUntilLead_pTleq2->Write();
+	hLeadJetPhi_DiscardedUntilLead_pTleq2->Write();
+
+	hLeadJetY_pTleq2_eta_cut->Write();
+	hLeadJetPt_pTleq2_eta_cut->Write();
+	hLeadJetPtY_pTleq2_eta_cut->Write();
+	hLeadJetPhi_pTleq2_eta_cut->Write();
+
+	hJetProxyY_pTleq2_eta_cut_WithLambdaOrBar->Write();
+	hJetProxyPt_pTleq2_eta_cut_WithLambdaOrBar->Write();
+	hJetProxyPtY_pTleq2_eta_cut_WithLambdaOrBar->Write();
+	hJetProxyPhi_pTleq2_eta_cut_WithLambdaOrBar->Write();
+
+	hJetProxyY_UsefulEvent->Write();
+	hJetProxyPt_UsefulEvent->Write();
+	hJetProxyPtY_UsefulEvent->Write();
+	hJetProxyPhi_UsefulEvent->Write();
 
 	f.Close();
 
