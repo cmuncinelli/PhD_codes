@@ -36,3 +36,7 @@ g++ -O2 -std=c++17 lambda_pol_PYTHIA.cxx -o lambda_pol_PYTHIA.exe `root-config -
 
 # Chaining these two simulation types:
 ./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e5 1 && ./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e5 6 && ./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1 && ./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6 && ./lambda_pol_PYTHIA.exe "pythia8_PbPb_536tev_AllowLambdaDecays" 1e5 6 && ./lambda_pol_PYTHIA.exe "pythia8_PbPb_536tev_AllowLambdaDecays" 1e5 6
+
+
+# Waiting for the simulations to finish running before analyzing the data:
+./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e5 6 && sleep 8h && ./lambda_pol_PYTHIA.exe "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6
