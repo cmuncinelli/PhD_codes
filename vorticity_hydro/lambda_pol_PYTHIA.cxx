@@ -211,41 +211,42 @@ int main(int argc, char *argv[]){
     // Histograms to know about the overall kinematics and production rates of the events:
         // Event counters (in the 40-50% centrality class only):
     auto hNEv_InCentralityClass = new TH1D("hNEv_InCentralityClass", "hNEv_InCentralityClass", 1, 0, 1);
-    auto hNEv_WithLambda = new TH1D("hNEv_WithLambda", "hNEv_WithLambda", 1, 0, 1);
+    auto hNEv_WithLambda = new TH1D("hNEv_WithLambda", "hNEv_WithLambda", 1, 0, 1); // Still useful, because I save events based on them having either a Lambda or LambdaBar!
     auto hNEv_proton_from_Lambda = new TH1D("hNEv_proton_from_Lambda", "hNEv_proton_from_Lambda", 1, 0, 1); // Should be about 64.1% (the branching ratio of Lambda->p+pi^-)
-    auto hNEv_WithLambda_andJets_Pt_leq_2_unit = new TH1D("hNEv_WithLambda_andJets_Pt_leq_2_unit", "hNEv_WithLambda_andJets_Pt_leq_2_unit", 1, 0, 1); // Events that have a particle with pT > 2 GeV/c at least
-    auto hNUsefulEv = new TH1D("hNUsefulEv", "hNUsefulEv", 1, 0, 1); // Just to know the number of events. This is not used anywhere in the code and there is no 1./Nev normalization anywhere
-
-        // Jet estimators in the |y| < 2.5 region only:
-            // A pT histogram that has all of the jets produced
-    auto hHighestMomentum_all_jets = new TH1D("hHighestMomentum_all_jets", "hHighestMomentum_all_jets", 100, 0, 10);
-    auto hHighestMomentumPzOverNorm_all_jets = new TH1D("hHighestMomentumPzOverNorm_all_jets", "hHighestMomentumPzOverNorm_all_jets", 100, -1, 1);
-
-            // A pT histogram for the jets that come from an event with Lambda:
-    auto hHighestMomentum_EvWithLambda = new TH1D("hHighestMomentum_EvWithLambda", "hHighestMomentum_EvWithLambda", 100, 0, 10);
-    auto hHighestMomentumPzOverNorm_EvWithLambda = new TH1D("hHighestMomentumPzOverNorm_EvWithLambda", "hHighestMomentumPzOverNorm_EvWithLambda", 100, -1, 1);
-
-            // A pT histogram for the jets that come from an event with Lambda and have a jet in midrapidity:
-    auto hHighestMomentum_WithLambda_Midrap = new TH1D("hHighestMomentum_WithLambda_Midrap", "hHighestMomentum_WithLambda_Midrap", 100, 0, 10); // To know the distribution of the jet proxies' momenta
-    auto hHighestMomentumPzOverNorm_WithLambda_Midrap = new TH1D("hHighestMomentumPzOverNorm_WithLambda_Midrap", "hHighestMomentumPzOverNorm_WithLambda_Midrap", 100, -1, 1); // Tells me how much of the momentum of the highest momentum particles is in Z (in normalized vector units)
-
-        // Kinematic information of the produced jets, in the same three categories as above:
-        // (changed the limits to agree with the new selection intervals, where |y|_max is 1.0, and pT_min is 2.0 GeV/c)
-        // (no need to keep plotting |y|<2.5 nor pT starting from 0.0)
-    auto hJetProxyY_all_jets = new TH1D("hJetProxyY_all_jets", "hJetProxyY_all_jets", 100, -1.0, 1.0);
-    auto hJetProxyPt_all_jets = new TH1D("hJetProxyPt_all_jets", "hJetProxyPt_all_jets", 100, 2, 10);
-    auto hJetProxyPtY_all_jets = new TH2D("hJetProxyPtY_all_jets", "hJetProxyPtY_all_jets", 40, 2, 10, 20, -1.0, 1.0);
-    auto hJetProxyPhi_all_jets = new TH1D("hJetProxyPhi_all_jets", "hJetProxyPhi_all_jets", 100, -PI, PI); // Pythia gives us Phi from -PI to PI!
-
-    auto hJetProxyY_ProtonFromLambda_events = new TH1D("hJetProxyY_ProtonFromLambda_events", "hJetProxyY_ProtonFromLambda_events", 100, -1.0, 1.0);
-    auto hJetProxyPt_ProtonFromLambda_events = new TH1D("hJetProxyPt_ProtonFromLambda_events", "hJetProxyPt_ProtonFromLambda_events", 100, 2, 10);
-    auto hJetProxyPtY_ProtonFromLambda_events = new TH2D("hJetProxyPtY_ProtonFromLambda_events", "hJetProxyPtY_ProtonFromLambda_events", 40, 2, 10, 20, -1.0, 1.0);
-    auto hJetProxyPhi_ProtonFromLambda_events = new TH1D("hJetProxyPhi_ProtonFromLambda_events", "hJetProxyPhi_ProtonFromLambda_events", 100, -PI, PI);
-
-    auto hJetProxyY_UsefulEvent = new TH1D("hJetProxyY_UsefulEvent", "hJetProxyY_UsefulEvent", 100, -1.0, 1.0);
-    auto hJetProxyPt_UsefulEvent = new TH1D("hJetProxyPt_UsefulEvent", "hJetProxyPt_UsefulEvent", 100, 2, 10);
-    auto hJetProxyPtY_UsefulEvent = new TH2D("hJetProxyPtY_UsefulEvent", "hJetProxyPtY_UsefulEvent", 40, 2, 10, 20, -1.0, 1.0);
-    auto hJetProxyPhi_UsefulEvent = new TH1D("hJetProxyPhi_UsefulEvent", "hJetProxyPhi_UsefulEvent", 100, -PI, PI);
+    
+    /////////////////////////////////////////////////////////////////////////////////////
+    // LEGACY CODE! In the newer versions of the PythiaGenMin script, all events have a Lambda and a useful jet! The only histogram that is still useful is hNEv_proton_from_Lambda
+    // auto hNEv_WithLambda_andJets_Pt_leq_2_unit = new TH1D("hNEv_WithLambda_andJets_Pt_leq_2_unit", "hNEv_WithLambda_andJets_Pt_leq_2_unit", 1, 0, 1); // Events that have a particle with pT > 2 GeV/c at least
+    // auto hNUsefulEv = new TH1D("hNUsefulEv", "hNUsefulEv", 1, 0, 1); // Just to know the number of events. This is not used anywhere in the code and there is no 1./Nev normalization anywhere
+    //     // Jet estimators in the |y| < 2.5 region only:
+    //         // A pT histogram that has all of the jets produced
+    // auto hHighestMomentum_all_jets = new TH1D("hHighestMomentum_all_jets", "hHighestMomentum_all_jets", 100, 0, 10);
+    // auto hHighestMomentumPzOverNorm_all_jets = new TH1D("hHighestMomentumPzOverNorm_all_jets", "hHighestMomentumPzOverNorm_all_jets", 100, -1, 1);
+    //         // A pT histogram for the jets that come from an event with Lambda:
+    // auto hHighestMomentum_EvWithLambda = new TH1D("hHighestMomentum_EvWithLambda", "hHighestMomentum_EvWithLambda", 100, 0, 10);
+    // auto hHighestMomentumPzOverNorm_EvWithLambda = new TH1D("hHighestMomentumPzOverNorm_EvWithLambda", "hHighestMomentumPzOverNorm_EvWithLambda", 100, -1, 1);
+    //         // A pT histogram for the jets that come from an event with Lambda and have a jet in midrapidity:
+    // auto hHighestMomentum_WithLambda_Midrap = new TH1D("hHighestMomentum_WithLambda_Midrap", "hHighestMomentum_WithLambda_Midrap", 100, 0, 10); // To know the distribution of the jet proxies' momenta
+    // auto hHighestMomentumPzOverNorm_WithLambda_Midrap = new TH1D("hHighestMomentumPzOverNorm_WithLambda_Midrap", "hHighestMomentumPzOverNorm_WithLambda_Midrap", 100, -1, 1); // Tells me how much of the momentum of the highest momentum particles is in Z (in normalized vector units)
+    // LEGACY CODE! In the newer versions of the PythiaGenMin made for this vorticity study, we only save events that have useful jets!
+    //     // Kinematic information of the produced jets, in the same three categories as above:
+    //     // (changed the limits to agree with the new selection intervals, where |y|_max is 1.0, and pT_min is 2.0 GeV/c)
+    //     // (no need to keep plotting |y|<2.5 nor pT starting from 0.0)
+    // auto hJetProxyY_all_jets = new TH1D("hJetProxyY_all_jets", "hJetProxyY_all_jets", 100, -1.0, 1.0);
+    // auto hJetProxyPt_all_jets = new TH1D("hJetProxyPt_all_jets", "hJetProxyPt_all_jets", 100, 2, 10);
+    // auto hJetProxyPtY_all_jets = new TH2D("hJetProxyPtY_all_jets", "hJetProxyPtY_all_jets", 40, 2, 10, 20, -1.0, 1.0);
+    // auto hJetProxyPhi_all_jets = new TH1D("hJetProxyPhi_all_jets", "hJetProxyPhi_all_jets", 100, -PI, PI); // Pythia gives us Phi from -PI to PI!
+    //
+    // auto hJetProxyY_ProtonFromLambda_events = new TH1D("hJetProxyY_ProtonFromLambda_events", "hJetProxyY_ProtonFromLambda_events", 100, -1.0, 1.0);
+    // auto hJetProxyPt_ProtonFromLambda_events = new TH1D("hJetProxyPt_ProtonFromLambda_events", "hJetProxyPt_ProtonFromLambda_events", 100, 2, 10);
+    // auto hJetProxyPtY_ProtonFromLambda_events = new TH2D("hJetProxyPtY_ProtonFromLambda_events", "hJetProxyPtY_ProtonFromLambda_events", 40, 2, 10, 20, -1.0, 1.0);
+    // auto hJetProxyPhi_ProtonFromLambda_events = new TH1D("hJetProxyPhi_ProtonFromLambda_events", "hJetProxyPhi_ProtonFromLambda_events", 100, -PI, PI);
+    //
+    // auto hJetProxyY_UsefulEvent = new TH1D("hJetProxyY_UsefulEvent", "hJetProxyY_UsefulEvent", 100, -1.0, 1.0);
+    // auto hJetProxyPt_UsefulEvent = new TH1D("hJetProxyPt_UsefulEvent", "hJetProxyPt_UsefulEvent", 100, 2, 10);
+    // auto hJetProxyPtY_UsefulEvent = new TH2D("hJetProxyPtY_UsefulEvent", "hJetProxyPtY_UsefulEvent", 40, 2, 10, 20, -1.0, 1.0);
+    // auto hJetProxyPhi_UsefulEvent = new TH1D("hJetProxyPhi_UsefulEvent", "hJetProxyPhi_UsefulEvent", 100, -PI, PI);
+    /////////////////////////////////////////////////////////////////////////////////////
 
         // To know all of the produced Lambdas:
         // (Do notice that these DO NOT include the coordinate axis rotation that shifts phi=0 to phi_{jet}!)
@@ -262,24 +263,25 @@ int main(int argc, char *argv[]){
     auto hLambdaPhi_proton_mothers = new TH1D("hLambdaPhi_proton_mothers", "hLambdaPhi_proton_mothers", 100, -PI, PI);
 
         // Turning on Sumw2() for the histograms that only store counts:
-    hHighestMomentum_all_jets->Sumw2();
-    hHighestMomentumPzOverNorm_all_jets->Sumw2();
+    // LEGACY CODE! Now included in the PythiaGenMin datasets!
+    // hHighestMomentum_all_jets->Sumw2();
+    // hHighestMomentumPzOverNorm_all_jets->Sumw2();
 
-    hHighestMomentum_EvWithLambda->Sumw2();
-    hHighestMomentumPzOverNorm_EvWithLambda->Sumw2();
+    // hHighestMomentum_EvWithLambda->Sumw2();
+    // hHighestMomentumPzOverNorm_EvWithLambda->Sumw2();
 
-    hHighestMomentum_WithLambda_Midrap->Sumw2();
-    hHighestMomentumPzOverNorm_WithLambda_Midrap->Sumw2();
+    // hHighestMomentum_WithLambda_Midrap->Sumw2();
+    // hHighestMomentumPzOverNorm_WithLambda_Midrap->Sumw2();
 
-    hJetProxyY_all_jets->Sumw2();
-    hJetProxyPt_all_jets->Sumw2();
-    hJetProxyPhi_all_jets->Sumw2();
-    hJetProxyY_ProtonFromLambda_events->Sumw2();
-    hJetProxyPt_ProtonFromLambda_events->Sumw2();
-    hJetProxyPhi_ProtonFromLambda_events->Sumw2();
-    hJetProxyY_UsefulEvent->Sumw2();
-    hJetProxyPt_UsefulEvent->Sumw2();
-    hJetProxyPhi_UsefulEvent->Sumw2();
+    // hJetProxyY_all_jets->Sumw2();
+    // hJetProxyPt_all_jets->Sumw2();
+    // hJetProxyPhi_all_jets->Sumw2();
+    // hJetProxyY_ProtonFromLambda_events->Sumw2();
+    // hJetProxyPt_ProtonFromLambda_events->Sumw2();
+    // hJetProxyPhi_ProtonFromLambda_events->Sumw2();
+    // hJetProxyY_UsefulEvent->Sumw2();
+    // hJetProxyPt_UsefulEvent->Sumw2();
+    // hJetProxyPhi_UsefulEvent->Sumw2();
 
     hLambdaPt->Sumw2();
     hLambdaY->Sumw2();
@@ -412,6 +414,11 @@ int main(int argc, char *argv[]){
     // std::vector<Float_t> *pz_pointer;
     // std::vector<Float_t> *E_pointer;
 
+        // Variables that store the FastJet information:
+    Float_t pt_jet;
+    Float_t m_jet;
+    Float_t y_jet;
+    Float_t Phi_jet;
 
         // Connecting these variables to the TChain:
     chain.SetBranchAddress("ntrack", &ntrack);
@@ -428,6 +435,11 @@ int main(int argc, char *argv[]){
     chain.SetBranchAddress("pt", &pt_pointer);
     chain.SetBranchAddress("y", &y_pointer);
     chain.SetBranchAddress("Phi", &Phi_pointer);
+
+    chain.SetBranchAddress("pt_jet", &pt_jet);
+    chain.SetBranchAddress("m_jet", &m_jet);
+    chain.SetBranchAddress("y_jet", &y_jet);
+    chain.SetBranchAddress("Phi_jet", &Phi_jet);
 
     // Int_t N_useful_events = 0; // This number should be updated if there actually was any proton with a Lambda mother in the event, and if the jet was in the |y| < 0.5 range.
     for (Long64_t iEvent = 0; iEvent < nEntries; iEvent++){
@@ -473,16 +485,19 @@ int main(int argc, char *argv[]){
         std::vector<Float_t> lambda_phi_array; // Just for the calculations done in this event's loop
         std::vector<Float_t> lambda_y_array;
         std::vector<Float_t> lambda_pT_array;
-
-        // Entering the particle loop:
-        Float_t highest_particle_momentum = 0;
-        Int_t highest_particle_momentum_Idx = -1; // Saving this to be able to recover
         
-            // Checks for increasingly restrictive conditions necessary for the event to be useful:
-        Bool_t found_jet_candidate = false; // A bool that needs to be tracked: if the event does not haven even a single jet candidate (highest_particle_momentum stays 0 and Idx stays -1), it should not be considered valid!
+        // LEGACY CODE! In the newer versions of PythiaGenMin, a Pythia event is only saved to disk if it is useful to this particular analysis!
+        // (also, jets are already estimated with FastJet!)
+        // // Entering the particle loop:
+        // Float_t highest_particle_momentum = 0;
+        // Int_t highest_particle_momentum_Idx = -1; // Saving this to be able to recover
+        //     // Checks for increasingly restrictive conditions necessary for the event to be useful:
+        // Bool_t found_jet_candidate = false; // A bool that needs to be tracked: if the event does not haven even a single jet candidate (highest_particle_momentum stays 0 and Idx stays -1), it should not be considered valid!
+        // // Bool_t jet_Pt_leq_2 = false; // These two can be checked after the event
+        // // Bool_t jet_Pt_leq_2_contains_Lambda = false;
+            // These last check are still useful though -- I save events even if they don't have a Lambda decaying into a proton.
+            // Also, I saved events with LambdaBar, so you still have to check if this particular event has a Lambda instead of a LambdaBar, for instance
         Bool_t contains_lambda = false;
-        // Bool_t jet_Pt_leq_2 = false; // These two can be checked after the event
-        // Bool_t jet_Pt_leq_2_contains_Lambda = false;
         Bool_t contains_particle = false; // Contains a proton that came from a Lambda
         for (int particle_idx = 0; particle_idx < ntrack; particle_idx++){
             // Excluding particles that are useless for this comparison:
@@ -510,7 +525,7 @@ int main(int argc, char *argv[]){
                 TLorentzVector lambda_4_momentum_all_decay_modes(particle_px, particle_py, particle_pz, particle_E);
                 lambda_4momenta_all_decay_modes.push_back(lambda_4_momentum_all_decay_modes);
 
-                contains_lambda = true;
+                contains_lambda = true; // True by definition of the events saved to disk!
             }
 
                 // Now continuing the selection to see only the final particles
@@ -524,18 +539,19 @@ int main(int argc, char *argv[]){
             Float_t particle_momentum_squared = particle_px*particle_px + particle_py*particle_py + particle_pz*particle_pz; // Defined here to avoid recalculating stuff for particle_E and particle_momentum
             Float_t particle_E = std::sqrt(particle_m*particle_m + particle_momentum_squared);
             
-            // Updating the proxy to see if this particle has the highest momentum of the produced particles (jet direction!):
-            // (Notice that this comes BEFORE excluding this particle if it is not a proton! It can be a jet proxy, yet not be the particle that came from the Lambda decay!)
-            // Changed this preselection to a tighter cut (|y|<2.5 would be ~ 10°<theta<170°) of |y|<1 and included a minimum requirement in pT for the jet!
-            // I want transverse-only jet candidates, so the |y|<2.5 estimate with no pT
-            // Could also do this with a selection that is based on the transverse momentum of the particles, i.e., highest_particle_pT instead of highest_particle_momentum
-            Float_t particle_momentum = std::sqrt(particle_momentum_squared);
-            if (std::fabs(particle_y) < 1.0 && particle_pT > 2.0 && (highest_particle_momentum < particle_momentum)){
-                highest_particle_momentum = particle_momentum;
-                highest_particle_momentum_Idx = particle_idx;
-                // std::cout << "Particle momentum is " << highest_particle_momentum << std::endl;
-                found_jet_candidate = true; // At least one possible candidate in this event!
-            }
+            // LEGACY CODE! Now FastJet is used at generator level
+            // // Updating the proxy to see if this particle has the highest momentum of the produced particles (jet direction!):
+            // // (Notice that this comes BEFORE excluding this particle if it is not a proton! It can be a jet proxy, yet not be the particle that came from the Lambda decay!)
+            // // Changed this preselection to a tighter cut (|y|<2.5 would be ~ 10°<theta<170°) of |y|<1 and included a minimum requirement in pT for the jet!
+            // // I want transverse-only jet candidates, so the |y|<2.5 estimate with no pT
+            // // Could also do this with a selection that is based on the transverse momentum of the particles, i.e., highest_particle_pT instead of highest_particle_momentum
+            // Float_t particle_momentum = std::sqrt(particle_momentum_squared);
+            // if (std::fabs(particle_y) < 1.0 && particle_pT > 2.0 && (highest_particle_momentum < particle_momentum)){
+            //     highest_particle_momentum = particle_momentum;
+            //     highest_particle_momentum_Idx = particle_idx;
+            //     // std::cout << "Particle momentum is " << highest_particle_momentum << std::endl;
+            //     found_jet_candidate = true; // At least one possible candidate in this event!
+            // }
 
             //////////////////////////////////////
             //// Calculating the polarization ////
@@ -586,26 +602,26 @@ int main(int argc, char *argv[]){
             lambda_y_array.push_back(lambda_y);
             lambda_pT_array.push_back(lambda_pT);
         }
-        if (!found_jet_candidate){ // i.e., this event is not useful as there was not even a single transverse jet candidate in the |y|<1.0 region, with pT > 2 GeV/c!
-            // First, whould increment the variables that don't require this event to have a jet:
-                // (The event may have a Lambda, and may have a Lambda that decayed into a proton, even if it does not have a jet!)
-            if (contains_lambda){hNEv_WithLambda->Fill(0);}
-            if (contains_particle){hNEv_proton_from_Lambda->Fill(0);}
-            continue;
-        }
+        // if (!found_jet_candidate){ // i.e., this event is not useful as there was not even a single transverse jet candidate in the |y|<1.0 region, with pT > 2 GeV/c!
+        //     // First, whould increment the variables that don't require this event to have a jet:
+        //         // (The event may have a Lambda, and may have a Lambda that decayed into a proton, even if it does not have a jet!)
+        //     if (contains_lambda){hNEv_WithLambda->Fill(0);}
+        //     if (contains_particle){hNEv_proton_from_Lambda->Fill(0);}
+        //     continue;
+        // }
         // Getting the jet variables:
-        Float_t jet_phi = Phi[highest_particle_momentum_Idx];
-        Float_t jet_px = pt[highest_particle_momentum_Idx]*std::cos(jet_phi);
-        Float_t jet_py = pt[highest_particle_momentum_Idx]*std::sin(jet_phi);
-        Float_t jet_mT = std::sqrt(m[highest_particle_momentum_Idx]*m[highest_particle_momentum_Idx]
-                                   + pt[highest_particle_momentum_Idx]*pt[highest_particle_momentum_Idx]);
-        Float_t jet_pz = jet_mT*std::sinh(y[highest_particle_momentum_Idx]);
+        Float_t jet_phi = Phi_jet;
+        Float_t jet_px = pt_jet*std::cos(jet_phi);
+        Float_t jet_py = pt_jet*std::sin(jet_phi);
+        Float_t jet_mT = std::sqrt(m_jet*m_jet + pt_jet*pt_jet);
+        Float_t jet_pz = jet_mT*std::sinh(y_jet);
 
-            // Saving the jet distribution before the coordinate shift:
-        hJetProxyY_all_jets->Fill(y[highest_particle_momentum_Idx]);
-        hJetProxyPt_all_jets->Fill(pt[highest_particle_momentum_Idx]);
-        hJetProxyPtY_all_jets->Fill(pt[highest_particle_momentum_Idx], y[highest_particle_momentum_Idx]);
-        hJetProxyPhi_all_jets->Fill(jet_phi);
+        // LEGACY CODE!
+        //     // Saving the jet distribution before the coordinate shift:
+        // hJetProxyY_all_jets->Fill(y_jet);
+        // hJetProxyPt_all_jets->Fill(pt_jet);
+        // hJetProxyPtY_all_jets->Fill(pt_jet, y_jet);
+        // hJetProxyPhi_all_jets->Fill(jet_phi);
 
         TVector3 jet_trimomentum(jet_px, jet_py, jet_pz);
         // Rotating the jet to a coordinate system where \hat{t}_x = 1:
@@ -613,8 +629,9 @@ int main(int argc, char *argv[]){
         // Getting the unit vector for Z axis projections:
         TVector3 jet_trimomentum_unit = jet_trimomentum.Unit();
 
-        hHighestMomentum_all_jets->Fill(highest_particle_momentum);
-        hHighestMomentumPzOverNorm_all_jets->Fill(jet_trimomentum_unit.Z()); // How much of the unit vector is in z. Includes all jets with |y|<2.5
+        // LEGACY CODE!
+        // hHighestMomentum_all_jets->Fill(highest_particle_momentum);
+        // hHighestMomentumPzOverNorm_all_jets->Fill(jet_trimomentum_unit.Z()); // How much of the unit vector is in z. Includes all jets with |y|<2.5
 
         // Filling event counter:
         if (contains_lambda){
@@ -631,48 +648,53 @@ int main(int argc, char *argv[]){
 
         if(!contains_particle){continue;} // Skip the whole event: it doesn't have a single proton that came from Lambda.
         hNEv_proton_from_Lambda->Fill(0); // This event passed the "contains_particle" check
-        hHighestMomentum_EvWithLambda->Fill(highest_particle_momentum);
-        hHighestMomentumPzOverNorm_EvWithLambda->Fill(jet_trimomentum_unit.Z()); // How much of the unit vector is in z. Includes all jets with |y|<2.5, but only those with a Lambda
+        // LEGACY CODE!
+        // hHighestMomentum_EvWithLambda->Fill(highest_particle_momentum);
+        // hHighestMomentumPzOverNorm_EvWithLambda->Fill(jet_trimomentum_unit.Z()); // How much of the unit vector is in z. Includes all jets with |y|<2.5, but only those with a Lambda
+        // hJetProxyY_ProtonFromLambda_events->Fill(y_jet);
+        // hJetProxyPt_ProtonFromLambda_events->Fill(pt_jet);
+        // hJetProxyPtY_ProtonFromLambda_events->Fill(pt_jet, y_jet);
+        // hJetProxyPhi_ProtonFromLambda_events->Fill(jet_phi);
+        // if (pt_jet >= 2.){
+        //     hNEv_WithLambda_andJets_Pt_leq_2_unit->Fill(0);
+        // }
+        // LEGACY CODE!
+        // // Need to know if this event has any jets in the mid-rapidity region. If not, can't use it!
+        // // (TODO: If needed, you can relax this demand a little bit, to increase statistics in your testing!)
+        // Bool_t contains_jet_in_midrapidity = (std::fabs(y_jet) < 0.5); // Using fabs for easyness of reading for older coders.
+        //                                                                                           // C++11 already overloaded std::abs() to work appropriately with floats
 
-        hJetProxyY_ProtonFromLambda_events->Fill(y[highest_particle_momentum_Idx]);
-        hJetProxyPt_ProtonFromLambda_events->Fill(pt[highest_particle_momentum_Idx]);
-        hJetProxyPtY_ProtonFromLambda_events->Fill(pt[highest_particle_momentum_Idx], y[highest_particle_momentum_Idx]);
-        hJetProxyPhi_ProtonFromLambda_events->Fill(jet_phi);
 
-        if (pt[highest_particle_momentum_Idx] >= 2.){
-            hNEv_WithLambda_andJets_Pt_leq_2_unit->Fill(0);
-        }
-        
-        // Need to know if this event has any jets in the mid-rapidity region. If not, can't use it!
-        // (TODO: If needed, you can relax this demand a little bit, to increase statistics in your testing!)
-        Bool_t contains_jet_in_midrapidity = (std::fabs(y[highest_particle_momentum_Idx]) < 0.5); // Using fabs for easyness of reading for older coders.
-                                                                                                  // C++11 already overloaded std::abs() to work appropriately with floats
         // Added an additional loop here just to get the dN/d DeltaBetaJ distribution to see 
         // if there is any preferential production of Lambdas wrlt the jet.
         // Do notice that this Beta angle is the angular aperture of the Lambda and the jet,
         // so it is a more general angle than Phi or Theta and is valid vor all rapidities!
-        // (in the |y| < 2.5 though, so that we actually get jets, not beam remnants)
+        // By definition, all of the new events following the PythiaGenMin optimization
+        // already have |y|<0.5 so this result should now be guaranteed to be what Giorgio
+        // wanted to know (Lambda production due to high transverse momentum partons, produced
+        // in the collision, not coming from Beam Remnants)
         for (int i = 0; i < lambda_4momenta.size(); i++){
             TLorentzVector lambda_4momentum = lambda_4momenta[i];
             TVector3 lambda_trivec = lambda_4momentum.Vect();
             Double_t DeltaBetaJ = jet_trimomentum.Angle(lambda_trivec);
-            hLambdaDeltaBetaJ_WithProtonFromLambda->Fill(DeltaBetaJ); // Not necessarily a useful event in the sense of |y|<0.5, but still a useful statistic to know
+            hLambdaDeltaBetaJ_WithProtonFromLambda->Fill(DeltaBetaJ);
         }
-        if (!contains_jet_in_midrapidity){continue;}
+        // LEGACY CODE!
+        // if (!contains_jet_in_midrapidity){continue;}
         // std::cout << "\tThis event contains a jet in midrapidity!" << std::endl;
 
         // N_useful_events += 1;
-        hNUsefulEv->Fill(0);
+        // hNUsefulEv->Fill(0);
 
-        hJetProxyY_UsefulEvent->Fill(y[highest_particle_momentum_Idx]);
-        hJetProxyPt_UsefulEvent->Fill(pt[highest_particle_momentum_Idx]);
-        hJetProxyPtY_UsefulEvent->Fill(pt[highest_particle_momentum_Idx], y[highest_particle_momentum_Idx]);
-        hJetProxyPhi_UsefulEvent->Fill(jet_phi);
+        // hJetProxyY_UsefulEvent->Fill(y_jet);
+        // hJetProxyPt_UsefulEvent->Fill(pt_jet);
+        // hJetProxyPtY_UsefulEvent->Fill(pt_jet, y_jet);
+        // hJetProxyPhi_UsefulEvent->Fill(jet_phi);
         
             // Saving this useful jet for the Ring Observable calculation:
         jet_trimomenta_array.push_back(jet_trimomentum);
-        hHighestMomentum_WithLambda_Midrap->Fill(highest_particle_momentum);
-        hHighestMomentumPzOverNorm_WithLambda_Midrap->Fill(jet_trimomentum_unit.Z()); // How much of the unit vector is in z. Only for |y| < 0.5 jets
+        // hHighestMomentum_WithLambda_Midrap->Fill(highest_particle_momentum);
+        // hHighestMomentumPzOverNorm_WithLambda_Midrap->Fill(jet_trimomentum_unit.Z()); // How much of the unit vector is in z. Only for |y| < 0.5 jets
 
         // std::cout << "\t\tThis jet's momentum is " << highest_particle_momentum << std::endl;
 
@@ -988,8 +1010,8 @@ int main(int argc, char *argv[]){
     hNEv_InCentralityClass->Write();
     hNEv_WithLambda->Write();
     hNEv_proton_from_Lambda->Write();
-    hNEv_WithLambda_andJets_Pt_leq_2_unit->Write();
-    hNUsefulEv->Write();
+    // hNEv_WithLambda_andJets_Pt_leq_2_unit->Write();
+    // hNUsefulEv->Write();
 
     hLambdaPt->Write();
     hLambdaY->Write();
@@ -1001,28 +1023,29 @@ int main(int argc, char *argv[]){
     hLambdaY_proton_mothers->Write();
     hLambdaPhi_proton_mothers->Write();
 
-    hHighestMomentum_all_jets->Write();
-    hHighestMomentumPzOverNorm_all_jets->Write();
-    hHighestMomentum_EvWithLambda->Write();
-    hHighestMomentumPzOverNorm_EvWithLambda->Write();
-    hHighestMomentum_WithLambda_Midrap->Write();
-    hHighestMomentumPzOverNorm_WithLambda_Midrap->Write();
-
-    // Jet kinematics:
-    hJetProxyY_all_jets->Write();
-    hJetProxyPt_all_jets->Write();
-    hJetProxyPtY_all_jets->Write();
-    hJetProxyPhi_all_jets->Write();
-
-    hJetProxyY_ProtonFromLambda_events->Write();
-    hJetProxyPt_ProtonFromLambda_events->Write();
-    hJetProxyPtY_ProtonFromLambda_events->Write();
-    hJetProxyPhi_ProtonFromLambda_events->Write();
-
-    hJetProxyY_UsefulEvent->Write();
-    hJetProxyPt_UsefulEvent->Write();
-    hJetProxyPtY_UsefulEvent->Write();
-    hJetProxyPhi_UsefulEvent->Write();
+    // LEGACY CODE! This information is already (partially) in the PythiaGenMin.cxx's updated version
+    // hHighestMomentum_all_jets->Write();
+    // hHighestMomentumPzOverNorm_all_jets->Write();
+    // hHighestMomentum_EvWithLambda->Write();
+    // hHighestMomentumPzOverNorm_EvWithLambda->Write();
+    // hHighestMomentum_WithLambda_Midrap->Write();
+    // hHighestMomentumPzOverNorm_WithLambda_Midrap->Write();
+    //
+    // // Jet kinematics:
+    // hJetProxyY_all_jets->Write();
+    // hJetProxyPt_all_jets->Write();
+    // hJetProxyPtY_all_jets->Write();
+    // hJetProxyPhi_all_jets->Write();
+    //
+    // hJetProxyY_ProtonFromLambda_events->Write();
+    // hJetProxyPt_ProtonFromLambda_events->Write();
+    // hJetProxyPtY_ProtonFromLambda_events->Write();
+    // hJetProxyPhi_ProtonFromLambda_events->Write();
+    //
+    // hJetProxyY_UsefulEvent->Write();
+    // hJetProxyPt_UsefulEvent->Write();
+    // hJetProxyPtY_UsefulEvent->Write();
+    // hJetProxyPhi_UsefulEvent->Write();
 
     hProtonStarCounter_DeltaPhiJRing_PtYCuts->Write();
 
