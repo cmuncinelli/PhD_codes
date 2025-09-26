@@ -8,7 +8,7 @@
 #include "TCanvas.h"
 #include "TH1.h"
 #include "TH1D.h"
-#include "TH1I.h"
+// #include "TH1I.h" // Not using this class anymore!
 #include "TH2.h"
 #include "TH2D.h"
 #include "TMath.h"
@@ -25,7 +25,8 @@
 const double PI = TMath::Pi();
 
 // void histogram_copy(TH1D *origin_hist, TH1D *destiny_hist, int N_bins);
-void multiplicity_to_centrality(TH1I *multiplicity_hist, TH1D *centrality_hist);
+void multiplicity_to_centrality(TH1D *multiplicity_hist, TH1D *centrality_hist);
+inline double wrapToInterval(double phi, double phi_min, double phi_max);
 void FillHistogramFromMap(TH1* hist, const std::map<int,int>& map);
 
 using namespace Pythia8;
@@ -71,7 +72,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	// (for more information, see logs 503 and 504)
 	double R = 0.4;
 	double jet_min_pT = 8.0; // Changed from 2.0 to 8.0: we were having 10% of events having 20 or more jets! The 8.0 GeV/c comes from Youpeng's PAG presentation
-	double ALICE_charged_jet_acceptance = 0.9 // Look at the Detector_Acceptances_and_FastJet.pdf document: TPS, ITS, TRD and TOF cover <0.9, and EMCal does not cover full azimuth!
+	double ALICE_charged_jet_acceptance = 0.9; // Look at the Detector_Acceptances_and_FastJet.pdf document: TPS, ITS, TRD and TOF cover <0.9, and EMCal does not cover full azimuth!
 	double jet_max_eta = ALICE_charged_jet_acceptance - R; // The jet must be entirely in the region where ALICE can actually see it!
 														   // Notice that you don't need to do an extra |y|<0.5 cut if the jet pT is sufficiently high, because y ~ \eta in that limit.
     fastjet::JetDefinition jetDef(fastjet::antikt_algorithm, R);
@@ -90,33 +91,49 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	// Thus, changed to a C++ approach instead of the usual "Int_t ID[kMaxTrack];" C-style arrays for the branches.
 	Int_t ntrack;
 	Int_t ntrack_final;
-	std::vector<Int_t> ID;
-	std::vector<Int_t> mother1_ID;
-	std::vector<Int_t> mother2_ID;
-	std::vector<Bool_t> IsFinal;
-	std::vector<Bool_t> IsPrimary;
-	std::vector<Bool_t> IsCarbonCopy;
 	Int_t charged_in_back_forward_eta; // The multiplicity indicator for 1807.11321 [nucl-ex]'s data
 	Int_t ntracks_in_back_forward_eta; // Another multiplicity indicator, trying to mimic the indirect charged particle production due to neutral's interactions with V0. Something finer than just Nch, and will also receive only final particles
 	Int_t Ntracks_charged_forward;
 	Int_t Ntracks_primary;
 	Int_t Ntracks_final_charged_center;
 	Int_t Ntracks_final_charged;
+	
+	std::vector<Float_t> ProtonOrPBar_pt;
+	std::vector<Float_t> ProtonOrPBar_y;
+	std::vector<Float_t> ProtonOrPBar_Phi;
+	std::vector<Float_t> ProtonOrPBar_m;
 
-	// std::vector<Float_t> px; // Already saving pT,y,phi,mass
-	// std::vector<Float_t> py;
-	// std::vector<Float_t> pz;
-	std::vector<Float_t> pt;
-	std::vector<Float_t> m;
-	// std::vector<Float_t> e; // No need for charge
+	std::vector<Float_t> LambdaOrLBar_pt;
+	std::vector<Float_t> LambdaOrLBar_y;
+	std::vector<Float_t> LambdaOrLBar_Phi;
+	std::vector<Float_t> LambdaOrLBar_m;
 
-	// std::vector<Bool_t> charged; // Don't actually need to save this! This is purely a PDG-lookup information, so no need to store it when the
-									// PID is already enough to know it! The isCharged() will be useful inside the loop, but no need to store it!
+	std::vector<Bool_t> isProton_not_PBar;
+	std::vector<Bool_t> isLambda_notLBar;
+
+	std::vector<Bool_t> isLambdaOrLBarExperimentalPrimary;
+
+	// Don't need to store any of these for the Lambda polarization analysis! They were just occupying space in disk!
+	// std::vector<Int_t> ID;
+	// std::vector<Int_t> mother1_ID;
+	// std::vector<Int_t> mother2_ID;
+	// std::vector<Bool_t> IsFinal;
+	// std::vector<Bool_t> IsPrimary;
+	// std::vector<Bool_t> IsCarbonCopy;
+	// // std::vector<Float_t> px; // Already saving pT,y,phi,mass
+	// // std::vector<Float_t> py;
+	// // std::vector<Float_t> pz;
+	// std::vector<Float_t> pt;
+	// std::vector<Float_t> m;
+	// // std::vector<Float_t> e; // No need for charge
+
+	// // std::vector<Bool_t> charged; // Don't actually need to save this! This is purely a PDG-lookup information, so no need to store it when the
+	// 								// PID is already enough to know it! The isCharged() will be useful inside the loop, but no need to store it!
 	Bool_t charged_in_central_eta; // A single boolean that is reset at the start of each new event and marks that event as INEL>0 (or not).
 
-	// std::vector<Float_t> Eta;
-	std::vector<Float_t> y;
-	std::vector<Float_t> Phi;
+	// // std::vector<Float_t> Eta;
+	// std::vector<Float_t> y;
+	// std::vector<Float_t> Phi;
 
 	//////////////////////////////////////////////////////////////////////
 	// Including FastJet-estimated jet kinematic variables:
@@ -163,13 +180,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 	t3->Branch("ntrack",&ntrack,"ntrack/I");
 	t3->Branch("ntrack_final",&ntrack_final,"ntrack_final/I");
-	// t3->Branch("IsFinal",IsFinal,"IsFinal[ntrack]/O"); // Actually don't need to pass this array by reference, as it is a C++ array and it would be passed by ref by default!
-		// In the new declaration style, with C++ arrays, you don't need to declare types nor lengths! ROOT manages all that bookkeeping for you!
-	t3->Branch("IsFinal",&IsFinal);
-	t3->Branch("IsPrimary",&IsPrimary); 
-	// Do notice that the [ntrack] part is making it so that only the values from 0 up to ntrack - 1 will be stored in your TTree, so you don't need to reset IsPrimary for each new
-	// event in the loop!
-	t3->Branch("IsCarbonCopy",&IsCarbonCopy); 
+
 	t3->Branch("charged_in_back_forward_eta",&charged_in_back_forward_eta,"charged_in_back_forward_eta/I");
 	t3->Branch("ntracks_in_back_forward_eta",&ntracks_in_back_forward_eta,"ntracks_in_back_forward_eta/I");
 	t3->Branch("charged_in_central_eta",&charged_in_central_eta,"charged_in_central_eta/O");
@@ -178,26 +189,53 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	t3->Branch("Ntracks_final_charged_center",&Ntracks_final_charged_center,"Ntracks_final_charged_center/I");
 	t3->Branch("Ntracks_final_charged",&Ntracks_final_charged,"Ntracks_final_charged/I");
 
-	t3->Branch("ID",&ID); // A PID identifier
-	t3->Branch("Mother1_ID",&mother1_ID);
-	t3->Branch("Mother2_ID",&mother2_ID);
-	// t3->Branch("px",&px);
-	// t3->Branch("py",&py);
-	// t3->Branch("pz",&pz);
-	t3->Branch("pt",&pt);
-	t3->Branch("m",&m);
-	// t3->Branch("e",&e);
-	// t3->Branch("charged",&charged);
-
-	// t3->Branch("Eta",&Eta);
-	t3->Branch("y",&y);
-	t3->Branch("Phi",&Phi);
-
 		// Including FastJet-estimated jet kinematic variables:
 	t3->Branch("pt_jet", &pt_jet, "pt_jet/F");
 	t3->Branch("m_jet", &m_jet, "m_jet/F");
 	t3->Branch("y_jet", &y_jet, "y_jet/F");
 	t3->Branch("Phi_jet", &Phi_jet, "Phi_jet/F");
+	
+	// Only the bare minimum information is stored now:
+	// -- Lambda, LambdaBar, p and pBar information, and only if the P or PBar came from a Lambda or LambdaBar!
+	// (already using the new C++ style of branch declaration, as described below in the LEGACY CODE section)
+	t3->Branch("ProtonOrPBar_pt", &ProtonOrPBar_pt);
+	t3->Branch("ProtonOrPBar_y", &ProtonOrPBar_y);
+	t3->Branch("ProtonOrPBar_Phi", &ProtonOrPBar_Phi);
+	t3->Branch("ProtonOrPBar_m", &ProtonOrPBar_m);
+
+	t3->Branch("LambdaOrLBar_pt", &LambdaOrLBar_pt);
+	t3->Branch("LambdaOrLBar_y", &LambdaOrLBar_y);
+	t3->Branch("LambdaOrLBar_Phi", &LambdaOrLBar_Phi);
+	t3->Branch("LambdaOrLBar_m", &LambdaOrLBar_m);
+
+	t3->Branch("isProton_not_PBar", &isProton_not_PBar);
+	t3->Branch("isLambda_notLBar", &isLambda_notLBar);
+
+	t3->Branch("isLambdaOrLBarExperimentalPrimary", &isLambdaOrLBarExperimentalPrimary);
+
+	// LEGACY CODE! Don't need to store all of this information for the processing of Lambda polarization, so I can reduce the size of the datasets!
+	// // t3->Branch("IsFinal",IsFinal,"IsFinal[ntrack]/O"); // Actually don't need to pass this array by reference, as it is a C++ array and it would be passed by ref by default!
+	// 	// In the new declaration style, with C++ arrays, you don't need to declare types nor lengths! ROOT manages all that bookkeeping for you!
+	// t3->Branch("IsFinal",&IsFinal);
+	// t3->Branch("IsPrimary",&IsPrimary); 
+	// // Do notice that the [ntrack] part is making it so that only the values from 0 up to ntrack - 1 will be stored in your TTree, so you don't need to reset IsPrimary for each new
+	// // event in the loop!
+	// t3->Branch("IsCarbonCopy",&IsCarbonCopy); 
+
+	// t3->Branch("ID",&ID); // A PID identifier
+	// t3->Branch("Mother1_ID",&mother1_ID);
+	// t3->Branch("Mother2_ID",&mother2_ID);
+	// // t3->Branch("px",&px);
+	// // t3->Branch("py",&py);
+	// // t3->Branch("pz",&pz);
+	// t3->Branch("pt",&pt);
+	// t3->Branch("m",&m);
+	// // t3->Branch("e",&e);
+	// // t3->Branch("charged",&charged);
+
+	// // t3->Branch("Eta",&Eta);
+	// t3->Branch("y",&y);
+	// t3->Branch("Phi",&Phi);
 
 	// Saving a global TH1D for each particle, just to see the information on their pT:
 	TH1D *pT_hist_charged_final = new TH1D("pT_hist_charged_final", "pT_hist_charged_final", N_bins_pT, 0, upper_limit_pT);
@@ -206,21 +244,22 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	TH1D *pT_hist_kaon_final = new TH1D("pT_hist_kaon_final", "pT_hist_kaon_final", N_bins_pT, 0, upper_limit_pT);
 
 	// Saving multiplicity information in a TH1I (which consumes at most 40 kB with this many bins!) -- Faster centrality/multiplicity class fetching:
-	int multiplicity_nbins = 10000; // The number of bins is also the number of entries, which gives one bin per possible multiplicity!
+	// Had to change to TH1D because was experiencing some overflows and rounding errors when trying to add a count when the bin already had many entries!
+	int multiplicity_nbins = 50000; // The number of bins is also the number of entries, which gives one bin per possible multiplicity!
 		// Could make this stop at 7000 bins, as the kMaxTrack is 7000 for my pythia simulations, but this format is more general and the disk size is ridiculously small...
 		// By declaring in this way, GetBin(0) will get the bin of events with 0 particles in multiplicity. The value 10000 is not stored, and it will go to the overflow bin.
 		// In other words, GetBin(N) will get you the exact bin with N particles! A convenient indexing, where [0] is the index of 0 particles and [1] for 1 particle!
-	TH1I *hNtracks = new TH1I("hNtracks", "hNtracks", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_charged_forward = new TH1I("hNtracks_charged_forward", "hNtracks_charged_forward", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_primary = new TH1I("hNtracks_primary", "hNtracks_primary", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_final = new TH1I("hNtracks_final", "hNtracks_final", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_final_forward = new TH1I("hNtracks_final_forward", "hNtracks_final_forward", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_final_forward_INEL_l0 = new TH1I("hNtracks_final_forward_INEL_l0", "hNtracks_final_forward_INEL_l0", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_final_charged_center = new TH1I("hNtracks_final_charged_center", "hNtracks_final_charged_center", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_final_charged = new TH1I("hNtracks_final_charged", "hNtracks_final_charged", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_final_charged_INEL_l0 = new TH1I("hNtracks_final_charged_INEL_l0", "hNtracks_final_charged_INEL_l0", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_final_charged_forward = new TH1I("hNtracks_final_charged_forward", "hNtracks_final_charged_forward", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_final_charged_forward_INEL_l0 = new TH1I("hNtracks_final_charged_forward_INEL_l0", "hNtracks_final_charged_forward_INEL_l0", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks = new TH1D("hNtracks", "hNtracks", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_charged_forward = new TH1D("hNtracks_charged_forward", "hNtracks_charged_forward", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_primary = new TH1D("hNtracks_primary", "hNtracks_primary", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_final = new TH1D("hNtracks_final", "hNtracks_final", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_final_forward = new TH1D("hNtracks_final_forward", "hNtracks_final_forward", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_final_forward_INEL_l0 = new TH1D("hNtracks_final_forward_INEL_l0", "hNtracks_final_forward_INEL_l0", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_final_charged_center = new TH1D("hNtracks_final_charged_center", "hNtracks_final_charged_center", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_final_charged = new TH1D("hNtracks_final_charged", "hNtracks_final_charged", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_final_charged_INEL_l0 = new TH1D("hNtracks_final_charged_INEL_l0", "hNtracks_final_charged_INEL_l0", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_final_charged_forward = new TH1D("hNtracks_final_charged_forward", "hNtracks_final_charged_forward", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_final_charged_forward_INEL_l0 = new TH1D("hNtracks_final_charged_forward_INEL_l0", "hNtracks_final_charged_forward_INEL_l0", multiplicity_nbins, 0, multiplicity_nbins);
 	// Caution! All the non INEL>0 (INEL_l0 or "larger than 0" in the above notation) may include multiplicity = 0 events, which will be assigned a position in the centrality determination
 	// as the most peripheral events!
 	// This makes those estimators not so trustable, as we wouldn't usually consider 0-particle events in the centrality estimator in V0 (Or so I think. It might be good to check this!)
@@ -228,11 +267,11 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// Now storing information to recover the number of events in each centrality class:
 		// You don't actually need this information for the root_to_csv_custom_PYTHIA.cxx to work, and it won't make it much faster,
 		// but it is nice to be able to visualize it!
-	TH1I *hINELev_Ntracks_final_charged_forward = new TH1I ("hINELev_Ntracks_final_charged_forward", "", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hINELev_Ntracks_final_charged_forward_Charged = new TH1I ("hINELev_Ntracks_final_charged_forward_Charged", "", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hINELev_Ntracks_final_charged_forward_Pion = new TH1I ("hINELev_Ntracks_final_charged_forward_Pion", "", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hINELev_Ntracks_final_charged_forward_Proton = new TH1I ("hINELev_Ntracks_final_charged_forward_Proton", "", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hINELev_Ntracks_final_charged_forward_Kaon = new TH1I ("hINELev_Ntracks_final_charged_forward_Kaon", "", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hINELev_Ntracks_final_charged_forward = new TH1D ("hINELev_Ntracks_final_charged_forward", "", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hINELev_Ntracks_final_charged_forward_Charged = new TH1D ("hINELev_Ntracks_final_charged_forward_Charged", "", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hINELev_Ntracks_final_charged_forward_Pion = new TH1D ("hINELev_Ntracks_final_charged_forward_Pion", "", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hINELev_Ntracks_final_charged_forward_Proton = new TH1D ("hINELev_Ntracks_final_charged_forward_Proton", "", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hINELev_Ntracks_final_charged_forward_Kaon = new TH1D ("hINELev_Ntracks_final_charged_forward_Kaon", "", multiplicity_nbins, 0, multiplicity_nbins);
 
 		// Some values for the Jet kinematic analysis histograms:
 	int N_bins_phi = 100;
@@ -314,22 +353,35 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 		// Track loop:
 			// Clearing all C++ arrays before the loop starts, so that you safely store only the information about the current event:
-		ID.clear();
-		mother1_ID.clear();
-		mother2_ID.clear();
-		IsFinal.clear();
-		IsPrimary.clear();
-		IsCarbonCopy.clear();
-		// px.clear();
-		// py.clear();
-		// pz.clear();
-		pt.clear();
-		m.clear();
-		// e.clear();
-		// charged.clear();
-		// Eta.clear();
-		y.clear();
-		Phi.clear();
+		ProtonOrPBar_pt.clear();
+		ProtonOrPBar_y.clear();
+		ProtonOrPBar_Phi.clear();
+		ProtonOrPBar_m.clear();
+		LambdaOrLBar_pt.clear();
+		LambdaOrLBar_y.clear();
+		LambdaOrLBar_Phi.clear();
+		LambdaOrLBar_m.clear();
+		isProton_not_PBar.clear();
+		isLambda_notLBar.clear();
+		isLambdaOrLBarExperimentalPrimary.clear();
+
+			// No longer useful arrays:
+		// ID.clear();
+		// mother1_ID.clear();
+		// mother2_ID.clear();
+		// IsFinal.clear();
+		// IsPrimary.clear();
+		// IsCarbonCopy.clear();
+		// // px.clear();
+		// // py.clear();
+		// // pz.clear();
+		// pt.clear();
+		// m.clear();
+		// // e.clear();
+		// // charged.clear();
+		// // Eta.clear();
+		// y.clear();
+		// Phi.clear();
 
 			// Clearing the list of FastJet candidates for this loop:
 		FastJetInputs.clear();
@@ -359,12 +411,15 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 				// It is best not to do an if ((daughter1 == daughter2) && (daughter1 > 0)){continue} if you are going to save these particles in a TTree, because the value on
 				// the i'th index of the vector that will be flushed into the TTree will still keep the previous iteration's particle data!
 			}
-			IsCarbonCopy.push_back(IsCarbonCopy_value);
-			
+			// IsCarbonCopy.push_back(IsCarbonCopy_value); // Moved all push_backs to the end of the loop
 
 			// if (isfinal){ntrack_final += 1;}
 
+			Float_t pT = pythia.event[i].pT();
 			Float_t rapidity = pythia.event[i].y();
+			Float_t Phi = pythia.event[i].phi();
+			Float_t mass = pythia.event[i].m();
+
 			Float_t eta_rap = pythia.event[i].eta();
 			Bool_t isCharged = pythia.event[i].isCharged();
 
@@ -403,29 +458,12 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 				// simulation where I allow it to decay!)
 			if (particle_PID == 3122 || particle_PID == -3122){contains_lambda_or_lambdabar = true;}
 
-			// ID[i] = particle_PID;
-			ID.push_back(particle_PID); // New C++ style vector storing
 			int motherIdx1 = pythia.event[i].mother1(); // Doing this, I can access it only once and don't need to re-read this information for pions!
 			int motherIdx2 = pythia.event[i].mother2();
-			mother1_ID.push_back(motherIdx1); // Not quite the PID of the mother. It is the Idx of the mother in Pythia's list of particles
-			mother2_ID.push_back(motherIdx2);
 
-			IsFinal.push_back(isfinal);
-			// px.push_back(pythia.event[i].px());
-			// py.push_back(pythia.event[i].py());
-			// pz.push_back(pythia.event[i].pz());
-
-			Float_t pT = pythia.event[i].pT();
-			pt.push_back(pT);
-			m.push_back(pythia.event[i].m()); // The actual simulated mass of the particle in the dynamic, so may be somewhat different from the PDG value. Thus the need to store it separately.
-			// e.push_back(pythia.event[i].e());
-			
-			Phi.push_back(pythia.event[i].phi());
-			// Eta.push_back(eta_rap);
-			y.push_back(rapidity);
-
-			// charged.push_back(isCharged); // Don't actually need to save this! This is purely a PDG-lookup information, so no need to store it when the PID is already enough to know it!
-
+			////////////////////////////////////////////////////////////////////////////////////////
+			/// CAUTION! THIS PRIMARY DEFINITION IS ACTUALLY A LITTLE BIT WRONG!!!
+			/// Check the Lambda isExperimentalPrimary definition below!!!
 			// Checking if the particle would be considered primary or not
 				// The particle will be considered primary by default. If it has a mother with a long lifetime, then it will be considered secondary.
 				// This allows for some contamination from possible secondaries that have long decay showers, though. My hypothesis is that this effect is too small to be significant.
@@ -446,7 +484,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 			else{
 				Ntracks_primary += 1; // This does not overcount the above check: they never happen simultaneuosly for the same particle!
 			}
-			IsPrimary.push_back(IsPrimary_value);
+			////////////////////////////////////////////////////////////////////////////////////////
 
 			if (isfinal && isCharged){
 				// event_hist_charged->Fill((double) pT);
@@ -468,6 +506,102 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 				pT_hist_kaon_final->Fill((double) pT);
 				n_kaon_event += 1;
 			}
+
+			// Including all USEFUL particles into the arrays for storage:
+			// First, should look only for protons and anti-protons:
+			if (isfinal){
+				if (particle_PID == 2212 || particle_PID == -2212){
+					// After that, should check if the mother of this proton or anti-proton is a Lambda or LambdaBar
+					Particle mother_particle_object = pythia.event[motherIdx1]; // Already using the Pythia8 namespace
+					int mother_PID = mother_particle_object.id();
+					if (mother_PID == 3122 || mother_PID == -3122){
+						// Should not worry with this Lambda being a carbon-copy or not: the useful kinematic information comes from the actual
+						// mother of the proton, not the previous stages of when that Lambda was generated, as far as I know. If we had the QGP,
+						// what would be measured is not the "first" Lambda, but the final after-interactions Lambda's daughter. In iSS, the
+						// Lambda would be the result of all the quark interactions inside the QGP, so it would also come after these interactions
+						// that are responsible for creating carbon-copies!
+						
+						Bool_t isProton_not_PBar_value = false; // A bool to know if this particle is a proton or a PBar (they will be stored in the same branch)
+						if (particle_PID == 2212){
+							isProton_not_PBar_value = true;
+						}
+
+						Bool_t isLambda_notLBar_value = false; // A bool to know if this particle is a Lambda or an LBar (they will be stored in the same branch)
+						if (mother_PID == 3122){
+							isLambda_notLBar_value = true;
+						}
+
+						//////////////////////////////////////////////////////////
+						// Checking if the Lambda is primary:
+						Bool_t isExperimentalPrimary = true;
+						while ((mother_particle_object.mother1() == mother_particle_object.mother2()) && (mother_particle_object.mother1() > 0)){
+							// Should keep changing the mother particle definition if the mother is a carbon copy!
+							// We want to see if the physical mother of the Lambda has a specific tau0 lifetime, not the lifetime of the carbon-copy mother!
+							mother_particle_object = pythia.event[mother_particle_object.mother1()];
+						}
+
+							// Getting the mother of the Lambda:
+						Particle lambda_mother_object = pythia.event[mother_particle_object.mother1()];
+						// Case 1: Check lifetime of the mother
+						// (long-lived weak decays should be considered non-primary)
+						// (Definition of experimental primary in slide 112 of https://indico.cern.ch/event/666222/contributions/2768780/attachments/1551303/2437229/DPG_AnalysisTutorial_20171102.pdf)
+						// If the mother of this lambda is the beam itself, there is no 
+						if (lambda_mother_object.tau0() >= 10.0){ // tau0 in mm/c
+							isExperimentalPrimary = false;
+						}
+
+						// Case 2: Direct hadronization products (fragmentation or R-hadron formation)
+						// (If the Lambda's mother comes from any of these statuses, then it came from the beam's strings in some sense, so should be set as primary again)
+						if ((abs(lambda_mother_object.status()) >= 81 && abs(lambda_mother_object.status()) <= 86) || (abs(lambda_mother_object.status()) >= 101 && abs(lambda_mother_object.status()) <= 106)){
+							isExperimentalPrimary = true;
+						}
+						//////////////////////////////////////////////////////////
+
+						// Saving the useful variables:
+						ProtonOrPBar_pt.push_back(pT);
+						ProtonOrPBar_y.push_back(rapidity);
+						ProtonOrPBar_Phi.push_back(Phi);
+						ProtonOrPBar_m.push_back(mass);
+
+						LambdaOrLBar_pt.push_back(pythia.event[motherIdx1].pT());
+						LambdaOrLBar_y.push_back(pythia.event[motherIdx1].y());
+						LambdaOrLBar_Phi.push_back(pythia.event[motherIdx1].phi());
+						LambdaOrLBar_m.push_back(pythia.event[motherIdx1].m());
+
+						isProton_not_PBar.push_back(isProton_not_PBar_value);
+						isLambda_notLBar.push_back(isLambda_notLBar_value);
+
+						isLambdaOrLBarExperimentalPrimary.push_back(isExperimentalPrimary);
+					}
+				}
+			}
+
+			// Do not need to store these variables anymore -- Could make some std::map objects to at least know the PIDs that are produced, but that is not necessary right now!
+			// // ID[i] = particle_PID;
+			// ID.push_back(particle_PID); // New C++ style vector storing
+			
+			// IsCarbonCopy.push_back(IsCarbonCopy_value);
+
+			// mother1_ID.push_back(motherIdx1); // Not quite the PID of the mother. It is the Idx of the mother in Pythia's list of particles
+			// mother2_ID.push_back(motherIdx2);
+
+			// IsFinal.push_back(isfinal);
+			// // px.push_back(pythia.event[i].px());
+			// // py.push_back(pythia.event[i].py());
+			// // pz.push_back(pythia.event[i].pz());
+
+			// pt.push_back(pT);
+			// m.push_back(mass); // The actual simulated mass of the particle in the dynamic, so may be somewhat different from the PDG value. Thus the need to store it separately.
+			// // e.push_back(pythia.event[i].e());
+			
+			// Phi.push_back(Phi);
+			// // Eta.push_back(eta_rap);
+			// y.push_back(rapidity);
+
+			// // charged.push_back(isCharged); // Don't actually need to save this! This is purely a PDG-lookup information, so no need to store it when the PID is already enough to know it!
+
+			// IsPrimary.push_back(IsPrimary_value);
+
 
 
 			// Finally, introducing this particle to the jet candidate list if a certain number of criteria are obeyed:
@@ -616,10 +750,10 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		hLeadJetPhi_pTleqJetMinPt_eta_cut->Fill(Phi_jet);
 
 		// Saving the information of the first discarded jet's relative position to the leading jet:
-		pt_firstDiscardedJet = firstDiscardedJet.pt();
-		m_firstDiscardedJet = firstDiscardedJet.m();
-		y_firstDiscardedJet = firstDiscardedJet.rap();
-		Phi_firstDiscardedJet = firstDiscardedJet.phi_std();
+		Float_t pt_firstDiscardedJet = firstDiscardedJet.pt();
+		Float_t m_firstDiscardedJet = firstDiscardedJet.m();
+		Float_t y_firstDiscardedJet = firstDiscardedJet.rap();
+		Float_t Phi_firstDiscardedJet = firstDiscardedJet.phi_std();
 
 		hfirstDiscardedJetY_minus_leadingJet_MinPtCut->Fill(y_firstDiscardedJet - y_jet);
 		hfirstDiscardedJetPt_MinPtCut->Fill(pt_jet);
@@ -821,17 +955,17 @@ void doCentrality(std::string output_folder, int N_cores, std::string input_card
 
 	// Reading all N_cores worker data and summing the hNtracks histograms:
 		// First declaring histograms to receive the sums:
-	TH1I *hNtracks_sum = new TH1I("hNtracks_sum", "hNtracks_sum", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_charged_forward_sum = new TH1I("hNtracks_charged_forward_sum", "hNtracks_charged_forward_sum", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_primary_sum = new TH1I("hNtracks_primary_sum", "hNtracks_primary_sum", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_final_sum = new TH1I("hNtracks_final_sum", "hNtracks_final_sum", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_final_forward_sum = new TH1I("hNtracks_final_forward_sum", "hNtracks_final_forward_sum", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_final_forward_INEL_l0_sum = new TH1I("hNtracks_final_forward_INEL_l0_sum", "hNtracks_final_forward_INEL_l0_sum", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_final_charged_center_sum = new TH1I("hNtracks_final_charged_center_sum", "hNtracks_final_charged_center_sum", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_final_charged_sum = new TH1I("hNtracks_final_charged_sum", "hNtracks_final_charged_sum", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_final_charged_INEL_l0_sum = new TH1I("hNtracks_final_charged_INEL_l0_sum", "hNtracks_final_charged_INEL_l0_sum", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_final_charged_forward_sum = new TH1I("hNtracks_final_charged_forward_sum", "hNtracks_final_charged_forward_sum", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1I *hNtracks_final_charged_forward_INEL_l0_sum = new TH1I("hNtracks_final_charged_forward_INEL_l0_sum", "hNtracks_final_charged_forward_INEL_l0_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_sum = new TH1D("hNtracks_sum", "hNtracks_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_charged_forward_sum = new TH1D("hNtracks_charged_forward_sum", "hNtracks_charged_forward_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_primary_sum = new TH1D("hNtracks_primary_sum", "hNtracks_primary_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_final_sum = new TH1D("hNtracks_final_sum", "hNtracks_final_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_final_forward_sum = new TH1D("hNtracks_final_forward_sum", "hNtracks_final_forward_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_final_forward_INEL_l0_sum = new TH1D("hNtracks_final_forward_INEL_l0_sum", "hNtracks_final_forward_INEL_l0_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_final_charged_center_sum = new TH1D("hNtracks_final_charged_center_sum", "hNtracks_final_charged_center_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_final_charged_sum = new TH1D("hNtracks_final_charged_sum", "hNtracks_final_charged_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_final_charged_INEL_l0_sum = new TH1D("hNtracks_final_charged_INEL_l0_sum", "hNtracks_final_charged_INEL_l0_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_final_charged_forward_sum = new TH1D("hNtracks_final_charged_forward_sum", "hNtracks_final_charged_forward_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	TH1D *hNtracks_final_charged_forward_INEL_l0_sum = new TH1D("hNtracks_final_charged_forward_INEL_l0_sum", "hNtracks_final_charged_forward_INEL_l0_sum", multiplicity_nbins, 0, multiplicity_nbins);
 
     for (int WorkerId = 0; WorkerId < N_cores; ++WorkerId){
         std::string data_filename = (std::string) output_folder;
@@ -840,17 +974,17 @@ void doCentrality(std::string output_folder, int N_cores, std::string input_card
 		TFile *data_file = TFile::Open(data_filename.c_str(), "READ");
 
 			// Fetching from current file:
-		TH1I *hNtracks_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks"));
-		TH1I *hNtracks_charged_forward_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_charged_forward"));
-		TH1I *hNtracks_primary_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_primary"));
-		TH1I *hNtracks_final_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_final"));
-		TH1I *hNtracks_final_forward_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_final_forward"));
-		TH1I *hNtracks_final_forward_INEL_l0_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_final_forward_INEL_l0"));
-		TH1I *hNtracks_final_charged_center_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_final_charged_center"));
-		TH1I *hNtracks_final_charged_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_final_charged"));
-		TH1I *hNtracks_final_charged_INEL_l0_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_final_charged_INEL_l0"));
-		TH1I *hNtracks_final_charged_forward_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_final_charged_forward"));
-		TH1I *hNtracks_final_charged_forward_INEL_l0_local = dynamic_cast<TH1I*>(data_file->Get("hNtracks_final_charged_forward_INEL_l0"));
+		TH1D *hNtracks_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks"));
+		TH1D *hNtracks_charged_forward_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_charged_forward"));
+		TH1D *hNtracks_primary_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_primary"));
+		TH1D *hNtracks_final_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final"));
+		TH1D *hNtracks_final_forward_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_forward"));
+		TH1D *hNtracks_final_forward_INEL_l0_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_forward_INEL_l0"));
+		TH1D *hNtracks_final_charged_center_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_charged_center"));
+		TH1D *hNtracks_final_charged_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_charged"));
+		TH1D *hNtracks_final_charged_INEL_l0_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_charged_INEL_l0"));
+		TH1D *hNtracks_final_charged_forward_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_charged_forward"));
+		TH1D *hNtracks_final_charged_forward_INEL_l0_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_charged_forward_INEL_l0"));
 
 			// Adding all histograms:
 		hNtracks_sum->Add(hNtracks_local);
@@ -871,12 +1005,12 @@ void doCentrality(std::string output_folder, int N_cores, std::string input_card
 	output_file.cd();
 
 	// Processing these multiplicity histograms into centrality histograms:
-		// First, declaring the new histograms using the information of maximum and minimum multiplicity of the TH1I's:
+		// First, declaring the new histograms using the information of maximum and minimum multiplicity of the TH1D's:
 		// The number of bins is exactly the maximum number of multiplicity + 1 (the upper limit is non-inclusive!).
 		// Index 0 will be multiplicity [0, 1), index 1 will be [1, 2) and so on until the last index.
 		// If the maximum value (the last one) was 10, then we need 11 bins to get the [10, 11) bin as a regular bin, not as the overflow bin!
 	// TH1D *hNtracks_to_centrality = new TH1D("hNtracks_to_centrality", "hNtracks_to_centrality", hNtracks->GetMaximum() + 1, 0, hNtracks->GetMaximum() + 1);
-		// Updated to use FindLastBinAbove() instead of maximum value! I don't want the highest value in the TH1I, I want the highest bin with non-zero value!
+		// Updated to use FindLastBinAbove() instead of maximum value! I don't want the highest value in the TH1D, I want the highest bin with non-zero value!
 	TH1D *hNtracks_to_centrality = new TH1D("hNtracks_to_centrality", "hNtracks_to_centrality", hNtracks_sum->FindLastBinAbove(0) + 1, 0, hNtracks_sum->FindLastBinAbove(0) + 1);
 	TH1D *hNtracks_to_centrality_charged_forward = new TH1D("hNtracks_to_centrality_charged_forward", "hNtracks_to_centrality_charged_forward", hNtracks_charged_forward_sum->FindLastBinAbove(0) + 1, 0, hNtracks_charged_forward_sum->FindLastBinAbove(0) + 1);
 	TH1D *hNtracks_to_centrality_primary = new TH1D("hNtracks_to_centrality_primary", "hNtracks_to_centrality_primary", hNtracks_primary_sum->FindLastBinAbove(0) + 1, 0, hNtracks_primary_sum->FindLastBinAbove(0) + 1);
@@ -1034,7 +1168,7 @@ int main(int argc, char *argv[]){
 // }
 
 // Converting the event multiplicity to centrality in the most precise way possible -- Corresponding each integer number of particles to a limit in centrality.
-void multiplicity_to_centrality(TH1I *multiplicity_hist, TH1D *centrality_hist){
+void multiplicity_to_centrality(TH1D *multiplicity_hist, TH1D *centrality_hist){
 	int Nev = multiplicity_hist->GetEntries();
 	int Nbins = centrality_hist->GetNbinsX(); // I want to loop only on the [0 particles, maximum_number_of_particles] region, not in the [0, 10.000] particles region that the hNtracks histograms need to have to avoid missing any data.
 
