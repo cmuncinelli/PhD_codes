@@ -212,7 +212,8 @@ int main(int argc, char *argv[]){
         // Event counters (in the 40-50% centrality class only):
     auto hNEv_InCentralityClass = new TH1D("hNEv_InCentralityClass", "hNEv_InCentralityClass", 1, 0, 1);
     auto hNEv_WithLambda = new TH1D("hNEv_WithLambda", "hNEv_WithLambda", 1, 0, 1); // Still useful, because I save events based on them having either a Lambda or LambdaBar!
-    auto hNEv_proton_from_Lambda = new TH1D("hNEv_proton_from_Lambda", "hNEv_proton_from_Lambda", 1, 0, 1); // Should be about 64.1% (the branching ratio of Lambda->p+pi^-)
+    auto hNEv_WithLambdaBar = new TH1D("hNEv_WithLambdaBar", "hNEv_WithLambdaBar", 1, 0, 1); // Still useful, because I save events based on them having either a Lambda or LambdaBar!
+    // auto hNEv_proton_from_Lambda = new TH1D("hNEv_proton_from_Lambda", "hNEv_proton_from_Lambda", 1, 0, 1); // Should be about 64.1% (the branching ratio of Lambda->p+pi^-)
     
     /////////////////////////////////////////////////////////////////////////////////////
     // LEGACY CODE! In the newer versions of the PythiaGenMin script, all events have a Lambda and a useful jet! The only histogram that is still useful is hNEv_proton_from_Lambda
@@ -254,13 +255,14 @@ int main(int argc, char *argv[]){
     auto hLambdaY = new TH1D("hLambdaY", "hLambdaY", 100, -5, 5);
     auto hLambdaPhi = new TH1D("hLambdaPhi", "hLambdaPhi", 100, -PI, PI); // Pythia gives phi in the range -PI to PI!
     auto hLambdaDeltaBetaJ_WithProtonFromLambda = new TH1D("hLambdaDeltaBetaJ_WithProtonFromLambda", "hLambdaDeltaBetaJ_WithProtonFromLambda", 100, 0, PI); // A histogram that tells us the angular distribution of Lambdas along a jet (this is the angle from the dot product, so more general than Phi)
-        // Another histogram, which includes all possible Lambda decay modes:
-    auto hLambdaDeltaBetaJ_AllLambdaDecayModes = new TH1D("hLambdaDeltaBetaJ_AllLambdaDecayModes", "hLambdaDeltaBetaJ_AllLambdaDecayModes", 100, 0, PI);
-
+    
+    // LEGACY CODE! Now all lambda and lambdaBar which were stored come from a proton or anti-proton!
+    // Another histogram, which includes all possible Lambda decay modes:
+    // auto hLambdaDeltaBetaJ_AllLambdaDecayModes = new TH1D("hLambdaDeltaBetaJ_AllLambdaDecayModes", "hLambdaDeltaBetaJ_AllLambdaDecayModes", 100, 0, PI);
         // To know all of Lambdas that are also proton mothers:
-    auto hLambdaPt_proton_mothers = new TH1D("hLambdaPt_proton_mothers", "hLambdaPt_proton_mothers", 100, 0, 10);
-    auto hLambdaY_proton_mothers = new TH1D("hLambdaY_proton_mothers", "hLambdaY_proton_mothers", 100, -5, 5);
-    auto hLambdaPhi_proton_mothers = new TH1D("hLambdaPhi_proton_mothers", "hLambdaPhi_proton_mothers", 100, -PI, PI);
+    // auto hLambdaPt_proton_mothers = new TH1D("hLambdaPt_proton_mothers", "hLambdaPt_proton_mothers", 100, 0, 10);
+    // auto hLambdaY_proton_mothers = new TH1D("hLambdaY_proton_mothers", "hLambdaY_proton_mothers", 100, -5, 5);
+    // auto hLambdaPhi_proton_mothers = new TH1D("hLambdaPhi_proton_mothers", "hLambdaPhi_proton_mothers", 100, -PI, PI);
 
         // Turning on Sumw2() for the histograms that only store counts:
     // LEGACY CODE! Now included in the PythiaGenMin datasets!
@@ -288,11 +290,11 @@ int main(int argc, char *argv[]){
     hLambdaPhi->Sumw2();
     
     hLambdaDeltaBetaJ_WithProtonFromLambda->Sumw2();
-    hLambdaDeltaBetaJ_AllLambdaDecayModes->Sumw2();
+    // hLambdaDeltaBetaJ_AllLambdaDecayModes->Sumw2();
 
-    hLambdaPt_proton_mothers->Sumw2();
-    hLambdaY_proton_mothers->Sumw2();
-    hLambdaPhi_proton_mothers->Sumw2();
+    // hLambdaPt_proton_mothers->Sumw2();
+    // hLambdaY_proton_mothers->Sumw2();
+    // hLambdaPhi_proton_mothers->Sumw2();
 
     hProtonStarCounter_DeltaPhiJRing_PtYCuts->Sumw2();
     hProtonStarCounter_DeltaPhiJRing->Sumw2();
@@ -393,26 +395,27 @@ int main(int argc, char *argv[]){
 
         // Indexes for looping over all particles of the event:
     // const Int_t kMaxTrack = 7000; // This is no longer necessary with the update on PythiaGenMin.cxx, which uses C++ vectors, with no specific number of entries!
-    Int_t ntrack; // The number of particles generated in that event (including carbon-copies and non-final state particles)
+    // Int_t ntrack; // The number of particles generated in that event (including carbon-copies and non-final state particles)
         // Centrality selection:
     Int_t Ntracks_final_charged;
-        // PID selection:
-    // Int_t PID[kMaxTrack];
-    std::vector<Int_t> *PID_pointer = nullptr; // Newer C++ implementation --> As ROOT gives me a pointer for the std::vector from the way PythiaGenMin is coded, this has to also be a pointer
-    std::vector<Int_t> *mother1_Idx_pointer = nullptr; // Not quite the PID of the mother. It is the Idx of the mother in Pythia's list of particles
-    std::vector<Int_t> *mother2_Idx_pointer = nullptr; // Also initializing the pointer as a nullptr. If you don't, you will get a segmentation error!
-    std::vector<Bool_t> *IsFinal_pointer = nullptr;
-    std::vector<Bool_t> *IsCarbonCopy_pointer = nullptr;
-        // 4-moment information:
-    std::vector<Float_t> *m_pointer = nullptr; // The actual simulated mass of the particle in the dynamic, so may be somewhat different from the PDG value.
-    std::vector<Float_t> *pt_pointer = nullptr;
-    std::vector<Float_t> *y_pointer = nullptr;
-    std::vector<Float_t> *Phi_pointer = nullptr;
-            // If needed, can reconstruct these variables from (m, pT, y, Phi):
-    // std::vector<Float_t> *px_pointer;
-    // std::vector<Float_t> *py_pointer;
-    // std::vector<Float_t> *pz_pointer;
-    // std::vector<Float_t> *E_pointer;
+
+        // Lambda, LambdaBar, p and pBar information:
+    // Newer C++ implementation --> As ROOT gives me a pointer for the std::vector from the way PythiaGenMin is coded, this has to also be a pointer
+    // Also initializing the pointer as a nullptr. If you don't, you will get a segmentation error from ROOT!
+    std::vector<Float_t> *ProtonOrPBar_pt_pointer = nullptr;
+	std::vector<Float_t> *ProtonOrPBar_y_pointer = nullptr;
+	std::vector<Float_t> *ProtonOrPBar_Phi_pointer = nullptr;
+	std::vector<Float_t> *ProtonOrPBar_m_pointer = nullptr;
+
+	std::vector<Float_t> *LambdaOrLBar_pt_pointer = nullptr;
+	std::vector<Float_t> *LambdaOrLBar_y_pointer = nullptr;
+	std::vector<Float_t> *LambdaOrLBar_Phi_pointer = nullptr;
+	std::vector<Float_t> *LambdaOrLBar_m_pointer = nullptr;
+
+	std::vector<Bool_t> *isProton_not_PBar_pointer = nullptr;
+	std::vector<Bool_t> *isLambda_notLBar_pointer = nullptr;
+
+	std::vector<Bool_t> *isLambdaOrLBarExperimentalPrimary_pointer = nullptr;
 
         // Variables that store the FastJet information:
     Float_t pt_jet;
@@ -420,26 +423,59 @@ int main(int argc, char *argv[]){
     Float_t y_jet;
     Float_t Phi_jet;
 
+    // LEGACY CODE! In the newer versions, the particles are already identified and I don't need this information
+    //        // PID selection:
+    // // Int_t PID[kMaxTrack];
+    // std::vector<Int_t> *PID_pointer = nullptr;
+    // std::vector<Int_t> *mother1_Idx_pointer = nullptr; // Not quite the PID of the mother. It is the Idx of the mother in Pythia's list of particles
+    // std::vector<Int_t> *mother2_Idx_pointer = nullptr;
+    // std::vector<Bool_t> *IsFinal_pointer = nullptr;
+    // std::vector<Bool_t> *IsCarbonCopy_pointer = nullptr;
+    //     // 4-moment information:
+    // std::vector<Float_t> *m_pointer = nullptr; // The actual simulated mass of the particle in the dynamic, so may be somewhat different from the PDG value.
+    // std::vector<Float_t> *pt_pointer = nullptr;
+    // std::vector<Float_t> *y_pointer = nullptr;
+    // std::vector<Float_t> *Phi_pointer = nullptr;
+    //         // If needed, can reconstruct these variables from (m, pT, y, Phi):
+    // // std::vector<Float_t> *px_pointer;
+    // // std::vector<Float_t> *py_pointer;
+    // // std::vector<Float_t> *pz_pointer;
+    // // std::vector<Float_t> *E_pointer;
+
+
         // Connecting these variables to the TChain:
-    chain.SetBranchAddress("ntrack", &ntrack);
+    // chain.SetBranchAddress("ntrack", &ntrack);
     chain.SetBranchAddress("Ntracks_final_charged", &Ntracks_final_charged);
 
-    // chain.SetBranchAddress("ID", &PID); // Do notice that with this new implementation, based on std::vector, you need to pass the address of the object: we are no longer dealing with C arrays (pointers!)
-    chain.SetBranchAddress("ID", &PID_pointer); // Do notice that with this new implementation, based on std::vector, you need to pass the std::vector address, thus the previous usage of a pointer!
-    chain.SetBranchAddress("Mother1_ID", &mother1_Idx_pointer); // Weird reading that still needs an extra & for the address.
-    chain.SetBranchAddress("Mother2_ID", &mother2_Idx_pointer);
-    chain.SetBranchAddress("IsFinal", &IsFinal_pointer);
-    chain.SetBranchAddress("IsCarbonCopy", &IsCarbonCopy_pointer);
-
-    chain.SetBranchAddress("m", &m_pointer);
-    chain.SetBranchAddress("pt", &pt_pointer);
-    chain.SetBranchAddress("y", &y_pointer);
-    chain.SetBranchAddress("Phi", &Phi_pointer);
+    chain.SetBranchAddress("ProtonOrPBar_pt", &ProtonOrPBar_pt_pointer);
+    chain.SetBranchAddress("ProtonOrPBar_y", &ProtonOrPBar_y_pointer);
+    chain.SetBranchAddress("ProtonOrPBar_Phi", &ProtonOrPBar_Phi_pointer);
+    chain.SetBranchAddress("ProtonOrPBar_m", &ProtonOrPBar_m_pointer);
+    chain.SetBranchAddress("LambdaOrLBar_pt", &LambdaOrLBar_pt_pointer);
+    chain.SetBranchAddress("LambdaOrLBar_y", &LambdaOrLBar_y_pointer);
+    chain.SetBranchAddress("LambdaOrLBar_Phi", &LambdaOrLBar_Phi_pointer);
+    chain.SetBranchAddress("LambdaOrLBar_m", &LambdaOrLBar_m_pointer);
+    chain.SetBranchAddress("isProton_not_PBar", &isProton_not_PBar_pointer);
+    chain.SetBranchAddress("isLambda_notLBar", &isLambda_notLBar_pointer);
+    chain.SetBranchAddress("isLambdaOrLBarExperimentalPrimary", &isLambdaOrLBarExperimentalPrimary_pointer);
 
     chain.SetBranchAddress("pt_jet", &pt_jet);
     chain.SetBranchAddress("m_jet", &m_jet);
     chain.SetBranchAddress("y_jet", &y_jet);
     chain.SetBranchAddress("Phi_jet", &Phi_jet);
+
+    // LEGACY CODE! In the newer versions, the particles are already identified and I don't need all this information
+    // // chain.SetBranchAddress("ID", &PID); // Do notice that with this new implementation, based on std::vector, you need to pass the address of the object: we are no longer dealing with C arrays (pointers!)
+    // chain.SetBranchAddress("ID", &PID_pointer); // Do notice that with this new implementation, based on std::vector, you need to pass the std::vector address, thus the previous usage of a pointer!
+    // chain.SetBranchAddress("Mother1_ID", &mother1_Idx_pointer); // Weird reading that still needs an extra & for the address.
+    // chain.SetBranchAddress("Mother2_ID", &mother2_Idx_pointer);
+    // chain.SetBranchAddress("IsFinal", &IsFinal_pointer);
+    // chain.SetBranchAddress("IsCarbonCopy", &IsCarbonCopy_pointer);
+
+    // chain.SetBranchAddress("m", &m_pointer);
+    // chain.SetBranchAddress("pt", &pt_pointer);
+    // chain.SetBranchAddress("y", &y_pointer);
+    // chain.SetBranchAddress("Phi", &Phi_pointer);
 
     // Int_t N_useful_events = 0; // This number should be updated if there actually was any proton with a Lambda mother in the event, and if the jet was in the |y| < 0.5 range.
     for (Long64_t iEvent = 0; iEvent < nEntries; iEvent++){
@@ -453,15 +489,17 @@ int main(int argc, char *argv[]){
 
         // Dereferencing for the inner loop -- This new C++-like implementation with std::vector* is kinda messy:
             // In other words, copying the contents of the pointer into local variables
-        std::vector<Int_t> PID = *PID_pointer;
-        std::vector<Int_t> mother1_Idx = *mother1_Idx_pointer;
-        std::vector<Int_t> mother2_Idx = *mother2_Idx_pointer;
-        std::vector<Bool_t> IsFinal = *IsFinal_pointer;
-        std::vector<Bool_t> IsCarbonCopy = *IsCarbonCopy_pointer;
-        std::vector<Float_t> m = *m_pointer;
-        std::vector<Float_t> pt = *pt_pointer;
-        std::vector<Float_t> y = *y_pointer;
-        std::vector<Float_t> Phi = *Phi_pointer;
+        std::vector<Float_t> ProtonOrPBar_pt = *ProtonOrPBar_pt_pointer;
+        std::vector<Float_t> ProtonOrPBar_y = *ProtonOrPBar_y_pointer;
+        std::vector<Float_t> ProtonOrPBar_Phi = *ProtonOrPBar_Phi_pointer;
+        std::vector<Float_t> ProtonOrPBar_m = *ProtonOrPBar_m_pointer;
+        std::vector<Float_t> LambdaOrLBar_pt = *LambdaOrLBar_pt_pointer;
+        std::vector<Float_t> LambdaOrLBar_y = *LambdaOrLBar_y_pointer;
+        std::vector<Float_t> LambdaOrLBar_Phi = *LambdaOrLBar_Phi_pointer;
+        std::vector<Float_t> LambdaOrLBar_m = *LambdaOrLBar_m_pointer;
+        std::vector<Bool_t> isProton_not_PBar = *isProton_not_PBar_pointer;
+        std::vector<Bool_t> isLambda_notLBar = *isLambda_notLBar_pointer;
+        std::vector<Bool_t> isLambdaOrLBarExperimentalPrimary = *isLambdaOrLBarExperimentalPrimary_pointer;
 
         // Will use something like this to identify to which centrality class the event belongs to:
         int centrality_bin = 1;
@@ -481,8 +519,8 @@ int main(int argc, char *argv[]){
         std::vector<TLorentzVector> proton_4momenta;
         // std::vector<TLorentzVector> proton_4momenta_Star;
         std::vector<TLorentzVector> lambda_4momenta;
-        std::vector<TLorentzVector> lambda_4momenta_all_decay_modes; // Another vector, that stores all possible decays, even if they didn't become the useful p+pi^- for the analysis
-        std::vector<Float_t> lambda_phi_array; // Just for the calculations done in this event's loop
+        // std::vector<TLorentzVector> lambda_4momenta_all_decay_modes; // Another vector, that stores all possible decays, even if they didn't become the useful p+pi^- for the analysis
+        std::vector<Float_t> lambda_phi_array; // Just for the calculations done in this event's loop -- Gets only the LAMBDA (not LambdaBar!) information in an array
         std::vector<Float_t> lambda_y_array;
         std::vector<Float_t> lambda_pT_array;
         
@@ -499,45 +537,40 @@ int main(int argc, char *argv[]){
             // Also, I saved events with LambdaBar, so you still have to check if this particular event has a Lambda instead of a LambdaBar, for instance
         Bool_t contains_lambda = false;
         Bool_t contains_particle = false; // Contains a proton that came from a Lambda
-        for (int particle_idx = 0; particle_idx < ntrack; particle_idx++){
-            // Excluding particles that are useless for this comparison:
-            if (IsCarbonCopy[particle_idx]){continue;} // Used this exclusion first, because I also want to analyze Lambda's that did not decay into protons:
+        for (int particle_idx = 0; particle_idx < ProtonOrPBar_pt.size(); particle_idx++){
+            // LEGACY CODE! Particles are already pre-selected!
+            // // Excluding particles that are useless for this comparison:
+            // if (IsCarbonCopy[particle_idx]){continue;} // Used this exclusion first, because I also want to analyze Lambda's that did not decay into protons:
             // Getting useful information for the jet-proxy estimation and the boosts:
-            Float_t particle_y = y[particle_idx];
-            Float_t particle_pT = pt[particle_idx];
-            Float_t particle_phi = Phi[particle_idx];
-            Float_t particle_m = m[particle_idx];
+            Float_t lambda_y = LambdaOrLBar_y[particle_idx]; // Could actually be a LambdaBar, but kept the older lambda_y name while we don't generalize the rest of the loop
+            Float_t lambda_pT = LambdaOrLBar_pt[particle_idx];
+            Float_t lambda_phi = LambdaOrLBar_Phi[particle_idx];
+            Float_t lambda_m = LambdaOrLBar_m[particle_idx];
 
-            if (PID[particle_idx] == 3122){
-                hLambdaY->Fill(particle_y);
-                hLambdaPt->Fill(particle_pT);
-                hLambdaPhi->Fill(particle_phi);
+            if (isLambda_notLBar[particle_idx]){ // Fills the Lambda information
+                hLambdaY->Fill(lambda_y);
+                hLambdaPt->Fill(lambda_pT);
+                hLambdaPhi->Fill(lambda_phi);
 
-                // Saving the 4 vector for this case that didn't necessarily decay into p+pi^-:
-                // (Yes, I am recalculating the px,py,pz,E, but there are so few Lambda that this shouldn't matter)
-                Float_t particle_px = particle_pT*std::cos(particle_phi);
-                Float_t particle_py = particle_pT*std::sin(particle_phi);
-                Float_t particle_mT = std::sqrt(particle_m*particle_m + particle_pT*particle_pT);
-                Float_t particle_pz = particle_mT*std::sinh(particle_y);
-                Float_t particle_momentum_squared = particle_px*particle_px + particle_py*particle_py + particle_pz*particle_pz;
-                Float_t particle_E = std::sqrt(particle_m*particle_m + particle_momentum_squared);
+                // LEGACY CODE! All Lambda that were stored decayed into a proton!
+                // // Saving the 4 vector for this case that didn't necessarily decay into p+pi^-:
+                // // (Yes, I am recalculating the px,py,pz,E, but there are so few Lambda that this shouldn't matter)
+                // Float_t particle_px = particle_pT*std::cos(particle_phi);
+                // Float_t particle_py = particle_pT*std::sin(particle_phi);
+                // Float_t particle_mT = std::sqrt(particle_m*particle_m + particle_pT*particle_pT);
+                // Float_t particle_pz = particle_mT*std::sinh(particle_y);
+                // Float_t particle_momentum_squared = particle_px*particle_px + particle_py*particle_py + particle_pz*particle_pz;
+                // Float_t particle_E = std::sqrt(particle_m*particle_m + particle_momentum_squared);
 
-                TLorentzVector lambda_4_momentum_all_decay_modes(particle_px, particle_py, particle_pz, particle_E);
-                lambda_4momenta_all_decay_modes.push_back(lambda_4_momentum_all_decay_modes);
+                // TLorentzVector lambda_4_momentum_all_decay_modes(particle_px, particle_py, particle_pz, particle_E);
+                // lambda_4momenta_all_decay_modes.push_back(lambda_4_momentum_all_decay_modes);
 
                 contains_lambda = true; // True by definition of the events saved to disk!
             }
 
-                // Now continuing the selection to see only the final particles
-            if (!IsFinal[particle_idx]){continue;}
-            // std::cout<<"Actually useful particle!!!" << std::endl;
-                // Recovering (px,py,pz) to calculate the norm of the trimomentum:
-            Float_t particle_px = particle_pT*std::cos(particle_phi);
-            Float_t particle_py = particle_pT*std::sin(particle_phi);
-            Float_t particle_mT = std::sqrt(particle_m*particle_m + particle_pT*particle_pT);
-            Float_t particle_pz = particle_mT*std::sinh(particle_y);
-            Float_t particle_momentum_squared = particle_px*particle_px + particle_py*particle_py + particle_pz*particle_pz; // Defined here to avoid recalculating stuff for particle_E and particle_momentum
-            Float_t particle_E = std::sqrt(particle_m*particle_m + particle_momentum_squared);
+            //     // Now continuing the selection to see only the final particles
+            // if (!IsFinal[particle_idx]){continue;}
+            // // std::cout<<"Actually useful particle!!!" << std::endl;
             
             // LEGACY CODE! Now FastJet is used at generator level
             // // Updating the proxy to see if this particle has the highest momentum of the produced particles (jet direction!):
@@ -556,25 +589,42 @@ int main(int argc, char *argv[]){
             //////////////////////////////////////
             //// Calculating the polarization ////
             //////////////////////////////////////
-            if (PID[particle_idx] != 2212){continue;} // Will only use protons for the end of this loop, which is the part that actually calculates the polarization
+            // if (PID[particle_idx] != 2212){continue;} 
+            // Skip all PBar for now:
+            if (!isProton_not_PBar[particle_idx]){continue;} // Will only use protons for the end of this loop, which is the part that actually calculates the polarization
                 // Do notice that only PROTONS are useful here: pbar can be used for lambda-bar polarization studies, but in the first version of this code
                 // the goal is to use ONLY lambda, not lambda-bar.
 
-            int mother_idx = mother1_Idx[particle_idx];
-            // Possibly shouldn't do the loop below! The useful kinematic information is of the mother that generated this Lambda!
-            // while (IsCarbonCopy[mother_idx]){ // Should keep searching for the true mother until it is an actual particle, not a carbon-copy
-            //     mother_idx = mother1_Idx[mother_idx]; // Will search for this mother's mother untill it is no longer a carbon-copy
-            // }
-            if (PID[mother_idx] != 3122){continue;} // This means that the mother of this particle IS NOT a Lambda. So excludes it.
-            contains_particle = true;
+            Float_t particle_y = ProtonOrPBar_y[particle_idx]; // At this point, this is no longer a general particle (it is a proton after the isProton_not_PBar!), but kept the older naming just to get the code working fast
+            Float_t particle_pT = ProtonOrPBar_pt[particle_idx];
+            Float_t particle_phi = ProtonOrPBar_Phi[particle_idx];
+            Float_t particle_m = ProtonOrPBar_m[particle_idx];
+
+                // Recovering (px,py,pz) to calculate the norm of the trimomentum:
+            Float_t particle_px = particle_pT*std::cos(particle_phi);
+            Float_t particle_py = particle_pT*std::sin(particle_phi);
+            Float_t particle_mT = std::sqrt(particle_m*particle_m + particle_pT*particle_pT);
+            Float_t particle_pz = particle_mT*std::sinh(particle_y);
+            Float_t particle_momentum_squared = particle_px*particle_px + particle_py*particle_py + particle_pz*particle_pz; // Defined here to avoid recalculating stuff for particle_E and particle_momentum
+            Float_t particle_E = std::sqrt(particle_m*particle_m + particle_momentum_squared);
+
+            // Don't need to check if the mother is a Lambda -- already do that when saving!
+            // int mother_idx = mother1_Idx[particle_idx];
+            // // Possibly shouldn't do the loop below! The useful kinematic information is of the mother that generated this Lambda!
+            // // while (IsCarbonCopy[mother_idx]){ // Should keep searching for the true mother until it is an actual particle, not a carbon-copy
+            // //     mother_idx = mother1_Idx[mother_idx]; // Will search for this mother's mother untill it is no longer a carbon-copy
+            // // }
+            // if (PID[mother_idx] != 3122){continue;} // This means that the mother of this particle IS NOT a Lambda. So excludes it.
+            contains_particle = true; // Kept this loop to know which events contain pBar and which contain protons. Was known a priory, but kept for easy reading of the end ROOT file
             // std::cout << "This proton has a Lambda mother!" << std::endl; // Very few events should have this property!
 
             // Fetching the mother's kinematic variables:
             // (Necessary for the Ring Observable calculation)
-            Float_t lambda_y = y[mother_idx];
-            Float_t lambda_pT = pt[mother_idx];
-            Float_t lambda_phi = Phi[mother_idx];
-            Float_t lambda_m = m[mother_idx];
+            
+            // Float_t lambda_y = LambdaOrLBar_y[particle_idx];
+            // Float_t lambda_pT = LambdaOrLBar_pt[particle_idx];
+            // Float_t lambda_phi = LambdaOrLBar_Phi[particle_idx];
+            // Float_t lambda_m = LambdaOrLBar_m[particle_idx];
                 // For the boost:
             Float_t lambda_px = lambda_pT*std::cos(lambda_phi);
             Float_t lambda_py = lambda_pT*std::sin(lambda_phi);
@@ -584,10 +634,10 @@ int main(int argc, char *argv[]){
             Float_t lambda_momentum_squared = lambda_px*lambda_px + lambda_py*lambda_py + lambda_pz*lambda_pz;
             Float_t lambda_E = std::sqrt(lambda_m*lambda_m + lambda_momentum_squared);
 
-                // Filling some useful histograms about the Lambdas that decayed into protons:
-            hLambdaY_proton_mothers->Fill(lambda_y);
-            hLambdaPt_proton_mothers->Fill(lambda_pT);
-            hLambdaPhi_proton_mothers->Fill(lambda_phi);
+            //     // Filling some useful histograms about the Lambdas that decayed into protons:
+            // hLambdaY_proton_mothers->Fill(lambda_y);
+            // hLambdaPt_proton_mothers->Fill(lambda_pT);
+            // hLambdaPhi_proton_mothers->Fill(lambda_phi);
 
             // Constructing the 4-momenta for the boost:
                 // (As I am later rotating the coordinate system to have phi_jet = 0, I will only boost the particles after rotating them in the laboratory frame!
@@ -599,6 +649,7 @@ int main(int argc, char *argv[]){
 
             lambda_4momenta.push_back(lambda_4momentum);
             proton_4momenta.push_back(proton_4momentum);
+                // These last three are still useful, even in the latest storage optimization, because they will keep the information only from the Lambda, not from the LambdaBar particles!
             lambda_phi_array.push_back(lambda_phi);
             lambda_y_array.push_back(lambda_y);
             lambda_pT_array.push_back(lambda_pT);
@@ -638,17 +689,20 @@ int main(int argc, char *argv[]){
         if (contains_lambda){
             hNEv_WithLambda->Fill(0);
 
-            // Another DeltaBetaJ histogram, that works for events where the Lambda decayed into something different from a proton (the other decay mode that differs p+pi^-)
-            for (int i = 0; i < lambda_4momenta_all_decay_modes.size(); i++){ // Notice the usage of lambda_4momenta_all_decay_modes, which is filled even if the Lambda didn't decay into a p+pi^-
-                TLorentzVector lambda_4momentum = lambda_4momenta_all_decay_modes[i];
-                TVector3 lambda_trivec = lambda_4momentum.Vect();
-                Double_t DeltaBetaJ = jet_trimomentum.Angle(lambda_trivec);
-                hLambdaDeltaBetaJ_AllLambdaDecayModes->Fill(DeltaBetaJ);
-            }
+            // LEGACY CODE! In the newer versions, all Lambda decay into protons, so there are no other decay modes! The hNEv_WithLambda is still useful to know the amount of Lambda vs. LambdaBar events, though
+            // // Another DeltaBetaJ histogram, that works for events where the Lambda decayed into something different from a proton (the other decay mode that differs p+pi^-)
+            // for (int i = 0; i < lambda_4momenta_all_decay_modes.size(); i++){ // Notice the usage of lambda_4momenta_all_decay_modes, which is filled even if the Lambda didn't decay into a p+pi^-
+            //     TLorentzVector lambda_4momentum = lambda_4momenta_all_decay_modes[i];
+            //     TVector3 lambda_trivec = lambda_4momentum.Vect();
+            //     Double_t DeltaBetaJ = jet_trimomentum.Angle(lambda_trivec);
+            //     hLambdaDeltaBetaJ_AllLambdaDecayModes->Fill(DeltaBetaJ);
+            // }
         }
 
         if(!contains_particle){continue;} // Skip the whole event: it doesn't have a single proton that came from Lambda.
-        hNEv_proton_from_Lambda->Fill(0); // This event passed the "contains_particle" check
+        // LEGACY CODE! Deprecated in the storage optimization of PythiaGenMin.cxx
+        // hNEv_proton_from_Lambda->Fill(0); // This event passed the "contains_particle" check
+
         // LEGACY CODE!
         // hHighestMomentum_EvWithLambda->Fill(highest_particle_momentum);
         // hHighestMomentumPzOverNorm_EvWithLambda->Fill(jet_trimomentum_unit.Z()); // How much of the unit vector is in z. Includes all jets with |y|<2.5, but only those with a Lambda
@@ -1010,7 +1064,8 @@ int main(int argc, char *argv[]){
     // Overall event statistics:
     hNEv_InCentralityClass->Write();
     hNEv_WithLambda->Write();
-    hNEv_proton_from_Lambda->Write();
+    // hNEv_proton_from_Lambda->Write();
+
     // hNEv_WithLambda_andJets_Pt_leq_2_unit->Write();
     // hNUsefulEv->Write();
 
@@ -1018,11 +1073,12 @@ int main(int argc, char *argv[]){
     hLambdaY->Write();
     hLambdaPhi->Write();
     hLambdaDeltaBetaJ_WithProtonFromLambda->Write();
-    hLambdaDeltaBetaJ_AllLambdaDecayModes->Write();
-
-    hLambdaPt_proton_mothers->Write();
-    hLambdaY_proton_mothers->Write();
-    hLambdaPhi_proton_mothers->Write();
+    
+    // LEGACY CODE! Made before the PythiaGenMin.cxx optimization
+    // hLambdaDeltaBetaJ_AllLambdaDecayModes->Write();
+    // hLambdaPt_proton_mothers->Write();
+    // hLambdaY_proton_mothers->Write();
+    // hLambdaPhi_proton_mothers->Write();
 
     // LEGACY CODE! This information is already (partially) in the PythiaGenMin.cxx's updated version
     // hHighestMomentum_all_jets->Write();

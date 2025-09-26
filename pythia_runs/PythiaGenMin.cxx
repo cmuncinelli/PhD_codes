@@ -757,7 +757,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 		hfirstDiscardedJetY_minus_leadingJet_MinPtCut->Fill(y_firstDiscardedJet - y_jet);
 		hfirstDiscardedJetPt_MinPtCut->Fill(pt_jet);
-		hfirstDiscardedJetPtY_minus_leadingJet_MinPtCut->Fill(pt_jet, y_jet);
+		hfirstDiscardedJetPtY_minus_leadingJet_MinPtCut->Fill(pt_jet, y_jet - y_jet);
 		hfirstDiscardedJetPhi_minus_leadingJet_MinPtCut->Fill(wrapToInterval(Phi_firstDiscardedJet - Phi_jet, -PI, PI));
 
 		if(!contains_lambda_or_lambdabar){ // I am only going to save events that have jets in the interval which is useful to my Ring analysis!
@@ -946,7 +946,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 ////////////////////////////////
 void doCentrality(std::string output_folder, int N_cores, std::string input_card_name){
 	std::cout << "\nProcessing centrality" << std::endl;
-	int multiplicity_nbins = 10000; // The number of bins is also the number of entries, which gives one bin per possible multiplicity!
+	int multiplicity_nbins = 50000; // The number of bins is also the number of entries, which gives one bin per possible multiplicity!
 
 	std::string output_centrality_filename =(std::string) output_folder;
 	output_centrality_filename += "/Ntracks_to_centrality_conversion.root";
