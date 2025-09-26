@@ -68,15 +68,16 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	pythia.init();
 
 	// Setting up FastJet finder with anti-kT method:
-
-	// Set up FastJet jet finder.
+	// (for more information, see logs 503 and 504)
 	double R = 0.4;
 	double jet_min_pT = 8.0; // Changed from 2.0 to 8.0: we were having 10% of events having 20 or more jets! The 8.0 GeV/c comes from Youpeng's PAG presentation
-	double jet_max_eta = 1.0; // To make the code even more optimized, this should probably be a cut in |y|<0.5, which is what we actually use for the Ring!
+	double ALICE_charged_jet_acceptance = 0.9 // Look at the Detector_Acceptances_and_FastJet.pdf document: TPS, ITS, TRD and TOF cover <0.9, and EMCal does not cover full azimuth!
+	double jet_max_eta = ALICE_charged_jet_acceptance - R; // The jet must be entirely in the region where ALICE can actually see it!
+														   // Notice that you don't need to do an extra |y|<0.5 cut if the jet pT is sufficiently high, because y ~ \eta in that limit.
     fastjet::JetDefinition jetDef(fastjet::antikt_algorithm, R);
   	std::vector <fastjet::PseudoJet> FastJetInputs;
 
-		// Creating the file to link associate all current histograms and trees to the current gDirectory
+		// Creating the file to associate all current histograms and trees to the current gDirectory
 		// (i.e., the current folder) instead of the global ROOT gDirectory.
 	std::string filename = (std::string) output_folder;
 	filename += "/output_core" + to_string(WorkerId) + ".root"; // A simple naming scheme. Left the whole event naming and info for the output_folder name.
@@ -129,31 +130,32 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	TH1D *hEventCounter = new TH1D ("hEventCounter", "Total number of simulated events", 1, -1, 1);
 	TH1D *hEventCounterWithLambdaOrBar = new TH1D ("hEventCounterWithLambdaOrBar", "hEventCounterWithLambdaOrBar", 1, -1, 1);
 	TH1D *hEventCounterWithJets_pTleqJetMinPt = new TH1D ("hEventCounterWithJets_pTleqJetMinPt", "hEventCounter(jets w/ pT>8)", 1, -1, 1); // Jets in the interval pT > jet_min_pT, all Eta
-	TH1D *hEventCounterWithJets_pTleqJetMinPt_EtaCuts = new TH1D ("hEventCounterWithJets_pTleqJetMinPt_EtaCuts", "hEventCounter(jets w/ pT>8,|eta|<1)", 1, -1, 1); // Jets in the interval pT > jet_min_pT and |eta| < 1.0
-	TH1D *hEventCounterWithLambdaOrBarWithJets_pTleqJetMinPt_EtaCuts = new TH1D ("hEventCounterWithLambdaOrBarWithJets_pTleqJetMinPt_EtaCuts", "hEventCounter(jets w/ pT>8,|eta|<1),hasLambdaorLambdaBar", 1, -1, 1);
-	TH1D *hEventCounterUsefulEventForRing = new TH1D ("hEventCounterUsefulEventForRing", "hEventCounter(jets w/ pT>8,|eta|<1),hasLambda in pTandYcuts", 1, -1, 1); // Contains Lambda in the desired pT and |y| range, contains a jet in the desired range
+	TH1D *hEventCounterWithJets_pTleqJetMinPt_EtaCuts = new TH1D ("hEventCounterWithJets_pTleqJetMinPt_EtaCuts", "hEventCounter(jets w/ pT>8,|eta|<0.5)", 1, -1, 1); // Jets in the interval pT > jet_min_pT and |eta| < 0.9 - R
+	TH1D *hEventCounterWithLambdaOrBarWithJets_pTleqJetMinPt_EtaCuts = new TH1D ("hEventCounterWithLambdaOrBarWithJets_pTleqJetMinPt_EtaCuts", "hEventCounter(jets w/ pT>8,|eta|<0.5),hasLambdaorLambdaBar", 1, -1, 1);
+	TH1D *hEventCounterPassedYExtraCheck = new TH1D ("hEventCounterPassedYExtraCheck", "hEventCounter(jets w/ pT>8,|eta|<0.5,|y|<0.5),hasLambda in pTandYcuts", 1, -1, 1); // Contains Lambda in the desired pT and |y| range, contains a jet in the desired range
 	TH1D *hINELEventCounter = new TH1D ("hINELEventCounter", "", 1, -1, 1);
 	TH1D *hEventCounterCharged = new TH1D ("hEventCounterCharged", "", 1, -1, 1);
 	TH1D *hEventCounterPion = new TH1D ("hEventCounterPion", "", 1, -1, 1);
 	TH1D *hEventCounterProton = new TH1D ("hEventCounterProton", "", 1, -1, 1);
 	TH1D *hEventCounterKaon = new TH1D ("hEventCounterKaon", "", 1, -1, 1);
 	
-	TH1D *hJetCounterPerEvent = new TH1D ("hJetCounterPerEvent", "Number of jets found in each event", 50, 0, 50);
+	TH1D *hJetCounterPerEvent = new TH1D ("hJetCounterPerEvent", "Number of jets found in each event", 40, 0, 40);
+	TH1D *hDiscardedHighPtJetCounterPerEvent = new TH1D ("hDiscardedHighPtJetCounterPerEvent", "Number of jets discarded until |eta|<jet_max_eta jet was found", 40, 0, 40);
 	TH1D *hNParticlesPerJet = new TH1D ("hNParticlesPerJet", "N_particles in each jet(pT>8)", 50, 0, 50);
-	TH1D *hNParticlesLeadingJet_EtaCuts = new TH1D ("hNParticlesLeadingJet_EtaCuts", "N_particles in each |eta|<1 jet(pT>8)", 50, 0, 50);
-	TH1D *hNParticlesLeadingJet_EtaCutsWithLambda = new TH1D ("hNParticlesLeadingJet_EtaCutsWithLambda", "N_particles in each |eta|<1,w/Lambda,jet(pT>8)", 50, 0, 50);
-	TH1D *hNParticlesLeadingJet_UsefulForRing = new TH1D ("hNParticlesLeadingJet_UsefulForRing", "N_particles in |y|<0.5,w/Lambda,jet(pT>8)", 50, 0, 50);
+	TH1D *hNParticlesLeadingJet_EtaCuts = new TH1D ("hNParticlesLeadingJet_EtaCuts", "N_particles in each |eta|<0.5 jet(pT>8)", 50, 0, 50);
+	TH1D *hNParticlesLeadingJet_EtaCutsWithLambda = new TH1D ("hNParticlesLeadingJet_EtaCutsWithLambda", "N_particles in each |eta|<0.5,w/Lambda,jet(pT>8)", 50, 0, 50);
+	TH1D *hNParticlesLeadingJet_PassedYExtraCheck = new TH1D ("hNParticlesLeadingJet_PassedYExtraCheck", "N_particles in |y|<0.5,w/Lambda,jet(pT>8)", 50, 0, 50);
 		// Some maps to know the PID of the particles on each type of jet:
 	std::map<int,int> mapCountsOfPIDAllJetConstituents;
 	std::map<int,int> mapCountsOfPIDLeadingJetConstituents_EtaCuts;
 	std::map<int,int> mapCountsOfPIDLeadingJetConstituents_EtaCutsWithLambda;
-	std::map<int,int> mapCountsOfPIDLeadingJetConstituents_UsefulForRing;
+	std::map<int,int> mapCountsOfPIDLeadingJetConstituents_PassedYExtraCheck;
 	
 	// The histograms themselves will be declared AFTER we know what PIDs are actually contained in the events
 	// hPIDOfAllJetConstituents
 	// hPIDLeadingJetConstituents_EtaCuts
 	// hPIDLeadingJetConstituents_EtaCutsWithLambda
-	// hPIDLeadingJetConstituents_UsefulForRing
+	// hPIDLeadingJetConstituents_PassedYExtraCheck
 
 
 	int N_bins_pT = 800;
@@ -256,15 +258,20 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
     auto hLeadJetPtY_pTleqJetMinPt_eta_cut = new TH2D("hLeadJetPtY_pTleqJetMinPt_eta_cut", "(minpT and maxEta OK)", 40, 0, 50, 40, -2.5, 2.5);
     auto hLeadJetPhi_pTleqJetMinPt_eta_cut = new TH1D("hLeadJetPhi_pTleqJetMinPt_eta_cut", "(minpT and maxEta OK)", 100, -PI, PI);
 
+	auto hfirstDiscardedJetY_minus_leadingJet_MinPtCut = new TH1D("hfirstDiscardedJetY_minus_leadingJet_MinPtCut", "(minpT_OK,yFirstDiscardedJet-ySelectedJet)", 100, -2.5, 2.5);
+	auto hfirstDiscardedJetPt_MinPtCut = new TH1D("hfirstDiscardedJetPt_MinPtCut", "(minpT_OK,FirstDiscardedJet)", 100, 0, 50);
+	auto hfirstDiscardedJetPtY_minus_leadingJet_MinPtCut = new TH2D("hfirstDiscardedJetPtY_minus_leadingJet_MinPtCut", "(minpT_OK,yFirstDiscardedJet-ySelectedJet)", 40, 0, 50, 40, -2.5, 2.5);
+	auto hfirstDiscardedJetPhi_minus_leadingJet_MinPtCut = new TH1D("hfirstDiscardedJetPhi_minus_leadingJet_MinPtCut", "(minpT_OK,PhiFirstDiscardedJet-PhiSelectedJet)", 100, -PI, PI);
+
 	auto hJetProxyY_pTleqJetMinPt_eta_cut_WithLambdaOrBar = new TH1D("hJetProxyY_pTleqJetMinPt_eta_cut_WithLambdaOrBar", "(minpT, maxEta OK, contains LambdaOrLBar)", 100, -2.5, 2.5);
     auto hJetProxyPt_pTleqJetMinPt_eta_cut_WithLambdaOrBar = new TH1D("hJetProxyPt_pTleqJetMinPt_eta_cut_WithLambdaOrBar", "(minpT, maxEta OK, contains LambdaOrLBar)", 100, 0, 50);
     auto hJetProxyPtY_pTleqJetMinPt_eta_cut_WithLambdaOrBar = new TH2D("hJetProxyPtY_pTleqJetMinPt_eta_cut_WithLambdaOrBar", "(minpT, maxEta OK, contains LambdaOrLBar)", 40, 0, 50, 40, -2.5, 2.5);
     auto hJetProxyPhi_pTleqJetMinPt_eta_cut_WithLambdaOrBar = new TH1D("hJetProxyPhi_pTleqJetMinPt_eta_cut_WithLambdaOrBar", "(minpT, maxEta OK, contains LambdaOrLBar)", 100, -PI, PI);
 
-    auto hJetProxyY_UsefulEvent = new TH1D("hJetProxyY_UsefulEvent", "(minpT and maxY OK, contains LambdaOrLBar)", 100, -2.5, 2.5);
-    auto hJetProxyPt_UsefulEvent = new TH1D("hJetProxyPt_UsefulEvent", "(minpT and maxY OK, contains LambdaOrLBar)", 100, 0, 50);
-    auto hJetProxyPtY_UsefulEvent = new TH2D("hJetProxyPtY_UsefulEvent", "(minpT and maxY OK, contains LambdaOrLBar)", 40, 0, 50, 40, -2.5, 2.5);
-    auto hJetProxyPhi_UsefulEvent = new TH1D("hJetProxyPhi_UsefulEvent", "(minpT and maxY OK, contains LambdaOrLBar)", 100, -PI, PI);
+    auto hJetProxyY_YExtraCheck = new TH1D("hJetProxyY_YExtraCheck", "(minpT and maxY OK, contains LambdaOrLBar)", 100, -2.5, 2.5);
+    auto hJetProxyPt_YExtraCheck = new TH1D("hJetProxyPt_YExtraCheck", "(minpT and maxY OK, contains LambdaOrLBar)", 100, 0, 50);
+    auto hJetProxyPtY_YExtraCheck = new TH2D("hJetProxyPtY_YExtraCheck", "(minpT and maxY OK, contains LambdaOrLBar)", 40, 0, 50, 40, -2.5, 2.5);
+    auto hJetProxyPhi_YExtraCheck = new TH1D("hJetProxyPhi_YExtraCheck", "(minpT and maxY OK, contains LambdaOrLBar)", 100, -PI, PI);
 
 	// Event loop
 	for (int iEvent=0; iEvent<N_ev; ++iEvent){
@@ -328,6 +335,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		FastJetInputs.clear();
 		for (int i = 0; i < pythia.event.size(); ++i){
 			bool isfinal = pythia.event[i].isFinal();
+			bool isvisible = pythia.event[i].isVisible();
 			// Checking if this particle has a carbon-copy daughter. If it does, then it isn't final, and it didn't decay: it just scattered. This is not what I want to look at!
 				// From PYTHIA: "daughter1 = daughter2 > 0: the particle has a "carbon copy" as its sole daughter, but with changed momentum as a "recoil" effect".
 			Int_t daughter1 = pythia.event[i].daughter1();
@@ -463,7 +471,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 
 			// Finally, introducing this particle to the jet candidate list if a certain number of criteria are obeyed:
-			if (isfinal && !IsCarbonCopy_value){ // Particle should be physical and a final state only! (could even enforce IsVisible() for a more realistic case)
+			if (isfinal && isCharged && !IsCarbonCopy_value && isvisible){ // Particle should be physical and a final state only! Should also be visible and CHARGED only. Notice that 
 				// Create a PseudoJet from the complete Pythia particle:
       			fastjet::PseudoJet particleTemp = pythia.event[i];
 				// Store the original Pythia index in "user_index" to later on get the PID of the particle
@@ -528,7 +536,9 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 			// Now applying the eta cut for the jets (if they don't pass |eta|<jet_max_eta, then the jet is not selected)
 		fastjet::PseudoJet leadingJet;
+		fastjet::PseudoJet firstDiscardedJet;
 		Bool_t foundJet = false; // A bool to verify if there is any jet with pT > jet_min_pT AND |eta| < 1.0 (or jet_max_eta, to be more general)
+		int discarded_highpT_jets = 0;
 		for (const auto& jet : sortedJets){
 			// A pre-selection that is necessary to pick leading Jets that actually point in the midrapidity region, 
 			// properly using events even if we have to pick a leading jet that does not have the largest pT of the 
@@ -544,9 +554,22 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 			// searching from the highest-pT jet of the event to the lowest one.
 			// (Rewrote this loop to loop over all of the jets of the event, instead
 			// of breaking at the first valid leadingJet)
-			if (!foundJet && std::abs(jet.eta()) < jet_max_eta){
-				leadingJet = jet;
-				foundJet = true;
+			if (!foundJet){
+				if (std::abs(jet.eta()) < jet_max_eta){
+					leadingJet = jet;
+					foundJet = true;
+					hDiscardedHighPtJetCounterPerEvent->Fill(discarded_highpT_jets); // Fills the histogram with the counter of jets discarded until the desired one was found
+					// The number of times this was filled can also show us how many events failed to have any jet in the |eta|<jet_max_eta region, if compared with the
+					// hEventCounterWithJets_pTleqJetMinPt_EtaCuts counter
+				}
+				else{
+					// Should only increase if the jet was not yet found.
+					// It wouldn't make much difference if this counter was increased outside of the "else" statement, but this way it avoids an extra useless sum
+					discarded_highpT_jets += 1; // A counter to know how many jets were thrown away until the desired eta-range jet was found
+					
+					// Getting the information of the first discarded jet (useful to know if it was back-to-back with the selected leadingJet!):
+					if (discarded_highpT_jets == 1){firstDiscardedJet = jet;}
+				}
 			}
 
 			std::vector<fastjet::PseudoJet> jet_constituents = jet.constituents();
@@ -592,7 +615,18 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		hLeadJetPtY_pTleqJetMinPt_eta_cut->Fill(pt_jet, y_jet);
 		hLeadJetPhi_pTleqJetMinPt_eta_cut->Fill(Phi_jet);
 
-		if(!contains_lambda_or_lambdabar){
+		// Saving the information of the first discarded jet's relative position to the leading jet:
+		pt_firstDiscardedJet = firstDiscardedJet.pt();
+		m_firstDiscardedJet = firstDiscardedJet.m();
+		y_firstDiscardedJet = firstDiscardedJet.rap();
+		Phi_firstDiscardedJet = firstDiscardedJet.phi_std();
+
+		hfirstDiscardedJetY_minus_leadingJet_MinPtCut->Fill(y_firstDiscardedJet - y_jet);
+		hfirstDiscardedJetPt_MinPtCut->Fill(pt_jet);
+		hfirstDiscardedJetPtY_minus_leadingJet_MinPtCut->Fill(pt_jet, y_jet);
+		hfirstDiscardedJetPhi_minus_leadingJet_MinPtCut->Fill(wrapToInterval(Phi_firstDiscardedJet - Phi_jet, -PI, PI));
+
+		if(!contains_lambda_or_lambdabar){ // I am only going to save events that have jets in the interval which is useful to my Ring analysis!
 			iEvent--;
 			continue;
 		}
@@ -610,25 +644,27 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		hJetProxyPtY_pTleqJetMinPt_eta_cut_WithLambdaOrBar->Fill(pt_jet, y_jet);
 		hJetProxyPhi_pTleqJetMinPt_eta_cut_WithLambdaOrBar->Fill(Phi_jet);
 
+		// The check below is just paranoid -- For a high enough pT, this should not be necessary!
+		// (just removed the iEvent-- and the skipping part of it, while preserving the histogramming)
 		if (std::fabs(leadingJet.rap()) < 0.5){ // If the event contains a lambda, we will do a final, less restrictive check: does this event's leading jet stay in the |y|<0.5 region?
-			hEventCounterUsefulEventForRing->Fill(0);
+			hEventCounterPassedYExtraCheck->Fill(0);
 		}
-		else{ // I am only going to save events that have jets in the interval which is useful to my Ring analysis!
-			iEvent--;
-			continue;
-		}
-		hNParticlesLeadingJet_UsefulForRing->Fill(leadingJet_constituents.size());
+		// else{
+		// 	iEvent--;
+		// 	continue;
+		// }
+		hNParticlesLeadingJet_PassedYExtraCheck->Fill(leadingJet_constituents.size());
 			// Filling the map for this "EtaCutsWithLambda" cut:
 		for (const auto &key_and_value_pair : CurrentEvent_LeadingJet_map){
 			int PID = key_and_value_pair.first; // the key
 			int counts = key_and_value_pair.second; // the count
-			mapCountsOfPIDLeadingJetConstituents_UsefulForRing[PID] += counts;
+			mapCountsOfPIDLeadingJetConstituents_PassedYExtraCheck[PID] += counts;
 		}
 
-		hJetProxyY_UsefulEvent->Fill(y_jet);
-		hJetProxyPt_UsefulEvent->Fill(pt_jet);
-		hJetProxyPtY_UsefulEvent->Fill(pt_jet, y_jet);
-		hJetProxyPhi_UsefulEvent->Fill(Phi_jet);
+		hJetProxyY_YExtraCheck->Fill(y_jet);
+		hJetProxyPt_YExtraCheck->Fill(pt_jet);
+		hJetProxyPtY_YExtraCheck->Fill(pt_jet, y_jet);
+		hJetProxyPhi_YExtraCheck->Fill(Phi_jet);
 
 		t3->Fill(); // Filling the tree first thing after the loop!
 	}
@@ -637,12 +673,12 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	auto hPIDOfAllJetConstituents = new TH1D("hPIDOfAllJetConstituents", "PIDs of all jets' constituents", mapCountsOfPIDAllJetConstituents.size(), 0, mapCountsOfPIDAllJetConstituents.size());
 	auto hPIDLeadingJetConstituents_EtaCuts = new TH1D("hPIDLeadingJetConstituents_EtaCuts", "PIDs of eta_cut_OK jets' constituents", mapCountsOfPIDLeadingJetConstituents_EtaCuts.size(), 0, mapCountsOfPIDLeadingJetConstituents_EtaCuts.size());
 	auto hPIDLeadingJetConstituents_EtaCutsWithLambda = new TH1D("hPIDLeadingJetConstituents_EtaCutsWithLambda", "PIDs of eta_cut_OK+w/LambdaOrLBar jets' constituents", mapCountsOfPIDLeadingJetConstituents_EtaCutsWithLambda.size(), 0, mapCountsOfPIDLeadingJetConstituents_EtaCutsWithLambda.size());
-	auto hPIDLeadingJetConstituents_UsefulForRing = new TH1D("hPIDLeadingJetConstituents_UsefulForRing", "PIDs of Useful(w/LambdaOrLBar,Ycut_OK) jets' constituents", mapCountsOfPIDLeadingJetConstituents_UsefulForRing.size(), 0, mapCountsOfPIDLeadingJetConstituents_UsefulForRing.size());
+	auto hPIDLeadingJetConstituents_PassedYExtraCheck = new TH1D("hPIDLeadingJetConstituents_PassedYExtraCheck", "PIDs of Useful(w/LambdaOrLBar,Ycut_OK) jets' constituents", mapCountsOfPIDLeadingJetConstituents_PassedYExtraCheck.size(), 0, mapCountsOfPIDLeadingJetConstituents_PassedYExtraCheck.size());
 		// Filling these histograms:
 	FillHistogramFromMap(hPIDOfAllJetConstituents, mapCountsOfPIDAllJetConstituents);
 	FillHistogramFromMap(hPIDLeadingJetConstituents_EtaCuts, mapCountsOfPIDLeadingJetConstituents_EtaCuts);
 	FillHistogramFromMap(hPIDLeadingJetConstituents_EtaCutsWithLambda, mapCountsOfPIDLeadingJetConstituents_EtaCutsWithLambda);
-	FillHistogramFromMap(hPIDLeadingJetConstituents_UsefulForRing, mapCountsOfPIDLeadingJetConstituents_UsefulForRing);
+	FillHistogramFromMap(hPIDLeadingJetConstituents_PassedYExtraCheck, mapCountsOfPIDLeadingJetConstituents_PassedYExtraCheck);
 
 	// pythia.stat();
 	// t3->Print();
@@ -657,7 +693,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	hEventCounterWithJets_pTleqJetMinPt->Write();
 	hEventCounterWithJets_pTleqJetMinPt_EtaCuts->Write();
 	hEventCounterWithLambdaOrBarWithJets_pTleqJetMinPt_EtaCuts->Write();
-	hEventCounterUsefulEventForRing->Write();
+	hEventCounterPassedYExtraCheck->Write();
 	hINELEventCounter->Write();
 	hEventCounterCharged->Write();
 	hEventCounterPion->Write();
@@ -665,15 +701,16 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	hEventCounterKaon->Write();
 	
 	hJetCounterPerEvent->Write();
+	hDiscardedHighPtJetCounterPerEvent->Write();
 	hNParticlesPerJet->Write();
 	hNParticlesLeadingJet_EtaCuts->Write();
 	hNParticlesLeadingJet_EtaCutsWithLambda->Write();
-	hNParticlesLeadingJet_UsefulForRing->Write();
+	hNParticlesLeadingJet_PassedYExtraCheck->Write();
 
 	hPIDOfAllJetConstituents->Write();
 	hPIDLeadingJetConstituents_EtaCuts->Write();
 	hPIDLeadingJetConstituents_EtaCutsWithLambda->Write();
-	hPIDLeadingJetConstituents_UsefulForRing->Write();
+	hPIDLeadingJetConstituents_PassedYExtraCheck->Write();
 
 	pT_hist_charged_final->Sumw2();
 	pT_hist_pion_final->Sumw2();
@@ -716,15 +753,20 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	hLeadJetPtY_pTleqJetMinPt_eta_cut->Write();
 	hLeadJetPhi_pTleqJetMinPt_eta_cut->Write();
 
+	hfirstDiscardedJetY_minus_leadingJet_MinPtCut->Write();
+	hfirstDiscardedJetPt_MinPtCut->Write();
+	hfirstDiscardedJetPtY_minus_leadingJet_MinPtCut->Write();
+	hfirstDiscardedJetPhi_minus_leadingJet_MinPtCut->Write();
+
 	hJetProxyY_pTleqJetMinPt_eta_cut_WithLambdaOrBar->Write();
 	hJetProxyPt_pTleqJetMinPt_eta_cut_WithLambdaOrBar->Write();
 	hJetProxyPtY_pTleqJetMinPt_eta_cut_WithLambdaOrBar->Write();
 	hJetProxyPhi_pTleqJetMinPt_eta_cut_WithLambdaOrBar->Write();
 
-	hJetProxyY_UsefulEvent->Write();
-	hJetProxyPt_UsefulEvent->Write();
-	hJetProxyPtY_UsefulEvent->Write();
-	hJetProxyPhi_UsefulEvent->Write();
+	hJetProxyY_YExtraCheck->Write();
+	hJetProxyPt_YExtraCheck->Write();
+	hJetProxyPtY_YExtraCheck->Write();
+	hJetProxyPhi_YExtraCheck->Write();
 
 	f.Close();
 
@@ -765,20 +807,9 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	return;
 }
 
-void FillHistogramFromMap(TH1* hist, const std::map<int,int>& map){ // A helper function to make the whole process of filling maps cleaner
-    int bin = 1;
-    for (const auto &kv : map){
-		// Fixing the label to the actual PID number:
-        hist->GetXaxis()->SetBinLabel(bin, std::to_string(kv.first).c_str());
-		// Setting the content:
-        hist->SetBinContent(bin, kv.second);
-        bin++;
-    }
-	hist->ResetStats(); // Have to do this to make the histogram actually have the number of particles as the NEntries, not the number of bins/fills we did in this function!
-}
-
-
-
+////////////////////////////////
+/// Physics helper functions ///
+////////////////////////////////
 void doCentrality(std::string output_folder, int N_cores, std::string input_card_name){
 	std::cout << "\nProcessing centrality" << std::endl;
 	int multiplicity_nbins = 10000; // The number of bins is also the number of entries, which gives one bin per possible multiplicity!
@@ -898,6 +929,37 @@ void doCentrality(std::string output_folder, int N_cores, std::string input_card
 }
 
 
+////////////////////////
+/// Helper functions ///
+////////////////////////
+void FillHistogramFromMap(TH1* hist, const std::map<int,int>& map){ // A helper function to make the whole process of filling maps cleaner
+    int bin = 1;
+    for (const auto &kv : map){
+		// Fixing the label to the actual PID number:
+        hist->GetXaxis()->SetBinLabel(bin, std::to_string(kv.first).c_str());
+		// Setting the content:
+        hist->SetBinContent(bin, kv.second);
+        bin++;
+    }
+	hist->ResetStats(); // Have to do this to make the histogram actually have the number of particles as the NEntries, not the number of bins/fills we did in this function!
+}
+
+// Wrap an angle into [phi_min, phi_max) for the coordinate shift that redefines the phi angle as having phi = 0 pointing towards the jet direction.
+// This is useful to define a \hat{t} vector that is always pointing towards (1, 0, 0), making it easier to calculate the ring observable in the
+// "with bullet" case:
+// Fast wrapping into [phi_min, phi_max)
+inline double wrapToInterval(double phi, double phi_min, double phi_max){
+    double range = phi_max - phi_min;
+    // Use fmod to reduce directly
+    phi = std::fmod(phi - phi_min, range);
+    if (phi < 0) phi += range;
+    return phi + phi_min;
+}
+
+
+/////////////////////////////////////////
+/////////////// MAIN CALL ///////////////
+/////////////////////////////////////////
 int main(int argc, char *argv[]){
     if (argc != 5){
 		std::cerr << "Usage:" << argv[0] << " output_folder input_card_path N_ev N_cores" << std::endl;
