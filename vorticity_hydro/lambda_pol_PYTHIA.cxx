@@ -561,9 +561,10 @@ int main(int argc, char *argv[]){
                 // the goal is to use ONLY lambda, not lambda-bar.
 
             int mother_idx = mother1_Idx[particle_idx];
-            while (IsCarbonCopy[mother_idx]){ // Should keep searching for the true mother until it is an actual particle, not a carbon-copy
-                mother_idx = mother1_Idx[mother_idx]; // Will search for this mother's mother untill it is no longer a carbon-copy
-            }
+            // Possibly shouldn't do the loop below! The useful kinematic information is of the mother that generated this Lambda!
+            // while (IsCarbonCopy[mother_idx]){ // Should keep searching for the true mother until it is an actual particle, not a carbon-copy
+            //     mother_idx = mother1_Idx[mother_idx]; // Will search for this mother's mother untill it is no longer a carbon-copy
+            // }
             if (PID[mother_idx] != 3122){continue;} // This means that the mother of this particle IS NOT a Lambda. So excludes it.
             contains_particle = true;
             // std::cout << "This proton has a Lambda mother!" << std::endl; // Very few events should have this property!
