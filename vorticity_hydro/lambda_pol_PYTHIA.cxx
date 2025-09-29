@@ -38,17 +38,20 @@
 #include <algorithm>
 
 
-
 // Some constants for the code:
 const double PI = TMath::Pi();
     // Constant from Phys. Rev. D 110, 030001 - Published 1 August, 2024, i.e.: https://journals.aps.org/prd/pdf/10.1103/PhysRevD.110.030001
 const double alpha_H = 0.747; // Fixed as a constant, just for this toy model!
-const double mass_Lambda = 1115.683/1000.; // Passed from MeV/c^2 (+/- 0.006) to GeV/c^2
-const double mass_proton = 938.27208816/1000.; // Passed from MeV/c^2 (+/- 0.00000029) to GeV/c^2
-const double mass_pi = 139.57039/1000.; // Passed from MeV/c^2 (+/- 0.00018), for both pi+ and pi-, to GeV/c^2
-const double mL2 = mass_Lambda * mass_Lambda;
+// const double mass_Lambda = 1115.683/1000.; // Passed from MeV/c^2 (+/- 0.006) to GeV/c^2
+// const double mass_proton = 938.27208816/1000.; // Passed from MeV/c^2 (+/- 0.00000029) to GeV/c^2
+// const double mass_pi = 139.57039/1000.; // Passed from MeV/c^2 (+/- 0.00018), for both pi+ and pi-, to GeV/c^2
+// const double mL2 = mass_Lambda * mass_Lambda;
 
-void find_jet_proxy();
+// Actually using Pythia masses for the proton, Lambda and pion:
+// (see get_pythia_masses.txt for more information. This was also hardcoded here to avoid the need of compiling with Pythia libs)
+const Float_t lambda_m = 1.11568f;
+const Float_t proton_m = 0.938270f;
+const Float_t pi_m = 0.139570f;
 
     // Helper functions:
 inline double wrapToInterval(double phi, double phi_min, double phi_max);
@@ -409,12 +412,12 @@ int main(int argc, char *argv[]){
     std::vector<Float_t> *ProtonOrPBar_pt_pointer = nullptr;
 	std::vector<Float_t> *ProtonOrPBar_y_pointer = nullptr;
 	std::vector<Float_t> *ProtonOrPBar_Phi_pointer = nullptr;
-	std::vector<Float_t> *ProtonOrPBar_m_pointer = nullptr;
+	// std::vector<Float_t> *ProtonOrPBar_m_pointer = nullptr; // Not a necessary information here: protons and Lambdas are stable, so Pythia does not vary their mass (as it would do with \rho resonances, giving them a Breit-Wigner)
 
 	std::vector<Float_t> *LambdaOrLBar_pt_pointer = nullptr;
 	std::vector<Float_t> *LambdaOrLBar_y_pointer = nullptr;
 	std::vector<Float_t> *LambdaOrLBar_Phi_pointer = nullptr;
-	std::vector<Float_t> *LambdaOrLBar_m_pointer = nullptr;
+	// std::vector<Float_t> *LambdaOrLBar_m_pointer = nullptr;
 
 	std::vector<Bool_t> *isProton_not_PBar_pointer = nullptr;
 	std::vector<Bool_t> *isLambda_notLBar_pointer = nullptr;
@@ -454,11 +457,11 @@ int main(int argc, char *argv[]){
     chain.SetBranchAddress("ProtonOrPBar_pt", &ProtonOrPBar_pt_pointer);
     chain.SetBranchAddress("ProtonOrPBar_y", &ProtonOrPBar_y_pointer);
     chain.SetBranchAddress("ProtonOrPBar_Phi", &ProtonOrPBar_Phi_pointer);
-    chain.SetBranchAddress("ProtonOrPBar_m", &ProtonOrPBar_m_pointer);
+    // chain.SetBranchAddress("ProtonOrPBar_m", &ProtonOrPBar_m_pointer);
     chain.SetBranchAddress("LambdaOrLBar_pt", &LambdaOrLBar_pt_pointer);
     chain.SetBranchAddress("LambdaOrLBar_y", &LambdaOrLBar_y_pointer);
     chain.SetBranchAddress("LambdaOrLBar_Phi", &LambdaOrLBar_Phi_pointer);
-    chain.SetBranchAddress("LambdaOrLBar_m", &LambdaOrLBar_m_pointer);
+    // chain.SetBranchAddress("LambdaOrLBar_m", &LambdaOrLBar_m_pointer);
     chain.SetBranchAddress("isProton_not_PBar", &isProton_not_PBar_pointer);
     chain.SetBranchAddress("isLambda_notLBar", &isLambda_notLBar_pointer);
     chain.SetBranchAddress("isLambdaOrLBarExperimentalPrimary", &isLambdaOrLBarExperimentalPrimary_pointer);
@@ -496,11 +499,11 @@ int main(int argc, char *argv[]){
         std::vector<Float_t> ProtonOrPBar_pt = *ProtonOrPBar_pt_pointer;
         std::vector<Float_t> ProtonOrPBar_y = *ProtonOrPBar_y_pointer;
         std::vector<Float_t> ProtonOrPBar_Phi = *ProtonOrPBar_Phi_pointer;
-        std::vector<Float_t> ProtonOrPBar_m = *ProtonOrPBar_m_pointer;
+        // std::vector<Float_t> ProtonOrPBar_m = *ProtonOrPBar_m_pointer;
         std::vector<Float_t> LambdaOrLBar_pt = *LambdaOrLBar_pt_pointer;
         std::vector<Float_t> LambdaOrLBar_y = *LambdaOrLBar_y_pointer;
         std::vector<Float_t> LambdaOrLBar_Phi = *LambdaOrLBar_Phi_pointer;
-        std::vector<Float_t> LambdaOrLBar_m = *LambdaOrLBar_m_pointer;
+        // std::vector<Float_t> LambdaOrLBar_m = *LambdaOrLBar_m_pointer;
         std::vector<Bool_t> isProton_not_PBar = *isProton_not_PBar_pointer;
         std::vector<Bool_t> isLambda_notLBar = *isLambda_notLBar_pointer;
         std::vector<Bool_t> isLambdaOrLBarExperimentalPrimary = *isLambdaOrLBarExperimentalPrimary_pointer;
@@ -549,7 +552,7 @@ int main(int argc, char *argv[]){
             Float_t lambda_y = LambdaOrLBar_y[particle_idx]; // Could actually be a LambdaBar, but kept the older lambda_y name while we don't generalize the rest of the loop
             Float_t lambda_pT = LambdaOrLBar_pt[particle_idx];
             Float_t lambda_phi = LambdaOrLBar_Phi[particle_idx];
-            Float_t lambda_m = LambdaOrLBar_m[particle_idx];
+            // Float_t lambda_m = LambdaOrLBar_m[particle_idx];
 
             if (isLambda_notLBar[particle_idx]){ // Fills the Lambda information
                 hLambdaY->Fill(lambda_y);
@@ -602,15 +605,15 @@ int main(int argc, char *argv[]){
             Float_t particle_y = ProtonOrPBar_y[particle_idx]; // At this point, this is no longer a general particle (it is a proton after the isProton_not_PBar!), but kept the older naming just to get the code working fast
             Float_t particle_pT = ProtonOrPBar_pt[particle_idx];
             Float_t particle_phi = ProtonOrPBar_Phi[particle_idx];
-            Float_t particle_m = ProtonOrPBar_m[particle_idx];
+            // Float_t particle_m = ProtonOrPBar_m[particle_idx];
 
                 // Recovering (px,py,pz) to calculate the norm of the trimomentum:
             Float_t particle_px = particle_pT*std::cos(particle_phi);
             Float_t particle_py = particle_pT*std::sin(particle_phi);
-            Float_t particle_mT = std::sqrt(particle_m*particle_m + particle_pT*particle_pT);
+            Float_t particle_mT = std::sqrt(proton_m*proton_m + particle_pT*particle_pT);
             Float_t particle_pz = particle_mT*std::sinh(particle_y);
             Float_t particle_momentum_squared = particle_px*particle_px + particle_py*particle_py + particle_pz*particle_pz; // Defined here to avoid recalculating stuff for particle_E and particle_momentum
-            Float_t particle_E = std::sqrt(particle_m*particle_m + particle_momentum_squared);
+            Float_t particle_E = std::sqrt(proton_m*proton_m + particle_momentum_squared);
 
             // Don't need to check if the mother is a Lambda -- already do that when saving!
             // int mother_idx = mother1_Idx[particle_idx];

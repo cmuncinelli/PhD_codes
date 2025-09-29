@@ -1,0 +1,10 @@
+# Just run in a ROOT session within O2Physics:
+gSystem->Load("libpythia8");
+#include "Pythia8/Pythia.h"
+Pythia8::Pythia pythia;
+Float_t m_Lambda = pythia.particleData.m0(3122);
+Float_t m_Proton = pythia.particleData.m0(2212);
+Float_t m_Pion = pythia.particleData.m0(211);
+
+# Do notice that particle and antiparticle masses are, of course, equal in Pythia (we have never measured CPT violation!)
+# Also, they are all floats if you check the precision in Pythia.

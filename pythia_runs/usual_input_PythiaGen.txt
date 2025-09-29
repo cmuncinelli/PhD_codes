@@ -9,10 +9,10 @@
 # Dry run:
 ./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e1 1
 
-# Mid statistics run (~750 MB of data):
+# Mid statistics run (~750 MB of data in old format, ~ MB in new format):
 ./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e5 120
 
-# High statistics run (~650 GB of data):
+# High statistics run (~650 GB of data in old format, ~15 GB in new format):
 ./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e8 120
 
     # To run in jarvis5 (storage3 is freer):
