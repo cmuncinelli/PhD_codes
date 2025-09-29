@@ -15,6 +15,9 @@
 # High statistics run (~650 GB of data):
 ./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e8 120
 
+    # To run in jarvis5 (storage3 is freer):
+./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e10 120
+
 
     # Testing Angantyr:
 ./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_PbPb_536tev_AllowLambdaDecays.cfg" 1e1 1
@@ -26,10 +29,6 @@
 ./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_PbPb_536tev_AllowLambdaDecays.cfg" 1e6 120
 
 
-
-
-
-
 # For compiling -- Notice I am using OpenMP for parallelization, so you need it installed (sudo apt-get install libomp-dev):
 g++ -O2 -std=c++17 PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 `root-config --cflags --libs` -fopenmp
 
@@ -39,6 +38,9 @@ g++ -O2 -std=c++17 PythiaGenMin.cxx -o PythiaGenMin.exe \
 -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 \
 -I$FASTJET/include -L$FASTJET/lib -lfastjet \
 `root-config --cflags --libs` -fopenmp
+
+        # No spaces:
+g++ -O2 -std=c++17 PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 -I$FASTJET/include -L$FASTJET/lib -lfastjet `root-config --cflags --libs` -fopenmp
 
 # Debugging:
 g++ -O0 -g -fno-omit-frame-pointer -fsanitize=address,undefined -D_GLIBCXX_ASSERTIONS -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 -fopenmp PythiaGenMin.cxx -o PythiaGenMin.exe `root-config --cflags --libs`

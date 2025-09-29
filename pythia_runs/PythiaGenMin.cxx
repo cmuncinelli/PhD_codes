@@ -1169,10 +1169,10 @@ int main(int argc, char *argv[]){
 
 // Converting the event multiplicity to centrality in the most precise way possible -- Corresponding each integer number of particles to a limit in centrality.
 void multiplicity_to_centrality(TH1D *multiplicity_hist, TH1D *centrality_hist){
-	int Nev = multiplicity_hist->GetEntries();
+	long long Nev = multiplicity_hist->GetEntries();
 	int Nbins = centrality_hist->GetNbinsX(); // I want to loop only on the [0 particles, maximum_number_of_particles] region, not in the [0, 10.000] particles region that the hNtracks histograms need to have to avoid missing any data.
 
-	int number_of_events_up_to_current_bin = 0; // The number of events that came up to this bin, including this bin.
+	long long number_of_events_up_to_current_bin = 0; // The number of events that came up to this bin, including this bin.
 	for (int bin = 1; bin <= Nbins; bin++){ // 1 <= bin <= Nbins because the underflow bin is 0 and the overflow bin is Nbins + 1.
 		// Determining the height of the current bin, i.e., the lower centrality limit that this bin has.
 		number_of_events_up_to_current_bin += multiplicity_hist->GetBinContent(bin); // Sums the contents of the current bin to see how much of the total number of events we have gone through
