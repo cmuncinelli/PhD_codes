@@ -63,23 +63,25 @@ int FindClosestBin(TH1D* hist, double targetValue);
 
 
 int main(int argc, char *argv[]){
-    if (argc != 4){
-		std::cerr << "Usage:" << argv[0] << " input_card_name N_events target_centrality_bin" << std::endl;
+    if (argc != 5){
+		std::cerr << "Usage:" << argv[0] << " simulations_folder input_card_name N_events target_centrality_bin" << std::endl;
         return 1; // Indicate an error.
     }
 
-	const char *input_card_name = (const char*) argv[1];
-    double N_ev_receiver = std::atof(argv[2]); // This receives input like 1e9 and converts it into a proper double.
+	const char *simulations_folder = (const char*) argv[1];
+    const char *input_card_name = (const char*) argv[2];
+    double N_ev_receiver = std::atof(argv[3]); // This receives input like 1e9 and converts it into a proper double.
     // uint N_events = static_cast<int>(N_ev_receiver); // Should use long long for real high statistics (even uint would overflow at 1e10 or so!), but this is enough for now
 	long long N_events = static_cast<long long>(N_ev_receiver);  // Use long long because int fails when N_ev ~ 1e10 !
-    int target_centrality_bin = std::atoi(argv[3]);
+    int target_centrality_bin = std::atoi(argv[4]);
 
     std::cout << "\nReading results for input card " << input_card_name << " and running for " << N_events << " events" << std::endl;
 
     // Defining the path related variables
     std::string output_folder = "/home/cicero/results/hydro_vorticity/PythiaPol/";
     
-    std::string input_folder = "/storage2/cicero/pythia_data/";
+    std::string input_folder = simulations_folder; // Generalized to have the same code running in Jarvis4 and Jarvis5!
+    // std::string input_folder = "/storage2/cicero/pythia_data/";
     // std::string input_folder = "/storage3/cicero/pythia_data/"; // Quick modification for jarvis5 (storage3 was freer here)
     input_folder += input_card_name;
     input_folder += "_" + std::to_string(N_events) + "ev/"; // Specific folder for this input card and its number of events!
