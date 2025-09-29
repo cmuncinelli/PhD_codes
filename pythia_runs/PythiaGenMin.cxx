@@ -1103,7 +1103,8 @@ int main(int argc, char *argv[]){
     const char *output_folder = (const char*) argv[1];
 	const char *input_card_path = (const char*) argv[2];
     double N_ev_receiver = atof(argv[3]); // This receives input like 1e9 and converts it into a proper double.
-	uint N_ev = static_cast<int>(N_ev_receiver); // Should use long long for real high statistics (even uint would overflow at 1e10 or so!), but this is enough for now
+	// uint N_ev = static_cast<int>(N_ev_receiver); // Should use long long for real high statistics (even uint would overflow at 1e10 or so!), but this is enough for now
+	long long N_ev = static_cast<long long>(N_ev_receiver);  // Use long long because int fails when N_ev ~ 1e10 !
 	uint N_cores = std::atoi(argv[4]);
 
 	std::cout << "\n\nNow running " << argv[0] << " " << argv[1] << " " << argv[2] << " " << N_ev << " " << argv[4] << std::endl;
@@ -1128,14 +1129,15 @@ int main(int argc, char *argv[]){
     #pragma omp parallel for
 	for (int WorkerId = 0; WorkerId < N_cores; WorkerId++){
 		// Calculating the number of events per worker, in a way that will give me exactly N_ev for whichever number of workers I use:
-		int base = N_ev / N_cores;
-    	int remainder = N_ev % N_cores;
-		int N_ev_current_worker = base + (WorkerId < remainder ? 1 : 0);
+		long long base = N_ev / N_cores;
+	    	long long remainder = N_ev % N_cores;
+		long long N_ev_current_worker = base + (WorkerId < remainder ? 1 : 0);
 
 		// std::cout << base << std::endl;
 		// std::cout << remainder << std::endl;
 		// std::cout << N_ev_current_worker << std::endl;
-
+		
+		// Preserved the function call as a bunch of ints, because 1e10 / 122 cores will give you something within the int values
 		RunWorker(WorkerId, N_ev_current_worker, output_folder_for_current_card, input_card_path, input_card_name);
 	}
 
@@ -1169,10 +1171,10 @@ int main(int argc, char *argv[]){
 
 // Converting the event multiplicity to centrality in the most precise way possible -- Corresponding each integer number of particles to a limit in centrality.
 void multiplicity_to_centrality(TH1D *multiplicity_hist, TH1D *centrality_hist){
-	int Nev = multiplicity_hist->GetEntries();
+	long long Nev = multiplicity_hist->GetEntries();
 	int Nbins = centrality_hist->GetNbinsX(); // I want to loop only on the [0 particles, maximum_number_of_particles] region, not in the [0, 10.000] particles region that the hNtracks histograms need to have to avoid missing any data.
 
-	int number_of_events_up_to_current_bin = 0; // The number of events that came up to this bin, including this bin.
+	long long number_of_events_up_to_current_bin = 0; // The number of events that came up to this bin, including this bin.
 	for (int bin = 1; bin <= Nbins; bin++){ // 1 <= bin <= Nbins because the underflow bin is 0 and the overflow bin is Nbins + 1.
 		// Determining the height of the current bin, i.e., the lower centrality limit that this bin has.
 		number_of_events_up_to_current_bin += multiplicity_hist->GetBinContent(bin); // Sums the contents of the current bin to see how much of the total number of events we have gone through
