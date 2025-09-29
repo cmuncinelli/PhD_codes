@@ -79,8 +79,8 @@ int main(int argc, char *argv[]){
     // Defining the path related variables
     std::string output_folder = "/home/cicero/results/hydro_vorticity/PythiaPol/";
     
-    // std::string input_folder = "/storage2/cicero/pythia_data/";
-    std::string input_folder = "/storage3/cicero/pythia_data/"; // Quick modification for jarvis5 (storage3 was freer here)
+    std::string input_folder = "/storage2/cicero/pythia_data/";
+    // std::string input_folder = "/storage3/cicero/pythia_data/"; // Quick modification for jarvis5 (storage3 was freer here)
     input_folder += input_card_name;
     input_folder += "_" + std::to_string(N_events) + "ev/"; // Specific folder for this input card and its number of events!
     
