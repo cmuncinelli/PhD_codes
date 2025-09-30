@@ -1,0 +1,40 @@
+// Results from optimization -- Phase 1:
+// Using the -O2 optimization flag:
+////// TIME STATISTICS //////
+The program ran for: 542.593 seconds.
+The code takes about 0.005 seconds per event, or 5.426 seconds for 1e3 events.
+In an N_cores-agnostic way, the program takes 0.651 seconds to analyze an event in each core, or 651.111 seconds for 1e3 events.
+/////////////////////////////
+
+// Using the -O3 optimization flag:
+////// TIME STATISTICS //////
+The program ran for: 544.179 seconds.
+The code takes about 0.005 seconds per event, or 5.442 seconds for 1e3 events.
+/////////////////////////////
+
+
+
+// Results from optimization -- Phase 2:
+(compiling with g++ -O2 -std=c++17 -march=native -flto -pipe PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 -I$FASTJET/include -L$FASTJET/lib -lfastjet `root-config --cflags --libs` -fopenmp)
+// Modifying compilation, applying pre-selection to PseudoJet candidates, creating a single pythia particle object per particle
+// in the loop, reserving space for the vectors and so on:
+////// TIME STATISTICS //////
+The program ran for: 553.302 seconds.
+The code takes about 0.006 seconds per event, or 5.533 seconds for 1e3 events.
+In an N_cores-agnostic way, the program takes 0.664 seconds to analyze an event in each core, or 663.962 seconds for 1e3 events.
+/////////////////////////////
+
+
+
+// For even further optimization, I could even do a PGO (profile-guided optimization) that optimizes the most-accessed regions of
+// the code:
+g++ -O2 -fprofile-generate -std=c++17 -march=native -flto -pipe PythiaGenMin.cxx -o PythiaGenMin-profile.exe -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 -I$FASTJET/include -L$FASTJET/lib -lfastjet `root-config --cflags --libs` -fopenmp
+
+// Then run that with a typical sized dataset:
+./PythiaGenMin-profile.exe "/storage2/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e5 120
+
+// Which generates stuff like:
+./PythiaGenMin.cxx.gcda and ./PythiaGenMin.cxx.gcno
+
+// Then you finally recompile using this profile as input:
+g++ -O2 -fprofile-use -std=c++17 -march=native -flto -pipe PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 -I$FASTJET/include -L$FASTJET/lib -lfastjet `root-config --cflags --libs` -fopenmp

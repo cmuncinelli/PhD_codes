@@ -42,5 +42,12 @@ g++ -O2 -std=c++17 PythiaGenMin.cxx -o PythiaGenMin.exe \
         # No spaces:
 g++ -O2 -std=c++17 PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 -I$FASTJET/include -L$FASTJET/lib -lfastjet `root-config --cflags --libs` -fopenmp
 
+    # Adding some more optimization flags:
+-march=native for better vectorization and a CPU-specific compilation, tuned for my CPU
+-flto (Link-Time Optimization), i.e., the linker can inline between files (might not work with the way Pythia and ROOT are built in O2Physics though...)
+-pipe for faster compilation time (uses pipe instead of temp files)
+
+g++ -O2 -std=c++17 -march=native -flto -pipe PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 -I$FASTJET/include -L$FASTJET/lib -lfastjet `root-config --cflags --libs` -fopenmp
+
 # Debugging:
 g++ -O0 -g -fno-omit-frame-pointer -fsanitize=address,undefined -D_GLIBCXX_ASSERTIONS -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 -fopenmp PythiaGenMin.cxx -o PythiaGenMin.exe `root-config --cflags --libs`
