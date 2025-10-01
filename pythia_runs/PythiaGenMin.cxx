@@ -350,29 +350,29 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
     auto hJetProxyPhi_YExtraCheck = new TH1D("hJetProxyPhi_YExtraCheck", "(minpT and maxY OK, contains LambdaOrLBar)", 100, -PI, PI);
 
 	// Event loop
-	double total_time_fast_scanning_event_ms = 0;
-	long long N_scanned_ev = 0;
-	long long N_useful_ev = 0; // DEBUG/OPTIMIZATION!
-	double event_averaged_total_particle_loop_time_ms_useful_ev = 0; // DEBUG/OPTIMIZATION!
-	double event_averaged_usable_particles_loop_time_ms_useful_ev = 0;
-	double event_averaged_other_particles_loop_time_ms_useful_ev = 0;
-	uint event_total_particles_processed_useful_ev = 0;
-	uint event_usable_particles_processed_useful_ev = 0;
-	uint event_other_particles_processed_useful_ev = 0;
-	double time_on_histograms_useful = 0;
-	double time_clustering = 0;
-	double time_processing_jet = 0;
-	double time_filling_tree = 0;
-		// Another metric, for the useless events, to see how much time I waste on them:
-	long long N_useless_ev = 0; // DEBUG/OPTIMIZATION!
-	double event_averaged_total_particle_loop_time_ms_useless_ev = 0; // DEBUG/OPTIMIZATION!
-	double event_averaged_usable_particles_loop_time_ms_useless_ev = 0;
-	double event_averaged_other_particles_loop_time_ms_useless_ev = 0;
-	uint event_total_particles_processed_useless_ev = 0;
-	uint event_usable_particles_processed_useless_ev = 0;
-	uint event_other_particles_processed_useless_ev = 0;
-	double time_on_histograms_useless_ev = 0;
-	double time_on_clustering_useless_ev = 0; // Only happens if the event is declared "useless" after it passes the previous checks
+	// double total_time_fast_scanning_event_ms = 0;
+	// long long N_scanned_ev = 0;
+	// long long N_useful_ev = 0; // DEBUG/OPTIMIZATION!
+	// double event_averaged_total_particle_loop_time_ms_useful_ev = 0; // DEBUG/OPTIMIZATION!
+	// double event_averaged_usable_particles_loop_time_ms_useful_ev = 0;
+	// double event_averaged_other_particles_loop_time_ms_useful_ev = 0;
+	// uint event_total_particles_processed_useful_ev = 0;
+	// uint event_usable_particles_processed_useful_ev = 0;
+	// uint event_other_particles_processed_useful_ev = 0;
+	// double time_on_histograms_useful = 0;
+	// double time_clustering = 0;
+	// double time_processing_jet = 0;
+	// double time_filling_tree = 0;
+	// 	// Another metric, for the useless events, to see how much time I waste on them:
+	// long long N_useless_ev = 0; // DEBUG/OPTIMIZATION!
+	// double event_averaged_total_particle_loop_time_ms_useless_ev = 0; // DEBUG/OPTIMIZATION!
+	// double event_averaged_usable_particles_loop_time_ms_useless_ev = 0;
+	// double event_averaged_other_particles_loop_time_ms_useless_ev = 0;
+	// uint event_total_particles_processed_useless_ev = 0;
+	// uint event_usable_particles_processed_useless_ev = 0;
+	// uint event_other_particles_processed_useless_ev = 0;
+	// double time_on_histograms_useless_ev = 0;
+	// double time_on_clustering_useless_ev = 0; // Only happens if the event is declared "useless" after it passes the previous checks
 
 	for (int iEvent=0; iEvent<N_ev; ++iEvent){
 		// pythia.next();
@@ -387,7 +387,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// (this means the centrality estimator will be biased, but we can just use a centrality estimator
 		// that came from a different code!)
 		// This diminishes the amount of time spent on useless events!
-		auto fast_scan_start = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
+		// auto fast_scan_start = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
 		bool contains_lambda_or_lambdabar_in_measurable_eta = false;
 		for (int i = 0; i < pythia.event.size(); ++i){
 			if ((pythia.event[i].id() == 3122 || pythia.event[i].id() == -3122) && std::fabs(pythia.event[i].eta()) < ALICE_charged_particle_acceptance){
@@ -395,13 +395,13 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 				break; // Found one, exit immediately!
 			}
 		}
-		auto fast_scan_end = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
-		N_scanned_ev += 1; // The counts from hEventCounter already consider this, yet kept it just for the quick optimization tests
-		total_time_fast_scanning_event_ms += std::chrono::duration<double, std::milli>(fast_scan_end - fast_scan_start).count();
+		// auto fast_scan_end = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
+		// N_scanned_ev += 1; // The counts from hEventCounter already consider this, yet kept it just for the quick optimization tests
+		// total_time_fast_scanning_event_ms += std::chrono::duration<double, std::milli>(fast_scan_end - fast_scan_start).count();
 		if (!contains_lambda_or_lambdabar_in_measurable_eta){
-			event_averaged_total_particle_loop_time_ms_useless_ev += std::chrono::duration<double, std::milli>(fast_scan_end - fast_scan_start).count();
-			event_total_particles_processed_useless_ev += pythia.event.size();
-			N_useless_ev += 1;
+			// event_averaged_total_particle_loop_time_ms_useless_ev += std::chrono::duration<double, std::milli>(fast_scan_end - fast_scan_start).count();
+			// event_total_particles_processed_useless_ev += pythia.event.size();
+			// N_useless_ev += 1;
 			iEvent--;
 			continue;
 		}
@@ -471,13 +471,13 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// y.clear();
 		// Phi.clear();
 
-		auto particle_loop_start = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
-		double total_particle_loop_time_ms = 0.;
-		double usable_particles_loop_time_ms = 0.;
-		double other_particles_loop_time_ms = 0.;
-		uint total_particles_processed = 0;
-		uint usable_particles_processed = 0;
-		uint other_particles_processed = 0;
+		// auto particle_loop_start = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
+		// double total_particle_loop_time_ms = 0.;
+		// double usable_particles_loop_time_ms = 0.;
+		// double other_particles_loop_time_ms = 0.;
+		// uint total_particles_processed = 0;
+		// uint usable_particles_processed = 0;
+		// uint other_particles_processed = 0;
 
 			// Clearing the list of FastJet candidates for this loop:
 		FastJetInputs.clear();
@@ -758,13 +758,13 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 						isLambdaOrLBarExperimentalPrimary.push_back(isExperimentalPrimary);
 
-						usable_particles_processed += 1; // DEBUG/OPTIMIZATION!
+						// usable_particles_processed += 1; // DEBUG/OPTIMIZATION!
 					}
-					else{other_particles_processed += 1;} // DEBUG/OPTIMIZATION!
+					// else{other_particles_processed += 1;} // DEBUG/OPTIMIZATION!
 				}
-				else{other_particles_processed += 1;} // DEBUG/OPTIMIZATION!
+				// else{other_particles_processed += 1;} // DEBUG/OPTIMIZATION!
 			}
-			else{other_particles_processed += 1;} // DEBUG/OPTIMIZATION!
+			// else{other_particles_processed += 1;} // DEBUG/OPTIMIZATION!
 
 			// Do not need to store these variables anymore -- Could make some std::map objects to at least know the PIDs that are produced, but that is not necessary right now!
 			// // ID[i] = particle_PID;
@@ -792,9 +792,9 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 			// IsPrimary.push_back(IsPrimary_value);
 
-			total_particles_processed += 1; // DEBUG/OPTIMIZATION!
+			// total_particles_processed += 1; // DEBUG/OPTIMIZATION!
 		}
-		auto particle_loop_end = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
+		// auto particle_loop_end = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
 		///////////////////////////////////////////////////////////
 		// First, filling the centrality estimators to have an unbiased estimation
 		// (If we defined centrality from jet-only events, we would have higher centrality events
@@ -836,7 +836,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// if (n_kaon_event != 0){hEventCounterKaon->Fill(0);}
 		///////////////////////////////////////////////////////////
 
-		auto histogram_fill_end = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
+		// auto histogram_fill_end = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
 
 		// First the Lambda fast checks:
 		// if(contains_lambda_or_lambdabar){hEventCounterWithLambdaOrBar->Fill(0);}
@@ -876,7 +876,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		inclusiveJets = clustSeq.inclusive_jets(jet_min_pT); // Gets all the jets with pT above this minimum threshold
 		sortedJets = fastjet::sorted_by_pt(inclusiveJets); // Sort from highest to lowest pT
 
-		auto jet_clustering_end = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
+		// auto jet_clustering_end = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
 
 		hJetCounterPerEventWithLambda->Fill(sortedJets.size()); // This may be zero without a problem! I just need to know how many of the total events have a jet
 		if(sortedJets.size() != 0){hEventCounterWithJets_pTleqJetMinPt_WithLambda->Fill(0);}
@@ -930,17 +930,17 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 			}
 		}
 		if (!foundJet){ // Should restart the whole loop, as we are not saving events that don't have the minimum jets necessary for my analysis!
-			// Moved the DEBUG/OPTIMIZATION! variables further down the code, to see how much time is spent on "useless events" just because they don't have a jet in the desired region
-			event_averaged_total_particle_loop_time_ms_useless_ev += total_particle_loop_time_ms; // DEBUG/OPTIMIZATION!
-			event_averaged_usable_particles_loop_time_ms_useless_ev += total_particle_loop_time_ms * (usable_particles_processed * 1./total_particles_processed);
-			event_averaged_other_particles_loop_time_ms_useless_ev += total_particle_loop_time_ms * (other_particles_processed * 1./total_particles_processed);
-			event_total_particles_processed_useless_ev += total_particles_processed;
-			event_usable_particles_processed_useless_ev += usable_particles_processed;
-			event_other_particles_processed_useless_ev += other_particles_processed;
-			time_on_histograms_useless_ev += std::chrono::duration<double, std::milli>(histogram_fill_end - particle_loop_end).count();
-			time_on_clustering_useless_ev += std::chrono::duration<double, std::milli>(jet_clustering_end - histogram_fill_end).count();
+			// // Moved the DEBUG/OPTIMIZATION! variables further down the code, to see how much time is spent on "useless events" just because they don't have a jet in the desired region
+			// event_averaged_total_particle_loop_time_ms_useless_ev += total_particle_loop_time_ms; // DEBUG/OPTIMIZATION!
+			// event_averaged_usable_particles_loop_time_ms_useless_ev += total_particle_loop_time_ms * (usable_particles_processed * 1./total_particles_processed);
+			// event_averaged_other_particles_loop_time_ms_useless_ev += total_particle_loop_time_ms * (other_particles_processed * 1./total_particles_processed);
+			// event_total_particles_processed_useless_ev += total_particles_processed;
+			// event_usable_particles_processed_useless_ev += usable_particles_processed;
+			// event_other_particles_processed_useless_ev += other_particles_processed;
+			// time_on_histograms_useless_ev += std::chrono::duration<double, std::milli>(histogram_fill_end - particle_loop_end).count();
+			// time_on_clustering_useless_ev += std::chrono::duration<double, std::milli>(jet_clustering_end - histogram_fill_end).count();
 
-			N_useless_ev += 1; // DEBUG/OPTIMIZATION!
+			// N_useless_ev += 1; // DEBUG/OPTIMIZATION!
 
 			iEvent--;
 			continue;
@@ -1029,56 +1029,56 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		hJetProxyPtY_YExtraCheck->Fill(pt_jet, y_jet);
 		hJetProxyPhi_YExtraCheck->Fill(Phi_jet);
 
-		auto jet_processing_end = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
+		// auto jet_processing_end = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
 		t3->Fill(); // Filling the tree first thing after the loop!
-		auto tree_fill_end = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
+		// auto tree_fill_end = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
 
-		total_particle_loop_time_ms = std::chrono::duration<double, std::milli>(particle_loop_end - particle_loop_start).count(); // DEBUG/OPTIMIZATION!
-		// std::cout << "Time statistics of USEFUL event:" << std::endl;
-		// std::cout << "\tNumber of useful particles vs useless particles vs total: " << usable_particles_processed << " " << other_particles_processed << " " << total_particles_processed << std::endl;
-		// std::cout << std::setprecision(8) << "\tTime (ms) spent processing all particles: " << total_particle_loop_time_ms  << " or " << total_particle_loop_time_ms/total_particles_processed << " ms per particle" << std::endl;
-		// std::cout << std::setprecision(8) << "\tTime (ms) spent processing useful particles: " << total_particle_loop_time_ms * (usable_particles_processed * 1./total_particles_processed) << std::endl;
-		// std::cout << std::setprecision(8) << "\tTime (ms) spent processing other particles: " << total_particle_loop_time_ms * (other_particles_processed * 1./total_particles_processed) << std::endl;
-		// std::cout << std::setprecision(8) << "\tTime (ms) spent filling histograms: " << std::chrono::duration<double, std::milli>(histogram_fill_end - particle_loop_end).count() << std::endl;
-		// std::cout << std::setprecision(8) << "\tTime (ms) spent clustering jets: " << std::chrono::duration<double, std::milli>(jet_clustering_end - histogram_fill_end).count() << std::endl;
-		// Summing values for the event average:
-		event_averaged_total_particle_loop_time_ms_useful_ev += total_particle_loop_time_ms; // DEBUG/OPTIMIZATION!
-		event_averaged_usable_particles_loop_time_ms_useful_ev += total_particle_loop_time_ms * (usable_particles_processed * 1./total_particles_processed);
-		event_averaged_other_particles_loop_time_ms_useful_ev += total_particle_loop_time_ms * (other_particles_processed * 1./total_particles_processed);
-		event_total_particles_processed_useful_ev += total_particles_processed;
-		event_usable_particles_processed_useful_ev += usable_particles_processed;
-		event_other_particles_processed_useful_ev += other_particles_processed;
-		time_on_histograms_useful += std::chrono::duration<double, std::milli>(histogram_fill_end - particle_loop_end).count();
-		time_clustering += std::chrono::duration<double, std::milli>(jet_clustering_end - histogram_fill_end).count();
-		time_processing_jet += std::chrono::duration<double, std::milli>(jet_processing_end - jet_clustering_end).count();
-		time_filling_tree += std::chrono::duration<double, std::milli>(tree_fill_end - jet_processing_end).count();
-		N_useful_ev += 1; // DEBUG/OPTIMIZATION!
+		// total_particle_loop_time_ms = std::chrono::duration<double, std::milli>(particle_loop_end - particle_loop_start).count(); // DEBUG/OPTIMIZATION!
+		// // std::cout << "Time statistics of USEFUL event:" << std::endl;
+		// // std::cout << "\tNumber of useful particles vs useless particles vs total: " << usable_particles_processed << " " << other_particles_processed << " " << total_particles_processed << std::endl;
+		// // std::cout << std::setprecision(8) << "\tTime (ms) spent processing all particles: " << total_particle_loop_time_ms  << " or " << total_particle_loop_time_ms/total_particles_processed << " ms per particle" << std::endl;
+		// // std::cout << std::setprecision(8) << "\tTime (ms) spent processing useful particles: " << total_particle_loop_time_ms * (usable_particles_processed * 1./total_particles_processed) << std::endl;
+		// // std::cout << std::setprecision(8) << "\tTime (ms) spent processing other particles: " << total_particle_loop_time_ms * (other_particles_processed * 1./total_particles_processed) << std::endl;
+		// // std::cout << std::setprecision(8) << "\tTime (ms) spent filling histograms: " << std::chrono::duration<double, std::milli>(histogram_fill_end - particle_loop_end).count() << std::endl;
+		// // std::cout << std::setprecision(8) << "\tTime (ms) spent clustering jets: " << std::chrono::duration<double, std::milli>(jet_clustering_end - histogram_fill_end).count() << std::endl;
+		// // Summing values for the event average:
+		// event_averaged_total_particle_loop_time_ms_useful_ev += total_particle_loop_time_ms; // DEBUG/OPTIMIZATION!
+		// event_averaged_usable_particles_loop_time_ms_useful_ev += total_particle_loop_time_ms * (usable_particles_processed * 1./total_particles_processed);
+		// event_averaged_other_particles_loop_time_ms_useful_ev += total_particle_loop_time_ms * (other_particles_processed * 1./total_particles_processed);
+		// event_total_particles_processed_useful_ev += total_particles_processed;
+		// event_usable_particles_processed_useful_ev += usable_particles_processed;
+		// event_other_particles_processed_useful_ev += other_particles_processed;
+		// time_on_histograms_useful += std::chrono::duration<double, std::milli>(histogram_fill_end - particle_loop_end).count();
+		// time_clustering += std::chrono::duration<double, std::milli>(jet_clustering_end - histogram_fill_end).count();
+		// time_processing_jet += std::chrono::duration<double, std::milli>(jet_processing_end - jet_clustering_end).count();
+		// time_filling_tree += std::chrono::duration<double, std::milli>(tree_fill_end - jet_processing_end).count();
+		// N_useful_ev += 1; // DEBUG/OPTIMIZATION!
 	}
-	// DEBUG/OPTIMIZATION!
-	// Printing average time statistics:
-	std::cout << "\n\nTime statistics for all events -- fast check stats:" << std::endl;
-	std::cout << "\tTotal time spent fast scanning (ms): " << total_time_fast_scanning_event_ms << std::endl;
-	std::cout << "\tEvent-averaged total_time_fast_scanning_event_ms: " << total_time_fast_scanning_event_ms*1./N_scanned_ev << std::endl;
+	// // DEBUG/OPTIMIZATION!
+	// // Printing average time statistics:
+	// std::cout << "\n\nTime statistics for all events -- fast check stats:" << std::endl;
+	// std::cout << "\tTotal time spent fast scanning (ms): " << total_time_fast_scanning_event_ms << std::endl;
+	// std::cout << "\tEvent-averaged total_time_fast_scanning_event_ms: " << total_time_fast_scanning_event_ms*1./N_scanned_ev << std::endl;
 
-	std::cout << "\nTime statistics averages of USEFUL events:" << std::endl;
-	std::cout << "\tNumber of useful particles vs useless particles vs total: " << event_usable_particles_processed_useful_ev << " " << event_other_particles_processed_useful_ev << " " << event_total_particles_processed_useful_ev << std::endl;
-	std::cout << "\tAverage number of useful particles vs useless particles vs total PER USEFUL EVENT: " << event_usable_particles_processed_useful_ev*1./N_useful_ev << " " << event_other_particles_processed_useful_ev*1./N_useful_ev << " " << event_total_particles_processed_useful_ev*1./N_useful_ev << std::endl;
-	std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent processing all particles: " << event_averaged_total_particle_loop_time_ms_useful_ev*1./N_useful_ev  << " or " << event_averaged_total_particle_loop_time_ms_useful_ev*1./event_total_particles_processed_useful_ev << " ms per particle" << std::endl;
-	std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent processing useful particles: " << event_averaged_usable_particles_loop_time_ms_useful_ev*1./N_useful_ev << std::endl;
-	std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent processing other particles: " << event_averaged_other_particles_loop_time_ms_useful_ev*1./N_useful_ev << std::endl;
-	std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent filling histograms: " << time_on_histograms_useful/N_useful_ev << std::endl;
-	std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent clustering jets: " << time_clustering/N_useful_ev << std::endl;
-	std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent processing jets: " << time_processing_jet/N_useful_ev << std::endl;
-	std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent filling the TTree: " << time_filling_tree/N_useful_ev << std::endl;
+	// std::cout << "\nTime statistics averages of USEFUL events:" << std::endl;
+	// std::cout << "\tNumber of useful particles vs useless particles vs total: " << event_usable_particles_processed_useful_ev << " " << event_other_particles_processed_useful_ev << " " << event_total_particles_processed_useful_ev << std::endl;
+	// std::cout << "\tAverage number of useful particles vs useless particles vs total PER USEFUL EVENT: " << event_usable_particles_processed_useful_ev*1./N_useful_ev << " " << event_other_particles_processed_useful_ev*1./N_useful_ev << " " << event_total_particles_processed_useful_ev*1./N_useful_ev << std::endl;
+	// std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent processing all particles: " << event_averaged_total_particle_loop_time_ms_useful_ev*1./N_useful_ev  << " or " << event_averaged_total_particle_loop_time_ms_useful_ev*1./event_total_particles_processed_useful_ev << " ms per particle" << std::endl;
+	// std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent processing useful particles: " << event_averaged_usable_particles_loop_time_ms_useful_ev*1./N_useful_ev << std::endl;
+	// std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent processing other particles: " << event_averaged_other_particles_loop_time_ms_useful_ev*1./N_useful_ev << std::endl;
+	// std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent filling histograms: " << time_on_histograms_useful/N_useful_ev << std::endl;
+	// std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent clustering jets: " << time_clustering/N_useful_ev << std::endl;
+	// std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent processing jets: " << time_processing_jet/N_useful_ev << std::endl;
+	// std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent filling the TTree: " << time_filling_tree/N_useful_ev << std::endl;
 
-	std::cout << "\nTime statistics averages of USELESS events:" << std::endl;
-	std::cout << "\tNumber of useful particles vs useless particles vs total: " << event_usable_particles_processed_useless_ev << " " << event_other_particles_processed_useless_ev << " " << event_total_particles_processed_useless_ev << std::endl;
-	std::cout << std::setprecision(4) << "\tAverage number of useful particles vs useless particles vs total PER USELESS EVENT: " << event_usable_particles_processed_useless_ev*1./N_useless_ev << " " << event_other_particles_processed_useless_ev*1./N_useless_ev << " " << event_total_particles_processed_useless_ev*1./N_useless_ev << std::endl;
-	std::cout << std::setprecision(8) << "\tAverage per (useless)event time (ms) spent processing all particles: " << event_averaged_total_particle_loop_time_ms_useless_ev*1./N_useless_ev  << " or " << event_averaged_total_particle_loop_time_ms_useless_ev*1./event_total_particles_processed_useless_ev << " ms per particle" << std::endl;
-	std::cout << std::setprecision(8) << "\tAverage per (useless)event time (ms) spent processing useless particles: " << event_averaged_usable_particles_loop_time_ms_useless_ev*1./N_useless_ev << std::endl;
-	std::cout << std::setprecision(8) << "\tAverage per (useless)event time (ms) spent processing other particles: " << event_averaged_other_particles_loop_time_ms_useless_ev*1./N_useless_ev << std::endl;
-	std::cout << std::setprecision(8) << "\tAverage per (useless)event time (ms) spent filling histograms: " << time_on_histograms_useless_ev/N_useless_ev << std::endl;
-	std::cout << std::setprecision(8) << "\tAverage per (useless)event time (ms) spent clustering jets: " << time_on_clustering_useless_ev/N_useless_ev << std::endl;
+	// std::cout << "\nTime statistics averages of USELESS events:" << std::endl;
+	// std::cout << "\tNumber of useful particles vs useless particles vs total: " << event_usable_particles_processed_useless_ev << " " << event_other_particles_processed_useless_ev << " " << event_total_particles_processed_useless_ev << std::endl;
+	// std::cout << std::setprecision(4) << "\tAverage number of useful particles vs useless particles vs total PER USELESS EVENT: " << event_usable_particles_processed_useless_ev*1./N_useless_ev << " " << event_other_particles_processed_useless_ev*1./N_useless_ev << " " << event_total_particles_processed_useless_ev*1./N_useless_ev << std::endl;
+	// std::cout << std::setprecision(8) << "\tAverage per (useless)event time (ms) spent processing all particles: " << event_averaged_total_particle_loop_time_ms_useless_ev*1./N_useless_ev  << " or " << event_averaged_total_particle_loop_time_ms_useless_ev*1./event_total_particles_processed_useless_ev << " ms per particle" << std::endl;
+	// std::cout << std::setprecision(8) << "\tAverage per (useless)event time (ms) spent processing useless particles: " << event_averaged_usable_particles_loop_time_ms_useless_ev*1./N_useless_ev << std::endl;
+	// std::cout << std::setprecision(8) << "\tAverage per (useless)event time (ms) spent processing other particles: " << event_averaged_other_particles_loop_time_ms_useless_ev*1./N_useless_ev << std::endl;
+	// std::cout << std::setprecision(8) << "\tAverage per (useless)event time (ms) spent filling histograms: " << time_on_histograms_useless_ev/N_useless_ev << std::endl;
+	// std::cout << std::setprecision(8) << "\tAverage per (useless)event time (ms) spent clustering jets: " << time_on_clustering_useless_ev/N_useless_ev << std::endl;
 
 
 
@@ -1408,6 +1408,7 @@ int main(int argc, char *argv[]){
     auto start_time = std::chrono::high_resolution_clock::now();
 	ROOT::EnableThreadSafety(); // Makes ROOT thread-aware -- This solves the parallelization problems and initializes ROOT, solving all previous problems!
 	omp_set_num_threads(N_cores); // Simple and short parallelization!
+	// omp_set_proc_bind(omp_proc_bind_spread); // makes the threads spread across all cores and sockets, maximizing CPU usage instead of hyperthreading
     #pragma omp parallel for
 	for (int WorkerId = 0; WorkerId < N_cores; WorkerId++){
 		// Calculating the number of events per worker, in a way that will give me exactly N_ev for whichever number of workers I use:
