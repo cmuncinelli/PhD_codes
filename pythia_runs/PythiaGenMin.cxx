@@ -374,6 +374,12 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	// double time_on_histograms_useless_ev = 0;
 	// double time_on_clustering_useless_ev = 0; // Only happens if the event is declared "useless" after it passes the previous checks
 
+	double number_of_actually_simulated_events = 0;
+	double INELEventCounter = 0;
+	double EventCounterWithLambdaOrBar_in_measurable_eta = 0;
+	double EventCounterWithJets_pTleqJetMinPt_WithLambda = 0;
+	double EventCounterWithEtaOKLambdaWithJets_pTleqJetMinPt_EtaCuts = 0;
+	double EventCounterPassedYExtraCheck = 0;
 	for (int iEvent=0; iEvent<N_ev; ++iEvent){
 		// pythia.next();
 		if (!pythia.next()){ // Skip failed events --> Angantyr can generate events that have no particles at all!
@@ -381,7 +387,8 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 			continue;
 		}
 
-		hEventCounter->Fill(0);
+		number_of_actually_simulated_events += 1;
+		// hEventCounter->Fill(0);
 
 		// Implementing a fast loop that just discards the event quickly if it does not have a Lambda
 		// (this means the centrality estimator will be biased, but we can just use a centrality estimator
@@ -482,9 +489,9 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 			// Clearing the list of FastJet candidates for this loop:
 		FastJetInputs.clear();
 		for (int i = 0; i < pythia.event.size(); ++i){
-			const auto &particle = pythia.event[i];
+			const auto &particle = pythia.event[i]; // Just a fancy alias, because it is a reference (&particle), so there is no copy actually being done here.
 
-			const bool isfinal = particle.isFinal();
+			const bool isfinal = particle.isFinal(); // No cost in creating this variable: compiler will just inline below
 			// bool isvisible = particle.isVisible(); // No need for this check, actually. We are demanding that the particle is charged, so we don't
 													  // need to demand it to be visible (all charged are visible by definition!)
 				// No need for carbon-copy checking anymore. Read the "DEBUG/OPTIMIZATION!" line below
@@ -524,13 +531,14 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 			// if (isfinal){ntrack_final += 1;}
 
-			const Float_t pT = particle.pT();
-			const Float_t rapidity = particle.y();
-			const Float_t Phi = particle.phi();
-			// Float_t mass = particle.m(); // No longer needed in this code: we are not storing the masses of the protons nor lambdas because pythia treats them as stable and with fixed mass!
+			// These were also moved further down the code -- They are not used outside of the isFinal "if"
+			// const Float_t pT = particle.pT();
+			// const Float_t rapidity = particle.y();
+			// const Float_t Phi = particle.phi();
+			// // Float_t mass = particle.m(); // No longer needed in this code: we are not storing the masses of the protons nor lambdas because pythia treats them as stable and with fixed mass!
 
-			const Float_t eta_rap = particle.eta();
-			const Bool_t isCharged = particle.isCharged();
+			// const Float_t eta_rap = particle.eta();
+			// const Bool_t isCharged = particle.isCharged();
 
 			// Grouped this redundant "isfinal" at the end of the for loop:
 			// // Starting the selections according to ALICE cuts in 1807.11321 [nucl-ex]
@@ -642,9 +650,13 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 			// Including all USEFUL particles into the arrays for storage:
 			// First, should look only for protons and anti-protons:
 			if (isfinal){
+				const Bool_t isCharged = particle.isCharged();
+
 				// Selections that were being done earlier in the code, which meant checking isfinal more than once for the particle:
 				ntrack_final += 1; // Checking if final
 				if (isCharged){
+					const Float_t eta_rap = particle.eta(); // Just need this value within this isCharged check
+					const Float_t pT = particle.pT();
 					//////////////////////////////////////////////////
 					Ntracks_final_charged += 1; // Checking final charged in all eta
 					if (std::fabs(eta_rap) < 1.0){
@@ -652,7 +664,91 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 						charged_in_central_eta = true;
 					}
 					//////////////////////////////////////////////////
+					// Now doing the check to see if this is a proton with Lambda mother or not:
+					const int particle_PID = particle.id(); // Moved this definition here, because it was not used anywhere else in the code!
+												  	  // (so no need to define it outside of the "if(isfinal)"!)
+					if (particle_PID == 2212 || particle_PID == -2212){
+						int motherIdx1 = particle.mother1(); // Moved from earlier on in the code: we don't need to get the mother of every particle because we
+															// are no longer checking the isPrimary condition for all particles!
+						// int motherIdx2 = particle.mother2();
 
+						// After that, should check if the mother of this proton or anti-proton is a Lambda or LambdaBar
+						// Particle mother_particle_object = pythia.event[motherIdx1]; // Already using the Pythia8 namespace
+						const int mother_PID = pythia.event[motherIdx1].id(); // Removed the mother_particle_object as it was no longer being used
+						if (mother_PID == 3122 || mother_PID == -3122){
+							// Should not worry with this Lambda being a carbon-copy or not: the useful kinematic information comes from the actual
+							// mother of the proton, not the previous stages of when that Lambda was generated, as far as I know. If we had the QGP,
+							// what would be measured is not the "first" Lambda, but the final after-interactions Lambda's daughter. In iSS, the
+							// Lambda would be the result of all the quark interactions inside the QGP, so it would also come after these interactions
+							// that are responsible for creating carbon-copies!
+							
+							Bool_t isProton_not_PBar_value = false; // A bool to know if this particle is a proton or a PBar (they will be stored in the same branch)
+							if (particle_PID == 2212){
+								isProton_not_PBar_value = true;
+							}
+
+							Bool_t isLambda_notLBar_value = false; // A bool to know if this particle is a Lambda or an LBar (they will be stored in the same branch)
+							if (mother_PID == 3122){
+								isLambda_notLBar_value = true;
+							}
+
+							//////////////////////////////////////////////////////////
+							// Checking if the Lambda is primary:
+							Bool_t isExperimentalPrimary = true;
+							int temp_mother_idx = motherIdx1;
+							while ((pythia.event[temp_mother_idx].mother1() == pythia.event[temp_mother_idx].mother2()) && (pythia.event[temp_mother_idx].mother1() > 0)){
+								// Should keep changing the mother particle definition if the mother is a carbon copy!
+								// We want to see if the physical mother of the Lambda has a specific tau0 lifetime, not the lifetime of the carbon-copy mother!
+								
+								// No longer copying all of the particle information for each iteration -- It is best to just access the Idx
+								// mother_particle_object = pythia.event[mother_particle_object.mother1()];
+								temp_mother_idx = pythia.event[temp_mother_idx].mother1(); // Quicker than updating the whole object: just updates the index!
+							}
+
+								// Getting the mother of the Lambda:
+							Particle lambda_mother_object = pythia.event[pythia.event[temp_mother_idx].mother1()];
+							// Case 1: Check lifetime of the mother
+							// (long-lived weak decays should be considered non-primary)
+							// (Definition of experimental primary in slide 112 of https://indico.cern.ch/event/666222/contributions/2768780/attachments/1551303/2437229/DPG_AnalysisTutorial_20171102.pdf)
+							// If the mother of this lambda is the beam itself, there is no 
+							if (lambda_mother_object.tau0() >= 10.0){ // tau0 in mm/c
+								isExperimentalPrimary = false;
+							}
+
+							// Case 2: Direct hadronization products (fragmentation or R-hadron formation)
+							// (If the Lambda's mother comes from any of these statuses, then it came from the beam's strings in some sense, so should be set as primary again)
+							if ((abs(lambda_mother_object.status()) >= 81 && abs(lambda_mother_object.status()) <= 86) || (abs(lambda_mother_object.status()) >= 101 && abs(lambda_mother_object.status()) <= 106)){
+								isExperimentalPrimary = true;
+							}
+							//////////////////////////////////////////////////////////
+
+							// Getting the variables that we didn't fetch until now:
+							const Float_t rapidity = particle.y();
+							const Float_t Phi = particle.phi();
+
+							// Saving the useful variables:
+							ProtonOrPBar_pt.push_back(pT);
+							ProtonOrPBar_y.push_back(rapidity);
+							ProtonOrPBar_Phi.push_back(Phi);
+							// ProtonOrPBar_m.push_back(mass);
+
+							LambdaOrLBar_pt.push_back(pythia.event[motherIdx1].pT());
+							LambdaOrLBar_y.push_back(pythia.event[motherIdx1].y());
+							LambdaOrLBar_Phi.push_back(pythia.event[motherIdx1].phi());
+							// LambdaOrLBar_m.push_back(pythia.event[motherIdx1].m());
+
+							isProton_not_PBar.push_back(isProton_not_PBar_value);
+							isLambda_notLBar.push_back(isLambda_notLBar_value);
+
+							isLambdaOrLBarExperimentalPrimary.push_back(isExperimentalPrimary);
+
+							// usable_particles_processed += 1; // DEBUG/OPTIMIZATION!
+						}
+						// else{other_particles_processed += 1;} // DEBUG/OPTIMIZATION!
+					}
+					// else{other_particles_processed += 1;} // DEBUG/OPTIMIZATION!
+					
+					// Doing the jet candidate selection AFTER the proton loop, because the jet selection can hit "continue" on the particles:
 					//////////////////////////////////////////////////
 					// Also moved the jet candidate selection inside these checks -- We already check if a particle is charged once, so there is no need to check it again!
 						// Finally, introducing this particle to the jet candidate list if a certain number of criteria are obeyed:
@@ -672,7 +768,10 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 					// interval. Therefore, we will apply a cut just to remove beam remnants in the forward region,
 					// i.e., a really open cut like |\eta| < 3. We could even apply a stricter cut to more closely
 					// resemble the detector acceptances. Yet, at this stage I just want to get rid of useless statistics.
-					if (pT < 0.1 || std::fabs(eta_rap) > 3){continue;} // Will just continue the loop. As this is the last part of the loop, there is no problem in skipping it
+
+					// Changed to apply a stricter cut: this will greatly speed up the loop and I don't need to know the statistics
+					// of jets outside of the detectable region anymore (those are already present in the previous runs' data)
+					if (pT < 0.1 || std::fabs(eta_rap) > ALICE_charged_particle_acceptance){continue;} // Will just continue the loop. As this is the last part of the loop, there is no problem in skipping it
 
 					// Create a PseudoJet from the complete Pythia particle:
 					fastjet::PseudoJet particleTemp = particle;
@@ -683,84 +782,6 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 					FastJetInputs.push_back(particleTemp);
 					// }
 					//////////////////////////////////////////////////
-				}
-
-				int particle_PID = particle.id(); // Moved this definition here, because it was not used anywhere else in the code!
-												  // (so no need to define it outside of the "if(isfinal)"!)
-				if (particle_PID == 2212 || particle_PID == -2212){
-					int motherIdx1 = particle.mother1(); // Moved from earlier on in the code: we don't need to get the mother of every particle because we
-														 // are no longer checking the isPrimary condition for all particles!
-					// int motherIdx2 = particle.mother2(); // Act
-
-					// After that, should check if the mother of this proton or anti-proton is a Lambda or LambdaBar
-					Particle mother_particle_object = pythia.event[motherIdx1]; // Already using the Pythia8 namespace
-					int mother_PID = mother_particle_object.id();
-					if (mother_PID == 3122 || mother_PID == -3122){
-						// Should not worry with this Lambda being a carbon-copy or not: the useful kinematic information comes from the actual
-						// mother of the proton, not the previous stages of when that Lambda was generated, as far as I know. If we had the QGP,
-						// what would be measured is not the "first" Lambda, but the final after-interactions Lambda's daughter. In iSS, the
-						// Lambda would be the result of all the quark interactions inside the QGP, so it would also come after these interactions
-						// that are responsible for creating carbon-copies!
-						
-						Bool_t isProton_not_PBar_value = false; // A bool to know if this particle is a proton or a PBar (they will be stored in the same branch)
-						if (particle_PID == 2212){
-							isProton_not_PBar_value = true;
-						}
-
-						Bool_t isLambda_notLBar_value = false; // A bool to know if this particle is a Lambda or an LBar (they will be stored in the same branch)
-						if (mother_PID == 3122){
-							isLambda_notLBar_value = true;
-						}
-
-						//////////////////////////////////////////////////////////
-						// Checking if the Lambda is primary:
-						Bool_t isExperimentalPrimary = true;
-						int temp_mother_idx = motherIdx1;
-						while ((pythia.event[temp_mother_idx].mother1() == pythia.event[temp_mother_idx].mother2()) && (pythia.event[temp_mother_idx].mother1() > 0)){
-							// Should keep changing the mother particle definition if the mother is a carbon copy!
-							// We want to see if the physical mother of the Lambda has a specific tau0 lifetime, not the lifetime of the carbon-copy mother!
-							
-							// No longer copying all of the particle information for each iteration -- It is best to just access the Idx
-							// mother_particle_object = pythia.event[mother_particle_object.mother1()];
-							temp_mother_idx = pythia.event[temp_mother_idx].mother1(); // Quicker than updating the whole object: just updates the index!
-						}
-
-							// Getting the mother of the Lambda:
-						Particle lambda_mother_object = pythia.event[pythia.event[temp_mother_idx].mother1()];
-						// Case 1: Check lifetime of the mother
-						// (long-lived weak decays should be considered non-primary)
-						// (Definition of experimental primary in slide 112 of https://indico.cern.ch/event/666222/contributions/2768780/attachments/1551303/2437229/DPG_AnalysisTutorial_20171102.pdf)
-						// If the mother of this lambda is the beam itself, there is no 
-						if (lambda_mother_object.tau0() >= 10.0){ // tau0 in mm/c
-							isExperimentalPrimary = false;
-						}
-
-						// Case 2: Direct hadronization products (fragmentation or R-hadron formation)
-						// (If the Lambda's mother comes from any of these statuses, then it came from the beam's strings in some sense, so should be set as primary again)
-						if ((abs(lambda_mother_object.status()) >= 81 && abs(lambda_mother_object.status()) <= 86) || (abs(lambda_mother_object.status()) >= 101 && abs(lambda_mother_object.status()) <= 106)){
-							isExperimentalPrimary = true;
-						}
-						//////////////////////////////////////////////////////////
-
-						// Saving the useful variables:
-						ProtonOrPBar_pt.push_back(pT);
-						ProtonOrPBar_y.push_back(rapidity);
-						ProtonOrPBar_Phi.push_back(Phi);
-						// ProtonOrPBar_m.push_back(mass);
-
-						LambdaOrLBar_pt.push_back(pythia.event[motherIdx1].pT());
-						LambdaOrLBar_y.push_back(pythia.event[motherIdx1].y());
-						LambdaOrLBar_Phi.push_back(pythia.event[motherIdx1].phi());
-						// LambdaOrLBar_m.push_back(pythia.event[motherIdx1].m());
-
-						isProton_not_PBar.push_back(isProton_not_PBar_value);
-						isLambda_notLBar.push_back(isLambda_notLBar_value);
-
-						isLambdaOrLBarExperimentalPrimary.push_back(isExperimentalPrimary);
-
-						// usable_particles_processed += 1; // DEBUG/OPTIMIZATION!
-					}
-					// else{other_particles_processed += 1;} // DEBUG/OPTIMIZATION!
 				}
 				// else{other_particles_processed += 1;} // DEBUG/OPTIMIZATION!
 			}
@@ -802,7 +823,8 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// Filling the event counters for INEL events for each multiplicity class:
 			// (This is actually just to sate my curiosity. It has no practical use, as the number of events is the same for all particle species in the ALICE standard normalization of pT spectra)
 		if (charged_in_central_eta){
-			hINELEventCounter->Fill(0);
+			// hINELEventCounter->Fill(0);
+			INELEventCounter += 1;
 			// hINELev_Ntracks_final_charged_forward->Fill(charged_in_back_forward_eta);
 
 			// if (n_charged_event != 0){hINELev_Ntracks_final_charged_forward_Charged->Fill(charged_in_back_forward_eta);}
@@ -866,7 +888,8 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// 	iEvent--;
 		// 	continue;
 		// }
-		hEventCounterWithLambdaOrBar_in_measurable_eta->Fill(0);
+		// hEventCounterWithLambdaOrBar_in_measurable_eta->Fill(0);
+		EventCounterWithLambdaOrBar_in_measurable_eta += 1;
 
 		// Now applying the jet cuts:
 		// Checking the Jet information to see if this event will be excluded or not:
@@ -879,7 +902,10 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// auto jet_clustering_end = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
 
 		hJetCounterPerEventWithLambda->Fill(sortedJets.size()); // This may be zero without a problem! I just need to know how many of the total events have a jet
-		if(sortedJets.size() != 0){hEventCounterWithJets_pTleqJetMinPt_WithLambda->Fill(0);}
+		if(sortedJets.size() != 0){
+			// hEventCounterWithJets_pTleqJetMinPt_WithLambda->Fill(0);
+			EventCounterWithJets_pTleqJetMinPt_WithLambda += 1;
+		}
 
 			// Now applying the eta cut for the jets (if they don't pass |eta|<jet_max_eta, then the jet is not selected)
 		fastjet::PseudoJet leadingJet;
@@ -924,8 +950,8 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 			// Getting the PID of each constituent of this jet:
 			for (const auto& jet_constituent : jet_constituents){
-				int particle_PythiaIdx = jet_constituent.user_index(); // Using what we defined in particleTemp
-				int particle_PID = pythia.event[particle_PythiaIdx].id();
+				const int particle_PythiaIdx = jet_constituent.user_index(); // Using what we defined in particleTemp
+				const int particle_PID = pythia.event[particle_PythiaIdx].id();
 				mapCountsOfPIDAllJetConstituents_WithLambda[particle_PID]++; // Creates a key with the PID number, and then adds 1 to that key's value
 			}
 		}
@@ -993,7 +1019,8 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// 	iEvent--;
 		// 	continue;
 		// }
-		hEventCounterWithEtaOKLambdaWithJets_pTleqJetMinPt_EtaCuts->Fill(0);
+		// hEventCounterWithEtaOKLambdaWithJets_pTleqJetMinPt_EtaCuts->Fill(0);
+		EventCounterWithEtaOKLambdaWithJets_pTleqJetMinPt_EtaCuts += 1;
 		hNParticlesLeadingJet_EtaCutsWithLambda->Fill(leadingJet_constituents.size());
 			// Filling the map for this "EtaCutsWithLambda" cut:
 		for (const auto &key_and_value_pair : CurrentEvent_LeadingJet_map){
@@ -1010,7 +1037,8 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// The check below is just paranoid -- For a high enough pT, this should not be necessary!
 		// (just removed the iEvent-- and the skipping part of it, while preserving the histogramming)
 		if (std::fabs(leadingJet.rap()) < 0.5){ // If the event contains a lambda, we will do a final, less restrictive check: does this event's leading jet stay in the |y|<0.5 region?
-			hEventCounterPassedYExtraCheck->Fill(0);
+			// hEventCounterPassedYExtraCheck->Fill(0);
+			EventCounterPassedYExtraCheck += 1;
 		}
 		// else{
 		// 	iEvent--;
@@ -1054,6 +1082,14 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// time_filling_tree += std::chrono::duration<double, std::milli>(tree_fill_end - jet_processing_end).count();
 		// N_useful_ev += 1; // DEBUG/OPTIMIZATION!
 	}
+	// Updating event counters:
+	hEventCounter->Fill(0., number_of_actually_simulated_events);
+	hINELEventCounter->Fill(0., INELEventCounter);
+	hEventCounterWithLambdaOrBar_in_measurable_eta->Fill(0., EventCounterWithLambdaOrBar_in_measurable_eta);
+	hEventCounterWithJets_pTleqJetMinPt_WithLambda->Fill(0., EventCounterWithJets_pTleqJetMinPt_WithLambda);
+	hEventCounterWithEtaOKLambdaWithJets_pTleqJetMinPt_EtaCuts->Fill(0., EventCounterWithEtaOKLambdaWithJets_pTleqJetMinPt_EtaCuts);
+	hEventCounterPassedYExtraCheck->Fill(0., EventCounterPassedYExtraCheck);
+
 	// // DEBUG/OPTIMIZATION!
 	// // Printing average time statistics:
 	// std::cout << "\n\nTime statistics for all events -- fast check stats:" << std::endl;

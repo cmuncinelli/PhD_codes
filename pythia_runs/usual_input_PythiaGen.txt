@@ -15,6 +15,11 @@
 # High statistics run (~650 GB of data in old format, ~15 GB in new format):
 ./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e8 120
 
+        # Test runs with physical cores, not hypertrheaded programs:
+export OMP_PLACES=cores
+export OMP_PROC_BIND=close
+
+
     # To run in jarvis5 (storage3 is freer):
 ./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e10 120
 
@@ -45,9 +50,27 @@ g++ -O2 -std=c++17 PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PY
     # Adding some more optimization flags:
 -march=native for better vectorization and a CPU-specific compilation, tuned for my CPU
 -flto (Link-Time Optimization), i.e., the linker can inline between files (might not work with the way Pythia and ROOT are built in O2Physics though...)
+        # Used an flto=2 so that it tries to compile using two cores for link-time optimization. Quicker and almost costless.
 -pipe for faster compilation time (uses pipe instead of temp files)
 
-g++ -O2 -std=c++17 -march=native -flto -pipe PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 -I$FASTJET/include -L$FASTJET/lib -lfastjet `root-config --cflags --libs` -fopenmp
+g++ -O2 -std=c++17 -march=native -flto=2 -pipe PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 -I$FASTJET/include -L$FASTJET/lib -lfastjet `root-config --cflags --libs` -fopenmp
 
 # Debugging:
 g++ -O0 -g -fno-omit-frame-pointer -fsanitize=address,undefined -D_GLIBCXX_ASSERTIONS -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 -fopenmp PythiaGenMin.cxx -o PythiaGenMin.exe `root-config --cflags --libs`
+
+
+
+# Testing in jarvis15 (notice you have to change your username here! Messy! The actual users are not in /home/<username>: there is an extra layer due to CCJDR's meddling!):
+# First with the physical cores (168 in total!):
+    # To get the physical cores number, use: awk '/physical id/ {p[$4]++} /core id/ {c[$4]++} END {print length(p)*length(c)}' /proc/cpuinfo
+./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e5 160
+# The overall final time with 1e5 events (and the additional prints to get time statistics), was: 230.16195849
+# Removing the additional prints and clocks: 230.680 (praticamente nenhuma diferença!!!)
+# By messing with the OMP_PROC_BIND export variable before running the program, the timing became: 
+
+# Then with the logical cores (336 in total! Two threads per physical core!):
+    # To get the number of logical cores, just run: nproc
+./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e5 320
+# The overall final time with 1e5 events (and the additional prints to get time statistics), was: 230.46289213
+# Removing the additional prints and clocks: 231.639
+# By messing with the OMP_PROC_BIND export variable before running the program, the timing became: 

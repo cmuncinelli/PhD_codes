@@ -50,3 +50,9 @@ g++ -O2 -std=c++17 lambda_pol_PYTHIA.cxx -o lambda_pol_PYTHIA.exe `root-config -
 
 # For running in jarvis5 (notice that everything that referred to a storage2 will now refer to storage3, which is a bit freer in jarvis5):
 ./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e10 122 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 1
+
+
+# For running in jarvis15 (here you can use storage2 to keep the same commands):
+        # Actually, look at the results from usual_input_PythiaGen first!
+### ./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/users/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e8 122 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 1
+./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e8 320 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1
