@@ -189,3 +189,29 @@ The program ran for: 290.802 seconds.
 The code takes about 0.006 seconds per event, or 5.816 seconds for 1e3 events.
 In an N_cores-agnostic way, the program takes 0.698 seconds to analyze an event in each core, or 697.926 seconds for 1e3 events.
 /////////////////////////////
+
+
+
+
+
+
+
+
+
+# Some extra, old checks, one in jarvis15:
+# Testing in jarvis15 (notice you have to change your username here! Messy! The actual users are not in /home/<username>: there is an extra layer due to CCJDR's meddling!):
+# First with the physical cores (168 in total!):
+    # To get the physical cores number, use: awk '/physical id/ {p[$4]++} /core id/ {c[$4]++} END {print length(p)*length(c)}' /proc/cpuinfo
+./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e5 160
+# The overall final time with 1e5 events (and the additional prints to get time statistics), was: 230.16195849
+# Removing the additional prints and clocks: 230.680 (praticamente nenhuma diferença!!!)
+# By messing with the OMP_PROC_BIND export variable before running the program, the timing became: (see the pythia_running_times-OptimizationPassesComparison.txt file)
+
+# Then with the logical cores (336 in total! Two threads per physical core!):
+    # To get the number of logical cores, just run: nproc
+./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e5 320
+# The overall final time with 1e5 events (and the additional prints to get time statistics), was: 230.46289213
+# Removing the additional prints and clocks: 231.639
+# By messing with the OMP_PROC_BIND export variable before running the program, the timing became: (see the pythia_running_times-OptimizationPassesComparison.txt file)
+
+# After optimization pass5, 320 logical cores, 1e5 events: 225.914 (so kept the same time, approximatelly!)

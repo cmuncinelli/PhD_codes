@@ -15,14 +15,13 @@
 # High statistics run (~650 GB of data in old format, ~15 GB in new format):
 ./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e8 120
 
-        # Test runs with physical cores, not hypertrheaded programs:
-export OMP_PLACES=cores
-export OMP_PROC_BIND=close
-
-
     # To run in jarvis5 (storage3 is freer):
 ./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e10 120
+    # To run in jarvis15 (storage3 is faster):
+./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e5 330
 
+    # Increasing sample size to useful numbers:
+./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e8 330
 
     # Testing Angantyr:
 ./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_PbPb_536tev_AllowLambdaDecays.cfg" 1e1 1
@@ -53,6 +52,7 @@ g++ -O2 -std=c++17 PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PY
         # Used an flto=2 so that it tries to compile using two cores for link-time optimization. Quicker and almost costless.
 -pipe for faster compilation time (uses pipe instead of temp files)
 
+        # Faster compile:
 g++ -O2 -std=c++17 -march=native -flto=2 -pipe PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 -I$FASTJET/include -L$FASTJET/lib -lfastjet `root-config --cflags --libs` -fopenmp
 
 # Debugging:
@@ -60,17 +60,19 @@ g++ -O0 -g -fno-omit-frame-pointer -fsanitize=address,undefined -D_GLIBCXX_ASSER
 
 
 
-# Testing in jarvis15 (notice you have to change your username here! Messy! The actual users are not in /home/<username>: there is an extra layer due to CCJDR's meddling!):
-# First with the physical cores (168 in total!):
-    # To get the physical cores number, use: awk '/physical id/ {p[$4]++} /core id/ {c[$4]++} END {print length(p)*length(c)}' /proc/cpuinfo
-./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e5 160
-# The overall final time with 1e5 events (and the additional prints to get time statistics), was: 230.16195849
-# Removing the additional prints and clocks: 230.680 (praticamente nenhuma diferença!!!)
-# By messing with the OMP_PROC_BIND export variable before running the program, the timing became: 
+# Fully chained commands, from start to finish:
+    # Jarvis4:
+./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e8 122 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1
+    # Jarvis5:
+./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e8 122 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1
+    # Jarvis15:
+./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e8 330 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1
 
-# Then with the logical cores (336 in total! Two threads per physical core!):
-    # To get the number of logical cores, just run: nproc
-./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e5 320
-# The overall final time with 1e5 events (and the additional prints to get time statistics), was: 230.46289213
-# Removing the additional prints and clocks: 231.639
-# By messing with the OMP_PROC_BIND export variable before running the program, the timing became: 
+
+# Smaller stats tests:
+    # Jarvis4:
+./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e4 122 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e4 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e4 1
+    # Jarvis5:
+./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e4 122 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e4 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e4 1
+    # Jarvis15:
+./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e4 330 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e4 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e4 1

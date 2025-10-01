@@ -1,33 +1,33 @@
 # Compilation:
 g++ -O2 -std=c++17 lambda_pol_PYTHIA.cxx -o lambda_pol_PYTHIA.exe `root-config --cflags --libs`
 
-# Run:
-./lambda_pol_PYTHIA.exe simulations_folder input_card_name N_events target_centrality_bin
+# Run (had to generalize the style to include an output folder, because in the CCJDR-managed computers the path is not "/home/cicero", but "/home/users/cicerodm"!):
+./lambda_pol_PYTHIA.exe simulations_folder output_folder input_card_name N_events target_centrality_bin
 
 
     # For pp @ 13.6 TeV - 1.000 ev run:
         # 0-5% (target_centrality_bin = 1):
-./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e3 1
+./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e3 1
         # 40-50% (target_centrality_bin = 6):
-./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e3 6
+./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e3 6
 
     # For pp @ 13.6 TeV - 100.000 ev run:
         # 0-5% (target_centrality_bin = 1):
-./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e5 1
+./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e5 1
         # 40-50% (target_centrality_bin = 6):
-./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e5 6
+./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e5 6
 
         # Chaining both of them:
-./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e5 1 && ./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e5 6
+./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e5 1 && ./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e5 6
 
     # For pp @ 13.6 TeV - 100.000.000 ev run:
         # 0-5% (target_centrality_bin = 1):
-./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1
+./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1
         # 40-50% (target_centrality_bin = 6):
-./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6
+./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6
 
         # Chaining the two that take a longer time to run:
-./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6 && ./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1
+./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6 && ./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1
 
 
         # For PbPb - 5.36 TeV - 100.000 ev run:
@@ -35,24 +35,24 @@ g++ -O2 -std=c++17 lambda_pol_PYTHIA.cxx -o lambda_pol_PYTHIA.exe `root-config -
 
 
 # Chaining these two simulation types:
-./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e5 1 && ./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e5 6 && ./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1 && ./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6 && ./lambda_pol_PYTHIA.exe "pythia8_PbPb_536tev_AllowLambdaDecays" 1e5 6 && ./lambda_pol_PYTHIA.exe "pythia8_PbPb_536tev_AllowLambdaDecays" 1e5 6
+./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e5 1 && ./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e5 6 && ./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1 && ./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6 && ./lambda_pol_PYTHIA.exe "pythia8_PbPb_536tev_AllowLambdaDecays" 1e5 6 && ./lambda_pol_PYTHIA.exe "pythia8_PbPb_536tev_AllowLambdaDecays" 1e5 6
 
 
 # Waiting for the simulations to finish running before analyzing the data:
-./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e5 6 && sleep 8h && ./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6
+./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e5 6 && sleep 8h && ./lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6
 
 
 # High statistics and then processing:
-./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e8 122 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1
+./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e8 122 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1
 
 # Real high statistics (after storage optimizations):
-./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e10 122 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 1
+./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e10 122 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage2/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 1
 
 # For running in jarvis5 (notice that everything that referred to a storage2 will now refer to storage3, which is a bit freer in jarvis5):
-./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e10 122 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 1
+./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e10 122 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 1
 
 
-# For running in jarvis15 (here you can use storage2 to keep the same commands):
+# For running in jarvis15 (here you can use storage2 to keep the same commands, but used storage3 because it is faster and larger):
         # Actually, look at the results from usual_input_PythiaGen first!
-### ./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/users/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e8 122 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 1
-./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e8 320 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1
+### ./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/users/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e8 122 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 1
+../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 1

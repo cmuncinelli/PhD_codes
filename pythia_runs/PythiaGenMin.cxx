@@ -1501,8 +1501,8 @@ int main(int argc, char *argv[]){
 
 	std::cout << "\n////// TIME STATISTICS //////" << std::endl;
     std::cout << "The program ran for: " << total_elapsed.count() << " seconds." << std::endl;
-    std::cout << "The code takes about " << total_elapsed.count() * 1./N_ev << " seconds per event, or " << total_elapsed.count() * 1./N_ev * 1000 << " seconds for 1e3 events." << std::endl;
-    std::cout << "In an N_cores-agnostic way, the program takes " << total_elapsed.count() * 1./(N_ev * 1./N_cores) << " seconds to analyze an event in each core, or " << total_elapsed.count() * 1./(N_ev * 1./N_cores) * 1000 << " seconds for 1e3 events." << std::endl;
+    std::cout << std::setprecision(8) << "The code takes about " << total_elapsed.count() * 1./N_ev << " seconds per event, or " << total_elapsed.count() * 1./N_ev * 1000 << " seconds for 1e3 events." << std::endl;
+    std::cout << std::setprecision(8) << "In an N_cores-agnostic way, the program takes " << total_elapsed.count() * 1./(N_ev * 1./N_cores) << " seconds to analyze an event in each core, or " << total_elapsed.count() * 1./(N_ev * 1./N_cores) * 1000 << " seconds for 1e3 events." << std::endl;
 	// Notice that N_ev * 1./N_cores is the number of events per core, and then we are dividing to get the number of seconds per event.
     std::cout << "/////////////////////////////" << std::endl;
 
