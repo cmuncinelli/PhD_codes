@@ -1,0 +1,110 @@
+# With optimization -- Phase 2:
+Time statistics averages of USEFUL events:
+        Number of useful particles vs useless particles vs total: 3727 1710066 1713793
+        Average number of useful particles vs useless particles vs total PER USEFUL EVENT: 3.727 1710.066 1713.793
+        Average per (useful)event time (ms) spent processing all particles: 0.12380972 or 0.00007224 ms per particle
+        Average per (useful)event time (ms) spent processing useful particles: 0.00027059
+        Average per (useful)event time (ms) spent processing other particles: 0.12353914
+        Average per (useful)event time (ms) spent filling histograms: 0.00035623
+        Average per (useful)event time (ms) spent clustering jets: 0.07128444
+        Average per (useful)event time (ms) spent processing jets: 0.00323749
+        Average per (useful)event time (ms) spent filling the TTree: 0.00884542
+Time statistics averages of USELESS events:
+        Number of useful particles vs useless particles vs total: 128923 65501740 65630663
+        Average number of useful particles vs useless particles vs total PER USELESS EVENT: 0.81437568 413.75878819 414.57316388
+        Average per (useless)event time (ms) spent processing all particles: 0.03178060 or 0.00007666 ms per particle
+        Average per (useless)event time (ms) spent processing useless particles: 0.00006368
+        Average per (useless)event time (ms) spent processing other particles: 0.03171692
+        Average per (useless)event time (ms) spent filling histograms: 0.00025016
+////// TIME STATISTICS //////
+The program ran for: 301.26039012 seconds.
+The code takes about 0.30126039 seconds per event, or 301.26039012 seconds for 1e3 events.
+In an N_cores-agnostic way, the program takes 0.30126039 seconds to analyze an event in each core, or 301.26039012 seconds for 1e3 events.
+/////////////////////////////
+
+# Now, without the isPrimary selection:
+Time statistics averages of USEFUL events:
+        Number of useful particles vs useless particles vs total: 3843 1684035 1687878
+        Average number of useful particles vs useless particles vs total PER USEFUL EVENT: 3.843 1684.035 1687.878
+        Average per (useful)event time (ms) spent processing all particles: 0.12106814 or 0.00007173 ms per particle
+        Average per (useful)event time (ms) spent processing useful particles: 0.00027698
+        Average per (useful)event time (ms) spent processing other particles: 0.12079116
+        Average per (useful)event time (ms) spent filling histograms: 0.00037253
+        Average per (useful)event time (ms) spent clustering jets: 0.06994338
+        Average per (useful)event time (ms) spent processing jets: 0.00336249
+        Average per (useful)event time (ms) spent filling the TTree: 0.00849641
+Time statistics averages of USELESS events:
+        Number of useful particles vs useless particles vs total: 124434 62776753 62901187
+        Average number of useful particles vs useless particles vs total PER USELESS EVENT: 0.81864474 413.00495395 413.82359868
+        Average per (useless)event time (ms) spent processing all particles: 0.03146640 or 0.00007604 ms per particle
+        Average per (useless)event time (ms) spent processing useless particles: 0.00006345
+        Average per (useless)event time (ms) spent processing other particles: 0.03140295
+        Average per (useless)event time (ms) spent filling histograms: 0.00024984
+////// TIME STATISTICS //////
+The program ran for: 290.78976258 seconds.
+The code takes about 0.29078976 seconds per event, or 290.78976258 seconds for 1e3 events.
+In an N_cores-agnostic way, the program takes 0.29078976 seconds to analyze an event in each core, or 290.78976258 seconds for 1e3 events.
+/////////////////////////////
+
+
+
+# Now another test, with a fast scan before running the useless events, which just checks if the event has Lambda or not:
+Time statistics for all events -- fast check stats:
+        Total time spent fast scanning (ms): 120.088
+        Event-averaged time_fast_scanning_event_ms: 0.001
+Time statistics averages of USEFUL events:
+        Number of useful particles vs useless particles vs total: 3852 1693911 1697763
+        Average number of useful particles vs useless particles vs total PER USEFUL EVENT: 3.852 1693.911 1697.763
+        Average per (useful)event time (ms) spent processing all particles: 0.11752463 or 0.00006922 ms per particle
+        Average per (useful)event time (ms) spent processing useful particles: 0.00026786
+        Average per (useful)event time (ms) spent processing other particles: 0.11725677
+        Average per (useful)event time (ms) spent filling histograms: 0.00035859
+        Average per (useful)event time (ms) spent clustering jets: 0.05548718
+        Average per (useful)event time (ms) spent processing jets: 0.00316653
+        Average per (useful)event time (ms) spent filling the TTree: 0.00830324
+Time statistics averages of USELESS events:
+        Number of useful particles vs useless particles vs total: 50464 19097728 80679713
+        Average number of useful particles vs useless particles vs total PER USELESS EVENT: 0.33815804 127.97341053 540.63279323
+        Average per (useless)event time (ms) spent processing all particles: 0.00065027 or 0.00000120 ms per particle
+        Average per (useless)event time (ms) spent processing useless particles: 0.00000000
+        Average per (useless)event time (ms) spent processing other particles: 0.00000000
+        Average per (useless)event time (ms) spent filling histograms: 0.00004304
+        Average per (useless)event time (ms) spent clustering jets: 0.00419034
+////// TIME STATISTICS //////
+The program ran for: 279.33851585 seconds.
+The code takes about 0.27933852 seconds per event, or 279.33851585 seconds for 1e3 events.
+In an N_cores-agnostic way, the program takes 0.27933852 seconds to analyze an event in each core, or 279.33851585 seconds for 1e3 events.
+/////////////////////////////
+
+
+# On top of that check, just to see how the time of the fast-scanning compares to the full loop on all particles WITHOUT the isExperimentalPrimary part (should not change ANYTHING meaningfully, as this would only change the time spent running useful particles, right? (which is already small)):
+Time statistics for all events -- fast check stats:
+        Total time spent fast scanning (ms): 119.382
+        Event-averaged total_time_fast_scanning_event_ms: 0.001
+Time statistics averages of USEFUL events:
+        Number of useful particles vs useless particles vs total: 3769 1702337 1706106
+        Average number of useful particles vs useless particles vs total PER USEFUL EVENT: 3.769 1702.337 1706.106
+        Average per (useful)event time (ms) spent processing all particles: 0.11871884 or 0.00006958 ms per particle
+        Average per (useful)event time (ms) spent processing useful particles: 0.00026345
+        Average per (useful)event time (ms) spent processing other particles: 0.11845539
+        Average per (useful)event time (ms) spent filling histograms: 0.00041015
+        Average per (useful)event time (ms) spent clustering jets: 0.05592550
+        Average per (useful)event time (ms) spent processing jets: 0.00316118
+        Average per (useful)event time (ms) spent filling the TTree: 0.00830452
+Time statistics averages of USELESS events:
+        Number of useful particles vs useless particles vs total: 48178 18249467 78497214
+        Average number of useful particles vs useless particles vs total PER USELESS EVENT: 0.3301 125.0426 537.8511
+        Average per (useless)event time (ms) spent processing all particles: 0.00066299 or 0.00000123 ms per particle
+        Average per (useless)event time (ms) spent processing useless particles: 0.00000000
+        Average per (useless)event time (ms) spent processing other particles: 0.00000000
+        Average per (useless)event time (ms) spent filling histograms: 0.00004786
+        Average per (useless)event time (ms) spent clustering jets: 0.00410146
+////// TIME STATISTICS //////
+The program ran for: 274.70394081 seconds.
+The code takes about 0.27470394 seconds per event, or 274.70394081 seconds for 1e3 events.
+In an N_cores-agnostic way, the program takes 0.27470394 seconds to analyze an event in each core, or 274.70394081 seconds for 1e3 events.
+/////////////////////////////
+
+
+# Removing the expensive forward rapidity multiplicity checks and removing the "IsPrimary_value" check that is no longer used in the code (also expensive!)
+# Also cleaning up the if statements and useless information that was being accessed in the loops:

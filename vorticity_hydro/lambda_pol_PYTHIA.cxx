@@ -45,13 +45,13 @@ const double alpha_H = 0.747; // Fixed as a constant, just for this toy model!
 // const double mass_Lambda = 1115.683/1000.; // Passed from MeV/c^2 (+/- 0.006) to GeV/c^2
 // const double mass_proton = 938.27208816/1000.; // Passed from MeV/c^2 (+/- 0.00000029) to GeV/c^2
 // const double mass_pi = 139.57039/1000.; // Passed from MeV/c^2 (+/- 0.00018), for both pi+ and pi-, to GeV/c^2
-// const double mL2 = mass_Lambda * mass_Lambda;
 
 // Actually using Pythia masses for the proton, Lambda and pion:
 // (see get_pythia_masses.txt for more information. This was also hardcoded here to avoid the need of compiling with Pythia libs)
 const Float_t lambda_m = 1.11568f;
 const Float_t proton_m = 0.938270f;
 const Float_t pi_m = 0.139570f;
+const double mL2 = lambda_m * lambda_m;
 
     // Helper functions:
 inline double wrapToInterval(double phi, double phi_min, double phi_max);

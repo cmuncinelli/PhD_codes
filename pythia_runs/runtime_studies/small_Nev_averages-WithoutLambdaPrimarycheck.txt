@@ -1,0 +1,100 @@
+Averages for USEFUL Events (3 events):
+| Metric                                   | Average      |
+| ---------------------------------------- | ------------ |
+| Useful particles                         | **3.6**      |
+| Useless particles                        | **1,778.6**  |
+| Total particles                          | **1,782.2**  |
+| Time spent processing all particles (ms) | **0.18920**  |
+| Time spent on useful particles (ms)      | **0.000376** |
+| Time spent on other particles (ms)       | **0.18882**  |
+| Time filling histograms (ms)             | **0.002174** |
+| Time clustering jets (ms)                | **0.101672** |
+
+Averages for USELESS Events (7 events):
+| Metric                                   | Average      |
+| ---------------------------------------- | ------------ |
+| Useful particles                         | **0.63**     |
+| Useless particles                        | **277.25**   |
+| Total particles                          | **277.88**   |
+| Time spent processing all particles (ms) | **0.04029**  |
+| Time spent on useful particles (ms)      | **0.000075** |
+| Time spent on other particles (ms)       | **0.04021**  |
+
+
+# Datasets for these events (does not include isPrimary selection):
+Could you do the same for this other, completely different dataset please? (Don't mix the two, please)
+Time statistics of USEFUL event:
+        Number of useful particles vs useless particles vs total: 1 2094 2095
+        Time (ms) spent processing all particles: 0.23722700 or 0.00011323 ms per particle
+        Time (ms) spent processing useful particles: 0.00011323
+        Time (ms) spent processing other particles: 0.23711377
+        Time (ms) spent filling histograms: 0.00420800
+        Time (ms) spent clustering jets: 0.12410900
+        Time statistics of USELESS event:
+                Number of useful particles vs useless particles vs total: 1 243 244
+                Time (ms) spent processing all particles: 0.03386500 or 0.00013879 ms per particle
+                Time (ms) spent processing useful particles: 0.00013879
+                Time (ms) spent processing other particles: 0.03372621
+Time statistics of USEFUL event:
+        Number of useful particles vs useless particles vs total: 3 1059 1062
+        Time (ms) spent processing all particles: 0.11181600 or 0.00010529 ms per particle
+        Time (ms) spent processing useful particles: 0.00031586
+        Time (ms) spent processing other particles: 0.11150014
+        Time (ms) spent filling histograms: 0.00098100
+        Time (ms) spent clustering jets: 0.06972500
+        Time statistics of USELESS event:
+                Number of useful particles vs useless particles vs total: 1 274 275
+                Time (ms) spent processing all particles: 0.03524800 or 0.00012817 ms per particle
+                Time (ms) spent processing useful particles: 0.00012817
+                Time (ms) spent processing other particles: 0.03511983
+        Time statistics of USELESS event:
+                Number of useful particles vs useless particles vs total: 1 620 621
+                Time (ms) spent processing all particles: 0.06429400 or 0.00010353 ms per particle
+                Time (ms) spent processing useful particles: 0.00010353
+                Time (ms) spent processing other particles: 0.06419047
+        Time statistics of USELESS event:
+                Number of useful particles vs useless particles vs total: 0 113 113
+                Time (ms) spent processing all particles: 0.01391700 or 0.00012316 ms per particle
+                Time (ms) spent processing useful particles: 0.00000000
+                Time (ms) spent processing other particles: 0.01391700
+        Time statistics of USELESS event:
+                Number of useful particles vs useless particles vs total: 1 272 273
+                Time (ms) spent processing all particles: 0.03093000 or 0.00011330 ms per particle
+                Time (ms) spent processing useful particles: 0.00011330
+                Time (ms) spent processing other particles: 0.03081670
+        Time statistics of USELESS event:
+                Number of useful particles vs useless particles vs total: 0 409 409
+                Time (ms) spent processing all particles: 0.04535700 or 0.00011090 ms per particle
+                Time (ms) spent processing useful particles: 0.00000000
+                Time (ms) spent processing other particles: 0.04535700
+        Time statistics of USELESS event:
+                Number of useful particles vs useless particles vs total: 1 294 295
+                Time (ms) spent processing all particles: 0.03483700 or 0.00011809 ms per particle
+                Time (ms) spent processing useful particles: 0.00011809
+                Time (ms) spent processing other particles: 0.03471891
+Time statistics of USEFUL event:
+        Number of useful particles vs useless particles vs total: 5 1827 1832
+        Time (ms) spent processing all particles: 0.18429500 or 0.00010060 ms per particle
+        Time (ms) spent processing useful particles: 0.00050299
+        Time (ms) spent processing other particles: 0.18379201
+        Time (ms) spent filling histograms: 0.00177300
+        Time (ms) spent clustering jets: 0.09202800
+Time statistics of USEFUL event:
+        Number of useful particles vs useless particles vs total: 5 2480 2485
+        Time (ms) spent processing all particles: 0.25652400 or 0.00010323 ms per particle
+        Time (ms) spent processing useful particles: 0.00051614
+        Time (ms) spent processing other particles: 0.25600786
+        Time (ms) spent filling histograms: 0.00230400
+        Time (ms) spent clustering jets: 0.14822500
+Time statistics of USEFUL event:
+        Number of useful particles vs useless particles vs total: 4 1433 1437
+        Time (ms) spent processing all particles: 0.15616100 or 0.00010867 ms per particle
+        Time (ms) spent processing useful particles: 0.00043469
+        Time (ms) spent processing other particles: 0.15572631
+        Time (ms) spent filling histograms: 0.00160300
+        Time (ms) spent clustering jets: 0.07429300
+        Time statistics of USELESS event:
+                Number of useful particles vs useless particles vs total: 0 193 193
+                Time (ms) spent processing all particles: 0.05278200 or 0.00027348 ms per particle
+                Time (ms) spent processing useful particles: 0.00000000
+                Time (ms) spent processing other particles: 0.05278200

@@ -24,6 +24,21 @@ The code takes about 0.006 seconds per event, or 5.533 seconds for 1e3 events.
 In an N_cores-agnostic way, the program takes 0.664 seconds to analyze an event in each core, or 663.962 seconds for 1e3 events.
 /////////////////////////////
 
+// Removing the isPrimary section, just to see how long it takes (a non-negligible time!)
+////// TIME STATISTICS //////
+The program ran for: 543.989 seconds.
+The code takes about 0.005 seconds per event, or 5.440 seconds for 1e3 events.
+In an N_cores-agnostic way, the program takes 0.653 seconds to analyze an event in each core, or 652.786 seconds for 1e3 events.
+/////////////////////////////
+
+
+// Results in jarvis5 (surprisingly, longer!!!):
+////// TIME STATISTICS //////
+The program ran for: 634.339 seconds.
+The code takes about 0.006 seconds per event, or 6.343 seconds for 1e3 events.
+In an N_cores-agnostic way, the program takes 0.761 seconds to analyze an event in each core, or 761.207 seconds for 1e3 events.
+/////////////////////////////
+
 
 
 // For even further optimization, I could even do a PGO (profile-guided optimization) that optimizes the most-accessed regions of

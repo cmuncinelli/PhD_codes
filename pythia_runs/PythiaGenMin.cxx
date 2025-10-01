@@ -22,6 +22,7 @@
 #include <iostream>
 #include <map> // For the PID tracking of the jet constituents
 #include <chrono>
+#include <iomanip> // For printing doubles with more precision
 
 const double PI = TMath::Pi();
 
@@ -92,10 +93,11 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	// Thus, changed to a C++ approach instead of the usual "Int_t ID[kMaxTrack];" C-style arrays for the branches.
 	Int_t ntrack;
 	Int_t ntrack_final;
-	Int_t charged_in_back_forward_eta; // The multiplicity indicator for 1807.11321 [nucl-ex]'s data
-	Int_t ntracks_in_back_forward_eta; // Another multiplicity indicator, trying to mimic the indirect charged particle production due to neutral's interactions with V0. Something finer than just Nch, and will also receive only final particles
-	Int_t Ntracks_charged_forward;
-	Int_t Ntracks_primary;
+		// Too expensive to check these in the loop, if we are not going to use it!
+	// Int_t ntracks_in_back_forward_eta; // Another multiplicity indicator, trying to mimic the indirect charged particle production due to neutral's interactions with V0. Something finer than just Nch, and will also receive only final particles
+	// Int_t Ntracks_charged_forward;
+	// Int_t charged_in_back_forward_eta; // The multiplicity indicator for 1807.11321 [nucl-ex]'s data
+	// Int_t Ntracks_primary;
 	Int_t Ntracks_final_charged_center;
 	Int_t Ntracks_final_charged;
 	
@@ -159,14 +161,14 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	//////////////////////////////////////////////////////////////////////
 
 	TH1D *hEventCounter = new TH1D ("hEventCounter", "Total number of simulated events", 1, -1, 1);
-	TH1D *hEventCounterWithLambdaOrBar = new TH1D ("hEventCounterWithLambdaOrBar", "hEventCounterWithLambdaOrBar", 1, -1, 1);
+	// TH1D *hEventCounterWithLambdaOrBar = new TH1D ("hEventCounterWithLambdaOrBar", "hEventCounterWithLambdaOrBar", 1, -1, 1); // DEBUG/OPTIMIZATION --> removed temporarily just to have the fastest possible quick scan. Can re-add with a simple counter in the fast scan, before the eta is checked
 	TH1D *hEventCounterWithLambdaOrBar_in_measurable_eta = new TH1D ("hEventCounterWithLambdaOrBar_in_measurable_eta", "hEventCounterWithLambdaOrBar_in_measurable_eta", 1, -1, 1);
 	TH1D *hEventCounterWithJets_pTleqJetMinPt_WithLambda = new TH1D ("hEventCounterWithJets_pTleqJetMinPt_WithLambda", "hEventCounter(jets w/ pT>8,w/LambdaOrBar)", 1, -1, 1); // Jets in the interval pT > jet_min_pT, all Eta
 	// TH1D *hEventCounterWithJets_pTleqJetMinPt_EtaCuts = new TH1D ("hEventCounterWithJets_pTleqJetMinPt_EtaCuts", "hEventCounter(jets w/ pT>8,|eta|<0.5)", 1, -1, 1); // Jets in the interval pT > jet_min_pT and |eta| < 0.9 - R
 	TH1D *hEventCounterWithEtaOKLambdaWithJets_pTleqJetMinPt_EtaCuts = new TH1D ("hEventCounterWithEtaOKLambdaWithJets_pTleqJetMinPt_EtaCuts", "hEventCounter(jets w/ pT>8,|eta|<0.5),hasLambdaorLambdaBar", 1, -1, 1);
 	TH1D *hEventCounterPassedYExtraCheck = new TH1D ("hEventCounterPassedYExtraCheck", "hEventCounter(jets w/ pT>8,|eta|<0.5,|y|<0.5),hasLambda in pTandYcuts", 1, -1, 1); // Contains Lambda in the desired pT and |y| range, contains a jet in the desired range
 	TH1D *hINELEventCounter = new TH1D ("hINELEventCounter", "", 1, -1, 1);
-	TH1D *hEventCounterCharged = new TH1D ("hEventCounterCharged", "", 1, -1, 1);
+	// TH1D *hEventCounterCharged = new TH1D ("hEventCounterCharged", "", 1, -1, 1);
 	// TH1D *hEventCounterPion = new TH1D ("hEventCounterPion", "", 1, -1, 1);
 	// TH1D *hEventCounterProton = new TH1D ("hEventCounterProton", "", 1, -1, 1);
 	// TH1D *hEventCounterKaon = new TH1D ("hEventCounterKaon", "", 1, -1, 1);
@@ -196,11 +198,11 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	t3->Branch("ntrack",&ntrack,"ntrack/I");
 	t3->Branch("ntrack_final",&ntrack_final,"ntrack_final/I");
 
-	t3->Branch("charged_in_back_forward_eta",&charged_in_back_forward_eta,"charged_in_back_forward_eta/I");
-	t3->Branch("ntracks_in_back_forward_eta",&ntracks_in_back_forward_eta,"ntracks_in_back_forward_eta/I");
+	// t3->Branch("charged_in_back_forward_eta",&charged_in_back_forward_eta,"charged_in_back_forward_eta/I");
+	// t3->Branch("ntracks_in_back_forward_eta",&ntracks_in_back_forward_eta,"ntracks_in_back_forward_eta/I");
 	t3->Branch("charged_in_central_eta",&charged_in_central_eta,"charged_in_central_eta/O");
-	t3->Branch("Ntracks_charged_forward",&Ntracks_charged_forward,"Ntracks_charged_forward/I");
-	t3->Branch("Ntracks_primary",&Ntracks_primary,"Ntracks_primary/I");
+	// t3->Branch("Ntracks_charged_forward",&Ntracks_charged_forward,"Ntracks_charged_forward/I");
+	// t3->Branch("Ntracks_primary",&Ntracks_primary,"Ntracks_primary/I");
 	t3->Branch("Ntracks_final_charged_center",&Ntracks_final_charged_center,"Ntracks_final_charged_center/I");
 	t3->Branch("Ntracks_final_charged",&Ntracks_final_charged,"Ntracks_final_charged/I");
 
@@ -265,11 +267,11 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// By declaring in this way, GetBin(0) will get the bin of events with 0 particles in multiplicity. The value 10000 is not stored, and it will go to the overflow bin.
 		// In other words, GetBin(N) will get you the exact bin with N particles! A convenient indexing, where [0] is the index of 0 particles and [1] for 1 particle!
 	TH1D *hNtracks = new TH1D("hNtracks", "hNtracks", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1D *hNtracks_charged_forward = new TH1D("hNtracks_charged_forward", "hNtracks_charged_forward", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1D *hNtracks_primary = new TH1D("hNtracks_primary", "hNtracks_primary", multiplicity_nbins, 0, multiplicity_nbins);
+	// TH1D *hNtracks_charged_forward = new TH1D("hNtracks_charged_forward", "hNtracks_charged_forward", multiplicity_nbins, 0, multiplicity_nbins);
+	// TH1D *hNtracks_primary = new TH1D("hNtracks_primary", "hNtracks_primary", multiplicity_nbins, 0, multiplicity_nbins);
 	TH1D *hNtracks_final = new TH1D("hNtracks_final", "hNtracks_final", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1D *hNtracks_final_forward = new TH1D("hNtracks_final_forward", "hNtracks_final_forward", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1D *hNtracks_final_forward_INEL_l0 = new TH1D("hNtracks_final_forward_INEL_l0", "hNtracks_final_forward_INEL_l0", multiplicity_nbins, 0, multiplicity_nbins);
+	// TH1D *hNtracks_final_forward = new TH1D("hNtracks_final_forward", "hNtracks_final_forward", multiplicity_nbins, 0, multiplicity_nbins);
+	// TH1D *hNtracks_final_forward_INEL_l0 = new TH1D("hNtracks_final_forward_INEL_l0", "hNtracks_final_forward_INEL_l0", multiplicity_nbins, 0, multiplicity_nbins);
 	TH1D *hNtracks_final_charged_center = new TH1D("hNtracks_final_charged_center", "hNtracks_final_charged_center", multiplicity_nbins, 0, multiplicity_nbins);
 	TH1D *hNtracks_final_charged = new TH1D("hNtracks_final_charged", "hNtracks_final_charged", multiplicity_nbins, 0, multiplicity_nbins);
 	TH1D *hNtracks_final_charged_INEL_l0 = new TH1D("hNtracks_final_charged_INEL_l0", "hNtracks_final_charged_INEL_l0", multiplicity_nbins, 0, multiplicity_nbins);
@@ -348,6 +350,30 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
     auto hJetProxyPhi_YExtraCheck = new TH1D("hJetProxyPhi_YExtraCheck", "(minpT and maxY OK, contains LambdaOrLBar)", 100, -PI, PI);
 
 	// Event loop
+	double total_time_fast_scanning_event_ms = 0;
+	long long N_scanned_ev = 0;
+	long long N_useful_ev = 0; // DEBUG/OPTIMIZATION!
+	double event_averaged_total_particle_loop_time_ms_useful_ev = 0; // DEBUG/OPTIMIZATION!
+	double event_averaged_usable_particles_loop_time_ms_useful_ev = 0;
+	double event_averaged_other_particles_loop_time_ms_useful_ev = 0;
+	uint event_total_particles_processed_useful_ev = 0;
+	uint event_usable_particles_processed_useful_ev = 0;
+	uint event_other_particles_processed_useful_ev = 0;
+	double time_on_histograms_useful = 0;
+	double time_clustering = 0;
+	double time_processing_jet = 0;
+	double time_filling_tree = 0;
+		// Another metric, for the useless events, to see how much time I waste on them:
+	long long N_useless_ev = 0; // DEBUG/OPTIMIZATION!
+	double event_averaged_total_particle_loop_time_ms_useless_ev = 0; // DEBUG/OPTIMIZATION!
+	double event_averaged_usable_particles_loop_time_ms_useless_ev = 0;
+	double event_averaged_other_particles_loop_time_ms_useless_ev = 0;
+	uint event_total_particles_processed_useless_ev = 0;
+	uint event_usable_particles_processed_useless_ev = 0;
+	uint event_other_particles_processed_useless_ev = 0;
+	double time_on_histograms_useless_ev = 0;
+	double time_on_clustering_useless_ev = 0; // Only happens if the event is declared "useless" after it passes the previous checks
+
 	for (int iEvent=0; iEvent<N_ev; ++iEvent){
 		// pythia.next();
 		if (!pythia.next()){ // Skip failed events --> Angantyr can generate events that have no particles at all!
@@ -356,8 +382,32 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		}
 
 		hEventCounter->Fill(0);
+
+		// Implementing a fast loop that just discards the event quickly if it does not have a Lambda
+		// (this means the centrality estimator will be biased, but we can just use a centrality estimator
+		// that came from a different code!)
+		// This diminishes the amount of time spent on useless events!
+		auto fast_scan_start = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
+		bool contains_lambda_or_lambdabar_in_measurable_eta = false;
+		for (int i = 0; i < pythia.event.size(); ++i){
+			if ((pythia.event[i].id() == 3122 || pythia.event[i].id() == -3122) && std::fabs(pythia.event[i].eta()) < ALICE_charged_particle_acceptance){
+				contains_lambda_or_lambdabar_in_measurable_eta = true;
+				break; // Found one, exit immediately!
+			}
+		}
+		auto fast_scan_end = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
+		N_scanned_ev += 1; // The counts from hEventCounter already consider this, yet kept it just for the quick optimization tests
+		total_time_fast_scanning_event_ms += std::chrono::duration<double, std::milli>(fast_scan_end - fast_scan_start).count();
+		if (!contains_lambda_or_lambdabar_in_measurable_eta){
+			event_averaged_total_particle_loop_time_ms_useless_ev += std::chrono::duration<double, std::milli>(fast_scan_end - fast_scan_start).count();
+			event_total_particles_processed_useless_ev += pythia.event.size();
+			N_useless_ev += 1;
+			iEvent--;
+			continue;
+		}
+
 		int five_percent_step = 0.05 * N_ev; // Defined this outside the check to avoid some divisions by zero that could happen when using low N_ev per worker.
-		if ((WorkerId < 5) && five_percent_step > 0 ? (iEvent % five_percent_step == 0) : false){ // Printing for just 10 workers is already more than enough!
+		if ((WorkerId == 0) && five_percent_step > 0 ? (iEvent % five_percent_step == 0) : false){ // Printing for just 10 workers is already more than enough!
 			std::cout << "[Worker " << WorkerId << "] Now on event " << iEvent << " of " << N_ev << " (" << (100.0 * iEvent / N_ev) << "%)" << std::endl;
 		}
 
@@ -365,12 +415,12 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		ntrack_final = 0; // Resetting for the next event
 
 		charged_in_central_eta = false; // Resetting the bool for the next event
-		charged_in_back_forward_eta = 0; // Actually ""charged_in_back_forward_eta_FINAL" cause it only gets final particles
-		ntracks_in_back_forward_eta = 0;
+		// charged_in_back_forward_eta = 0; // Actually ""charged_in_back_forward_eta_FINAL" cause it only gets final particles
+		// ntracks_in_back_forward_eta = 0;
 
 		// Some variables that will not be stored, but will be used inside the loop for counting particles -- These serve only for studying and are not necessarily useful for any analysis:
-		Ntracks_charged_forward = 0;
-		Ntracks_primary = 0;
+		// Ntracks_charged_forward = 0;
+		// Ntracks_primary = 0;
 		Ntracks_final_charged = 0;
 		Ntracks_final_charged_center = 0;
 
@@ -384,8 +434,10 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// m_jet = 0;
 		y_jet = 0;
 		Phi_jet = 0;
-		Bool_t contains_lambda_or_lambdabar = false; // In this new code, will exclude events that have neither a Lambda nor a Lambda bar
-		Bool_t contains_lambda_or_lambdabar_in_measurable_eta = false; // Selecting the same interval as would be measurable in ALICE
+
+			// These checks were moved above and incorporated into a single "contains_lambda_or_lambdabar_in_measurable_eta"
+		// Bool_t contains_lambda_or_lambdabar = false; // In this new code, will exclude events that have neither a Lambda nor a Lambda bar
+		// Bool_t contains_lambda_or_lambdabar_in_measurable_eta = false; // Selecting the same interval as would be measurable in ALICE
 
 		// Track loop:
 			// Clearing all C++ arrays before the loop starts, so that you safely store only the information about the current event:
@@ -419,17 +471,27 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// y.clear();
 		// Phi.clear();
 
+		auto particle_loop_start = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
+		double total_particle_loop_time_ms = 0.;
+		double usable_particles_loop_time_ms = 0.;
+		double other_particles_loop_time_ms = 0.;
+		uint total_particles_processed = 0;
+		uint usable_particles_processed = 0;
+		uint other_particles_processed = 0;
+
 			// Clearing the list of FastJet candidates for this loop:
 		FastJetInputs.clear();
 		for (int i = 0; i < pythia.event.size(); ++i){
 			const auto &particle = pythia.event[i];
 
-			bool isfinal = particle.isFinal();
-			bool isvisible = particle.isVisible();
-			// Checking if this particle has a carbon-copy daughter. If it does, then it isn't final, and it didn't decay: it just scattered. This is not what I want to look at!
-				// From PYTHIA: "daughter1 = daughter2 > 0: the particle has a "carbon copy" as its sole daughter, but with changed momentum as a "recoil" effect".
-			Int_t daughter1 = particle.daughter1();
-			Int_t daughter2 = particle.daughter2();
+			const bool isfinal = particle.isFinal();
+			// bool isvisible = particle.isVisible(); // No need for this check, actually. We are demanding that the particle is charged, so we don't
+													  // need to demand it to be visible (all charged are visible by definition!)
+				// No need for carbon-copy checking anymore. Read the "DEBUG/OPTIMIZATION!" line below
+			// // Checking if this particle has a carbon-copy daughter. If it does, then it isn't final, and it didn't decay: it just scattered. This is not what I want to look at!
+			// 	// From PYTHIA: "daughter1 = daughter2 > 0: the particle has a "carbon copy" as its sole daughter, but with changed momentum as a "recoil" effect".
+			// Int_t daughter1 = particle.daughter1();
+			// Int_t daughter2 = particle.daughter2();
 			
 			// if ((daughter1 == daughter2) && (daughter1 > 0)){continue;} // This means this particle should not be considered!
 			// Be careful though. When you do this kind of particle skipping, you need to keep track of the PYTHIA particle indexes in your exported TTree.
@@ -440,94 +502,121 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 			// Final particles will never enter this category, but non-final particles will. To actually avoid saving this kind of particle, you would need to have two indexes:
 			// the first index will actually run through the event, and the second index will run through the vectors that will be exported to the TTree:
 			
-			Bool_t IsCarbonCopy_value = false; // This should be set as false by default for each particle! 
-											   // If you don't declare this for each particle, the vector 
-											   // won't be updated correctly and eventually will become full of trues!
-			if ((daughter1 == daughter2) && (daughter1 > 0)){
-				IsCarbonCopy_value = true; // This will be a useful bool to consider, where you will skip the particle if it is simply a carbon-copy: it may not be a final state,
-				// but a carbon-copy isn't even a physical particle, and it shouldn't be considered if you want to count the number of intermediate particles in your collision.
-				// It is best not to do an if ((daughter1 == daughter2) && (daughter1 > 0)){continue} if you are going to save these particles in a TTree, because the value on
-				// the i'th index of the vector that will be flushed into the TTree will still keep the previous iteration's particle data!
-			}
+			/////////////////////////////////////////////////////////////
+			// DEBUG/OPTIMIZATION! I don't need to calculate wether the particle is a carbon-copy anymore!
+			// I only need this check to know if the Lambdas were primary or not in the block below!
+			// Other than that, the only other place were this was used was in the PseudoJet candidate
+			// selection, but there is no way that a final-state particle is a carbon-copy particle, because
+			// by definition it did not decay any longer and thus cannot have a carbon-copy daughter to take
+			// its place! Thus, you don't need to check this here anymore, and can save some computing time!
+			///////////////////////////////////
+			// Bool_t IsCarbonCopy_value = false; // This should be set as false by default for each particle! 
+			// 								   // If you don't declare this for each particle, the vector 
+			// 								   // won't be updated correctly and eventually will become full of trues!
+			// if ((daughter1 == daughter2) && (daughter1 > 0)){
+			// 	IsCarbonCopy_value = true; // This will be a useful bool to consider, where you will skip the particle if it is simply a carbon-copy: it may not be a final state,
+			// 	// but a carbon-copy isn't even a physical particle, and it shouldn't be considered if you want to count the number of intermediate particles in your collision.
+			// 	// It is best not to do an if ((daughter1 == daughter2) && (daughter1 > 0)){continue} if you are going to save these particles in a TTree, because the value on
+			// 	// the i'th index of the vector that will be flushed into the TTree will still keep the previous iteration's particle data!
+			// }
+			/////////////////////////////////////////////////////////////
 			// IsCarbonCopy.push_back(IsCarbonCopy_value); // Moved all push_backs to the end of the loop
 
 			// if (isfinal){ntrack_final += 1;}
 
-			Float_t pT = particle.pT();
-			Float_t rapidity = particle.y();
-			Float_t Phi = particle.phi();
-			Float_t mass = particle.m();
+			const Float_t pT = particle.pT();
+			const Float_t rapidity = particle.y();
+			const Float_t Phi = particle.phi();
+			// Float_t mass = particle.m(); // No longer needed in this code: we are not storing the masses of the protons nor lambdas because pythia treats them as stable and with fixed mass!
 
-			Float_t eta_rap = particle.eta();
-			Bool_t isCharged = particle.isCharged();
+			const Float_t eta_rap = particle.eta();
+			const Bool_t isCharged = particle.isCharged();
 
-			// Starting the selections according to ALICE cuts in 1807.11321 [nucl-ex]
-				// 1) The original conditions are:
-			if (isfinal){
-				ntrack_final += 1; // Checking if final
+			// Grouped this redundant "isfinal" at the end of the for loop:
+			// // Starting the selections according to ALICE cuts in 1807.11321 [nucl-ex]
+			// 	// 1) The original conditions are:
+			// if (isfinal){
+			// 	ntrack_final += 1; // Checking if final
+			// 	if (isCharged){
+			// 		Ntracks_final_charged += 1; // Checking final charged in all eta
+			// 		if (std::fabs(eta_rap) < 1.0){
+			// 			Ntracks_final_charged_center += 1;
+			// 			charged_in_central_eta = true;
+			// 		}
+			// 	}
+			// 	// This check is much too expensive:
+			// 	// (This involves four floating-point comparisons and a logical OR. When the CPU executes this, it has to guess which
+			// 	// path the code will take. If it guesses wrong (a "branch misprediction"), it has to throw away the work it was doing
+			// 	// and restart, which is a significant performance penalty!)
+			// 	// if ((eta_rap > -3.7 && eta_rap < -1.7) || (eta_rap > 2.8 && eta_rap < 5.1)){
+			// 	// 	ntracks_in_back_forward_eta += 1; // Checking final in backward/forward eta
+			// 	// 	if (isCharged){ // Selecting only the charged particles, for an Nch metric of multiplicity
+			// 	// 		charged_in_back_forward_eta += 1; // Selects all charged particles, regardless of being from secondary decays, as V0 would get them too
+			// 	// 		// Checking final charged in backward/forward eta
+			// 	// 	}
+			// 	// }
+			// 		// Optimized this checked and passed it as a subcase of the previous "isCharged" one!
+			// 	// else if (isCharged && (std::fabs(eta_rap) < 1.0)){
+			// 	// 	Ntracks_final_charged_center += 1; // Checking final charged in central eta
+			// 	// 	charged_in_central_eta = true;
+			// 	// }
+			// }
 
-				if (isCharged){
-					Ntracks_final_charged += 1; // Checking final charged in all eta
-				}
+			// This check is much too expensive:
+			// else{
+			// 	if (isCharged && ((eta_rap > -3.7 && eta_rap < -1.7) || (eta_rap > 2.8 && eta_rap < 5.1))){
+			// 		Ntracks_charged_forward += 1; // Checking charged and forward, but non-final
+			// 	}
+			// }
 
-				if ((eta_rap > -3.7 && eta_rap < -1.7) || (eta_rap > 2.8 && eta_rap < 5.1)){
-					ntracks_in_back_forward_eta += 1; // Checking final in backward/forward eta
-					if (isCharged){ // Selecting only the charged particles, for an Nch metric of multiplicity
-						charged_in_back_forward_eta += 1; // Selects all charged particles, regardless of being from secondary decays, as V0 would get them too
-						// Checking final charged in backward/forward eta
-					}
-				}
-				else if (isCharged && (std::fabs(eta_rap) < 1.0)){
-					Ntracks_final_charged_center += 1; // Checking final charged in central eta
-					charged_in_central_eta = true;
-				}
-			}
-			else{
-				if (isCharged && ((eta_rap > -3.7 && eta_rap < -1.7) || (eta_rap > 2.8 && eta_rap < 5.1))){
-					Ntracks_charged_forward += 1; // Checking charged and forward, but non-final
-				}
-			}
-
-			int particle_PID = particle.id();
+			// Moved this further down the code -- We only need to know the PID of the particles that are final states in this code to
+			// distinguish protons and antiprotons only! There is no use for it anywhere else! Just look at the code below to see this!
+			// int particle_PID = particle.id();
 
 				// Updating the "has Lambda or Lambda Bar" flag:
 				// (do notice that this does not depend on the particle being a carbon copy nor being final!
 				// If a carbon copy was a Lambda, it still counts, and no Lambda should ever be final in this
 				// simulation where I allow it to decay!)
-			if (particle_PID == 3122 || particle_PID == -3122){
-				contains_lambda_or_lambdabar = true;
-				if (std::fabs(eta_rap) < ALICE_charged_particle_acceptance){
-					contains_lambda_or_lambdabar_in_measurable_eta = true;
-				}
-			}
+			// if (particle_PID == 3122 || particle_PID == -3122){
+			// 	contains_lambda_or_lambdabar = true;
+			// 	if (std::fabs(eta_rap) < ALICE_charged_particle_acceptance){
+			// 		contains_lambda_or_lambdabar_in_measurable_eta = true;
+			// 	}
+			// }
 
-			int motherIdx1 = particle.mother1(); // Doing this, I can access it only once and don't need to re-read this information for pions!
-			int motherIdx2 = particle.mother2();
+				// Moved these motherIdx checks to further down the code -- They are not needed in the new style that does not calculate isPrimary for all particles!
+			// int motherIdx1 = particle.mother1(); // Doing this, I can access it only once and don't need to re-read this information for pions!
+			// int motherIdx2 = particle.mother2();
 
-			////////////////////////////////////////////////////////////////////////////////////////
-			/// CAUTION! THIS PRIMARY DEFINITION IS ACTUALLY A LITTLE BIT WRONG!!!
-			/// Check the Lambda isExperimentalPrimary definition below!!!
-			// Checking if the particle would be considered primary or not
-				// The particle will be considered primary by default. If it has a mother with a long lifetime, then it will be considered secondary.
-				// This allows for some contamination from possible secondaries that have long decay showers, though. My hypothesis is that this effect is too small to be significant.
-				// Possible secondaries from 2 -> N processes and two partons becoming a single particle will be considered as primaries.
-				// A little bit of a MC cheat is that particles whose lifetime is smaller than 10 mm/c but came straight from the collision will be considered primary, 
-				// and in experimental data that would not be true.
-			Bool_t IsPrimary_value = true;
-			// First, checking if it came from an actual decay:
-				// (I want to count all particles that didn't fall in both the loop's conditions with the Ntracks_primary, not the ones that checked one but didn't check the other if)
-			if (motherIdx1 > 0 && motherIdx2 == 0){
-				if (pythia.event[motherIdx1].tau0() >= 10.){ // Tau0 in mm/c. Reference is slide 112 of https://indico.cern.ch/event/666222/contributions/2768780/attachments/1551303/2437229/DPG_AnalysisTutorial_20171102.pdf
-					IsPrimary_value = false;
-				}
-				else{
-					Ntracks_primary += 1;
-				}
-			}
-			else{
-				Ntracks_primary += 1; // This does not overcount the above check: they never happen simultaneuosly for the same particle!
-			}
-			////////////////////////////////////////////////////////////////////////////////////////
+			// Removed the isPrimary check below because it was incomplete AND it was rather expensive to check the >= 10. condition:
+			// ("The particle i and its mother motherIdx1 can be far apart in memory. When the CPU needs data, it first looks in its 
+			// super-fast local cache. If the mother particle's data isn't there (a "cache miss"), the CPU has to stall and wait for
+			// that data to be fetched from the much slower main system RAM. This happens for almost every particle and can be a major,
+			// hidden source of slowdown.")
+			// ////////////////////////////////////////////////////////////////////////////////////////
+			// /// CAUTION! THIS PRIMARY DEFINITION IS ACTUALLY A LITTLE BIT WRONG!!!
+			// /// Check the Lambda isExperimentalPrimary definition below!!!
+			// // Checking if the particle would be considered primary or not
+			// 	// The particle will be considered primary by default. If it has a mother with a long lifetime, then it will be considered secondary.
+			// 	// This allows for some contamination from possible secondaries that have long decay showers, though. My hypothesis is that this effect is too small to be significant.
+			// 	// Possible secondaries from 2 -> N processes and two partons becoming a single particle will be considered as primaries.
+			// 	// A little bit of a MC cheat is that particles whose lifetime is smaller than 10 mm/c but came straight from the collision will be considered primary, 
+			// 	// and in experimental data that would not be true.
+			// Bool_t IsPrimary_value = true;
+			// // First, checking if it came from an actual decay:
+			// 	// (I want to count all particles that didn't fall in both the loop's conditions with the Ntracks_primary, not the ones that checked one but didn't check the other if)
+			// if (motherIdx1 > 0 && motherIdx2 == 0){
+			// 	if (pythia.event[motherIdx1].tau0() >= 10.){ // Tau0 in mm/c. Reference is slide 112 of https://indico.cern.ch/event/666222/contributions/2768780/attachments/1551303/2437229/DPG_AnalysisTutorial_20171102.pdf
+			// 		IsPrimary_value = false;
+			// 	}
+			// 	else{
+			// 		Ntracks_primary += 1;
+			// 	}
+			// }
+			// else{
+			// 	Ntracks_primary += 1; // This does not overcount the above check: they never happen simultaneuosly for the same particle!
+			// }
+			// ////////////////////////////////////////////////////////////////////////////////////////
 
 			// if (isfinal && isCharged){
 			// 	// event_hist_charged->Fill((double) pT);
@@ -553,7 +642,56 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 			// Including all USEFUL particles into the arrays for storage:
 			// First, should look only for protons and anti-protons:
 			if (isfinal){
+				// Selections that were being done earlier in the code, which meant checking isfinal more than once for the particle:
+				ntrack_final += 1; // Checking if final
+				if (isCharged){
+					//////////////////////////////////////////////////
+					Ntracks_final_charged += 1; // Checking final charged in all eta
+					if (std::fabs(eta_rap) < 1.0){
+						Ntracks_final_charged_center += 1;
+						charged_in_central_eta = true;
+					}
+					//////////////////////////////////////////////////
+
+					//////////////////////////////////////////////////
+					// Also moved the jet candidate selection inside these checks -- We already check if a particle is charged once, so there is no need to check it again!
+						// Finally, introducing this particle to the jet candidate list if a certain number of criteria are obeyed:
+					// if (isfinal && isCharged && !IsCarbonCopy_value && isvisible){ // Particle should be physical and a final state only! Should also be visible and CHARGED only.
+					// 1) There is no need to check IsCarbonCopy_value here, because isFinal already demands that the particle did not decay into a daughter, so there are no more carbon-copies.
+					// 2) Also, if we are going to demand charged-only tracks for the candidate selection, then we don't need the more general isVisible check, because being charged
+					// would already qualify the particle as being visible.
+					
+					// if (isfinal && isCharged){ // Particle should a final state only! Should also be CHARGED only.
+					// Trimming the PseudoJet candidates to reduce clustering time (Useless PseudoJets would consume more time):
+					// 1) If the jets must have pT > 8 GeV/c, and we have in the absolute worst case scenario a jet
+					// with 40 particles, then each particle has, in average, 0.2 GeV/c. We will introduce a cut of
+					// pT > 0.1 GeV/c for a particle to be considered a valid candidate, even if that does bias the
+					// jet distribution a little as it needs a minimum pT for the particle to be included.
+					// 2) We will only select jets with rapidity within jet_max_eta. If you want to know about jets
+					// outside this window, it is not wise to select PseudoJet candidates only within this jet_max_eta
+					// interval. Therefore, we will apply a cut just to remove beam remnants in the forward region,
+					// i.e., a really open cut like |\eta| < 3. We could even apply a stricter cut to more closely
+					// resemble the detector acceptances. Yet, at this stage I just want to get rid of useless statistics.
+					if (pT < 0.1 || std::fabs(eta_rap) > 3){continue;} // Will just continue the loop. As this is the last part of the loop, there is no problem in skipping it
+
+					// Create a PseudoJet from the complete Pythia particle:
+					fastjet::PseudoJet particleTemp = particle;
+					// Store the original Pythia index in "user_index" to later on get the PID of the particle
+					particleTemp.set_user_index(i);
+
+					// Store the PseudoJet:
+					FastJetInputs.push_back(particleTemp);
+					// }
+					//////////////////////////////////////////////////
+				}
+
+				int particle_PID = particle.id(); // Moved this definition here, because it was not used anywhere else in the code!
+												  // (so no need to define it outside of the "if(isfinal)"!)
 				if (particle_PID == 2212 || particle_PID == -2212){
+					int motherIdx1 = particle.mother1(); // Moved from earlier on in the code: we don't need to get the mother of every particle because we
+														 // are no longer checking the isPrimary condition for all particles!
+					// int motherIdx2 = particle.mother2(); // Act
+
 					// After that, should check if the mother of this proton or anti-proton is a Lambda or LambdaBar
 					Particle mother_particle_object = pythia.event[motherIdx1]; // Already using the Pythia8 namespace
 					int mother_PID = mother_particle_object.id();
@@ -619,9 +757,14 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 						isLambda_notLBar.push_back(isLambda_notLBar_value);
 
 						isLambdaOrLBarExperimentalPrimary.push_back(isExperimentalPrimary);
+
+						usable_particles_processed += 1; // DEBUG/OPTIMIZATION!
 					}
+					else{other_particles_processed += 1;} // DEBUG/OPTIMIZATION!
 				}
+				else{other_particles_processed += 1;} // DEBUG/OPTIMIZATION!
 			}
+			else{other_particles_processed += 1;} // DEBUG/OPTIMIZATION!
 
 			// Do not need to store these variables anymore -- Could make some std::map objects to at least know the PIDs that are produced, but that is not necessary right now!
 			// // ID[i] = particle_PID;
@@ -649,31 +792,9 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 			// IsPrimary.push_back(IsPrimary_value);
 
-
-
-			// Finally, introducing this particle to the jet candidate list if a certain number of criteria are obeyed:
-			if (isfinal && isCharged && !IsCarbonCopy_value && isvisible){ // Particle should be physical and a final state only! Should also be visible and CHARGED only. Notice that 
-				// Trimming the PseudoJet candidates to reduce clustering time (Useless PseudoJets would consume more time):
-				// 1) If the jets must have pT > 8 GeV/c, and we have in the absolute worst case scenario a jet
-				// with 40 particles, then each particle has, in average, 0.2 GeV/c. We will introduce a cut of
-				// pT > 0.1 GeV/c for a particle to be considered a valid candidate, even if that does bias the
-				// jet distribution a little as it needs a minimum pT for the particle to be included.
-				// 2) We will only select jets with rapidity within jet_max_eta. If you want to know about jets
-				// outside this window, it is not wise to select PseudoJet candidates only within this jet_max_eta
-				// interval. Therefore, we will apply a cut just to remove beam remnants in the forward region,
-				// i.e., a really open cut like |\eta| < 4. We could even apply a stricter cut to more closely
-				// resemble the detector acceptances. Yet, at this stage I just want to get rid of useless statistics.
-				if (pT < 0.1 || std::fabs(eta_rap) > 4){continue;} // Will just continue the loop. As this is the last part of the loop, there is no problem in skipping it
-
-				// Create a PseudoJet from the complete Pythia particle:
-      			fastjet::PseudoJet particleTemp = particle;
-				// Store the original Pythia index in "user_index" to later on get the PID of the particle
-  				particleTemp.set_user_index(i);
-
-				// Store the PseudoJet:
-				FastJetInputs.push_back(particleTemp);
-			}
+			total_particles_processed += 1; // DEBUG/OPTIMIZATION!
 		}
+		auto particle_loop_end = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
 		///////////////////////////////////////////////////////////
 		// First, filling the centrality estimators to have an unbiased estimation
 		// (If we defined centrality from jet-only events, we would have higher centrality events
@@ -682,7 +803,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 			// (This is actually just to sate my curiosity. It has no practical use, as the number of events is the same for all particle species in the ALICE standard normalization of pT spectra)
 		if (charged_in_central_eta){
 			hINELEventCounter->Fill(0);
-			hINELev_Ntracks_final_charged_forward->Fill(charged_in_back_forward_eta);
+			// hINELev_Ntracks_final_charged_forward->Fill(charged_in_back_forward_eta);
 
 			// if (n_charged_event != 0){hINELev_Ntracks_final_charged_forward_Charged->Fill(charged_in_back_forward_eta);}
 				// You don't need to check if n_charged_event != 0. That comes imediatelly from the fact that charged_in_central_eta is true.
@@ -694,43 +815,68 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 			// First the non-final inclusive histograms:
 		hNtracks->Fill(ntrack);
-		hNtracks_charged_forward->Fill(Ntracks_charged_forward);
-		hNtracks_primary->Fill(Ntracks_primary);
+		// hNtracks_charged_forward->Fill(Ntracks_charged_forward); // Expensive to check
+		// hNtracks_primary->Fill(Ntracks_primary); // Expensive to check
+		
 			// Then the histograms that only have isFinal == true particles:
 		hNtracks_final->Fill(ntrack_final);
-		hNtracks_final_forward->Fill(ntracks_in_back_forward_eta);
-		if(charged_in_central_eta){hNtracks_final_forward_INEL_l0->Fill(ntracks_in_back_forward_eta);}
+		// hNtracks_final_forward->Fill(ntracks_in_back_forward_eta); // Expensive to check
+		// if(charged_in_central_eta){hNtracks_final_forward_INEL_l0->Fill(ntracks_in_back_forward_eta);} // Expensive to check
 		hNtracks_final_charged_center->Fill(Ntracks_final_charged_center);
 		hNtracks_final_charged->Fill(Ntracks_final_charged);
 		if(charged_in_central_eta){hNtracks_final_charged_INEL_l0->Fill(Ntracks_final_charged);} // This histogram should only be filled if the event is INEL>0, so it is more restrictive than the histogram above!
-		hNtracks_final_charged_forward->Fill(charged_in_back_forward_eta);
-		if(charged_in_central_eta){hNtracks_final_charged_forward_INEL_l0->Fill(charged_in_back_forward_eta);} // This histogram should only be filled if the event is INEL>0, so it is more restrictive than the histogram above!
+			// Too expensive to check:
+		// hNtracks_final_charged_forward->Fill(charged_in_back_forward_eta);
+		// if(charged_in_central_eta){hNtracks_final_charged_forward_INEL_l0->Fill(charged_in_back_forward_eta);} // This histogram should only be filled if the event is INEL>0, so it is more restrictive than the histogram above!
 
 		// Now filling the histograms for each particle type:
-		if (n_charged_event != 0){hEventCounterCharged->Fill(0);}
+		// if (n_charged_event != 0){hEventCounterCharged->Fill(0);}
 		// if (n_pion_event != 0){hEventCounterPion->Fill(0);}
 		// if (n_proton_event != 0){hEventCounterProton->Fill(0);}
 		// if (n_kaon_event != 0){hEventCounterKaon->Fill(0);}
 		///////////////////////////////////////////////////////////
 
+		auto histogram_fill_end = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
 
-		// Now applying the jet cuts:
-		if(contains_lambda_or_lambdabar){hEventCounterWithLambdaOrBar->Fill(0);}
-		if(!contains_lambda_or_lambdabar_in_measurable_eta){
-			// Then this event is not useful, and we will not collect any of the statistics that would come from clustering the jets.
-			// These numbers are already included in the "OlderJetParamsAndExtraInformation" folder in jarvis4's storage2.
-			// They are too expensive to keep calculating like this!
-			iEvent--;
-			continue;
-		}
+		// First the Lambda fast checks:
+		// if(contains_lambda_or_lambdabar){hEventCounterWithLambdaOrBar->Fill(0);}
+		// if(!contains_lambda_or_lambdabar_in_measurable_eta){
+		// 	// Then this event is not useful, and we will not collect any of the statistics that would come from clustering the jets.
+		// 	// These numbers are already included in the "OlderJetParamsAndExtraInformation" folder in jarvis4's storage2.
+		// 	// They are too expensive to keep calculating like this!
+			
+		// 	total_particle_loop_time_ms = std::chrono::duration<double, std::milli>(particle_loop_end - particle_loop_start).count(); // DEBUG/OPTIMIZATION!
+		// 	// std::cout << "\tTime statistics of USELESS event:" << std::endl;
+		// 	// std::cout << "\t\tNumber of useful particles vs useless particles vs total: " << usable_particles_processed << " " << other_particles_processed << " " << total_particles_processed << std::endl;
+		// 	// std::cout << std::setprecision(8) << "\t\tTime (ms) spent processing all particles: " << total_particle_loop_time_ms  << " or " << total_particle_loop_time_ms/total_particles_processed << " ms per particle" << std::endl;
+		// 	// std::cout << std::setprecision(8) << "\t\tTime (ms) spent processing useful particles: " << total_particle_loop_time_ms * (usable_particles_processed * 1./total_particles_processed) << std::endl;
+		// 	// std::cout << std::setprecision(8) << "\t\tTime (ms) spent processing other particles: " << total_particle_loop_time_ms * (other_particles_processed * 1./total_particles_processed) << std::endl;
+		// 	// std::cout << std::setprecision(8) << "\t\tTime (ms) spent filling histograms: " << std::chrono::duration<double, std::milli>(histogram_fill_end - particle_loop_end).count() << std::endl;
+		// 	// Summing values for the event average:
+		// 	event_averaged_total_particle_loop_time_ms_useless_ev += total_particle_loop_time_ms; // DEBUG/OPTIMIZATION!
+		// 	event_averaged_usable_particles_loop_time_ms_useless_ev += total_particle_loop_time_ms * (usable_particles_processed * 1./total_particles_processed);
+		// 	event_averaged_other_particles_loop_time_ms_useless_ev += total_particle_loop_time_ms * (other_particles_processed * 1./total_particles_processed);
+		// 	event_total_particles_processed_useless_ev += total_particles_processed;
+		// 	event_usable_particles_processed_useless_ev += usable_particles_processed;
+		// 	event_other_particles_processed_useless_ev += other_particles_processed;
+		// 	time_on_histograms_useless_ev += std::chrono::duration<double, std::milli>(histogram_fill_end - particle_loop_end).count();
+
+		// 	N_useless_ev += 1; // DEBUG/OPTIMIZATION!
+
+		// 	iEvent--;
+		// 	continue;
+		// }
 		hEventCounterWithLambdaOrBar_in_measurable_eta->Fill(0);
 
+		// Now applying the jet cuts:
 		// Checking the Jet information to see if this event will be excluded or not:
 			// Run Fastjet algorithm and sort jets in pT order.
 		vector <fastjet::PseudoJet> inclusiveJets, sortedJets;
 		fastjet::ClusterSequence clustSeq(FastJetInputs, jetDef); // Clusters the jet candidates
 		inclusiveJets = clustSeq.inclusive_jets(jet_min_pT); // Gets all the jets with pT above this minimum threshold
 		sortedJets = fastjet::sorted_by_pt(inclusiveJets); // Sort from highest to lowest pT
+
+		auto jet_clustering_end = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
 
 		hJetCounterPerEventWithLambda->Fill(sortedJets.size()); // This may be zero without a problem! I just need to know how many of the total events have a jet
 		if(sortedJets.size() != 0){hEventCounterWithJets_pTleqJetMinPt_WithLambda->Fill(0);}
@@ -784,6 +930,18 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 			}
 		}
 		if (!foundJet){ // Should restart the whole loop, as we are not saving events that don't have the minimum jets necessary for my analysis!
+			// Moved the DEBUG/OPTIMIZATION! variables further down the code, to see how much time is spent on "useless events" just because they don't have a jet in the desired region
+			event_averaged_total_particle_loop_time_ms_useless_ev += total_particle_loop_time_ms; // DEBUG/OPTIMIZATION!
+			event_averaged_usable_particles_loop_time_ms_useless_ev += total_particle_loop_time_ms * (usable_particles_processed * 1./total_particles_processed);
+			event_averaged_other_particles_loop_time_ms_useless_ev += total_particle_loop_time_ms * (other_particles_processed * 1./total_particles_processed);
+			event_total_particles_processed_useless_ev += total_particles_processed;
+			event_usable_particles_processed_useless_ev += usable_particles_processed;
+			event_other_particles_processed_useless_ev += other_particles_processed;
+			time_on_histograms_useless_ev += std::chrono::duration<double, std::milli>(histogram_fill_end - particle_loop_end).count();
+			time_on_clustering_useless_ev += std::chrono::duration<double, std::milli>(jet_clustering_end - histogram_fill_end).count();
+
+			N_useless_ev += 1; // DEBUG/OPTIMIZATION!
+
 			iEvent--;
 			continue;
 		}
@@ -871,8 +1029,58 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		hJetProxyPtY_YExtraCheck->Fill(pt_jet, y_jet);
 		hJetProxyPhi_YExtraCheck->Fill(Phi_jet);
 
+		auto jet_processing_end = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
 		t3->Fill(); // Filling the tree first thing after the loop!
+		auto tree_fill_end = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
+
+		total_particle_loop_time_ms = std::chrono::duration<double, std::milli>(particle_loop_end - particle_loop_start).count(); // DEBUG/OPTIMIZATION!
+		// std::cout << "Time statistics of USEFUL event:" << std::endl;
+		// std::cout << "\tNumber of useful particles vs useless particles vs total: " << usable_particles_processed << " " << other_particles_processed << " " << total_particles_processed << std::endl;
+		// std::cout << std::setprecision(8) << "\tTime (ms) spent processing all particles: " << total_particle_loop_time_ms  << " or " << total_particle_loop_time_ms/total_particles_processed << " ms per particle" << std::endl;
+		// std::cout << std::setprecision(8) << "\tTime (ms) spent processing useful particles: " << total_particle_loop_time_ms * (usable_particles_processed * 1./total_particles_processed) << std::endl;
+		// std::cout << std::setprecision(8) << "\tTime (ms) spent processing other particles: " << total_particle_loop_time_ms * (other_particles_processed * 1./total_particles_processed) << std::endl;
+		// std::cout << std::setprecision(8) << "\tTime (ms) spent filling histograms: " << std::chrono::duration<double, std::milli>(histogram_fill_end - particle_loop_end).count() << std::endl;
+		// std::cout << std::setprecision(8) << "\tTime (ms) spent clustering jets: " << std::chrono::duration<double, std::milli>(jet_clustering_end - histogram_fill_end).count() << std::endl;
+		// Summing values for the event average:
+		event_averaged_total_particle_loop_time_ms_useful_ev += total_particle_loop_time_ms; // DEBUG/OPTIMIZATION!
+		event_averaged_usable_particles_loop_time_ms_useful_ev += total_particle_loop_time_ms * (usable_particles_processed * 1./total_particles_processed);
+		event_averaged_other_particles_loop_time_ms_useful_ev += total_particle_loop_time_ms * (other_particles_processed * 1./total_particles_processed);
+		event_total_particles_processed_useful_ev += total_particles_processed;
+		event_usable_particles_processed_useful_ev += usable_particles_processed;
+		event_other_particles_processed_useful_ev += other_particles_processed;
+		time_on_histograms_useful += std::chrono::duration<double, std::milli>(histogram_fill_end - particle_loop_end).count();
+		time_clustering += std::chrono::duration<double, std::milli>(jet_clustering_end - histogram_fill_end).count();
+		time_processing_jet += std::chrono::duration<double, std::milli>(jet_processing_end - jet_clustering_end).count();
+		time_filling_tree += std::chrono::duration<double, std::milli>(tree_fill_end - jet_processing_end).count();
+		N_useful_ev += 1; // DEBUG/OPTIMIZATION!
 	}
+	// DEBUG/OPTIMIZATION!
+	// Printing average time statistics:
+	std::cout << "\n\nTime statistics for all events -- fast check stats:" << std::endl;
+	std::cout << "\tTotal time spent fast scanning (ms): " << total_time_fast_scanning_event_ms << std::endl;
+	std::cout << "\tEvent-averaged total_time_fast_scanning_event_ms: " << total_time_fast_scanning_event_ms*1./N_scanned_ev << std::endl;
+
+	std::cout << "\nTime statistics averages of USEFUL events:" << std::endl;
+	std::cout << "\tNumber of useful particles vs useless particles vs total: " << event_usable_particles_processed_useful_ev << " " << event_other_particles_processed_useful_ev << " " << event_total_particles_processed_useful_ev << std::endl;
+	std::cout << "\tAverage number of useful particles vs useless particles vs total PER USEFUL EVENT: " << event_usable_particles_processed_useful_ev*1./N_useful_ev << " " << event_other_particles_processed_useful_ev*1./N_useful_ev << " " << event_total_particles_processed_useful_ev*1./N_useful_ev << std::endl;
+	std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent processing all particles: " << event_averaged_total_particle_loop_time_ms_useful_ev*1./N_useful_ev  << " or " << event_averaged_total_particle_loop_time_ms_useful_ev*1./event_total_particles_processed_useful_ev << " ms per particle" << std::endl;
+	std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent processing useful particles: " << event_averaged_usable_particles_loop_time_ms_useful_ev*1./N_useful_ev << std::endl;
+	std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent processing other particles: " << event_averaged_other_particles_loop_time_ms_useful_ev*1./N_useful_ev << std::endl;
+	std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent filling histograms: " << time_on_histograms_useful/N_useful_ev << std::endl;
+	std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent clustering jets: " << time_clustering/N_useful_ev << std::endl;
+	std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent processing jets: " << time_processing_jet/N_useful_ev << std::endl;
+	std::cout << std::setprecision(8) << "\tAverage per (useful)event time (ms) spent filling the TTree: " << time_filling_tree/N_useful_ev << std::endl;
+
+	std::cout << "\nTime statistics averages of USELESS events:" << std::endl;
+	std::cout << "\tNumber of useful particles vs useless particles vs total: " << event_usable_particles_processed_useless_ev << " " << event_other_particles_processed_useless_ev << " " << event_total_particles_processed_useless_ev << std::endl;
+	std::cout << std::setprecision(4) << "\tAverage number of useful particles vs useless particles vs total PER USELESS EVENT: " << event_usable_particles_processed_useless_ev*1./N_useless_ev << " " << event_other_particles_processed_useless_ev*1./N_useless_ev << " " << event_total_particles_processed_useless_ev*1./N_useless_ev << std::endl;
+	std::cout << std::setprecision(8) << "\tAverage per (useless)event time (ms) spent processing all particles: " << event_averaged_total_particle_loop_time_ms_useless_ev*1./N_useless_ev  << " or " << event_averaged_total_particle_loop_time_ms_useless_ev*1./event_total_particles_processed_useless_ev << " ms per particle" << std::endl;
+	std::cout << std::setprecision(8) << "\tAverage per (useless)event time (ms) spent processing useless particles: " << event_averaged_usable_particles_loop_time_ms_useless_ev*1./N_useless_ev << std::endl;
+	std::cout << std::setprecision(8) << "\tAverage per (useless)event time (ms) spent processing other particles: " << event_averaged_other_particles_loop_time_ms_useless_ev*1./N_useless_ev << std::endl;
+	std::cout << std::setprecision(8) << "\tAverage per (useless)event time (ms) spent filling histograms: " << time_on_histograms_useless_ev/N_useless_ev << std::endl;
+	std::cout << std::setprecision(8) << "\tAverage per (useless)event time (ms) spent clustering jets: " << time_on_clustering_useless_ev/N_useless_ev << std::endl;
+
+
 
 	// Creating histograms for the PIDs contained in each specific jet subset:
 	auto hPIDOfAllJetConstituents_WithLambda = new TH1D("hPIDOfAllJetConstituents_WithLambda", "PIDs of all jets' constituents", mapCountsOfPIDAllJetConstituents_WithLambda.size(), 0, mapCountsOfPIDAllJetConstituents_WithLambda.size());
@@ -894,14 +1102,14 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	t3->Write();
 
 	hEventCounter->Write();
-	hEventCounterWithLambdaOrBar->Write();
+	// hEventCounterWithLambdaOrBar->Write();
 	hEventCounterWithLambdaOrBar_in_measurable_eta->Write();
 	hEventCounterWithJets_pTleqJetMinPt_WithLambda->Write();
 	// hEventCounterWithJets_pTleqJetMinPt_EtaCuts->Write(); // No longer saving this variation. Just the one on the line immediately below
 	hEventCounterWithEtaOKLambdaWithJets_pTleqJetMinPt_EtaCuts->Write();
 	hEventCounterPassedYExtraCheck->Write();
 	hINELEventCounter->Write();
-	hEventCounterCharged->Write();
+	// hEventCounterCharged->Write();
 	// hEventCounterPion->Write();
 	// hEventCounterProton->Write();
 	// hEventCounterKaon->Write();
@@ -931,17 +1139,17 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	// Saving the multiplicity histograms that will speed up the centrality selection process!
 		// First the non-final inclusive histograms:
 	hNtracks->Write();
-	hNtracks_charged_forward->Write();
-	hNtracks_primary->Write();
+	// hNtracks_charged_forward->Write();
+	// hNtracks_primary->Write();
 		// Then the histograms that only have isFinal == true particles:
 	hNtracks_final->Write();
-	hNtracks_final_forward->Write();
-	hNtracks_final_forward_INEL_l0->Write();
+	// hNtracks_final_forward->Write();
+	// hNtracks_final_forward_INEL_l0->Write();
 	hNtracks_final_charged_center->Write();
 	hNtracks_final_charged->Write();
 	hNtracks_final_charged_INEL_l0->Write();
-	hNtracks_final_charged_forward->Write();
-	hNtracks_final_charged_forward_INEL_l0->Write();
+	// hNtracks_final_charged_forward->Write();
+	// hNtracks_final_charged_forward_INEL_l0->Write();
 
 	hINELev_Ntracks_final_charged_forward->Write();
 	// hINELev_Ntracks_final_charged_forward_Charged->Write();
@@ -1028,16 +1236,16 @@ void doCentrality(std::string output_folder, int N_cores, std::string input_card
 	// Reading all N_cores worker data and summing the hNtracks histograms:
 		// First declaring histograms to receive the sums:
 	TH1D *hNtracks_sum = new TH1D("hNtracks_sum", "hNtracks_sum", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1D *hNtracks_charged_forward_sum = new TH1D("hNtracks_charged_forward_sum", "hNtracks_charged_forward_sum", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1D *hNtracks_primary_sum = new TH1D("hNtracks_primary_sum", "hNtracks_primary_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	// TH1D *hNtracks_charged_forward_sum = new TH1D("hNtracks_charged_forward_sum", "hNtracks_charged_forward_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	// TH1D *hNtracks_primary_sum = new TH1D("hNtracks_primary_sum", "hNtracks_primary_sum", multiplicity_nbins, 0, multiplicity_nbins);
 	TH1D *hNtracks_final_sum = new TH1D("hNtracks_final_sum", "hNtracks_final_sum", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1D *hNtracks_final_forward_sum = new TH1D("hNtracks_final_forward_sum", "hNtracks_final_forward_sum", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1D *hNtracks_final_forward_INEL_l0_sum = new TH1D("hNtracks_final_forward_INEL_l0_sum", "hNtracks_final_forward_INEL_l0_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	// TH1D *hNtracks_final_forward_sum = new TH1D("hNtracks_final_forward_sum", "hNtracks_final_forward_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	// TH1D *hNtracks_final_forward_INEL_l0_sum = new TH1D("hNtracks_final_forward_INEL_l0_sum", "hNtracks_final_forward_INEL_l0_sum", multiplicity_nbins, 0, multiplicity_nbins);
 	TH1D *hNtracks_final_charged_center_sum = new TH1D("hNtracks_final_charged_center_sum", "hNtracks_final_charged_center_sum", multiplicity_nbins, 0, multiplicity_nbins);
 	TH1D *hNtracks_final_charged_sum = new TH1D("hNtracks_final_charged_sum", "hNtracks_final_charged_sum", multiplicity_nbins, 0, multiplicity_nbins);
 	TH1D *hNtracks_final_charged_INEL_l0_sum = new TH1D("hNtracks_final_charged_INEL_l0_sum", "hNtracks_final_charged_INEL_l0_sum", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1D *hNtracks_final_charged_forward_sum = new TH1D("hNtracks_final_charged_forward_sum", "hNtracks_final_charged_forward_sum", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1D *hNtracks_final_charged_forward_INEL_l0_sum = new TH1D("hNtracks_final_charged_forward_INEL_l0_sum", "hNtracks_final_charged_forward_INEL_l0_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	// TH1D *hNtracks_final_charged_forward_sum = new TH1D("hNtracks_final_charged_forward_sum", "hNtracks_final_charged_forward_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	// TH1D *hNtracks_final_charged_forward_INEL_l0_sum = new TH1D("hNtracks_final_charged_forward_INEL_l0_sum", "hNtracks_final_charged_forward_INEL_l0_sum", multiplicity_nbins, 0, multiplicity_nbins);
 
     for (int WorkerId = 0; WorkerId < N_cores; ++WorkerId){
         std::string data_filename = (std::string) output_folder;
@@ -1047,29 +1255,29 @@ void doCentrality(std::string output_folder, int N_cores, std::string input_card
 
 			// Fetching from current file:
 		TH1D *hNtracks_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks"));
-		TH1D *hNtracks_charged_forward_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_charged_forward"));
-		TH1D *hNtracks_primary_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_primary"));
+		// TH1D *hNtracks_charged_forward_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_charged_forward")); // Too expensive to check. Removed others like it below
+		// TH1D *hNtracks_primary_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_primary"));
 		TH1D *hNtracks_final_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final"));
-		TH1D *hNtracks_final_forward_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_forward"));
-		TH1D *hNtracks_final_forward_INEL_l0_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_forward_INEL_l0"));
+		// TH1D *hNtracks_final_forward_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_forward"));
+		// TH1D *hNtracks_final_forward_INEL_l0_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_forward_INEL_l0"));
 		TH1D *hNtracks_final_charged_center_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_charged_center"));
 		TH1D *hNtracks_final_charged_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_charged"));
 		TH1D *hNtracks_final_charged_INEL_l0_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_charged_INEL_l0"));
-		TH1D *hNtracks_final_charged_forward_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_charged_forward"));
-		TH1D *hNtracks_final_charged_forward_INEL_l0_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_charged_forward_INEL_l0"));
+		// TH1D *hNtracks_final_charged_forward_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_charged_forward"));
+		// TH1D *hNtracks_final_charged_forward_INEL_l0_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_charged_forward_INEL_l0"));
 
 			// Adding all histograms:
 		hNtracks_sum->Add(hNtracks_local);
-		hNtracks_charged_forward_sum->Add(hNtracks_charged_forward_local);
-		hNtracks_primary_sum->Add(hNtracks_primary_local);
+		// hNtracks_charged_forward_sum->Add(hNtracks_charged_forward_local);
+		// hNtracks_primary_sum->Add(hNtracks_primary_local);
 		hNtracks_final_sum->Add(hNtracks_final_local);
-		hNtracks_final_forward_sum->Add(hNtracks_final_forward_local);
-		hNtracks_final_forward_INEL_l0_sum->Add(hNtracks_final_forward_INEL_l0_local);
+		// hNtracks_final_forward_sum->Add(hNtracks_final_forward_local);
+		// hNtracks_final_forward_INEL_l0_sum->Add(hNtracks_final_forward_INEL_l0_local);
 		hNtracks_final_charged_center_sum->Add(hNtracks_final_charged_center_local);
 		hNtracks_final_charged_sum->Add(hNtracks_final_charged_local);
 		hNtracks_final_charged_INEL_l0_sum->Add(hNtracks_final_charged_INEL_l0_local);
-		hNtracks_final_charged_forward_sum->Add(hNtracks_final_charged_forward_local);
-		hNtracks_final_charged_forward_INEL_l0_sum->Add(hNtracks_final_charged_forward_INEL_l0_local);
+		// hNtracks_final_charged_forward_sum->Add(hNtracks_final_charged_forward_local);
+		// hNtracks_final_charged_forward_INEL_l0_sum->Add(hNtracks_final_charged_forward_INEL_l0_local);
 
         data_file->Close();
     }
@@ -1084,52 +1292,52 @@ void doCentrality(std::string output_folder, int N_cores, std::string input_card
 	// TH1D *hNtracks_to_centrality = new TH1D("hNtracks_to_centrality", "hNtracks_to_centrality", hNtracks->GetMaximum() + 1, 0, hNtracks->GetMaximum() + 1);
 		// Updated to use FindLastBinAbove() instead of maximum value! I don't want the highest value in the TH1D, I want the highest bin with non-zero value!
 	TH1D *hNtracks_to_centrality = new TH1D("hNtracks_to_centrality", "hNtracks_to_centrality", hNtracks_sum->FindLastBinAbove(0) + 1, 0, hNtracks_sum->FindLastBinAbove(0) + 1);
-	TH1D *hNtracks_to_centrality_charged_forward = new TH1D("hNtracks_to_centrality_charged_forward", "hNtracks_to_centrality_charged_forward", hNtracks_charged_forward_sum->FindLastBinAbove(0) + 1, 0, hNtracks_charged_forward_sum->FindLastBinAbove(0) + 1);
-	TH1D *hNtracks_to_centrality_primary = new TH1D("hNtracks_to_centrality_primary", "hNtracks_to_centrality_primary", hNtracks_primary_sum->FindLastBinAbove(0) + 1, 0, hNtracks_primary_sum->FindLastBinAbove(0) + 1);
+	// TH1D *hNtracks_to_centrality_charged_forward = new TH1D("hNtracks_to_centrality_charged_forward", "hNtracks_to_centrality_charged_forward", hNtracks_charged_forward_sum->FindLastBinAbove(0) + 1, 0, hNtracks_charged_forward_sum->FindLastBinAbove(0) + 1);
+	// TH1D *hNtracks_to_centrality_primary = new TH1D("hNtracks_to_centrality_primary", "hNtracks_to_centrality_primary", hNtracks_primary_sum->FindLastBinAbove(0) + 1, 0, hNtracks_primary_sum->FindLastBinAbove(0) + 1);
 	TH1D *hNtracks_to_centrality_final = new TH1D("hNtracks_to_centrality_final", "hNtracks_to_centrality_final", hNtracks_final_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_sum->FindLastBinAbove(0) + 1);
-	TH1D *hNtracks_to_centrality_final_forward = new TH1D("hNtracks_to_centrality_final_forward", "hNtracks_to_centrality_final_forward", hNtracks_final_forward_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_forward_sum->FindLastBinAbove(0) + 1);
-	TH1D *hNtracks_to_centrality_final_forward_INEL_l0 = new TH1D("hNtracks_to_centrality_final_forward_INEL_l0", "hNtracks_to_centrality_final_forward_INEL_l0", hNtracks_final_forward_INEL_l0_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_forward_INEL_l0_sum->FindLastBinAbove(0) + 1);
+	// TH1D *hNtracks_to_centrality_final_forward = new TH1D("hNtracks_to_centrality_final_forward", "hNtracks_to_centrality_final_forward", hNtracks_final_forward_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_forward_sum->FindLastBinAbove(0) + 1);
+	// TH1D *hNtracks_to_centrality_final_forward_INEL_l0 = new TH1D("hNtracks_to_centrality_final_forward_INEL_l0", "hNtracks_to_centrality_final_forward_INEL_l0", hNtracks_final_forward_INEL_l0_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_forward_INEL_l0_sum->FindLastBinAbove(0) + 1);
 	TH1D *hNtracks_to_centrality_final_charged_center = new TH1D("hNtracks_to_centrality_final_charged_center", "hNtracks_to_centrality_final_charged_center", hNtracks_final_charged_center_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_center_sum->FindLastBinAbove(0) + 1);
 	TH1D *hNtracks_to_centrality_final_charged = new TH1D("hNtracks_to_centrality_final_charged", "hNtracks_to_centrality_final_charged", hNtracks_final_charged_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_sum->FindLastBinAbove(0) + 1);
 	TH1D *hNtracks_to_centrality_final_charged_INEL_l0 = new TH1D("hNtracks_to_centrality_final_charged_INEL_l0", "hNtracks_to_centrality_final_charged_INEL_l0", hNtracks_final_charged_INEL_l0_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_INEL_l0_sum->FindLastBinAbove(0) + 1);
-	TH1D *hNtracks_to_centrality_final_charged_forward = new TH1D("hNtracks_to_centrality_final_charged_forward", "hNtracks_to_centrality_final_charged_forward", hNtracks_final_charged_forward_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_forward_sum->FindLastBinAbove(0) + 1);
-	TH1D *hNtracks_to_centrality_final_charged_forward_INEL_l0 = new TH1D("hNtracks_to_centrality_final_charged_forward_INEL_l0", "hNtracks_to_centrality_final_charged_forward_INEL_l0", hNtracks_final_charged_forward_INEL_l0_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_forward_INEL_l0_sum->FindLastBinAbove(0) + 1);
+	// TH1D *hNtracks_to_centrality_final_charged_forward = new TH1D("hNtracks_to_centrality_final_charged_forward", "hNtracks_to_centrality_final_charged_forward", hNtracks_final_charged_forward_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_forward_sum->FindLastBinAbove(0) + 1);
+	// TH1D *hNtracks_to_centrality_final_charged_forward_INEL_l0 = new TH1D("hNtracks_to_centrality_final_charged_forward_INEL_l0", "hNtracks_to_centrality_final_charged_forward_INEL_l0", hNtracks_final_charged_forward_INEL_l0_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_forward_INEL_l0_sum->FindLastBinAbove(0) + 1);
 
 	multiplicity_to_centrality(hNtracks_sum, hNtracks_to_centrality);
-	multiplicity_to_centrality(hNtracks_charged_forward_sum, hNtracks_to_centrality_charged_forward);
-	multiplicity_to_centrality(hNtracks_primary_sum, hNtracks_to_centrality_primary);
+	// multiplicity_to_centrality(hNtracks_charged_forward_sum, hNtracks_to_centrality_charged_forward);
+	// multiplicity_to_centrality(hNtracks_primary_sum, hNtracks_to_centrality_primary);
 	multiplicity_to_centrality(hNtracks_final_sum, hNtracks_to_centrality_final);
-	multiplicity_to_centrality(hNtracks_final_forward_sum, hNtracks_to_centrality_final_forward);
-	multiplicity_to_centrality(hNtracks_final_forward_INEL_l0_sum, hNtracks_to_centrality_final_forward_INEL_l0);
+	// multiplicity_to_centrality(hNtracks_final_forward_sum, hNtracks_to_centrality_final_forward);
+	// multiplicity_to_centrality(hNtracks_final_forward_INEL_l0_sum, hNtracks_to_centrality_final_forward_INEL_l0);
 	multiplicity_to_centrality(hNtracks_final_charged_center_sum, hNtracks_to_centrality_final_charged_center);
 	multiplicity_to_centrality(hNtracks_final_charged_sum, hNtracks_to_centrality_final_charged);
 	multiplicity_to_centrality(hNtracks_final_charged_INEL_l0_sum, hNtracks_to_centrality_final_charged_INEL_l0);
-	multiplicity_to_centrality(hNtracks_final_charged_forward_sum, hNtracks_to_centrality_final_charged_forward);
-	multiplicity_to_centrality(hNtracks_final_charged_forward_INEL_l0_sum, hNtracks_to_centrality_final_charged_forward_INEL_l0);
+	// multiplicity_to_centrality(hNtracks_final_charged_forward_sum, hNtracks_to_centrality_final_charged_forward);
+	// multiplicity_to_centrality(hNtracks_final_charged_forward_INEL_l0_sum, hNtracks_to_centrality_final_charged_forward_INEL_l0);
 
 	hNtracks_sum->Write();
-	hNtracks_charged_forward_sum->Write();
-	hNtracks_primary_sum->Write();
+	// hNtracks_charged_forward_sum->Write();
+	// hNtracks_primary_sum->Write();
 	hNtracks_final_sum->Write();
-	hNtracks_final_forward_sum->Write();
-	hNtracks_final_forward_INEL_l0_sum->Write();
+	// hNtracks_final_forward_sum->Write();
+	// hNtracks_final_forward_INEL_l0_sum->Write();
 	hNtracks_final_charged_center_sum->Write();
 	hNtracks_final_charged_sum->Write();
 	hNtracks_final_charged_INEL_l0_sum->Write();
-	hNtracks_final_charged_forward_sum->Write();
-	hNtracks_final_charged_forward_INEL_l0_sum->Write();
+	// hNtracks_final_charged_forward_sum->Write();
+	// hNtracks_final_charged_forward_INEL_l0_sum->Write();
 
 	hNtracks_to_centrality->Write();
-	hNtracks_to_centrality_charged_forward->Write();
-	hNtracks_to_centrality_primary->Write();
+	// hNtracks_to_centrality_charged_forward->Write();
+	// hNtracks_to_centrality_primary->Write();
 	hNtracks_to_centrality_final->Write();
-	hNtracks_to_centrality_final_forward->Write();
-	hNtracks_to_centrality_final_forward_INEL_l0->Write();
+	// hNtracks_to_centrality_final_forward->Write();
+	// hNtracks_to_centrality_final_forward_INEL_l0->Write();
 	hNtracks_to_centrality_final_charged_center->Write();
 	hNtracks_to_centrality_final_charged->Write();
 	hNtracks_to_centrality_final_charged_INEL_l0->Write();
-	hNtracks_to_centrality_final_charged_forward->Write();
-	hNtracks_to_centrality_final_charged_forward_INEL_l0->Write();
+	// hNtracks_to_centrality_final_charged_forward->Write();
+	// hNtracks_to_centrality_final_charged_forward_INEL_l0->Write();
 
 	return;
 }
