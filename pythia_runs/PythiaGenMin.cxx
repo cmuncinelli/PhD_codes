@@ -20,7 +20,7 @@
 #include <TROOT.h> // Necessary for the EnableThreadSafety() part of ROOT
 
 #include <iostream>
-#include <map> // For the PID tracking of the jet constituents
+#include <map> // For the PID tracking of the jet constituents. Did not use unordered maps because the performance difference is close to zero!
 #include <chrono>
 #include <iomanip> // For printing doubles with more precision
 
@@ -145,7 +145,11 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 	// // std::vector<Bool_t> charged; // Don't actually need to save this! This is purely a PDG-lookup information, so no need to store it when the
 	// 								// PID is already enough to know it! The isCharged() will be useful inside the loop, but no need to store it!
-	Bool_t charged_in_central_eta; // A single boolean that is reset at the start of each new event and marks that event as INEL>0 (or not).
+	
+	// This bool is useless in this code! By definition, we demand that there is a whole jet within the |eta|<0.9 region,
+	// so all of the saved events are INEL>0 (charged within |eta|<1.0), so there surely is a charged particle in the central
+	// barrel, by definition!
+	// Bool_t charged_in_central_eta; // A single boolean that is reset at the start of each new event and marks that event as INEL>0 (or not).
 
 	// // std::vector<Float_t> Eta;
 	// std::vector<Float_t> y;
@@ -167,7 +171,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	// TH1D *hEventCounterWithJets_pTleqJetMinPt_EtaCuts = new TH1D ("hEventCounterWithJets_pTleqJetMinPt_EtaCuts", "hEventCounter(jets w/ pT>8,|eta|<0.5)", 1, -1, 1); // Jets in the interval pT > jet_min_pT and |eta| < 0.9 - R
 	TH1D *hEventCounterWithEtaOKLambdaWithJets_pTleqJetMinPt_EtaCuts = new TH1D ("hEventCounterWithEtaOKLambdaWithJets_pTleqJetMinPt_EtaCuts", "hEventCounter(jets w/ pT>8,|eta|<0.5),hasLambdaorLambdaBar", 1, -1, 1);
 	TH1D *hEventCounterPassedYExtraCheck = new TH1D ("hEventCounterPassedYExtraCheck", "hEventCounter(jets w/ pT>8,|eta|<0.5,|y|<0.5),hasLambda in pTandYcuts", 1, -1, 1); // Contains Lambda in the desired pT and |y| range, contains a jet in the desired range
-	TH1D *hINELEventCounter = new TH1D ("hINELEventCounter", "", 1, -1, 1);
+	// TH1D *hINELEventCounter = new TH1D ("hINELEventCounter", "", 1, -1, 1); // Useless in this version of the code. See comments on charged_in_central_eta.
 	// TH1D *hEventCounterCharged = new TH1D ("hEventCounterCharged", "", 1, -1, 1);
 	// TH1D *hEventCounterPion = new TH1D ("hEventCounterPion", "", 1, -1, 1);
 	// TH1D *hEventCounterProton = new TH1D ("hEventCounterProton", "", 1, -1, 1);
@@ -175,15 +179,15 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	
 	TH1D *hJetCounterPerEventWithLambda = new TH1D ("hJetCounterPerEventWithLambda", "Number of jets found in each event (w/LambdaOrBar)", 40, 0, 40);
 	TH1D *hDiscardedHighPtJetCounterPerEventWithLambda = new TH1D ("hDiscardedHighPtJetCounterPerEventWithLambda", "NumberOfJetsDiscardedUntil |eta|<jet_max_eta jet found(w/LambdaOrBar)", 40, 0, 40);
-	TH1D *hNParticlesPerJetWithLambda = new TH1D ("hNParticlesPerJetWithLambda", "N_particles in each jet(pT>8,w/LambdaOrBar)", 50, 0, 50);
+	// TH1D *hNParticlesPerJetWithLambda = new TH1D ("hNParticlesPerJetWithLambda", "N_particles in each jet(pT>8,w/LambdaOrBar)", 50, 0, 50); // Removed for optimization
 	// TH1D *hNParticlesLeadingJet_EtaCuts = new TH1D ("hNParticlesLeadingJet_EtaCuts", "N_particles in each |eta|<0.5 jet(pT>8)", 50, 0, 50);
 	TH1D *hNParticlesLeadingJet_EtaCutsWithLambda = new TH1D ("hNParticlesLeadingJet_EtaCutsWithLambda", "N_particles in each |eta|<0.5,w/LambdaOrBar,jet(pT>8)", 50, 0, 50);
-	TH1D *hNParticlesLeadingJet_PassedYExtraCheck = new TH1D ("hNParticlesLeadingJet_PassedYExtraCheck", "N_particles in |y|<0.5,w/LambdaOrbar,jet(pT>8)", 50, 0, 50);
+	// TH1D *hNParticlesLeadingJet_PassedYExtraCheck = new TH1D ("hNParticlesLeadingJet_PassedYExtraCheck", "N_particles in |y|<0.5,w/LambdaOrbar,jet(pT>8)", 50, 0, 50); // Removed for optimization
 		// Some maps to know the PID of the particles on each type of jet:
-	std::map<int,int> mapCountsOfPIDAllJetConstituents_WithLambda;
+	// std::map<int,int> mapCountsOfPIDAllJetConstituents_WithLambda; // Removed for optimization
 	// std::map<int,int> mapCountsOfPIDLeadingJetConstituents_EtaCuts;
 	std::map<int,int> mapCountsOfPIDLeadingJetConstituents_EtaCutsWithLambda;
-	std::map<int,int> mapCountsOfPIDLeadingJetConstituents_PassedYExtraCheck;
+	// std::map<int,int> mapCountsOfPIDLeadingJetConstituents_PassedYExtraCheck;
 	
 	// The histograms themselves will be declared AFTER we know what PIDs are actually contained in the events
 	// hPIDOfAllJetConstituents
@@ -200,7 +204,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 	// t3->Branch("charged_in_back_forward_eta",&charged_in_back_forward_eta,"charged_in_back_forward_eta/I");
 	// t3->Branch("ntracks_in_back_forward_eta",&ntracks_in_back_forward_eta,"ntracks_in_back_forward_eta/I");
-	t3->Branch("charged_in_central_eta",&charged_in_central_eta,"charged_in_central_eta/O");
+	// t3->Branch("charged_in_central_eta",&charged_in_central_eta,"charged_in_central_eta/O"); // Almost useless given the cuts employed here!
 	// t3->Branch("Ntracks_charged_forward",&Ntracks_charged_forward,"Ntracks_charged_forward/I");
 	// t3->Branch("Ntracks_primary",&Ntracks_primary,"Ntracks_primary/I");
 	t3->Branch("Ntracks_final_charged_center",&Ntracks_final_charged_center,"Ntracks_final_charged_center/I");
@@ -375,12 +379,12 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	// double time_on_clustering_useless_ev = 0; // Only happens if the event is declared "useless" after it passes the previous checks
 
 	double number_of_actually_simulated_events = 0;
-	double INELEventCounter = 0;
+	// double INELEventCounter = 0;
 	double EventCounterWithLambdaOrBar_in_measurable_eta = 0;
 	double EventCounterWithJets_pTleqJetMinPt_WithLambda = 0;
 	double EventCounterWithEtaOKLambdaWithJets_pTleqJetMinPt_EtaCuts = 0;
 	double EventCounterPassedYExtraCheck = 0;
-	for (int iEvent=0; iEvent<N_ev; ++iEvent){
+	for (int iEvent=0; iEvent<N_ev; ++iEvent){ // Could have done this with a "while", but do notice that this loop runs until the target N_ev is reached in *useful* events.
 		// pythia.next();
 		if (!pythia.next()){ // Skip failed events --> Angantyr can generate events that have no particles at all!
 			iEvent--; // Before skipping, will reset the counter increase of this non-generated event: we need EXACTLY N_ev to be generated
@@ -397,7 +401,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// auto fast_scan_start = std::chrono::high_resolution_clock::now(); // DEBUG/OPTIMIZATION!
 		bool contains_lambda_or_lambdabar_in_measurable_eta = false;
 		for (int i = 0; i < pythia.event.size(); ++i){
-			if ((pythia.event[i].id() == 3122 || pythia.event[i].id() == -3122) && std::fabs(pythia.event[i].eta()) < ALICE_charged_particle_acceptance){
+			if (pythia.event[i].idAbs() == 3122 && std::fabs(pythia.event[i].eta()) < ALICE_charged_particle_acceptance){
 				contains_lambda_or_lambdabar_in_measurable_eta = true;
 				break; // Found one, exit immediately!
 			}
@@ -421,7 +425,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		ntrack = pythia.event.size(); // This could be a bit problematic to estimate multiplicity: this includes non-final particles!
 		ntrack_final = 0; // Resetting for the next event
 
-		charged_in_central_eta = false; // Resetting the bool for the next event
+		// charged_in_central_eta = false; // Resetting the bool for the next event
 		// charged_in_back_forward_eta = 0; // Actually ""charged_in_back_forward_eta_FINAL" cause it only gets final particles
 		// ntracks_in_back_forward_eta = 0;
 
@@ -660,14 +664,14 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 					//////////////////////////////////////////////////
 					Ntracks_final_charged += 1; // Checking final charged in all eta
 					if (std::fabs(eta_rap) < 1.0){
-						Ntracks_final_charged_center += 1;
-						charged_in_central_eta = true;
+						Ntracks_final_charged_center += 1; // This, however, is not useless. This is the centrality estimator using the TPC/ITS region, essentially!
+					// 	charged_in_central_eta = true;// Useless here! We already demand that 
 					}
 					//////////////////////////////////////////////////
 					// Now doing the check to see if this is a proton with Lambda mother or not:
 					const int particle_PID = particle.id(); // Moved this definition here, because it was not used anywhere else in the code!
 												  	  // (so no need to define it outside of the "if(isfinal)"!)
-					if (particle_PID == 2212 || particle_PID == -2212){
+					if (std::abs(particle_PID) == 2212){
 						int motherIdx1 = particle.mother1(); // Moved from earlier on in the code: we don't need to get the mother of every particle because we
 															// are no longer checking the isPrimary condition for all particles!
 						// int motherIdx2 = particle.mother2();
@@ -675,7 +679,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 						// After that, should check if the mother of this proton or anti-proton is a Lambda or LambdaBar
 						// Particle mother_particle_object = pythia.event[motherIdx1]; // Already using the Pythia8 namespace
 						const int mother_PID = pythia.event[motherIdx1].id(); // Removed the mother_particle_object as it was no longer being used
-						if (mother_PID == 3122 || mother_PID == -3122){
+						if (std::abs(mother_PID) == 3122){
 							// Should not worry with this Lambda being a carbon-copy or not: the useful kinematic information comes from the actual
 							// mother of the proton, not the previous stages of when that Lambda was generated, as far as I know. If we had the QGP,
 							// what would be measured is not the "first" Lambda, but the final after-interactions Lambda's daughter. In iSS, the
@@ -771,7 +775,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 					// Changed to apply a stricter cut: this will greatly speed up the loop and I don't need to know the statistics
 					// of jets outside of the detectable region anymore (those are already present in the previous runs' data)
-					if (pT < 0.1 || std::fabs(eta_rap) > ALICE_charged_particle_acceptance){continue;} // Will just continue the loop. As this is the last part of the loop, there is no problem in skipping it
+					if (pT < 0.1 || (std::fabs(eta_rap) > ALICE_charged_particle_acceptance)){continue;} // Will just continue the loop. As this is the last part of the loop, there is no problem in skipping it
 
 					// Create a PseudoJet from the complete Pythia particle:
 					fastjet::PseudoJet particleTemp = particle;
@@ -822,18 +826,21 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// by construction, wouldn't we?)
 		// Filling the event counters for INEL events for each multiplicity class:
 			// (This is actually just to sate my curiosity. It has no practical use, as the number of events is the same for all particle species in the ALICE standard normalization of pT spectra)
-		if (charged_in_central_eta){
-			// hINELEventCounter->Fill(0);
-			INELEventCounter += 1;
-			// hINELev_Ntracks_final_charged_forward->Fill(charged_in_back_forward_eta);
+		
+		// This is true by default: all selected events are INEL>0.
+		// In the way it was designed, it does not tell us anything but that. We discard the INEL=0 events before even calculating this bool!
+		// if (charged_in_central_eta){
+		// 	// hINELEventCounter->Fill(0);
+		// 	INELEventCounter += 1;
+		// 	// hINELev_Ntracks_final_charged_forward->Fill(charged_in_back_forward_eta);
 
-			// if (n_charged_event != 0){hINELev_Ntracks_final_charged_forward_Charged->Fill(charged_in_back_forward_eta);}
-				// You don't need to check if n_charged_event != 0. That comes imediatelly from the fact that charged_in_central_eta is true.
-			// hINELev_Ntracks_final_charged_forward_Charged->Fill(charged_in_back_forward_eta);
-			// if (n_pion_event != 0){hINELev_Ntracks_final_charged_forward_Pion->Fill(charged_in_back_forward_eta);}
-			// if (n_proton_event != 0){hINELev_Ntracks_final_charged_forward_Proton->Fill(charged_in_back_forward_eta);}
-			// if (n_kaon_event != 0){hINELev_Ntracks_final_charged_forward_Kaon->Fill(charged_in_back_forward_eta);}
-		}
+		// 	// if (n_charged_event != 0){hINELev_Ntracks_final_charged_forward_Charged->Fill(charged_in_back_forward_eta);}
+		// 		// You don't need to check if n_charged_event != 0. That comes imediatelly from the fact that charged_in_central_eta is true.
+		// 	// hINELev_Ntracks_final_charged_forward_Charged->Fill(charged_in_back_forward_eta);
+		// 	// if (n_pion_event != 0){hINELev_Ntracks_final_charged_forward_Pion->Fill(charged_in_back_forward_eta);}
+		// 	// if (n_proton_event != 0){hINELev_Ntracks_final_charged_forward_Proton->Fill(charged_in_back_forward_eta);}
+		// 	// if (n_kaon_event != 0){hINELev_Ntracks_final_charged_forward_Kaon->Fill(charged_in_back_forward_eta);}
+		// }
 
 			// First the non-final inclusive histograms:
 		hNtracks->Fill(ntrack);
@@ -846,7 +853,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// if(charged_in_central_eta){hNtracks_final_forward_INEL_l0->Fill(ntracks_in_back_forward_eta);} // Expensive to check
 		hNtracks_final_charged_center->Fill(Ntracks_final_charged_center);
 		hNtracks_final_charged->Fill(Ntracks_final_charged);
-		if(charged_in_central_eta){hNtracks_final_charged_INEL_l0->Fill(Ntracks_final_charged);} // This histogram should only be filled if the event is INEL>0, so it is more restrictive than the histogram above!
+		// if(charged_in_central_eta){hNtracks_final_charged_INEL_l0->Fill(Ntracks_final_charged);} // This histogram should only be filled if the event is INEL>0, so it is more restrictive than the histogram above!
 			// Too expensive to check:
 		// hNtracks_final_charged_forward->Fill(charged_in_back_forward_eta);
 		// if(charged_in_central_eta){hNtracks_final_charged_forward_INEL_l0->Fill(charged_in_back_forward_eta);} // This histogram should only be filled if the event is INEL>0, so it is more restrictive than the histogram above!
@@ -945,15 +952,19 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 				}
 			}
 
-			std::vector<fastjet::PseudoJet> jet_constituents = jet.constituents();
-			hNParticlesPerJetWithLambda->Fill(jet_constituents.size());
+			// DEBUG/OPTIMIZATION! Removed this block of code here, because it takes too long to run!
+			// Notice that the chemical composition of the jets is almost the same with these KINEMATIC
+			// selections that you are applying to the jets!
+			// (Actually, moved this whole block further down the line: will not create a whole map for a jet that will be discarded!)
+			// std::vector<fastjet::PseudoJet> jet_constituents = jet.constituents();
+			// hNParticlesPerJetWithLambda->Fill(jet_constituents.size());
 
-			// Getting the PID of each constituent of this jet:
-			for (const auto& jet_constituent : jet_constituents){
-				const int particle_PythiaIdx = jet_constituent.user_index(); // Using what we defined in particleTemp
-				const int particle_PID = pythia.event[particle_PythiaIdx].id();
-				mapCountsOfPIDAllJetConstituents_WithLambda[particle_PID]++; // Creates a key with the PID number, and then adds 1 to that key's value
-			}
+			// // Getting the PID of each constituent of this jet:
+			// for (const auto& jet_constituent : jet_constituents){
+			// 	const int particle_PythiaIdx = jet_constituent.user_index(); // Using what we defined in particleTemp
+			// 	const int particle_PID = pythia.event[particle_PythiaIdx].id();
+			// 	mapCountsOfPIDAllJetConstituents_WithLambda[particle_PID]++; // Creates a key with the PID number, and then adds 1 to that key's value
+			// }
 		}
 		if (!foundJet){ // Should restart the whole loop, as we are not saving events that don't have the minimum jets necessary for my analysis!
 			// // Moved the DEBUG/OPTIMIZATION! variables further down the code, to see how much time is spent on "useless events" just because they don't have a jet in the desired region
@@ -979,17 +990,17 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 		// Creating a leadingJet map for the current event -- No need to do the jet_constituent loop for each more restrictive cut!
 		// In other words, loops through the jets only once, then just reads from the map for this event's leading jet
-		std::map<int,int> CurrentEvent_LeadingJet_map;
-		for (const auto& jet_constituent : leadingJet_constituents){
-			// Getting the PID of each constituent of this jet:
-			int particle_PythiaIdx = jet_constituent.user_index(); // Using what we defined in particleTemp
-			int particle_PID = pythia.event[particle_PythiaIdx].id();
-			CurrentEvent_LeadingJet_map[particle_PID]++; // Creates a key with the PID number, and then adds 1 to that key's value
-
-			// Am only studying the jets in events that have a Lambda too:
-			// // Can fill this particular Eta cut's map right now:
-			// mapCountsOfPIDLeadingJetConstituents_EtaCuts[particle_PID]++;
-		}
+		// (Actually, moved this whole block further down the line: will not create a whole map for a jet that will be discarded!)
+		// std::map<int,int> CurrentEvent_LeadingJet_map;
+		// for (const auto& jet_constituent : leadingJet_constituents){
+		// 	// Getting the PID of each constituent of this jet:
+		// 	int particle_PythiaIdx = jet_constituent.user_index(); // Using what we defined in particleTemp
+		// 	int particle_PID = pythia.event[particle_PythiaIdx].id();
+		// 	CurrentEvent_LeadingJet_map[particle_PID]++; // Creates a key with the PID number, and then adds 1 to that key's value
+		// 	// Am only studying the jets in events that have a Lambda too:
+		// 	// // Can fill this particular Eta cut's map right now:
+		// 	// mapCountsOfPIDLeadingJetConstituents_EtaCuts[particle_PID]++;
+		// }
 
 		// Setting the pT, m, y, phi values for the jet before filling the tree:		
 		pt_jet = leadingJet.pt();
@@ -1005,7 +1016,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 		// Saving the information of the first discarded jet's relative position to the leading jet:
 		Float_t pt_firstDiscardedJet = firstDiscardedJet.pt();
-		Float_t m_firstDiscardedJet = firstDiscardedJet.m();
+		// Float_t m_firstDiscardedJet = firstDiscardedJet.m(); // Not used in the code
 		Float_t y_firstDiscardedJet = firstDiscardedJet.rap();
 		Float_t Phi_firstDiscardedJet = firstDiscardedJet.phi_std();
 
@@ -1023,11 +1034,18 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		EventCounterWithEtaOKLambdaWithJets_pTleqJetMinPt_EtaCuts += 1;
 		hNParticlesLeadingJet_EtaCutsWithLambda->Fill(leadingJet_constituents.size());
 			// Filling the map for this "EtaCutsWithLambda" cut:
-		for (const auto &key_and_value_pair : CurrentEvent_LeadingJet_map){
-			int PID = key_and_value_pair.first; // the key
-			int counts = key_and_value_pair.second; // the count
-			mapCountsOfPIDLeadingJetConstituents_EtaCutsWithLambda[PID] += counts;
+		// std::map<int,int> mapCountsOfPIDLeadingJetConstituents_EtaCutsWithLambda; // No need to define this again! (This would even make it wrong, actually!)
+		for (const auto& jet_constituent : leadingJet_constituents){
+			// Getting the PID of each constituent of this jet:
+			const int particle_PythiaIdx = jet_constituent.user_index(); // Using what we defined in particleTemp
+			const int particle_PID = pythia.event[particle_PythiaIdx].id();
+			mapCountsOfPIDLeadingJetConstituents_EtaCutsWithLambda[particle_PID]++; // Creates a key with the PID number, and then adds 1 to that key's value
 		}
+		// for (const auto &key_and_value_pair : CurrentEvent_LeadingJet_map){
+		// 	int PID = key_and_value_pair.first; // the key
+		// 	int counts = key_and_value_pair.second; // the count
+		// 	mapCountsOfPIDLeadingJetConstituents_EtaCutsWithLambda[PID] += counts;
+		// }
 
 		hJetProxyY_pTleqJetMinPt_eta_cut_WithEtaOKLambda->Fill(y_jet);
 		hJetProxyPt_pTleqJetMinPt_eta_cut_WithEtaOKLambda->Fill(pt_jet);
@@ -1044,13 +1062,15 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// 	iEvent--;
 		// 	continue;
 		// }
-		hNParticlesLeadingJet_PassedYExtraCheck->Fill(leadingJet_constituents.size());
-			// Filling the map for this "EtaCutsWithLambda" cut:
-		for (const auto &key_and_value_pair : CurrentEvent_LeadingJet_map){
-			int PID = key_and_value_pair.first; // the key
-			int counts = key_and_value_pair.second; // the count
-			mapCountsOfPIDLeadingJetConstituents_PassedYExtraCheck[PID] += counts;
-		}
+		
+		// This is a costly loop! It has to go through all jet constituent particles in each event!
+		// hNParticlesLeadingJet_PassedYExtraCheck->Fill(leadingJet_constituents.size());
+		// 	// Filling the map for this "EtaCutsWithLambda" cut:
+		// for (const auto &key_and_value_pair : CurrentEvent_LeadingJet_map){
+		// 	int PID = key_and_value_pair.first; // the key
+		// 	int counts = key_and_value_pair.second; // the count
+		// 	mapCountsOfPIDLeadingJetConstituents_PassedYExtraCheck[PID] += counts;
+		// }
 
 		hJetProxyY_YExtraCheck->Fill(y_jet);
 		hJetProxyPt_YExtraCheck->Fill(pt_jet);
@@ -1084,11 +1104,25 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	}
 	// Updating event counters:
 	hEventCounter->Fill(0., number_of_actually_simulated_events);
-	hINELEventCounter->Fill(0., INELEventCounter);
+	// hINELEventCounter->Fill(0., INELEventCounter);
 	hEventCounterWithLambdaOrBar_in_measurable_eta->Fill(0., EventCounterWithLambdaOrBar_in_measurable_eta);
 	hEventCounterWithJets_pTleqJetMinPt_WithLambda->Fill(0., EventCounterWithJets_pTleqJetMinPt_WithLambda);
 	hEventCounterWithEtaOKLambdaWithJets_pTleqJetMinPt_EtaCuts->Fill(0., EventCounterWithEtaOKLambdaWithJets_pTleqJetMinPt_EtaCuts);
 	hEventCounterPassedYExtraCheck->Fill(0., EventCounterPassedYExtraCheck);
+		// Resetting statistics box counts to make the "entries" number consistent:
+	hEventCounter->ResetStats();
+	// hINELEventCounter->ResetStats();
+	hEventCounterWithLambdaOrBar_in_measurable_eta->ResetStats();
+	hEventCounterWithJets_pTleqJetMinPt_WithLambda->ResetStats();
+	hEventCounterWithEtaOKLambdaWithJets_pTleqJetMinPt_EtaCuts->ResetStats();
+	hEventCounterPassedYExtraCheck->ResetStats();
+		// Actually fixing the fEntries number:
+	hEventCounter->SetEntries(number_of_actually_simulated_events);
+	hEventCounterWithLambdaOrBar_in_measurable_eta->SetEntries(EventCounterWithLambdaOrBar_in_measurable_eta);
+	hEventCounterWithJets_pTleqJetMinPt_WithLambda->SetEntries(EventCounterWithJets_pTleqJetMinPt_WithLambda);
+	hEventCounterWithEtaOKLambdaWithJets_pTleqJetMinPt_EtaCuts->SetEntries(EventCounterWithEtaOKLambdaWithJets_pTleqJetMinPt_EtaCuts);
+	hEventCounterPassedYExtraCheck->SetEntries(EventCounterPassedYExtraCheck);
+
 
 	// // DEBUG/OPTIMIZATION!
 	// // Printing average time statistics:
@@ -1119,15 +1153,15 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 
 
 	// Creating histograms for the PIDs contained in each specific jet subset:
-	auto hPIDOfAllJetConstituents_WithLambda = new TH1D("hPIDOfAllJetConstituents_WithLambda", "PIDs of all jets' constituents", mapCountsOfPIDAllJetConstituents_WithLambda.size(), 0, mapCountsOfPIDAllJetConstituents_WithLambda.size());
+	// auto hPIDOfAllJetConstituents_WithLambda = new TH1D("hPIDOfAllJetConstituents_WithLambda", "PIDs of all jets' constituents", mapCountsOfPIDAllJetConstituents_WithLambda.size(), 0, mapCountsOfPIDAllJetConstituents_WithLambda.size());
 	// auto hPIDLeadingJetConstituents_EtaCuts = new TH1D("hPIDLeadingJetConstituents_EtaCuts", "PIDs of eta_cut_OK jets' constituents", mapCountsOfPIDLeadingJetConstituents_EtaCuts.size(), 0, mapCountsOfPIDLeadingJetConstituents_EtaCuts.size());
 	auto hPIDLeadingJetConstituents_EtaCutsWithLambda = new TH1D("hPIDLeadingJetConstituents_EtaCutsWithLambda", "PIDs of eta_cut_OK+w/LambdaOrLBar jets' constituents", mapCountsOfPIDLeadingJetConstituents_EtaCutsWithLambda.size(), 0, mapCountsOfPIDLeadingJetConstituents_EtaCutsWithLambda.size());
-	auto hPIDLeadingJetConstituents_PassedYExtraCheck = new TH1D("hPIDLeadingJetConstituents_PassedYExtraCheck", "PIDs of Useful(w/LambdaOrLBar,Ycut_OK) jets' constituents", mapCountsOfPIDLeadingJetConstituents_PassedYExtraCheck.size(), 0, mapCountsOfPIDLeadingJetConstituents_PassedYExtraCheck.size());
+	// auto hPIDLeadingJetConstituents_PassedYExtraCheck = new TH1D("hPIDLeadingJetConstituents_PassedYExtraCheck", "PIDs of Useful(w/LambdaOrLBar,Ycut_OK) jets' constituents", mapCountsOfPIDLeadingJetConstituents_PassedYExtraCheck.size(), 0, mapCountsOfPIDLeadingJetConstituents_PassedYExtraCheck.size());
 		// Filling these histograms:
-	FillHistogramFromMap(hPIDOfAllJetConstituents_WithLambda, mapCountsOfPIDAllJetConstituents_WithLambda);
+	// FillHistogramFromMap(hPIDOfAllJetConstituents_WithLambda, mapCountsOfPIDAllJetConstituents_WithLambda);
 	// FillHistogramFromMap(hPIDLeadingJetConstituents_EtaCuts, mapCountsOfPIDLeadingJetConstituents_EtaCuts);
 	FillHistogramFromMap(hPIDLeadingJetConstituents_EtaCutsWithLambda, mapCountsOfPIDLeadingJetConstituents_EtaCutsWithLambda);
-	FillHistogramFromMap(hPIDLeadingJetConstituents_PassedYExtraCheck, mapCountsOfPIDLeadingJetConstituents_PassedYExtraCheck);
+	// FillHistogramFromMap(hPIDLeadingJetConstituents_PassedYExtraCheck, mapCountsOfPIDLeadingJetConstituents_PassedYExtraCheck);
 
 	// pythia.stat();
 	// t3->Print();
@@ -1144,7 +1178,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	// hEventCounterWithJets_pTleqJetMinPt_EtaCuts->Write(); // No longer saving this variation. Just the one on the line immediately below
 	hEventCounterWithEtaOKLambdaWithJets_pTleqJetMinPt_EtaCuts->Write();
 	hEventCounterPassedYExtraCheck->Write();
-	hINELEventCounter->Write();
+	// hINELEventCounter->Write();
 	// hEventCounterCharged->Write();
 	// hEventCounterPion->Write();
 	// hEventCounterProton->Write();
@@ -1152,15 +1186,15 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	
 	hJetCounterPerEventWithLambda->Write();
 	hDiscardedHighPtJetCounterPerEventWithLambda->Write();
-	hNParticlesPerJetWithLambda->Write();
+	// hNParticlesPerJetWithLambda->Write();
 	// hNParticlesLeadingJet_EtaCuts->Write();
 	hNParticlesLeadingJet_EtaCutsWithLambda->Write();
-	hNParticlesLeadingJet_PassedYExtraCheck->Write();
+	// hNParticlesLeadingJet_PassedYExtraCheck->Write();
 
-	hPIDOfAllJetConstituents_WithLambda->Write();
+	// hPIDOfAllJetConstituents_WithLambda->Write(); // Removed for optimization purposes: the chemical composition doesn't change much along these kinematic cuts!
 	// hPIDLeadingJetConstituents_EtaCuts->Write();
 	hPIDLeadingJetConstituents_EtaCutsWithLambda->Write();
-	hPIDLeadingJetConstituents_PassedYExtraCheck->Write();
+	// hPIDLeadingJetConstituents_PassedYExtraCheck->Write();
 
 	// pT_hist_charged_final->Sumw2();
 	// pT_hist_pion_final->Sumw2();
@@ -1183,11 +1217,11 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	// hNtracks_final_forward_INEL_l0->Write();
 	hNtracks_final_charged_center->Write();
 	hNtracks_final_charged->Write();
-	hNtracks_final_charged_INEL_l0->Write();
+	// hNtracks_final_charged_INEL_l0->Write();
 	// hNtracks_final_charged_forward->Write();
 	// hNtracks_final_charged_forward_INEL_l0->Write();
 
-	hINELev_Ntracks_final_charged_forward->Write();
+	// hINELev_Ntracks_final_charged_forward->Write();
 	// hINELev_Ntracks_final_charged_forward_Charged->Write();
 	// hINELev_Ntracks_final_charged_forward_Pion->Write();
 	// hINELev_Ntracks_final_charged_forward_Proton->Write();
@@ -1279,7 +1313,7 @@ void doCentrality(std::string output_folder, int N_cores, std::string input_card
 	// TH1D *hNtracks_final_forward_INEL_l0_sum = new TH1D("hNtracks_final_forward_INEL_l0_sum", "hNtracks_final_forward_INEL_l0_sum", multiplicity_nbins, 0, multiplicity_nbins);
 	TH1D *hNtracks_final_charged_center_sum = new TH1D("hNtracks_final_charged_center_sum", "hNtracks_final_charged_center_sum", multiplicity_nbins, 0, multiplicity_nbins);
 	TH1D *hNtracks_final_charged_sum = new TH1D("hNtracks_final_charged_sum", "hNtracks_final_charged_sum", multiplicity_nbins, 0, multiplicity_nbins);
-	TH1D *hNtracks_final_charged_INEL_l0_sum = new TH1D("hNtracks_final_charged_INEL_l0_sum", "hNtracks_final_charged_INEL_l0_sum", multiplicity_nbins, 0, multiplicity_nbins);
+	// TH1D *hNtracks_final_charged_INEL_l0_sum = new TH1D("hNtracks_final_charged_INEL_l0_sum", "hNtracks_final_charged_INEL_l0_sum", multiplicity_nbins, 0, multiplicity_nbins);
 	// TH1D *hNtracks_final_charged_forward_sum = new TH1D("hNtracks_final_charged_forward_sum", "hNtracks_final_charged_forward_sum", multiplicity_nbins, 0, multiplicity_nbins);
 	// TH1D *hNtracks_final_charged_forward_INEL_l0_sum = new TH1D("hNtracks_final_charged_forward_INEL_l0_sum", "hNtracks_final_charged_forward_INEL_l0_sum", multiplicity_nbins, 0, multiplicity_nbins);
 
@@ -1298,7 +1332,7 @@ void doCentrality(std::string output_folder, int N_cores, std::string input_card
 		// TH1D *hNtracks_final_forward_INEL_l0_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_forward_INEL_l0"));
 		TH1D *hNtracks_final_charged_center_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_charged_center"));
 		TH1D *hNtracks_final_charged_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_charged"));
-		TH1D *hNtracks_final_charged_INEL_l0_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_charged_INEL_l0"));
+		// TH1D *hNtracks_final_charged_INEL_l0_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_charged_INEL_l0"));
 		// TH1D *hNtracks_final_charged_forward_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_charged_forward"));
 		// TH1D *hNtracks_final_charged_forward_INEL_l0_local = dynamic_cast<TH1D*>(data_file->Get("hNtracks_final_charged_forward_INEL_l0"));
 
@@ -1311,7 +1345,7 @@ void doCentrality(std::string output_folder, int N_cores, std::string input_card
 		// hNtracks_final_forward_INEL_l0_sum->Add(hNtracks_final_forward_INEL_l0_local);
 		hNtracks_final_charged_center_sum->Add(hNtracks_final_charged_center_local);
 		hNtracks_final_charged_sum->Add(hNtracks_final_charged_local);
-		hNtracks_final_charged_INEL_l0_sum->Add(hNtracks_final_charged_INEL_l0_local);
+		// hNtracks_final_charged_INEL_l0_sum->Add(hNtracks_final_charged_INEL_l0_local);
 		// hNtracks_final_charged_forward_sum->Add(hNtracks_final_charged_forward_local);
 		// hNtracks_final_charged_forward_INEL_l0_sum->Add(hNtracks_final_charged_forward_INEL_l0_local);
 
@@ -1335,7 +1369,7 @@ void doCentrality(std::string output_folder, int N_cores, std::string input_card
 	// TH1D *hNtracks_to_centrality_final_forward_INEL_l0 = new TH1D("hNtracks_to_centrality_final_forward_INEL_l0", "hNtracks_to_centrality_final_forward_INEL_l0", hNtracks_final_forward_INEL_l0_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_forward_INEL_l0_sum->FindLastBinAbove(0) + 1);
 	TH1D *hNtracks_to_centrality_final_charged_center = new TH1D("hNtracks_to_centrality_final_charged_center", "hNtracks_to_centrality_final_charged_center", hNtracks_final_charged_center_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_center_sum->FindLastBinAbove(0) + 1);
 	TH1D *hNtracks_to_centrality_final_charged = new TH1D("hNtracks_to_centrality_final_charged", "hNtracks_to_centrality_final_charged", hNtracks_final_charged_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_sum->FindLastBinAbove(0) + 1);
-	TH1D *hNtracks_to_centrality_final_charged_INEL_l0 = new TH1D("hNtracks_to_centrality_final_charged_INEL_l0", "hNtracks_to_centrality_final_charged_INEL_l0", hNtracks_final_charged_INEL_l0_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_INEL_l0_sum->FindLastBinAbove(0) + 1);
+	// TH1D *hNtracks_to_centrality_final_charged_INEL_l0 = new TH1D("hNtracks_to_centrality_final_charged_INEL_l0", "hNtracks_to_centrality_final_charged_INEL_l0", hNtracks_final_charged_INEL_l0_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_INEL_l0_sum->FindLastBinAbove(0) + 1);
 	// TH1D *hNtracks_to_centrality_final_charged_forward = new TH1D("hNtracks_to_centrality_final_charged_forward", "hNtracks_to_centrality_final_charged_forward", hNtracks_final_charged_forward_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_forward_sum->FindLastBinAbove(0) + 1);
 	// TH1D *hNtracks_to_centrality_final_charged_forward_INEL_l0 = new TH1D("hNtracks_to_centrality_final_charged_forward_INEL_l0", "hNtracks_to_centrality_final_charged_forward_INEL_l0", hNtracks_final_charged_forward_INEL_l0_sum->FindLastBinAbove(0) + 1, 0, hNtracks_final_charged_forward_INEL_l0_sum->FindLastBinAbove(0) + 1);
 
@@ -1347,7 +1381,7 @@ void doCentrality(std::string output_folder, int N_cores, std::string input_card
 	// multiplicity_to_centrality(hNtracks_final_forward_INEL_l0_sum, hNtracks_to_centrality_final_forward_INEL_l0);
 	multiplicity_to_centrality(hNtracks_final_charged_center_sum, hNtracks_to_centrality_final_charged_center);
 	multiplicity_to_centrality(hNtracks_final_charged_sum, hNtracks_to_centrality_final_charged);
-	multiplicity_to_centrality(hNtracks_final_charged_INEL_l0_sum, hNtracks_to_centrality_final_charged_INEL_l0);
+	// multiplicity_to_centrality(hNtracks_final_charged_INEL_l0_sum, hNtracks_to_centrality_final_charged_INEL_l0);
 	// multiplicity_to_centrality(hNtracks_final_charged_forward_sum, hNtracks_to_centrality_final_charged_forward);
 	// multiplicity_to_centrality(hNtracks_final_charged_forward_INEL_l0_sum, hNtracks_to_centrality_final_charged_forward_INEL_l0);
 
@@ -1359,7 +1393,7 @@ void doCentrality(std::string output_folder, int N_cores, std::string input_card
 	// hNtracks_final_forward_INEL_l0_sum->Write();
 	hNtracks_final_charged_center_sum->Write();
 	hNtracks_final_charged_sum->Write();
-	hNtracks_final_charged_INEL_l0_sum->Write();
+	// hNtracks_final_charged_INEL_l0_sum->Write();
 	// hNtracks_final_charged_forward_sum->Write();
 	// hNtracks_final_charged_forward_INEL_l0_sum->Write();
 
@@ -1371,7 +1405,7 @@ void doCentrality(std::string output_folder, int N_cores, std::string input_card
 	// hNtracks_to_centrality_final_forward_INEL_l0->Write();
 	hNtracks_to_centrality_final_charged_center->Write();
 	hNtracks_to_centrality_final_charged->Write();
-	hNtracks_to_centrality_final_charged_INEL_l0->Write();
+	// hNtracks_to_centrality_final_charged_INEL_l0->Write();
 	// hNtracks_to_centrality_final_charged_forward->Write();
 	// hNtracks_to_centrality_final_charged_forward_INEL_l0->Write();
 

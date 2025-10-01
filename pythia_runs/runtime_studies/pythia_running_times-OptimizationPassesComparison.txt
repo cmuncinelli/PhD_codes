@@ -1,3 +1,4 @@
+# Calculating with 1e3 events (not ideal, as with this number the code spends more time doing other things!), 120 cores
 Time statistics averages of USEFUL events:
         Number of useful particles vs useless particles vs total: 3727 1710066 1713793
         Average number of useful particles vs useless particles vs total PER USEFUL EVENT: 3.727 1710.066 1713.793
@@ -169,3 +170,22 @@ The code takes about 0.009 seconds per event, or 9.290 seconds for 1e3 events.
 In an N_cores-agnostic way, the program takes 0.557 seconds to analyze an event in each core, or 557.402 seconds for 1e3 events.
 /////////////////////////////
 # This was waaaaay worse!!! Maybe hyperthreading was actually helping!
+
+
+# Comparing with the 5e4, 120 cores result from the "Optimization -- Phase 1" commit:
+# (But do remember that this code does not discard an event if there is a Lambda outside of the detectable region! So it has more useless events in it!)
+# (In other words, we are generating and saving more useful Lambda, and a little bit quicker even! So we are already increasing the statistics!)
+# (In this case, we had about ~8000 events with a Lambda in the measurable eta range.)
+////// TIME STATISTICS //////
+The program ran for: 293.556 seconds.
+The code takes about 0.006 seconds per event, or 5.871 seconds for 1e3 events.
+In an N_cores-agnostic way, the program takes 0.705 seconds to analyze an event in each core, or 704.535 seconds for 1e3 events.
+/////////////////////////////
+
+
+# Optimization -- Pass5 (fluctuating around the same time, so not much of a significant optimization):
+////// TIME STATISTICS //////
+The program ran for: 290.802 seconds.
+The code takes about 0.006 seconds per event, or 5.816 seconds for 1e3 events.
+In an N_cores-agnostic way, the program takes 0.698 seconds to analyze an event in each core, or 697.926 seconds for 1e3 events.
+/////////////////////////////
