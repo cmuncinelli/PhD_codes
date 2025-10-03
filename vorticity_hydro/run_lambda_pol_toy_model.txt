@@ -10,6 +10,9 @@ sudo apt-get install libomp-dev
 # Or actually, what really works is to do (notice the usage of the -O2 optimization flag too):
 g++ -O2 -fopenmp lambda_pol_toy_model.cxx -o lambda_pol_toy_model.exe `root-config --cflags --libs`
 
+    # Then to run:
+./lambda_pol_toy_model.exe N_resamples N_threads with_bullet(int) force_DecayDist_mode(0=default, 1=AlongP, 2=PerpP)
+
 # To compile with memory error checks:
 g++ -fopenmp -fsanitize=address lambda_pol_toy_model.cxx -o lambda_pol_toy_model.exe `root-config --cflags --libs`
     # To get the precise lines where we get fails:
@@ -61,6 +64,20 @@ g++ -O0 -g -fsanitize=address,undefined -fopenmp lambda_pol_toy_model.cxx -o lam
 
 # On the new versions, you can't have a resampling of 1 time only due to the unbiased estimators used in error calculation:
 ./lambda_pol_toy_model.exe 10 10 1 0 & ./lambda_pol_toy_model.exe 100 30 1 0 & ./lambda_pol_toy_model.exe 1000 30 1 0 & ./lambda_pol_toy_model.exe 10000 30 1 0 & wait
+
+
+# High statistics, running for the 0_5cent with the data found on storage2 and using the lambda_pol_toy_model_0_5cent.cxx code:
+g++ -O2 -fopenmp lambda_pol_toy_model_0_5cent.cxx -o lambda_pol_toy_model_0_5cent.exe `root-config --cflags --libs`
+
+# Example run: ./lambda_pol_toy_model_0_5cent.exe N_resamples N_threads with_bullet(int) force_DecayDist_mode(0=default, 1=AlongP, 2=PerpP)
+./lambda_pol_toy_model_0_5cent.exe 100 122 1 0
+
+    # Now running on useful number of resamples:
+    # (in order, 10.000 events, with bullet, without bullet, with bullet but forcing polarization along P, without bullet and forcing polarization perpendicular to P)
+./lambda_pol_toy_model_0_5cent.exe 10000 122 1 0 && ./lambda_pol_toy_model_0_5cent.exe 10000 122 0 0 && ./lambda_pol_toy_model_0_5cent.exe 10000 122 1 1 && ./lambda_pol_toy_model_0_5cent.exe 10000 122 1 2
+
+    # Increasing the statistics a little bit (should run in ~12h):
+./lambda_pol_toy_model_0_5cent.exe 100000 122 1 0 && ./lambda_pol_toy_model_0_5cent.exe 100000 122 0 0 && ./lambda_pol_toy_model_0_5cent.exe 100000 122 1 1 && ./lambda_pol_toy_model_0_5cent.exe 100000 122 1 2
 
 ####################
 ### Some earlier problems caused by a lack of the "ROOT::EnableThreadSafety();" line.

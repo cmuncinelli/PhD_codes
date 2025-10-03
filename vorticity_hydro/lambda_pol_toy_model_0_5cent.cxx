@@ -1459,7 +1459,7 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     hRingObservableRecoPtYCuts_Err->Divide(hLambdaCounter_phiRingAngles_Weighted_PtYCuts);
     hRingObservableRecoPtYCuts_integrated_Err->Scale(1./hLambdaCounter_phiRingAngles_Weighted_PtYCuts->Integral());
 
-    // This error bar integration method below is actually wrong! The previous one was more correct: we could treat this
+    // These error bar integration methods are actually wrong! The previous one was more correct: we could treat this
     // as if the Ring Observable was measured in only one bin, so the error should reduce because we are increasing
     // statistics! It is as if we had more statistics in the measurement, so the error gets lower! This other method
     // would make the error higher! (see log 511)
@@ -1471,8 +1471,6 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     // }
     // integrated_err = std::sqrt(integrated_err);
     // hRingObservableRecoPtYCuts_integrated_Err->SetBinContent(1, integrated_err);
-
-
 
     // std::cout << "DEBUG! The last bin's error after the normalization is: " << hRingObservableRecoPtYCuts_Err->GetBinContent(N_bins_phi) << std::endl;
     // std::cout << "DEBUG! The integrated bin's error after the normalization is: " << hRingObservableRecoPtYCuts_integrated_Err->GetBinContent(1) << std::endl;
@@ -1583,7 +1581,7 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     std::cout << "\nExporting results" << std::endl;
     // std::string filename = "/home/cicero/results/hydro_vorticity/LambdaPol_lumpy_events_40_50_" + std::to_string(N_events) + "ev.root";
     // std::string filename = "/home/cicero/results/hydro_vorticity/LambdaPol2_lumpy_events_40_50_" + std::to_string(N_events) + "ev.root"; // Having many different file names for comparison
-    std::string filename = "/home/cicero/results/hydro_vorticity/LambdaPolResampled" + std::to_string(N_resamples) + "times_lumpy_events_40_50_" 
+    std::string filename = "/home/cicero/results/hydro_vorticity/LambdaPolResampled" + std::to_string(N_resamples) + "times_lumpy_events_0_5_" 
                            + ((with_bullet) ? "with_bullet_" : "no_bullet_") + std::to_string(N_events) + "ev"; // Used a ternary operator to symplify syntax, but beware of the proper encapsulation!
     if (force_DecayDist_mode == 1){ // 0 for the usual, physical, decay. 1 for decays along Pol. 2 for decays perpendicular to Pol
         filename += "_ForcedDecayAlongP";
@@ -2310,10 +2308,10 @@ void get_lambda(DoubleMatrix &y_matrix, DoubleMatrix &phi_matrix, DoubleMatrix &
 		
 		TString input_file_path;
         if (with_bullet){
-            input_file_path = "/storage1/vribeiro/lumpy_events_40_50/bullet/";
+            input_file_path = "/storage2/vribeiro/vorticity-data/lumpy_events_0_5/bullet/"; // Conveniently has 250 events as well!
         }
         else{
-            input_file_path = "/storage1/vribeiro/lumpy_events_40_50/no_bullet/";
+            input_file_path = "/storage2/vribeiro/vorticity-data/lumpy_events_0_5/no_bullet/"; // Conveniently has 250 events as well!
         }
         input_file_path += std::to_string(i)  + "/results/Smu_dpTdphidy_Thermal_rapidity_3122.dat";
 
@@ -2385,7 +2383,7 @@ void get_jet(std::vector<double> &n_event, std::vector<double> &n_random, std::v
     std::cout << "\n\tStarting event loop for Jet getter (even if the w/ jets flag is off, so that v_2 is averaged out!)..." << std::endl;
     
     // Getting a file that has jets in hydro set in a random direction for the jet momentum deposition:
-    const char* file_random_jet_path = "/storage1/vribeiro/lumpy_events_40_50/random_parameters.dat";
+    const char* file_random_jet_path = "/storage2/vribeiro/vorticity-data/lumpy_events_0_5/bullet/random_parameters.dat";
 
         // Skipping the whole buffering process Vitor did -- The files in only about ~10 kB, so it can be read at once:
     std::ifstream file_random_jet(file_random_jet_path);

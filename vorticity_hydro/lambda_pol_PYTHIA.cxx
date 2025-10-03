@@ -1033,14 +1033,47 @@ int main(int argc, char *argv[]){
     hRingObservable_PolStar_PtYCuts_Err->Divide(hLambdaCounter_DeltaPhiJRingAngles_PtYCuts);
     hRingObservable_PolStar_PtYCuts_integrated_Err->Scale(1./hLambdaCounter_DeltaPhiJRingAngles_PtYCuts->Integral());
 
-    // The previous method of error propagation of the integral was not working. Will fix it by hand:
-    double integrated_err = 0;
-    for (int i = 1; i <= hRingObservable_PolStar_PtYCuts_Err->GetNbinsX(); i++){
-        double err_i = hRingObservable_PolStar_PtYCuts_Err->GetBinContent(i);
-        integrated_err += err_i*err_i;
-    }
-    integrated_err = std::sqrt(integrated_err);
-    hRingObservable_PolStar_PtYCuts_integrated_Err->SetBinContent(1, integrated_err);
+    // These error bar integration methods are actually wrong! The previous one was more correct: we could treat this
+    // as if the Ring Observable was measured in only one bin, so the error should reduce because we are increasing
+    // statistics! It is as if we had more statistics in the measurement, so the error gets lower! This other method
+    // would make the error higher! (see log 511)
+    // // The previous method of error propagation of the integral was not working. Will fix it by hand:
+    // double integrated_err = 0;
+    // for (int i = 1; i <= hRingObservable_PolStar_PtYCuts_Err->GetNbinsX(); i++){
+    //     double err_i = hRingObservable_PolStar_PtYCuts_Err->GetBinContent(i);
+    //     integrated_err += err_i*err_i;
+    // }
+    // integrated_err = std::sqrt(integrated_err);
+    // hRingObservable_PolStar_PtYCuts_integrated_Err->SetBinContent(1, integrated_err);
+
+    // // A simple test -- Integrating in a smaller angular region, where the error is smaller:
+    // double integrated_err_test_phiLeq2rad = 0;
+    // double integrated_err_test_phiLeq1dot5rad = 0;
+
+    // double integrated_value_phiLeq2rad = 0;
+    // double integrated_value_phiLeq1dot5rad = 0;
+    // for (int i = 1; i <= hRingObservable_PolStar_PtYCuts_Err->GetNbinsX(); i++){
+    //     if (std::fabs(hRingObservable_PolStar_PtYCuts_Err->GetBinCenter(i)) <= 2.){
+    //         double err_i = hRingObservable_PolStar_PtYCuts_Err->GetBinContent(i);
+    //         double content_i = hRingObservable_PolStar_PtYCuts->GetBinContent(i);
+
+    //         integrated_err_test_phiLeq2rad += err_i*err_i;
+    //         integrated_value_phiLeq2rad += content_i;
+
+    //         if (std::fabs(hRingObservable_PolStar_PtYCuts_Err->GetBinCenter(i)) <= 1.5){
+    //             integrated_err_test_phiLeq1dot5rad += err_i*err_i;
+    //             integrated_value_phiLeq1dot5rad += content_i;
+    //         }
+    //     }
+    // }
+    // integrated_err_test_phiLeq2rad = std::sqrt(integrated_err_test_phiLeq2rad);
+    // integrated_err_test_phiLeq1dot5rad = std::sqrt(integrated_err_test_phiLeq1dot5rad);
+    // std::cout << "\n\t integrated_err_test_phiLeq2rad = " << integrated_err_test_phiLeq2rad << std::endl;
+    // std::cout << "\t integrated_err_test_phiLeq1dot5rad = " << integrated_err_test_phiLeq1dot5rad << std::endl;
+    // std::cout << "\t integrated_value_phiLeq2rad = " << integrated_value_phiLeq2rad << std::endl;
+    // std::cout << "\t integrated_value_phiLeq1dot5rad = " << integrated_value_phiLeq1dot5rad << std::endl;
+    // std::cout << "\t integrated_value_phiLeq2rad/integrated_err_test_phiLeq2rad (%) = " << integrated_value_phiLeq2rad/integrated_err_test_phiLeq2rad*100 << std::endl;
+    // std::cout << "\t integrated_value_phiLeq1dot5rad/integrated_err_test_phiLeq1dot5rad (%) = " << integrated_value_phiLeq1dot5rad/integrated_err_test_phiLeq1dot5rad*100 << std::endl;
 
     // Normalizing the polarization histograms that correspond to lower dimensional projections of the TH3D's of pT,y,phi polarization:
     hLambdaPolX_DeltaPhiJ_pTReco->Divide(hLambdaCounter_DeltaPhiJ_pT);
