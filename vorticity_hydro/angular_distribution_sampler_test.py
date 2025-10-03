@@ -80,10 +80,10 @@ median_abs_error = np.median(abs_errors, axis=0)
 
 # Plotting
 fig, ax = plt.subplots(ncols=2, figsize=(8,4))
-ax[0].loglog(sample_sizes_array, median_mean_cos[1:], linestyle='-')
+ax[0].loglog(sample_sizes_array, np.abs(median_mean_cos[1:]), linestyle='-')
 ax[0].axhline(true_cosine_mean, linestyle='--', label='True value')
 ax[0].set_xlabel('Number of samples N')
-ax[0].set_ylabel('Median value of sample mean')
+ax[0].set_ylabel('Absolute median value of sample mean')
 ax[0].grid(True, which='both', ls=':')
 ax[0].set_ylim(true_cosine_mean/2, 1)
 ax[0].tick_params(axis='y', right=True, labelright=True)
