@@ -1,5 +1,5 @@
 # Compilation:
-g++ -O2 -std=c++17 lambda_pol_PYTHIA.cxx -o lambda_pol_PYTHIA.exe `root-config --cflags --libs`
+g++ -O2 -std=c++17 -march=native -flto=2 -pipe lambda_pol_PYTHIA.cxx -o lambda_pol_PYTHIA.exe `root-config --cflags --libs`
 
 # Run (had to generalize the style to include an output folder, because in the CCJDR-managed computers the path is not "/home/cicero", but "/home/users/cicerodm"!):
 ./lambda_pol_PYTHIA.exe simulations_folder output_folder input_card_name N_events target_centrality_bin
