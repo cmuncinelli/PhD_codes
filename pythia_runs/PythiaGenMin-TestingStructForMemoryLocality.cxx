@@ -31,6 +31,19 @@ void multiplicity_to_centrality(TH1D *multiplicity_hist, TH1D *centrality_hist);
 inline double wrapToInterval(double phi, const double phi_min, const double phi_max);
 void FillHistogramFromMap(TH1* hist, const std::map<int,int>& map);
 
+// Defining a struct to be able to have better data locality in RAM:
+struct ParticleInfoEvent{
+	Float_t ProtonOrPBar_pt;
+	Float_t ProtonOrPBar_y;
+	Float_t ProtonOrPBar_Phi;
+	Float_t LambdaOrLBar_pt;
+	Float_t LambdaOrLBar_y;
+	Float_t LambdaOrLBar_Phi;
+	Bool_t isProton_not_PBar;
+	Bool_t isLambda_notLBar;
+	Bool_t isLambdaOrLBarExperimentalPrimary;
+};
+
 using namespace Pythia8;
 
 void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const std::string input_card_path, const std::string input_card_name){
@@ -101,33 +114,39 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	Int_t Ntracks_final_charged_center;
 	Int_t Ntracks_final_charged;
 	
-	std::vector<Float_t> ProtonOrPBar_pt;
-	std::vector<Float_t> ProtonOrPBar_y;
-	std::vector<Float_t> ProtonOrPBar_Phi;
-	// std::vector<Float_t> ProtonOrPBar_m;
-
-	std::vector<Float_t> LambdaOrLBar_pt;
-	std::vector<Float_t> LambdaOrLBar_y;
-	std::vector<Float_t> LambdaOrLBar_Phi;
-	// std::vector<Float_t> LambdaOrLBar_m;
-
-	std::vector<Bool_t> isProton_not_PBar;
-	std::vector<Bool_t> isLambda_notLBar;
-
-	std::vector<Bool_t> isLambdaOrLBarExperimentalPrimary;
-
-		// Pre-allocating space in memory for these vectors (considering that each event has, at most, 50 lambda):
-	// (128 lambdas and antilambdas -- and their proton/protonBar daughters -- should be more than enough for pp. 
-	// For PbPb, C++ can handle reallocation)
-	ProtonOrPBar_pt.reserve(128);
-	ProtonOrPBar_y.reserve(128);
-	ProtonOrPBar_Phi.reserve(128);
-	LambdaOrLBar_pt.reserve(128);
-	LambdaOrLBar_y.reserve(128);
-	LambdaOrLBar_Phi.reserve(128);
-	isProton_not_PBar.reserve(128);
-	isLambda_notLBar.reserve(128);
-	isLambdaOrLBarExperimentalPrimary.reserve(128);
+	// Replacing the whole following block with a single struct to ensure memory locality:
+	///////////////////////////////////////////////////////
+	// std::vector<Float_t> ProtonOrPBar_pt;
+	// std::vector<Float_t> ProtonOrPBar_y;
+	// std::vector<Float_t> ProtonOrPBar_Phi;
+	// // std::vector<Float_t> ProtonOrPBar_m;
+	//
+	// std::vector<Float_t> LambdaOrLBar_pt;
+	// std::vector<Float_t> LambdaOrLBar_y;
+	// std::vector<Float_t> LambdaOrLBar_Phi;
+	// // std::vector<Float_t> LambdaOrLBar_m;
+	//
+	// std::vector<Bool_t> isProton_not_PBar;
+	// std::vector<Bool_t> isLambda_notLBar;
+	//
+	// std::vector<Bool_t> isLambdaOrLBarExperimentalPrimary;
+	//
+	// 	// Pre-allocating space in memory for these vectors (considering that each event has, at most, 50 lambda):
+	// // (128 lambdas and antilambdas -- and their proton/protonBar daughters -- should be more than enough for pp. 
+	// // For PbPb, C++ can handle reallocation)
+	// ProtonOrPBar_pt.reserve(128);
+	// ProtonOrPBar_y.reserve(128);
+	// ProtonOrPBar_Phi.reserve(128);
+	// LambdaOrLBar_pt.reserve(128);
+	// LambdaOrLBar_y.reserve(128);
+	// LambdaOrLBar_Phi.reserve(128);
+	// isProton_not_PBar.reserve(128);
+	// isLambda_notLBar.reserve(128);
+	// isLambdaOrLBarExperimentalPrimary.reserve(128);
+	///////////////////////////////////////////////////////
+	std::vector<ParticleInfoEvent> particle_information;
+	auto* particle_information_branch_ptr = &particle_information; // TTree needs a pointer to the vector
+	particle_information.reserve(128); // Reserving for 128 Lambda/Protons per event (already anticipating PbPb statistics, and being extra safe)
 	FastJetInputs.reserve(ntrack); // Adding a reserve statement because this can be a pretty expensive vector to be constantly increasing in size
 
 	// Don't need to store any of these for the Lambda polarization analysis! They were just occupying space in disk!
