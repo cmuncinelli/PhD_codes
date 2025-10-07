@@ -129,7 +129,12 @@ int main(int argc, char *argv[]){
     for (auto& current_file_pair : file_pair){ // A loop in the "for i in [...]" style from python! (Yes, I am assuming at least a C++17 standard)
         std::string file_path = current_file_pair.second;
         
-        std::cout << "Reading " << file_path << " (core " << current_file_pair.first << ")\n";
+        if (current_file_pair.first < 10){
+            std::cout << "Reading " << file_path << " (core " << current_file_pair.first << ")\n";
+            if (current_file_pair.first == 9){ // Just a message to let the user know we will not print more than 10 lines.
+                std::cout << "And so on..." << std::endl;
+            }
+        }
         chain.Add(file_path.c_str());
     }
 
@@ -223,8 +228,8 @@ int main(int argc, char *argv[]){
     auto hRingObservable_daughter_per_candidate_squared_PtYCuts = new TH1D("hRingObservable_daughter_per_candidate_squared_PtYCuts", "hRingObservable_daughter_per_candidate_squared_PtYCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
     auto hRingObservable_daughter_per_candidate_squared_PtYCuts_integrated = new TH1D("hRingObservable_daughter_per_candidate_squared_PtYCuts_integrated", "hRingObservable_daughter_per_candidate_squared_PtYCuts_integrated", 1, phi_min_Ring, phi_max_Ring);
         // 1D version for the counter-1:
-    auto hLambdaCounter_DeltaPhiJRingAngles_minus1 = new TH1D("hLambdaCounter_DeltaPhiJRingAngles_minus1", "hLambdaCounter_DeltaPhiJRingAngles_minus1", N_bins_phi, phi_min, phi_max);
-    auto hLambdaCounter_DeltaPhiJRingAngles_PtYCuts_minus1 = new TH1D("hLambdaCounter_DeltaPhiJRingAngles_PtYCuts_minus1", "hLambdaCounter_DeltaPhiJRingAngles_PtYCuts_minus1", N_bins_phi, phi_min, phi_max);
+    auto hLambdaCounter_DeltaPhiJRingAngles_minus1 = new TH1D("hLambdaCounter_DeltaPhiJRingAngles_minus1", "hLambdaCounter_DeltaPhiJRingAngles_minus1", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    auto hLambdaCounter_DeltaPhiJRingAngles_PtYCuts_minus1 = new TH1D("hLambdaCounter_DeltaPhiJRingAngles_PtYCuts_minus1", "hLambdaCounter_DeltaPhiJRingAngles_PtYCuts_minus1", N_bins_phi, phi_min_Ring, phi_max_Ring);
 
     auto hRingObservable_daughter_per_candidate_err = new TH1D("hRingObservable_daughter_per_candidate_err", "hRingObservable_daughter_per_candidate_err", N_bins_phi, phi_min_Ring, phi_max_Ring);
     auto hRingObservable_daughter_per_candidate_PtYCuts_err = new TH1D("hRingObservable_daughter_per_candidate_PtYCuts_err", "hRingObservable_daughter_per_candidate_PtYCuts_err", N_bins_phi, phi_min_Ring, phi_max_Ring);
@@ -780,6 +785,12 @@ int main(int argc, char *argv[]){
         for (int i = 0; i < proton_4momenta.size(); i++){ // Goes over all protons and their trimomenta
             TLorentzVector proton_4momentum = proton_4momenta[i];
             TLorentzVector lambda_4momentum = lambda_4momenta[i];
+
+            // Skip if proton has undefined rotation or zero pT (Avoiding *numerical* errors!):
+            // (you could have some NaN values for the proton_star_unit_vector in these cases.
+            // (SetPhi would force a division by zero when rotating the coordinates, and boosts could also be ill defined)
+            if (proton_4momentum.Pt() <= 1e-10) continue;
+            if (lambda_4momentum.Pt() <= 1e-10) continue;
             
             // Rotating the whole coordinate system so that the jet's phi coordinate is zero:
             // (this allows easier combination across different events)
@@ -792,6 +803,10 @@ int main(int argc, char *argv[]){
             
             TVector3 beta_inverse = -lambda_4momentum.BoostVector(); // Boost trivector that goes from laboratory frame to the rest frame
             TLorentzVector proton_4momentum_star = proton_4momentum;
+            // Avoiding unphysical boosts that could happen when the Lambda's momentum is very close to zero:
+            // (This should already take care of possible very small magnitude protons that would become 
+            // numerically unstable to do "(proton_4momentum_star.Vect()).Unit()" on.)
+            if (beta_inverse.Mag() >= 0.999999) continue;
             proton_4momentum_star.Boost(beta_inverse); // Takes proton to Lambda rest frame.
 
             // Finally, using the boosted (and already rotated) vectors:
@@ -837,6 +852,16 @@ int main(int argc, char *argv[]){
             double no_avg_ring_observable = 3./(alpha_H) * ((proton_star_unit_vector.X()*cross_x + proton_star_unit_vector.Y()*cross_y
                                                             + proton_star_unit_vector.Z()*cross_z)/cross_product_norm);
             hRingObservable_daughter_per_candidate->Fill(delta_phi_J, no_avg_ring_observable);
+            // Finding the numerical errors that gave NaNs for the un-filtered lambda_pT observable (really low momentum Lambdas could generate NaN values for their protons!)
+            // // std::cout << "Filling the per-candidate histogram with no pT nor Y cuts. Value is: " << no_avg_ring_observable << std::endl;
+            // if (std::isnan(cross_x)){std::cout << "Filling the per-candidate histogram with no pT nor Y cuts, but found a NaN in cross_x! " << cross_x << std::endl;}
+            // if (std::isnan(cross_y)){std::cout << "Filling the per-candidate histogram with no pT nor Y cuts, but found a NaN in cross_y! " << cross_y << std::endl;}
+            // if (std::isnan(cross_z)){std::cout << "Filling the per-candidate histogram with no pT nor Y cuts, but found a NaN in cross_z! " << cross_z << std::endl;}
+            // if (std::isnan(cross_product_norm) || cross_product_norm == 0){std::cout << "Filling the per-candidate histogram with no pT nor Y cuts, but found a NaN or zero in cross_product_norm! " << cross_product_norm << std::endl;}
+            // if (std::isnan(proton_star_unit_vector.X()) || proton_star_unit_vector.X() == 0){std::cout << "Filling the per-candidate histogram with no pT nor Y cuts, but found a NaN or zero in proton_star_unit_vector.X()! " << proton_star_unit_vector.X() << std::endl;}
+            // if (std::isnan(proton_star_unit_vector.Y()) || proton_star_unit_vector.Y() == 0){std::cout << "Filling the per-candidate histogram with no pT nor Y cuts, but found a NaN or zero in proton_star_unit_vector.Y()! " << proton_star_unit_vector.Y() << std::endl;}
+            // if (std::isnan(proton_star_unit_vector.Z()) || proton_star_unit_vector.Z() == 0){std::cout << "Filling the per-candidate histogram with no pT nor Y cuts, but found a NaN or zero in proton_star_unit_vector.Z()! " << proton_star_unit_vector.Z() << std::endl;}
+            // if (std::isnan(no_avg_ring_observable) || no_avg_ring_observable == 0){std::cout << "Filling the per-candidate histogram with no pT nor Y cuts, but found a NaN or zero in no_avg_ring_observable! " << no_avg_ring_observable << "\n" << std::endl;}
             
             // Filling for the error bar of the per-candidate Lambda:
             double no_avg_ring_observable_squared = no_avg_ring_observable*no_avg_ring_observable;
@@ -845,6 +870,7 @@ int main(int argc, char *argv[]){
             if ((lambda_pT > 0.5 && lambda_pT < 1.5) && (lambda_y > -0.5 && lambda_y < 0.5)){ // Corrected to properly introduce the rapidity cuts too!
                 hRingObservable_daughter_per_candidate_PtYCuts->Fill(delta_phi_J, no_avg_ring_observable);
                 hRingObservable_daughter_per_candidate_PtYCuts_integrated->Fill(delta_phi_J, no_avg_ring_observable);
+                // if (std::isnan(no_avg_ring_observable) || no_avg_ring_observable == 0){std::cout << "Filling the per-candidate histogram WITH pT AND Y cuts, but found a NaN or zero! " << no_avg_ring_observable << std::endl;}
 
                 hLambdaCounter_DeltaPhiJ_PtYCuts->Fill(rotated_lambda_phi);
                 hLambdaCounter_DeltaPhiJRingAngles_PtYCuts->Fill(delta_phi_J);
@@ -883,6 +909,15 @@ int main(int argc, char *argv[]){
     hLambdaPolStarX_pT_y_DeltaPhiJReco->Scale(3.0 / alpha_H);
     hLambdaPolStarY_pT_y_DeltaPhiJReco->Scale(3.0 / alpha_H);
     hLambdaPolStarZ_pT_y_DeltaPhiJReco->Scale(3.0 / alpha_H);
+
+    // Normalizing the per-candidate histograms as well (this should be done before error propagation and everything else!):
+    hRingObservable_daughter_per_candidate->Divide(hLambdaCounter_DeltaPhiJRingAngles);
+    hRingObservable_daughter_per_candidate_PtYCuts->Divide(hLambdaCounter_DeltaPhiJRingAngles_PtYCuts);
+    hRingObservable_daughter_per_candidate_PtYCuts_integrated->Scale(1./hLambdaCounter_DeltaPhiJRingAngles_PtYCuts->Integral());
+
+    hRingObservable_daughter_per_candidate_squared->Divide(hLambdaCounter_DeltaPhiJRingAngles);
+    hRingObservable_daughter_per_candidate_squared_PtYCuts->Divide(hLambdaCounter_DeltaPhiJRingAngles_PtYCuts);
+    hRingObservable_daughter_per_candidate_squared_PtYCuts_integrated->Scale(1./hLambdaCounter_DeltaPhiJRingAngles_PtYCuts->Integral());
 
     ///////////////////////////////////////////////////////////
     //// Calculating the error bars for an UNWEIGHTED case ////
@@ -952,7 +987,7 @@ int main(int argc, char *argv[]){
     AddScalarIfLargerThanOneTH1D(hLambdaCounter_DeltaPhiJRingAngles_PtYCuts_minus1, -1);
     hRingObservable_daughter_per_candidate_err->Divide(hLambdaCounter_DeltaPhiJRingAngles_minus1); // Notice you have to scale BEFORE the square root takes place
     hRingObservable_daughter_per_candidate_PtYCuts_err->Divide(hLambdaCounter_DeltaPhiJRingAngles_PtYCuts_minus1);
-    hRingObservable_daughter_per_candidate_PtYCuts_integrated_err->Divide(hLambdaCounter_DeltaPhiJRingAngles_PtYCuts_minus1);
+    hRingObservable_daughter_per_candidate_PtYCuts_integrated_err->Scale(1./(hLambdaCounter_DeltaPhiJRingAngles_PtYCuts->Integral()-1)); // The subtraction is done only once, considering that this is an integrated observable
             // Taking the sqrt for each of them with an in-place method:
     SqrtHist(hRingObservable_daughter_per_candidate_err);
     SqrtHist(hRingObservable_daughter_per_candidate_PtYCuts_err);
@@ -1153,11 +1188,7 @@ int main(int argc, char *argv[]){
     SetErrorsFromErrHist(hRingObservable_PolStar_PtYCuts, hRingObservable_PolStar_PtYCuts_Err);
     SetErrorsFromErrHist(hRingObservable_PolStar_PtYCuts_integrated, hRingObservable_PolStar_PtYCuts_integrated_Err);
 
-    // Normalizing the per-candidate histograms as well:
-    hRingObservable_daughter_per_candidate_squared->Divide(hLambdaCounter_DeltaPhiJRingAngles);
-    hRingObservable_daughter_per_candidate_squared_PtYCuts->Divide(hLambdaCounter_DeltaPhiJRingAngles_PtYCuts);
-    hRingObservable_daughter_per_candidate_squared_PtYCuts_integrated->Scale(1./hLambdaCounter_DeltaPhiJRingAngles_PtYCuts->Integral());
-
+    // For the per-candidate histograms as well:
     SetErrorsFromErrHist(hRingObservable_daughter_per_candidate, hRingObservable_daughter_per_candidate_err);
     SetErrorsFromErrHist(hRingObservable_daughter_per_candidate_PtYCuts, hRingObservable_daughter_per_candidate_PtYCuts_err);
     SetErrorsFromErrHist(hRingObservable_daughter_per_candidate_PtYCuts_integrated, hRingObservable_daughter_per_candidate_PtYCuts_integrated_err);

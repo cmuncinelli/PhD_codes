@@ -55,4 +55,10 @@ g++ -O2 -std=c++17 -march=native -flto=2 -pipe lambda_pol_PYTHIA.cxx -o lambda_p
 # For running in jarvis15 (here you can use storage2 to keep the same commands, but used storage3 because it is faster and larger):
         # Actually, look at the results from usual_input_PythiaGen first!
 ### ./PythiaGenMin.exe "/storage2/cicero/pythia_data" "/home/users/cicero/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 1e8 122 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/cicero/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 1
-../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 1
+./lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 6 && ./lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e10 1
+
+        # Slightly lower stats:
+./lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 6 && ./lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e8 1
+
+        # Even lower, just for debugging:
+./lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e5 6 && ./lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 1e5 1
