@@ -2,98 +2,107 @@
 # =======================================================================
 #  Profile-Guided Optimization (PGO) build script for PythiaGenMin
 # =======================================================================
-#  Usage:
-#     ./pgo_build_and_run.sh train   # build with -fprofile-generate and run workload
-#     ./pgo_build_and_run.sh final   # build optimized binary using collected profiles
+#  This script will:
+#    1. Build and run a training (instrumented) version of PythiaGenMin
+#    2. Build an optimized PGO+LTO version automatically afterward
+#    3. Clean up all temporary profile data and intermediate binaries
 #
-#  Notes:
-#   - Training run produces profiling data in ./pgodata/
-#   - The final binary will use -O2, LTO, and PGO data for optimization
+#  Usage:
+#     ./pgo_build_and_run.sh
 # =======================================================================
 
-set -e  # exit immediately on any error
-set -u  # treat unset variables as errors
+set -euo pipefail
+
+# === Helper to print a timestamped header ==============================
+timestamp() { date +"[%H:%M:%S]"; }
+header() { echo; echo "$(timestamp) === $1 ==="; }
 
 # === Configuration =====================================================
-SRC="PythiaGenMin.cxx"
-TRAIN_DIR="./pgodata"
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
+SRC_FILE="PythiaGenMin.cxx"
+TRAIN_EXE="PythiaGenMin.profgen.exe"
+FINAL_EXE="PythiaGenMin.exe"
 
-# === Program arguments (safely stored in array) ========================
+# --- Change into the script's directory ---
+cd "$SCRIPT_DIR"
+echo "Working directory: $(pwd)"
+
+if [ ! -f "$SRC_FILE" ]; then
+  echo "ERROR: Source file not found at $(pwd)/$SRC_FILE"; exit 1;
+fi
+
 ARGS=(
   "/storage3/cicero/pythia_data"
   "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg"
-  "1e5"
-  "324"
+  "2e4"
+  "50"
 )
 
-# === Common includes and libraries =====================================
-EXTRA_CFLAGS=(
-  "-I$PYTHIA8/include"
-  "-I$FASTJET/include"
-  $(root-config --cflags)
-)
-
-EXTRA_LDFLAGS=(
-  "-L$PYTHIA8/lib" "-lpythia8"
-  "-L$FASTJET/lib" "-lfastjet"
-  $(root-config --libs)
-  "-fopenmp"
-)
+EXTRA_CFLAGS=("-I$PYTHIA8/include" "-I$FASTJET/include" $(root-config --cflags))
+EXTRA_LDFLAGS=("-L$PYTHIA8/lib" "-lpythia8" "-L$FASTJET/lib" "-lfastjet" $(root-config --libs) "-fopenmp")
 
 # =======================================================================
-# Build for profile generation (instrumented binary)
+# 0. SETUP AND CLEANUP
 # =======================================================================
-if [[ "${1:-}" == "train" ]]; then
-  echo "=== Building instrumented (profile generation) binary ==="
+header "0. Performing clean setup"
+rm -f "$TRAIN_EXE" "$FINAL_EXE" ./*.gcda ./*.gcno
 
-  g++ -std=c++17 -march=native -O2 -pipe \
-      -fprofile-generate=$TRAIN_DIR -fno-omit-frame-pointer \
-      "$SRC" -o PythiaGenMin.profgen.exe \
-      "${EXTRA_CFLAGS[@]}" "${EXTRA_LDFLAGS[@]}"
+# =======================================================================
+# 1. BUILD INSTRUMENTED BINARY
+# =======================================================================
+header "1. Building instrumented binary for profile generation"
 
-  echo
-  echo "=== Running training workload (this will generate profile data) ==="
-  echo "Command line:"
-  echo "  ./PythiaGenMin.profgen.exe \"${ARGS[@]}\""
-  echo
+g++ -std=c++17 -march=native -O2 -pipe \
+    -fprofile-generate -fno-omit-frame-pointer \
+    "$SRC_FILE" -o "$TRAIN_EXE" \
+    "${EXTRA_CFLAGS[@]}" "${EXTRA_LDFLAGS[@]}"
+echo "  -> Instrumented binary created."
 
-  ./PythiaGenMin.profgen.exe "${ARGS[@]}"
+# =======================================================================
+# 2. RUN TRAINING WORKLOAD
+# =======================================================================
+header "2. Running training workload to collect profile data"
 
-  echo
-  echo "=== Training run complete ==="
-  echo "Profile data stored in: $TRAIN_DIR"
-  echo "Next step: ./pgo_build_and_run.sh final"
-  exit 0
+time "./$TRAIN_EXE" "${ARGS[@]}"
+echo "  -> Training run completed."
+
+# =======================================================================
+# 3. VERIFY AND RENAME PROFILE DATA
+# =======================================================================
+header "3. Verifying and Renaming profile data"
+PROFILE_FILE=$(find . -maxdepth 1 -name "*.gcda" -print -quit)
+
+if [ -z "$PROFILE_FILE" ]; then
+  echo "  [FATAL ERROR] No '.gcda' profile file was generated. Halting."
+  exit 1
+fi
+echo "  -> Found generated profile file: $PROFILE_FILE"
+
+# --- NEW: Rename the file to what the compiler expects ---
+EXPECTED_FILE="${SRC_FILE%.*}.gcda" # This creates "PythiaGenMin.gcda"
+if [ "$PROFILE_FILE" != "./$EXPECTED_FILE" ]; then
+  echo "  -> Renaming '$PROFILE_FILE' to '$EXPECTED_FILE' to match compiler expectation."
+  mv "$PROFILE_FILE" "$EXPECTED_FILE"
+else
+  echo "  -> Profile file already has the expected name."
 fi
 
 # =======================================================================
-# Build optimized binary using collected profile data
+# 4. BUILD OPTIMIZED BINARY
 # =======================================================================
-if [[ "${1:-}" == "final" ]]; then
-  if [[ ! -d "$TRAIN_DIR" ]]; then
-    echo "Error: Profile data directory '$TRAIN_DIR' not found. Run 'train' first."
-    exit 1
-  fi
+header "4. Building optimized (PGO + LTO) binary"
 
-  echo "=== Building optimized (PGO + LTO) binary ==="
+g++ -std=c++17 -march=native -O2 -pipe \
+    -fprofile-use -fprofile-correction \
+    -flto=2 \
+    "$SRC_FILE" -o "$FINAL_EXE" \
+    "${EXTRA_CFLAGS[@]}" "${EXTRA_LDFLAGS[@]}"
 
-  g++ -std=c++17 -march=native -O2 -pipe \
-      -fprofile-use=$TRAIN_DIR -fprofile-correction \
-      -flto=2 \
-      "$SRC" -o PythiaGenMin.exe \
-      "${EXTRA_CFLAGS[@]}" "${EXTRA_LDFLAGS[@]}"
-
-  echo
-  echo "=== Optimized binary built: ./PythiaGenMin.exe ==="
-  echo "To test:"
-  echo "  time ./PythiaGenMin.exe \"${ARGS[@]}\""
-  exit 0
-fi
+echo "  -> Optimized binary built successfully: $FINAL_EXE"
 
 # =======================================================================
-# Help message
+# 5. FINAL CLEAN UP
 # =======================================================================
-echo "Usage:"
-echo "  $0 train    # build and run the instrumented version (collect profiles)"
-echo "  $0 final    # build optimized binary using the profile data"
-exit 1
+header "5. Cleaning up intermediate files"
+rm -f "$TRAIN_EXE" ./*.gcda ./*.gcno
+echo "  -> Cleanup complete. Only '$FINAL_EXE' remains."

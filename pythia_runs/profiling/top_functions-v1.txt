@@ -1,0 +1,5 @@
+Top functions for program: PythiaGenMin.exe
+Perf data: perf.data
+Generated: 2025-10-07 22:03:39Z
+
+=== Aggregation (top 20) ===
