@@ -33,7 +33,7 @@ void FillHistogramFromMap(TH1* hist, const std::map<int,int>& map);
 
 using namespace Pythia8;
 
-void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const std::string input_card_path, const std::string input_card_name){
+void RunWorker(const int WorkerId, const int N_ev, const std::string output_folder, const std::string input_card_path, const std::string input_card_name){
   	Pythia pythia;
 	
 	// // Some settings related to output in init(), next() and stat() that came from the Parnassus settings
@@ -73,7 +73,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 	// Setting up FastJet finder with anti-kT method:
 	// (for more information, see logs 503 and 504)
 	double R = 0.4;
-	double jet_min_pT = 8.0; // Changed from 2.0 to 8.0: we were having 10% of events having 20 or more jets! The 8.0 GeV/c comes from Youpeng's PAG presentation
+	double jet_min_pT = 60.0; // Changed from 2.0 to 8.0: we were having 10% of events having 20 or more jets! The 8.0 GeV/c comes from Youpeng's PAG presentation
 	double ALICE_charged_particle_acceptance = 0.9; // Look at the Detector_Acceptances_and_FastJet.pdf document: TPS, ITS, TRD and TOF cover <0.9, and EMCal does not cover full azimuth!
 	double jet_max_eta = ALICE_charged_particle_acceptance - R; // The jet must be entirely in the region where ALICE can actually see it!
 														   // Notice that you don't need to do an extra |y|<0.5 cut if the jet pT is sufficiently high, because y ~ \eta in that limit.
@@ -989,7 +989,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// This part will already be done for the WithLambda check afterwards:
 		// hEventCounterWithJets_pTleqJetMinPt_EtaCuts->Fill(0); // Notice you don't need an "else" statement here
 
-		std::vector<fastjet::PseudoJet> leadingJet_constituents = leadingJet.constituents();
+		const std::vector<fastjet::PseudoJet> leadingJet_constituents = leadingJet.constituents();
 		// hNParticlesLeadingJet_EtaCuts->Fill(leadingJet_constituents.size());
 
 		// Creating a leadingJet map for the current event -- No need to do the jet_constituent loop for each more restrictive cut!
@@ -1076,7 +1076,7 @@ void RunWorker(int WorkerId, int N_ev, const std::string output_folder, const st
 		// 	mapCountsOfPIDLeadingJetConstituents_PassedYExtraCheck[PID] += counts;
 		// }
 
-		hJetProxyY_YExtraCheck->Fill(y_jet);
+		hJetProxyY_YExtraCheck->Fill(y_jet); // Could remove this to further optimize the code
 		hJetProxyPt_YExtraCheck->Fill(pt_jet);
 		hJetProxyPtY_YExtraCheck->Fill(pt_jet, y_jet);
 		hJetProxyPhi_YExtraCheck->Fill(Phi_jet);
