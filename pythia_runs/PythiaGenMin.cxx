@@ -60,8 +60,18 @@ void RunWorker(const int WorkerId, const int N_ev, const std::string output_fold
 
 	// Seeding each worker core differently, based on a clock+WorkerId mixing:
 		// If you just give seed = 0, it might get the same seed for all workers, based only on the starting clock for all of them!
-	std::random_device rd;
-	std::mt19937 rng(rd() + static_cast<unsigned int>(WorkerId));
+	// std::random_device rd;
+	// std::mt19937 rng(rd() + static_cast<unsigned int>(WorkerId));
+	std::seed_seq seed_seq{
+	// Samples from time and the current loop index (WorkerId), to guarantee randomization for each core.
+	// Previous methods were not working by varying initial time, nor within the same core (gave deterministic seeds!).
+	// seed_seq is also a more robust seed generation method.
+		static_cast<unsigned>(std::chrono::high_resolution_clock::now().time_since_epoch().count()),
+		static_cast<unsigned>(WorkerId)
+	};
+	std::mt19937 rng(seed_seq);
+
+
     std::uniform_int_distribution<int> dist(1, 900000000); // Pythia expects values between 1 and 900.000.000 for its seed. Zero would be clock seeding, and that can be troublesome for multi-threading
     int seed = dist(rng);
 	pythia.readString("Random:seed = " + std::to_string(seed));
@@ -73,7 +83,7 @@ void RunWorker(const int WorkerId, const int N_ev, const std::string output_fold
 	// Setting up FastJet finder with anti-kT method:
 	// (for more information, see logs 503 and 504)
 	double R = 0.4;
-	double jet_min_pT = 60.0; // Changed from 2.0 to 8.0: we were having 10% of events having 20 or more jets! The 8.0 GeV/c comes from Youpeng's PAG presentation
+	double jet_min_pT = 8.0; // Changed from 2.0 to 8.0: we were having 10% of events having 20 or more jets! The 8.0 GeV/c comes from Youpeng's PAG presentation
 	double ALICE_charged_particle_acceptance = 0.9; // Look at the Detector_Acceptances_and_FastJet.pdf document: TPS, ITS, TRD and TOF cover <0.9, and EMCal does not cover full azimuth!
 	double jet_max_eta = ALICE_charged_particle_acceptance - R; // The jet must be entirely in the region where ALICE can actually see it!
 														   // Notice that you don't need to do an extra |y|<0.5 cut if the jet pT is sufficiently high, because y ~ \eta in that limit.

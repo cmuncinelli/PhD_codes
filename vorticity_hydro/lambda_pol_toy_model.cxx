@@ -88,8 +88,10 @@ void CheckBins(const char* name, const int* bins, int N_bins_total, TH1* hist);
 inline int mapGlobalToCompact(const TH1& h, int globalBin); // Receives the object itself, not the pointer!
 inline int mapCompactToGlobal(const TH1& h, int compactIndex); // The inverse transform
 void CopyTH3D(const TH3D* source, TH3D* target);
+void CopyTH1D(const TH1D* source, TH1D* target);
 void SqrtHist(TH1* h);
 void AddScalar(TH3D* h, double scalar);
+void AddScalarIfLargerThanOneTH1D(TH1D* h, double scalar);
 void SetErrorsFromErrHist(TH1* data, const TH1* errors);
 double IntegralAbsNoOverflow(const TH1* h);
 
@@ -200,6 +202,11 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     std::vector<double> hRingObservable_proxy_from_daughter_star_eq_defPtYCuts_bufferGlobal(N_bins_phi, 0.0);
     std::vector<double> hRingObservable_proxy_from_daughter_eq_defPtYCuts_integrated_bufferGlobal(N_bins_phi, 0.0);
     std::vector<double> hRingObservable_proxy_from_daughter_star_eq_defPtYCuts_integrated_bufferGlobal(N_bins_phi, 0.0);
+
+    // For the error estimation on a per-candidate basis:
+    std::vector<double> hRingObservable_daughter_per_candidate_squared_bufferGlobal(N_bins_phi, 0.0);
+    std::vector<double> hRingObservable_daughter_per_candidate_squared_PtYCuts_bufferGlobal(N_bins_phi, 0.0);
+    std::vector<double> hRingObservable_daughter_per_candidate_squared_PtYCuts_integrated_bufferGlobal(1, 0.0);
 
     // For peace of mind, the same plots that appear on the paper, before any kind of reconstruction:
         // (Properly weighted by the multiplicity of each bin!)
@@ -343,6 +350,23 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     auto hRingObservable_proxy_from_daughter_star_eq_defPtYCuts_integrated = new TH1D("hRingObservable_proxy_from_daughter_star_eq_defPtYCuts_integrated", "hRingObservable_proxy_from_daughter_star_eq_defPtYCuts_integrated", 1, phi_min_Ring, phi_max_Ring);
 
     auto hDebugCounter_phi_star_sampler = new TH1D("hDebugCounter_phi_star_sampler", "hDebugCounter_phi_star_sampler", N_bins_phi, phi_min_Ring, phi_max_Ring);
+
+    // Error propagation for the per-candidate observables (here we don't have true per candidate values, but the error bars may be estimated from this!):
+    auto hRingObservable_daughter_per_candidate_squared = new TH1D("hRingObservable_daughter_per_candidate_squared", "hRingObservable_daughter_per_candidate_squared", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    auto hRingObservable_daughter_per_candidate_squared_PtYCuts = new TH1D("hRingObservable_daughter_per_candidate_squared_PtYCuts", "hRingObservable_daughter_per_candidate_squared_PtYCuts", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    auto hRingObservable_daughter_per_candidate_squared_PtYCuts_integrated = new TH1D("hRingObservable_daughter_per_candidate_squared_PtYCuts_integrated", "hRingObservable_daughter_per_candidate_squared_PtYCuts_integrated", 1, phi_min_Ring, phi_max_Ring);
+    //     // 1D version for the counter-1:
+    // auto hLambdaCounter_DeltaPhiJRingAngles_minus1 = new TH1D("hLambdaCounter_DeltaPhiJRingAngles_minus1", "hLambdaCounter_DeltaPhiJRingAngles_minus1", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    // auto hLambdaCounter_DeltaPhiJRingAngles_PtYCuts_minus1 = new TH1D("hLambdaCounter_DeltaPhiJRingAngles_PtYCuts_minus1", "hLambdaCounter_DeltaPhiJRingAngles_PtYCuts_minus1", N_bins_phi, phi_min_Ring, phi_max_Ring);
+
+    auto hRingObservable_daughter_per_candidate_err = new TH1D("hRingObservable_daughter_per_candidate_err", "hRingObservable_daughter_per_candidate_err", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    auto hRingObservable_daughter_per_candidate_PtYCuts_err = new TH1D("hRingObservable_daughter_per_candidate_PtYCuts_err", "hRingObservable_daughter_per_candidate_PtYCuts_err", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    auto hRingObservable_daughter_per_candidate_PtYCuts_integrated_err = new TH1D("hRingObservable_daughter_per_candidate_PtYCuts_integrated_err", "hRingObservable_daughter_per_candidate_PtYCuts_integrated_err", 1, phi_min_Ring, phi_max_Ring);
+        // Saving a variation of the Ring Observable that is essentially a copy of the previous versions, but with this smaller error:
+    auto hRingObservableReco_with_err_per_candidate = new TH1D("hRingObservableReco_with_err_per_candidate", "hRingObservableReco_with_err_per_candidate", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    auto hRingObservableRecoPtYCuts_with_err_per_candidate = new TH1D("hRingObservableRecoPtYCuts_with_err_per_candidate", "hRingObservableRecoPtYCuts_with_err_per_candidate", N_bins_phi, phi_min_Ring, phi_max_Ring);
+    auto hRingObservableRecoPtYCuts_integrated_with_err_per_candidate = new TH1D("hRingObservableRecoPtYCuts_integrated_with_err_per_candidate", "hRingObservableRecoPtYCuts_integrated_with_err_per_candidate", 1, phi_min_Ring, phi_max_Ring);
+
 
     // The following block of code was moved inside the resamplings loop to take advantage of parallelization capabilities:
     // ////////////////////
@@ -509,12 +533,24 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
         // Now actually declaring the parallelization loop:
     #pragma omp parallel for
     for (int resample_idx = 0; resample_idx < N_resamples; resample_idx++){
-        // Declaring thread-local variables:
-            // Each thread should get its own RNG device, seeded differently, to avoid resamplings that share the same random numbers!
-        std::random_device rd; // Cleaner than the earlier method
-        std::mt19937 rng(rd() + omp_get_thread_num()); // Creates a random_device object then calls it with () getting a random seed (which is summed
-                                                    // to a number related to the current thread, to ensure each thread has a different seed), and
-                                                    // then that seed is passed to the random engine.
+        // // Declaring thread-local variables:
+        //     // Each thread should get its own RNG device, seeded differently, to avoid resamplings that share the same random numbers!
+        // std::random_device rd; // Cleaner than the earlier method
+        // // std::mt19937 rng(rd() + omp_get_thread_num()); // Creates a random_device object then calls it with () getting a random seed (which is summed
+        //                                             // to a number related to the current thread, to ensure each thread has a different seed), and
+        //                                             // then that seed is passed to the random engine.
+        // std::mt19937 rng(rd() + resample_idx); // Should actually use a different rng sequence for each iteration, not for each core! Otherwise, a same core might have the same rng for all iterations!
+        // Redone randomizer of current core and iteration loop:
+        std::seed_seq seed_seq{
+        // Samples from time, the current loop index and the thread number, to guarantee randomization.
+        // Previous methods were not working by varying initial time, nor within the same core (gave deterministic seeds!).
+        // seed_seq is also a more robust seed generation method.
+            static_cast<unsigned>(std::chrono::high_resolution_clock::now().time_since_epoch().count()),
+            static_cast<unsigned>(resample_idx),
+            static_cast<unsigned>(omp_get_thread_num())
+        };
+        std::mt19937 rng(seed_seq);
+
             // Uniform distribution for sampling cos(xi_star) using the inverse CDF method:
         std::uniform_real_distribution<double> dist_unit(0.0, 1.0);
             // Azimuth distribution:
@@ -610,6 +646,11 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
         std::vector<double> hRingObservable_proxy_from_daughter_eq_defPtYCuts_integrated_buffer(1, 0.0);
         std::vector<double> hRingObservable_proxy_from_daughter_star_eq_defPtYCuts_integrated_buffer(1, 0.0);
         // std::cout << "DEBUG! Thread locals declared" << std::endl;
+
+        // For the per-candidate error calculation:
+        std::vector<double> hRingObservable_daughter_per_candidate_squared_buffer(N_bins_phi, 0.0);
+        std::vector<double> hRingObservable_daughter_per_candidate_squared_PtYCuts_buffer(N_bins_phi, 0.0);
+        std::vector<double> hRingObservable_daughter_per_candidate_squared_PtYCuts_integrated_buffer(1, 0.0);
 
         // DEBUG!
         // std::cout << y_matrix_thrd_copy[100].size() << " " << N_bins_total << std::endl; // Yes, these two values did match!
@@ -853,6 +894,9 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
                 hRingObservable_proxy_from_daughter_eq_def_buffer[compact_bin_idx_phiRing_value] += RP_temp_eqv_def * current_particle_multiplicity;
                 hRingObservable_proxy_from_daughter_star_eq_def_buffer[compact_bin_idx_phiRing_value] += RP_temp_proton_star_eqv_def * current_particle_multiplicity;
 
+                // For the error estimation on a per-candidate basis:
+                hRingObservable_daughter_per_candidate_squared_buffer[compact_bin_idx_phiRing_value] += RP_temp_proton_star_eqv_def*RP_temp_proton_star_eqv_def * current_particle_multiplicity;
+
                 // Calculating the true value:
                 double RP_temp_true = ((true_PolX*cross_x + true_PolY*cross_y + true_PolZ*cross_z)/cross_product_norm);
                 hRingObservable_TrueValue_buffer[compact_bin_idx_phiRing_value] += RP_temp_true * current_particle_multiplicity;
@@ -880,6 +924,10 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
                     hLambdaCounter_phiRingAngles_PtYCuts_Weighted_buffer[compact_bin_idx_phiRing_value] += current_particle_multiplicity;
                     hProtonCounter_phiRing_PtYCuts_Weighted_buffer[compact_bin_idx_phiRing_proton_phi_wrapped_value] += current_particle_multiplicity;
                     hProtonStarCounter_phiRing_PtYCuts_Weighted_buffer[compact_bin_idx_phiRing_proton_star_phi_wrapped_value] += current_particle_multiplicity;
+
+                    // For the error estimation on a per-candidate basis:
+                    hRingObservable_daughter_per_candidate_squared_PtYCuts_buffer[compact_bin_idx_phiRing_value] += RP_temp_proton_star_eqv_def*RP_temp_proton_star_eqv_def * current_particle_multiplicity;
+                    hRingObservable_daughter_per_candidate_squared_PtYCuts_integrated_buffer[0] += RP_temp_proton_star_eqv_def*RP_temp_proton_star_eqv_def * current_particle_multiplicity;
                 }
 
                 // // Checking/debugging the angles after the coordinate rotation:
@@ -971,12 +1019,17 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
                 hLambdaCounter_phiRingAngles_Weighted_PtYCuts_bufferGlobal[CompactBinIndex_phi] += hLambdaCounter_phiRingAngles_PtYCuts_Weighted_buffer[CompactBinIndex_phi];
                 hProtonCounter_phiRing_Weighted_PtYCuts_bufferGlobal[CompactBinIndex_phi] += hProtonCounter_phiRing_PtYCuts_Weighted_buffer[CompactBinIndex_phi];
                 hProtonStarCounter_phiRing_Weighted_PtYCuts_bufferGlobal[CompactBinIndex_phi] += hProtonStarCounter_phiRing_PtYCuts_Weighted_buffer[CompactBinIndex_phi];
+
+                // For the error estimation on a per-candidate basis:
+                hRingObservable_daughter_per_candidate_squared_bufferGlobal[CompactBinIndex_phi] += hRingObservable_daughter_per_candidate_squared_buffer[CompactBinIndex_phi];
+                hRingObservable_daughter_per_candidate_squared_PtYCuts_bufferGlobal[CompactBinIndex_phi] += hRingObservable_daughter_per_candidate_squared_PtYCuts_buffer[CompactBinIndex_phi];
             }
                 // Filling integrated buffers (0D):
             hRingObservable_TrueValuePtYCuts_integrated_bufferGlobal[0] += hRingObservable_TrueValuePtYCuts_integrated_buffer[0];
             hRingObservable_NormPolTrueValuePtYCuts_integrated_bufferGlobal[0] += hRingObservable_NormPolTrueValuePtYCuts_integrated_buffer[0];
             hRingObservable_proxy_from_daughter_eq_defPtYCuts_integrated_bufferGlobal[0] += hRingObservable_proxy_from_daughter_eq_defPtYCuts_integrated_buffer[0];
             hRingObservable_proxy_from_daughter_star_eq_defPtYCuts_integrated_bufferGlobal[0] += hRingObservable_proxy_from_daughter_star_eq_defPtYCuts_integrated_buffer[0];
+            hRingObservable_daughter_per_candidate_squared_PtYCuts_integrated_bufferGlobal[0] += hRingObservable_daughter_per_candidate_squared_PtYCuts_integrated_buffer[0];
 
                 // Moving the report on sample number to the end of the loop -- No need for two omp critical regions:
             std::cout << "\tFinished resample " << std::to_string(counter + 1) << " of " + std::to_string(N_resamples) << " (" << (counter + 1) * 1./N_resamples * 100 << "%)" << std::endl;
@@ -1082,6 +1135,10 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
         hLambdaCounter_phiRingAngles_Weighted_PtYCuts->AddBinContent(GlobalBinIndex_phiRingAngles, hLambdaCounter_phiRingAngles_Weighted_PtYCuts_bufferGlobal[CompactBinIndex_phi]);
         hProtonCounter_phiRing_Weighted_PtYCuts->AddBinContent(GlobalBinIndex_phiRingAngles, hProtonCounter_phiRing_Weighted_PtYCuts_bufferGlobal[CompactBinIndex_phi]);
         hProtonStarCounter_phiRing_Weighted_PtYCuts->AddBinContent(GlobalBinIndex_phiRingAngles, hProtonStarCounter_phiRing_Weighted_PtYCuts_bufferGlobal[CompactBinIndex_phi]);
+
+        // For the error estimation on a per-candidate basis:
+        hRingObservable_daughter_per_candidate_squared->AddBinContent(GlobalBinIndex_phiRingAngles, hRingObservable_daughter_per_candidate_squared_bufferGlobal[CompactBinIndex_phi]);
+        hRingObservable_daughter_per_candidate_squared_PtYCuts->AddBinContent(GlobalBinIndex_phiRingAngles, hRingObservable_daughter_per_candidate_squared_PtYCuts_bufferGlobal[CompactBinIndex_phi]);
     }
 
         // Filling integrated value histograms -- Just adding a value in 0. is enough, if done with the proper weight:
@@ -1089,6 +1146,7 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     hRingObservable_NormPolTrueValuePtYCuts_integrated->Fill(0., hRingObservable_NormPolTrueValuePtYCuts_integrated_bufferGlobal[0]);
     hRingObservable_proxy_from_daughter_eq_defPtYCuts_integrated->Fill(0., hRingObservable_proxy_from_daughter_eq_defPtYCuts_integrated_bufferGlobal[0]);
     hRingObservable_proxy_from_daughter_star_eq_defPtYCuts_integrated->Fill(0., hRingObservable_proxy_from_daughter_star_eq_defPtYCuts_integrated_bufferGlobal[0]);
+    hRingObservable_daughter_per_candidate_squared_PtYCuts_integrated->Fill(0., hRingObservable_daughter_per_candidate_squared_PtYCuts_integrated_bufferGlobal[0]);
 
     std::cout << "Flushed!" << std::endl;
 
@@ -1159,9 +1217,9 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
         // Another test, where N_eff is actually just the number of resamplings done, whilst
         // the averages are still being calculated and normalized with their own particle
         // multiplicity weights. This should give me the right order of errors.
-    hLambdaAvgDotX_pT_y_phi_Weighted_Err->Scale(1./(N_resamples-1)); // Using N_resamples-1 as an unbiased error estimator for low resampling numbers.
-    hLambdaAvgDotY_pT_y_phi_Weighted_Err->Scale(1./(N_resamples-1));
-    hLambdaAvgDotZ_pT_y_phi_Weighted_Err->Scale(1./(N_resamples-1));
+    hLambdaAvgDotX_pT_y_phi_Weighted_Err->Scale(1./(N_events*N_resamples-1)); // Using N_resamples-1 as an unbiased error estimator for low resampling numbers.
+    hLambdaAvgDotY_pT_y_phi_Weighted_Err->Scale(1./(N_events*N_resamples-1));
+    hLambdaAvgDotZ_pT_y_phi_Weighted_Err->Scale(1./(N_events*N_resamples-1));
                 // Taking the sqrt for each of them with an in-place method:
     SqrtHist(hLambdaAvgDotX_pT_y_phi_Weighted_Err);
     SqrtHist(hLambdaAvgDotY_pT_y_phi_Weighted_Err);
@@ -1553,11 +1611,69 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     hRingObservable_proxy_from_daughter_eq_def2PtYCuts->Divide(hLambdaCounter_phiRingAngles_Weighted_PtYCuts);
 
     hRingObservable_proxy_from_daughter_eq_defPtYCuts_integrated->Scale(1./hLambdaCounter_phiRingAngles_Weighted_PtYCuts->Integral());
-    hRingObservable_proxy_from_daughter_star_eq_defPtYCuts_integrated->Scale(1./hLambdaCounter_phiRingAngles_Weighted_PtYCuts->Integral());
 
         // Another attempt (with proton momentum in the rest frame):
     hRingObservable_proxy_from_daughter_star_eq_def->Divide(hLambdaCounter_phiRingAngles_Weighted);
     hRingObservable_proxy_from_daughter_star_eq_defPtYCuts->Divide(hLambdaCounter_phiRingAngles_Weighted_PtYCuts);
+    hRingObservable_proxy_from_daughter_star_eq_defPtYCuts_integrated->Scale(1./hLambdaCounter_phiRingAngles_Weighted_PtYCuts->Integral());
+
+    // For the error estimation on a per-candidate basis:
+    hRingObservable_daughter_per_candidate_squared->Divide(hLambdaCounter_phiRingAngles_Weighted);
+    hRingObservable_daughter_per_candidate_squared_PtYCuts->Divide(hLambdaCounter_phiRingAngles_Weighted_PtYCuts);
+    hRingObservable_daughter_per_candidate_squared_PtYCuts_integrated->Scale(1./hLambdaCounter_phiRingAngles_Weighted_PtYCuts->Integral());
+    ///////////////////////////////////////////////////////////////
+    // Calculating the error for the per-candidate ring observable, which is calculated in a similar fashion:
+    // (Do notice that in this case there are no longer any XYZ components, yet you have three different histograms to fill)
+        // Copying the ring to calculate the <InsideAverageOfTheRing>^2 part:
+    CopyTH1D(hRingObservable_proxy_from_daughter_star_eq_def, hRingObservable_daughter_per_candidate_err);
+    CopyTH1D(hRingObservable_proxy_from_daughter_star_eq_defPtYCuts, hRingObservable_daughter_per_candidate_PtYCuts_err);
+    CopyTH1D(hRingObservable_proxy_from_daughter_star_eq_defPtYCuts_integrated, hRingObservable_daughter_per_candidate_PtYCuts_integrated_err);
+    // Now taking the square to get \mu^2:
+    hRingObservable_daughter_per_candidate_err->Multiply(hRingObservable_daughter_per_candidate_err);
+    hRingObservable_daughter_per_candidate_PtYCuts_err->Multiply(hRingObservable_daughter_per_candidate_PtYCuts_err);
+    hRingObservable_daughter_per_candidate_PtYCuts_integrated_err->Multiply(hRingObservable_daughter_per_candidate_PtYCuts_integrated_err);
+
+    // Now replacing the contents with <InsideAverageOfTheRing^2> - \mu^2
+    hRingObservable_daughter_per_candidate_err->Add(hRingObservable_daughter_per_candidate_squared, hRingObservable_daughter_per_candidate_err, 1., -1.);
+    hRingObservable_daughter_per_candidate_PtYCuts_err->Add(hRingObservable_daughter_per_candidate_squared_PtYCuts, hRingObservable_daughter_per_candidate_PtYCuts_err, 1., -1.);
+    hRingObservable_daughter_per_candidate_PtYCuts_integrated_err->Add(hRingObservable_daughter_per_candidate_squared_PtYCuts_integrated, hRingObservable_daughter_per_candidate_PtYCuts_integrated_err, 1., -1.);
+
+    // // Using the unbiased estimator from before (which shouldn't make much of a difference in this context
+    // // where we have a lot of particles (>>1), but kept it anyways for the harshest of possible cases)
+    //     // First, calculating a 1D version of the hLambdaCounter_minus1_pT_y_DeltaPhiJ:
+    // // Two kinds of counters -- One for the version that has PtY cuts, one that doesn't:
+    // // (and do notice that these should also be in RingAngles, to match the ring observable definition of angles)
+    // CopyTH1D(hLambdaCounter_phiRingAngles_Weighted, hLambdaCounter_DeltaPhiJRingAngles_minus1); // Necessary for an unbiased error estimator for low-statistics
+    // CopyTH1D(hLambdaCounter_phiRingAngles_Weighted_PtYCuts, hLambdaCounter_DeltaPhiJRingAngles_PtYCuts_minus1);
+    //
+    // // AddScalarIfLargerThanOneTH1D(hLambdaCounter_DeltaPhiJRingAngles_minus1, -1);
+    // // AddScalarIfLargerThanOneTH1D(hLambdaCounter_DeltaPhiJRingAngles_PtYCuts_minus1, -1);
+    // // hRingObservable_daughter_per_candidate_err->Divide(hLambdaCounter_DeltaPhiJRingAngles_minus1); // Notice you have to scale BEFORE the square root takes place
+    // // hRingObservable_daughter_per_candidate_PtYCuts_err->Divide(hLambdaCounter_DeltaPhiJRingAngles_PtYCuts_minus1);
+    // // hRingObservable_daughter_per_candidate_PtYCuts_integrated_err->Scale(1./(hLambdaCounter_DeltaPhiJRingAngles_PtYCuts->Integral()-1)); // The subtraction is done only once, considering that this is an integrated observable
+
+    // Should actually divide by the number of resamples taken:
+    // (notice that each (pT,y,phi) bin was resampled N_resamples times)
+    int N_bins_pT_in_interval = 20; // Actually, only bins with pT in [0.5, 1.5] should be considered. As pT goes from 0 to 3, this should be 2/3 of the interval, or 20 bins
+
+    double n_resamples_per_phi_bin_no_cuts = N_events*N_resamples*(N_bins_pT*N_bins_rap); // Need to scale by the number of resamples taken in each phi bin. Also assumes proton sampling is uniform in all pT, y and phi bins.
+    double n_resamples_per_phi_bin_with_cuts = N_events*N_resamples*(N_bins_pT_in_interval*N_bins_rap);
+    double n_resamples_integrated_with_cuts = N_events*N_resamples*(N_bins_pT_in_interval*N_bins_rap*N_bins_phi);
+    hRingObservable_daughter_per_candidate_err->Scale(1./(n_resamples_per_phi_bin_no_cuts-1));
+    hRingObservable_daughter_per_candidate_PtYCuts_err->Scale(1./(n_resamples_per_phi_bin_with_cuts-1));
+    hRingObservable_daughter_per_candidate_PtYCuts_integrated_err->Scale(1./(n_resamples_integrated_with_cuts-1));
+
+    // std::cout << "n_resamples_per_phi_bin_no_cuts: " << n_resamples_per_phi_bin_no_cuts << std::endl;
+    // std::cout << "n_resamples_per_phi_bin_with_cuts: " << n_resamples_per_phi_bin_with_cuts << std::endl;
+    // std::cout << "n_resamples_integrated_with_cuts: " << n_resamples_integrated_with_cuts << std::endl;
+    // std::cout << "hRingObservable_daughter_per_candidate_PtYCuts_integrated_err->GetBinContent(1): " << hRingObservable_daughter_per_candidate_PtYCuts_integrated_err->GetBinContent(1) << std::endl;
+
+            // Taking the sqrt for each of them with an in-place method:
+    SqrtHist(hRingObservable_daughter_per_candidate_err);
+    SqrtHist(hRingObservable_daughter_per_candidate_PtYCuts_err);
+    SqrtHist(hRingObservable_daughter_per_candidate_PtYCuts_integrated_err);
+    // std::cout << "After square root hRingObservable_daughter_per_candidate_PtYCuts_integrated_err->GetBinContent(1): " << hRingObservable_daughter_per_candidate_PtYCuts_integrated_err->GetBinContent(1) << std::endl;
+    ///////////////////////////////////////////////////////////////
 
     // Setting the error bars:
         // Setting the errors for the 4 equivalent histograms:
@@ -1576,6 +1692,15 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     SetErrorsFromErrHist(hRingObservable_proxy_from_daughter_eq_defPtYCuts_integrated, hRingObservableRecoPtYCuts_integrated_Err);
     SetErrorsFromErrHist(hRingObservable_proxy_from_daughter_star_eq_defPtYCuts_integrated, hRingObservableRecoPtYCuts_integrated_Err);
     // Didn't include an hRingObservableStarRecoPtYCuts_integrated here, but whatever: it should be equivalent to the previous three here already!
+
+    // The same for the ring observable using "per-candidate"-like error propagation:
+    CopyTH1D(hRingObservable_proxy_from_daughter_star_eq_def, hRingObservableReco_with_err_per_candidate);
+    CopyTH1D(hRingObservable_proxy_from_daughter_star_eq_defPtYCuts, hRingObservableRecoPtYCuts_with_err_per_candidate);
+    CopyTH1D(hRingObservable_proxy_from_daughter_star_eq_defPtYCuts_integrated, hRingObservableRecoPtYCuts_integrated_with_err_per_candidate);
+
+    SetErrorsFromErrHist(hRingObservableReco_with_err_per_candidate, hRingObservable_daughter_per_candidate_err);
+    SetErrorsFromErrHist(hRingObservableRecoPtYCuts_with_err_per_candidate, hRingObservable_daughter_per_candidate_PtYCuts_err);
+    SetErrorsFromErrHist(hRingObservableRecoPtYCuts_integrated_with_err_per_candidate, hRingObservable_daughter_per_candidate_PtYCuts_integrated_err);
 
     ////////////////////
     //// 4 - Exporting into a .root file for later review
@@ -1723,6 +1848,22 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     // delete hLambdaPolStarX_pT_y_phiReco_Weighted;
     // delete hLambdaPolStarY_pT_y_phiReco_Weighted;
     // delete hLambdaPolStarZ_pT_y_phiReco_Weighted;
+
+    // Error propagation for the per-candidate observables:
+    hRingObservableReco_with_err_per_candidate->Write();
+    hRingObservableRecoPtYCuts_with_err_per_candidate->Write();
+    hRingObservableRecoPtYCuts_integrated_with_err_per_candidate->Write();
+        // Needed to get the error values:
+    hRingObservable_daughter_per_candidate_squared->Write();
+    hRingObservable_daughter_per_candidate_squared_PtYCuts->Write();
+    hRingObservable_daughter_per_candidate_squared_PtYCuts_integrated->Write();
+    //     // 1D version for the counter-1:
+    // hLambdaCounter_DeltaPhiJRingAngles_minus1->Write();
+    // hLambdaCounter_DeltaPhiJRingAngles_PtYCuts_minus1->Write();
+        // Actual errors:
+    hRingObservable_daughter_per_candidate_err->Write();
+    hRingObservable_daughter_per_candidate_PtYCuts_err->Write();
+    hRingObservable_daughter_per_candidate_PtYCuts_integrated_err->Write();
 
     f.Close();
     std::cout << "Done exporting!" << std::endl;
@@ -1879,6 +2020,24 @@ void CopyTH3D(const TH3D* source, TH3D* target){
     }
 }
 
+// For TH1Ds too:
+void CopyTH1D(const TH1D* source, TH1D* target){
+    if (!source || !target) return;
+    // std::cout << "Now copying " << source->GetTitle() << " into " << target->GetTitle() << std::endl;
+
+    // Check binning matches
+    if (source->GetNbinsX() != target->GetNbinsX()){
+        printf("Error: Histograms have different binning!\n");
+        return;
+    }
+
+    // Copy bin contents and errors
+    for (int ix = 0; ix <= source->GetNbinsX() + 1; ++ix){
+        target->SetBinContent(ix, source->GetBinContent(ix));
+        target->SetBinError(ix, source->GetBinError(ix));
+    }
+}
+
 // ROOT lacks a sqrt function for its histograms, thus implemented it here by hand.
 // This function modifies the histogram in-place, so no returns needed.
 // An uglier rewrite of this function, that discriminates all three possible dimensions instead of using shorter syntax.
@@ -1969,6 +2128,15 @@ void AddScalar(TH3D* h, double scalar){
         h->SetBinContent(ix, iy, iz, val + scalar);
       }
     }
+  }
+}
+
+void AddScalarIfLargerThanOneTH1D(TH1D* h, double scalar){
+  int nbx = h->GetNbinsX();
+
+  for (int ix = 1; ix <= nbx; ++ix){
+    double val = h->GetBinContent(ix);
+    h->SetBinContent(ix, (val > 1) ? val + scalar : val); // Should only subtract if the bin count is larger than one
   }
 }
 
