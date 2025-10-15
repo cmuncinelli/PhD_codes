@@ -535,7 +535,7 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
     for (int resample_idx = 0; resample_idx < N_resamples; resample_idx++){
         // // Declaring thread-local variables:
         //     // Each thread should get its own RNG device, seeded differently, to avoid resamplings that share the same random numbers!
-        // std::random_device rd; // Cleaner than the earlier method
+        std::random_device rd; // Cleaner than the earlier method
         // // std::mt19937 rng(rd() + omp_get_thread_num()); // Creates a random_device object then calls it with () getting a random seed (which is summed
         //                                             // to a number related to the current thread, to ensure each thread has a different seed), and
         //                                             // then that seed is passed to the random engine.
@@ -547,7 +547,8 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
         // seed_seq is also a more robust seed generation method.
             static_cast<unsigned>(std::chrono::high_resolution_clock::now().time_since_epoch().count()),
             static_cast<unsigned>(resample_idx),
-            static_cast<unsigned>(omp_get_thread_num())
+            static_cast<unsigned>(omp_get_thread_num()),
+            rd() // Also added the OS entropy, just to make sure.
         };
         std::mt19937 rng(seed_seq);
 

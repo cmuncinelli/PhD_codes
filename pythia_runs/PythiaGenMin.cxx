@@ -60,14 +60,17 @@ void RunWorker(const int WorkerId, const int N_ev, const std::string output_fold
 
 	// Seeding each worker core differently, based on a clock+WorkerId mixing:
 		// If you just give seed = 0, it might get the same seed for all workers, based only on the starting clock for all of them!
-	// std::random_device rd;
+	std::random_device rd;
 	// std::mt19937 rng(rd() + static_cast<unsigned int>(WorkerId));
 	std::seed_seq seed_seq{
 	// Samples from time and the current loop index (WorkerId), to guarantee randomization for each core.
 	// Previous methods were not working by varying initial time, nor within the same core (gave deterministic seeds!).
 	// seed_seq is also a more robust seed generation method.
+	// Added OS entropy too. It seemed like it was giving some weird equal values even when running on different days,
+	// so WorkerId+rd() was not enough. That is why current time was added. As time by itself is also not enough, combined all three together.
 		static_cast<unsigned>(std::chrono::high_resolution_clock::now().time_since_epoch().count()),
-		static_cast<unsigned>(WorkerId)
+		static_cast<unsigned>(WorkerId),
+		rd()
 	};
 	std::mt19937 rng(seed_seq);
 
