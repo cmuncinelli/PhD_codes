@@ -79,3 +79,8 @@ g++ -O0 -g -fno-omit-frame-pointer -fsanitize=address,undefined -D_GLIBCXX_ASSER
 
     # Some larger test -- Jarvis15:
 ./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_pp_136tev_AllowLambdaDecays.cfg" 5e8 324 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 5e8 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_pp_136tev_AllowLambdaDecays" 5e8 1
+
+# For PbPb in Jarvis15:
+./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_PbPb_536tev_AllowLambdaDecays.cfg" 1e5 324
+    # For higher stats:
+./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_PbPb_536tev_AllowLambdaDecays.cfg" 1e7 324

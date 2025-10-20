@@ -83,12 +83,20 @@ void RunWorker(const int WorkerId, const int N_ev, const std::string output_fold
 
 	pythia.init();
 
+	// Checking if this is Pythia pp or Angantyr for some parameter definitions:
+	const bool use_angantyr = (input_card_name.find("_PbPb") != std::string::npos) || (input_card_name.find("_OO") != std::string::npos);
+
 	// Setting up FastJet finder with anti-kT method:
 	// (for more information, see logs 503 and 504)
-	double R = 0.4;
+	const double R = 0.4;
 	double jet_min_pT = 8.0; // Changed from 2.0 to 8.0: we were having 10% of events having 20 or more jets! The 8.0 GeV/c comes from Youpeng's PAG presentation
-	double ALICE_charged_particle_acceptance = 0.9; // Look at the Detector_Acceptances_and_FastJet.pdf document: TPS, ITS, TRD and TOF cover <0.9, and EMCal does not cover full azimuth!
-	double jet_max_eta = ALICE_charged_particle_acceptance - R; // The jet must be entirely in the region where ALICE can actually see it!
+	double minimum_track_pT = 0.1;
+	if (use_angantyr){
+		jet_min_pT = 60.0;
+		minimum_track_pT = .2;
+	}
+	const double ALICE_charged_particle_acceptance = 0.9; // Look at the Detector_Acceptances_and_FastJet.pdf document: TPS, ITS, TRD and TOF cover <0.9, and EMCal does not cover full azimuth!
+	const double jet_max_eta = ALICE_charged_particle_acceptance - R; // The jet must be entirely in the region where ALICE can actually see it!
 														   // Notice that you don't need to do an extra |y|<0.5 cut if the jet pT is sufficiently high, because y ~ \eta in that limit.
     fastjet::JetDefinition jetDef(fastjet::antikt_algorithm, R);
   	std::vector <fastjet::PseudoJet> FastJetInputs;
@@ -792,7 +800,7 @@ void RunWorker(const int WorkerId, const int N_ev, const std::string output_fold
 
 					// Changed to apply a stricter cut: this will greatly speed up the loop and I don't need to know the statistics
 					// of jets outside of the detectable region anymore (those are already present in the previous runs' data)
-					if (pT < 0.1 || (std::fabs(eta_rap) > ALICE_charged_particle_acceptance)){continue;} // Will just continue the loop. As this is the last part of the loop, there is no problem in skipping it
+					if (pT < minimum_track_pT || (std::fabs(eta_rap) > ALICE_charged_particle_acceptance)){continue;} // Will just continue the loop. As this is the last part of the loop, there is no problem in skipping it
 
 					// Create a PseudoJet from the complete Pythia particle:
 					fastjet::PseudoJet particleTemp = particle;
