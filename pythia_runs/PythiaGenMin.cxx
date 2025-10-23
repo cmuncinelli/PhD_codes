@@ -289,6 +289,7 @@ void RunWorker(const int WorkerId, const int N_ev, const std::string output_fold
 	// Saving multiplicity information in a TH1I (which consumes at most 40 kB with this many bins!) -- Faster centrality/multiplicity class fetching:
 	// (Had to change to TH1D because was experiencing some overflows and rounding errors when trying to add a count when the bin already had many entries!)
 	int multiplicity_nbins = 10000; // The number of bins is also the number of entries, which gives one bin per possible multiplicity!
+	if (use_angantyr) multiplicity_nbins = 1000000; // About 100 times more bins. The multiplicity can get really high for these events, and then centrality is badly determined!
 		// Could make this stop at 7000 bins, as the kMaxTrack is 7000 for my pythia simulations, but this format is more general and the disk size is ridiculously small...
 		// By declaring in this way, GetBin(0) will get the bin of events with 0 particles in multiplicity. The value 10000 is not stored, and it will go to the overflow bin.
 		// In other words, GetBin(N) will get you the exact bin with N particles! A convenient indexing, where [0] is the index of 0 particles and [1] for 1 particle!
@@ -348,14 +349,16 @@ void RunWorker(const int WorkerId, const int N_ev, const std::string output_fold
 	// auto hfirstDiscardedJetPtY_minus_leadingJet_MinPtCut = new TH2D("hfirstDiscardedJetPtY_minus_leadingJet_MinPtCut", "(minpT_OK,yFirstDiscardedJet-ySelectedJet)", 40, 0, 50, 20, -1.25, 1.25);
 	// auto hfirstDiscardedJetPhi_minus_leadingJet_MinPtCut = new TH1D("hfirstDiscardedJetPhi_minus_leadingJet_MinPtCut", "(minpT_OK,PhiFirstDiscardedJet-PhiSelectedJet)", 100, -PI, PI);
 
+	double jet_maximum_pT_for_hist = 50.;
+	if (use_angantyr) jet_maximum_pT_for_hist = 200.;
 	auto hJetProxyY_pTleqJetMinPt_eta_cut_WithEtaOKLambda = new TH1D("hJetProxyY_pTleqJetMinPt_eta_cut_WithEtaOKLambda", "(minpT, maxEta OK, contains LambdaOrLBar)", 100, -2.5, 2.5);
-    auto hJetProxyPt_pTleqJetMinPt_eta_cut_WithEtaOKLambda = new TH1D("hJetProxyPt_pTleqJetMinPt_eta_cut_WithEtaOKLambda", "(minpT, maxEta OK, contains LambdaOrLBar)", 100, 0, 50);
+    auto hJetProxyPt_pTleqJetMinPt_eta_cut_WithEtaOKLambda = new TH1D("hJetProxyPt_pTleqJetMinPt_eta_cut_WithEtaOKLambda", "(minpT, maxEta OK, contains LambdaOrLBar)", 100, 0, jet_maximum_pT_for_hist);
     auto hJetProxyPtY_pTleqJetMinPt_eta_cut_WithEtaOKLambda = new TH2D("hJetProxyPtY_pTleqJetMinPt_eta_cut_WithEtaOKLambda", "(minpT, maxEta OK, contains LambdaOrLBar)", 40, 0, 50, 20, -1.25, 1.25);
     auto hJetProxyPhi_pTleqJetMinPt_eta_cut_WithEtaOKLambda = new TH1D("hJetProxyPhi_pTleqJetMinPt_eta_cut_WithEtaOKLambda", "(minpT, maxEta OK, contains LambdaOrLBar)", 100, -PI, PI);
 
 	// Including the previous three discarded histograms types, in a Lambda-only version:
 	auto hLeadJetY_DiscardedUntilLead_pTleqJetMinPt_WithEtaOKLambda = new TH1D("hLeadJetY_DiscardedUntilLead_pTleqJetMinPt_WithEtaOKLambda", "Jets w/ min_pT threshold,w/LambdaOrBar, and pT>=selected_lead_jet", 100, -2.5, 2.5);
-    auto hLeadJetPt_DiscardedUntilLead_pTleqJetMinPt_WithEtaOKLambda = new TH1D("hLeadJetPt_DiscardedUntilLead_pTleqJetMinPt_WithEtaOKLambda", "Jets w/ min_pT threshold,w/LambdaOrBar, and pT>=selected_lead_jet", 100, 0, 50);
+    auto hLeadJetPt_DiscardedUntilLead_pTleqJetMinPt_WithEtaOKLambda = new TH1D("hLeadJetPt_DiscardedUntilLead_pTleqJetMinPt_WithEtaOKLambda", "Jets w/ min_pT threshold,w/LambdaOrBar, and pT>=selected_lead_jet", 100, 0, jet_maximum_pT_for_hist);
     auto hLeadJetPtY_DiscardedUntilLead_pTleqJetMinPt_WithEtaOKLambda = new TH2D("hLeadJetPtY_DiscardedUntilLead_pTleqJetMinPt_WithEtaOKLambda", "Jets w/ min_pT threshold,w/LambdaOrBar, and pT>=selected_lead_jet", 40, 0, 50, 20, -1.25, 1.25);
     auto hLeadJetPhi_DiscardedUntilLead_pTleqJetMinPt_WithEtaOKLambda = new TH1D("hLeadJetPhi_DiscardedUntilLead_pTleqJetMinPt_WithEtaOKLambda", "Jets w/ min_pT threshold,w/LambdaOrBar, and pT>=selected_lead_jet", 100, -PI, PI); // Pythia gives us Phi from -PI to PI! (thus also got the phi_std from FastJet)
 
@@ -365,13 +368,13 @@ void RunWorker(const int WorkerId, const int N_ev, const std::string output_fold
     // auto hLeadJetPhi_pTleqJetMinPt_eta_cut_WithEtaOKLambda = new TH1D("hLeadJetPhi_pTleqJetMinPt_eta_cut_WithEtaOKLambda", "(minpT and maxEta OK,w/LambdaOrBar)", 100, -PI, PI);
 
 	auto hfirstDiscardedJetY_minus_leadingJet_MinPtCut_WithEtaOKLambda = new TH1D("hfirstDiscardedJetY_minus_leadingJet_MinPtCut_WithEtaOKLambda", "(minpT_OK,w/LambdaOrBar,yFirstDiscardedJet-ySelectedJet)", 100, -2.5, 2.5);
-	auto hfirstDiscardedJetPt_MinPtCut_WithEtaOKLambda = new TH1D("hfirstDiscardedJetPt_MinPtCut_WithEtaOKLambda", "(minpT_OK,w/LambdaOrBar,FirstDiscardedJet)", 100, 0, 50);
+	auto hfirstDiscardedJetPt_MinPtCut_WithEtaOKLambda = new TH1D("hfirstDiscardedJetPt_MinPtCut_WithEtaOKLambda", "(minpT_OK,w/LambdaOrBar,FirstDiscardedJet)", 100, 0, jet_maximum_pT_for_hist);
 	auto hfirstDiscardedJetPtY_minus_leadingJet_MinPtCut_WithEtaOKLambda = new TH2D("hfirstDiscardedJetPtY_minus_leadingJet_MinPtCut_WithEtaOKLambda", "(minpT_OK,w/LambdaOrBar,yFirstDiscardedJet-ySelectedJet)", 40, 0, 50, 20, -1.25, 1.25);
 	auto hfirstDiscardedJetPhi_minus_leadingJet_MinPtCut_WithEtaOKLambda = new TH1D("hfirstDiscardedJetPhi_minus_leadingJet_MinPtCut_WithEtaOKLambda", "(minpT_OK,w/LambdaOrBar,PhiFirstDiscardedJet-PhiSelectedJet)", 100, -PI, PI);
 
 	// Final safety check for peace of mind:
     auto hJetProxyY_YExtraCheck = new TH1D("hJetProxyY_YExtraCheck", "(minpT and maxY OK, contains LambdaOrLBar)", 100, -2.5, 2.5);
-    auto hJetProxyPt_YExtraCheck = new TH1D("hJetProxyPt_YExtraCheck", "(minpT and maxY OK, contains LambdaOrLBar)", 100, 0, 50);
+    auto hJetProxyPt_YExtraCheck = new TH1D("hJetProxyPt_YExtraCheck", "(minpT and maxY OK, contains LambdaOrLBar)", 100, 0, jet_maximum_pT_for_hist);
     auto hJetProxyPtY_YExtraCheck = new TH2D("hJetProxyPtY_YExtraCheck", "(minpT and maxY OK, contains LambdaOrLBar)", 40, 0, 50, 20, -1.25, 1.25);
     auto hJetProxyPhi_YExtraCheck = new TH1D("hJetProxyPhi_YExtraCheck", "(minpT and maxY OK, contains LambdaOrLBar)", 100, -PI, PI);
 
@@ -1321,7 +1324,12 @@ void RunWorker(const int WorkerId, const int N_ev, const std::string output_fold
 ////////////////////////////////
 void doCentrality(std::string output_folder, int N_cores, std::string input_card_name){
 	std::cout << "\nProcessing centrality" << std::endl;
+
+	// Checking if this is Pythia pp or Angantyr for some parameter definitions:
+	const bool use_angantyr = (input_card_name.find("_PbPb") != std::string::npos) || (input_card_name.find("_OO") != std::string::npos);
+
 	int multiplicity_nbins = 10000; // The number of bins is also the number of entries, which gives one bin per possible multiplicity!
+	if (use_angantyr) multiplicity_nbins = 1000000; // About 100 times more bins. The multiplicity can get really high for these events, and then centrality is badly determined!
 
 	std::string output_centrality_filename =(std::string) output_folder;
 	output_centrality_filename += "/Ntracks_to_centrality_conversion.root";
