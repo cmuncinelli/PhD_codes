@@ -1655,7 +1655,8 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
 
     // Should actually divide by the number of resamples taken:
     // (notice that each (pT,y,phi) bin was resampled N_resamples times)
-    int N_bins_pT_in_interval = 20; // Actually, only bins with pT in [0.5, 1.5] should be considered. As pT goes from 0 to 3, this should be 2/3 of the interval, or 20 bins
+    int N_bins_pT_in_interval = 10; // Actually, only bins with pT in [0.5, 1.5] should be considered. As pT goes from 0 to 3, this should be 1/3 of the interval, or 10 bins
+    // This was wrong in previous definitions! I was using "2/3 -> 20 bins" instead of "1/3 -> 10 bins"! Error was underestimated! 1.5-0.5 = 1, which is a third of the interval between 0 and 3!
 
     double n_resamples_per_phi_bin_no_cuts = N_events*N_resamples*(N_bins_pT*N_bins_rap); // Need to scale by the number of resamples taken in each phi bin. Also assumes proton sampling is uniform in all pT, y and phi bins.
     double n_resamples_per_phi_bin_with_cuts = N_events*N_resamples*(N_bins_pT_in_interval*N_bins_rap);
