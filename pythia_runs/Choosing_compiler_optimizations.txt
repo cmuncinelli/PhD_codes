@@ -1,0 +1,39 @@
+# Short comparison study between:
+1) g++ -O3 -std=c++17 -march=native -flto=2 -pipe PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 -I$FASTJET/include -L$FASTJET/lib -lfastjet `root-config --cflags --libs` -fopenmp
+# and
+2) g++ -O2 -std=c++17 -march=native -flto=2 -pipe PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 -I$FASTJET/include -L$FASTJET/lib -lfastjet `root-config --cflags --libs` -fopenmp
+# Added also a comparison to the following command, with additional (SAFE!) compilation flags:
+3) g++ -O3 -std=c++17 -march=native -funroll-loops -ffp-contract=fast -flto=2 -fuse-linker-plugin -pipe -fopenmp -fopenmp-simd PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 -I$FASTJET/include -L$FASTJET/lib -lfastjet `root-config --cflags --libs`
+# Removed loop unrolling, because that can actually make things worse with the frequent "continue" statements in my loop!
+g++ -O3 -std=c++17 -march=native -ffp-contract=fast -flto=2 -fuse-linker-plugin -pipe -fopenmp PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 -I$FASTJET/include -L$FASTJET/lib -lfastjet `root-config --cflags --libs`
+
+# Both running the command:
+./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_PbPb_536tev_AllowLambdaDecays.cfg" 1e4 300
+
+1e4 - 300 cores - "-O3" optimization flag - PbPb @ 5.36 TeV:
+Run 1: 391.98 s
+Run 2: 361.54 s
+
+1e4 - 300 cores - "-O2" optimization flag - PbPb @ 5.36 TeV:
+Run 1: 405.67 s
+Run 2: 342.39 s
+
+1e4 - 300 cores - "-O3" optimization flag - PbPb @ 5.36 TeV + Additional optimization flags:
+Run 1: 423.73 s
+Run 2: 348.63 s
+
+
+# Actually, re-running all of these for a slightly larger dataset -- Most of the timing was spent optimizing the initial parameters, not with actually running the code!
+./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_PbPb_536tev_AllowLambdaDecays.cfg" 1e5 300
+
+1e5 - 300 cores - "-O3" optimization flag - PbPb @ 5.36 TeV:
+Run 1: 3311.35 s (3% faster than just O2)
+
+1e5 - 300 cores - "-O2" optimization flag - PbPb @ 5.36 TeV:
+Run 1: 3406.46 s
+
+1e5 - 300 cores - "-O3" optimization flag - PbPb @ 5.36 TeV + Additional optimization flags:
+Run 1: 3341.18 s (2% faster than just O2 --> Might be slower than just O3 due to statistics?)
+
+1e5 - 300 cores - "-O3" optimization flag - PbPb @ 5.36 TeV + Additional optimization flags -- Without loop unrolling (not useful here, and Pythia is pre-compiled!):
+Run 1: 3287.98 s (3.5% faster than just O2! --> Reduces execution time from 4 days to 3 days and 20h)

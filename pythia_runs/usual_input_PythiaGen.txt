@@ -84,3 +84,31 @@ g++ -O0 -g -fno-omit-frame-pointer -fsanitize=address,undefined -D_GLIBCXX_ASSER
 ./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_PbPb_536tev_AllowLambdaDecays.cfg" 1e5 324
     # For higher stats:
 ./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_PbPb_536tev_AllowLambdaDecays.cfg" 1e7 324
+
+# Larger run, already with analysis codes coupled to a single command:
+    # Starts with a small 1e4 statistics run to make sure everything runs fine:
+./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_PbPb_536tev_AllowLambdaDecays.cfg" 1e4 324 && ./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_PbPb_536tev_AllowLambdaDecays.cfg" 1e7 324 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_PbPb_536tev_AllowLambdaDecays" 1e7 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_PbPb_536tev_AllowLambdaDecays" 1e7 1
+    # Skip that initial check (1e7 events, instead of 5e6! Should take about 4 days):
+./PythiaGenMin.exe "/storage3/cicero/pythia_data" "/home/users/cicerodm/PhD_codes/pythia_runs/input_cards_ALICE/pythia8_PbPb_536tev_AllowLambdaDecays.cfg" 1e7 324 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_PbPb_536tev_AllowLambdaDecays" 1e7 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_PbPb_536tev_AllowLambdaDecays" 1e7 1
+
+# A faster compilation test -- Using O3's loop unrolling, inlining and operation vectorization (SIMD):
+    # This could be better for my code, as I explicitly optimized it to avoid cache misses and stuff like that!
+g++ -O3 -std=c++17 -march=native -flto=2 -pipe PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 -I$FASTJET/include -L$FASTJET/lib -lfastjet `root-config --cflags --libs` -fopenmp
+
+# Additional compiling optimizations:
+1) -funroll-loops
+Unrolls some inner loops!
+2) -ffp-contract=fast
+Contracts expressions like (a * b + c) into a single processor instruction
+3) -fuse-linker-plugin
+More information for the -flto optimization!
+4) -fopenmp-simd
+Allows for OpenMP to use SIMD instructions too.
+# Did not allow for the usage of -fno-math-errno, as it is not safe for Angantyr.
+
+# Including these optimizations:
+g++ -O3 -std=c++17 -march=native -funroll-loops -ffp-contract=fast -flto=2 -fuse-linker-plugin -pipe -fopenmp -fopenmp-simd PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 -I$FASTJET/include -L$FASTJET/lib -lfastjet `root-config --cflags --libs`
+
+# Removed -funroll-loops because of the lots of "continue" statements in the hottest loops of my code (unrolling may actually be bad here):
+    # Also removed the -fopenmp-simd, because no #pragma omp simd statements were used!
+g++ -O3 -std=c++17 -march=native -ffp-contract=fast -flto=2 -fuse-linker-plugin -pipe -fopenmp PythiaGenMin.cxx -o PythiaGenMin.exe -I$PYTHIA8/include -L$PYTHIA8/lib -lpythia8 -I$FASTJET/include -L$FASTJET/lib -lfastjet `root-config --cflags --libs`
