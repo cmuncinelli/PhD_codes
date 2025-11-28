@@ -1264,6 +1264,9 @@ int main(int argc, char *argv[]){ // Changed the code into a compiler-friendly w
 
             // Finally, calculating Var(<p_D>) = sqrt(1/(N_events*N_resamples) * (<p_i^2> - \mu^2)) for each component of <\hat{p}_D>:
                 // (actually, am trying to do this with 1/sqrt(N_resamples) alone now)
+    //////////////////////////
+    // THIS SHOULD ACTUALLY HAVE AN N_events COMPONENT! DO NOT USE IT!!!
+    //////////////////////////
     hLambdaAvgDotX_pT_y_phi_Unweighted_Err->Scale(1./(N_resamples-1)); // Notice you have to scale BEFORE the square root takes place
     hLambdaAvgDotY_pT_y_phi_Unweighted_Err->Scale(1./(N_resamples-1)); // Using N_resamples-1 as an unbiased error estimator for low resampling numbers.
     hLambdaAvgDotZ_pT_y_phi_Unweighted_Err->Scale(1./(N_resamples-1));
