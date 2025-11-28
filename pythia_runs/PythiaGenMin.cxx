@@ -1196,7 +1196,9 @@ void RunWorker(const int WorkerId, const int N_ev, const std::string output_fold
 
 	f.cd();
 
-	std::cout << "Writing information into the .root file" << std::endl;
+	if (WorkerId == 0){
+		std::cout << "Writing information into the .root file" << std::endl;
+	}
 	t3->Write();
 
 	hEventCounter->Write();
