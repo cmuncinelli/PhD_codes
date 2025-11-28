@@ -1,1 +1,4 @@
 root -l -q 'extract_analysis_results.cxx("/home/cicero/Datasets/asymmetric_rapidity_tests_LHC23_pass4_Thin_small/results/AnalysisResults-FinerBins.root", "/home/cicero/Datasets/asymmetric_rapidity_tests_LHC23_pass4_Thin_small/results/")'
+
+# Or with a new testing file:
+root -l -q 'extract_analysis_results.cxx("/home/cicero/Datasets/asymmetric_rapidity_tests_LHC23_pass4_Thin_small/results/AnalysisResults-FinerBins-1file.root", "/home/cicero/Datasets/asymmetric_rapidity_tests_LHC23_pass4_Thin_small/results/")'
