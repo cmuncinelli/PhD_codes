@@ -50,13 +50,21 @@ using namespace std;
 
 void extract_analysis_results(const char* inputPath, const char* outputFolder)
 {
-    // ------------------------------
-    // Ensure output folder exists
-    // ------------------------------
-    std::filesystem::create_directories(outputFolder);
+    // Find where "AnalysisResults" occurs
+    std::string key = "AnalysisResults";
+    size_t pos = inputPath.find(key);
 
-    TString outFileName = TString::Format("%sProcessedProjections.root", outputFolder); // Notice we already expect the folder to have the trailing "/"
-    TFile* fout = new TFile(outFileName, "RECREATE");
+    std::string suffix = "";
+    if (pos != std::string::npos) {
+        pos += key.length(); // jump to after "AnalysisResults"
+        size_t end = inputPath.rfind(".root");
+        if (end != std::string::npos && end > pos) {
+            suffix = inputPath.substr(pos, end - pos);  // e.g. "-hasTPCnoITS"
+        }
+    }
+
+    std::string outputName = outputFolder + "ProcessedProjections" + suffix + ".root";
+    TFile* fout = new TFile(outputName.c_str(), "RECREATE");
     if (!fout || fout->IsZombie()) {
         std::cerr << "ERROR: Cannot create output ROOT file in folder: " << outputFolder << std::endl;
         return;

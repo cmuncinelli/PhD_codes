@@ -1,0 +1,39 @@
+"requireIsVertexITSTPC": "true", --> Was false
+Configurable<int> minITSclusters{"minITSclusters", 3, "minimum ITS clusters"}; --> Was -1
+
+Configurable<bool> skipTPConly{"skipTPConly", true, "skip V0s comprised of at least one TPC only prong"}; --> Want to enforce we don't have TPC only tracks!
+
+Configurable<float> maxITSchi2PerNcls{"maxITSchi2PerNcls", 50, "maximum ITS chi2 per clusters"}; --> Based on slide 4 of https://indico.cern.ch/event/1617324/contributions/6818151/attachments/3184707/5666024/V0sInJets_PAG21225-1.pdf , which has a maximum of 36
+Configurable<float> maxTPCchi2PerNcls{"maxTPCchi2PerNcls", 8, "maximum TPC chi2 per clusters"}; --> Slide 4 of that same page has a maximum of chi2 4 per TPC cluster.
+
+
+# Maybe change these lifetime cuts? I mean, they should not be affecting the bump we are seeing, as the bump happens on 35 cm and the cut is in 30 cm *in the particle's own rest frame*
+
+
+Demands for David's code in terms of ITS and TPC:
+"requireIsVertexITSTPC": "true",
+"minITSclusters": "3",
+"maxITSchi2PerNcls": "50",
+"maxTPCchi2PerNcls": "8",
+"skipTPConly": "true",
+"rapidityCut": "1",
+
+
+# Running code:
+./run_analysis_multithreaded.sh input_data_storage.txt dpl-config-fineYbinning_ITSAndTPCEnforced.json 16
+# Downloading files:
+./download_files.sh ./ /storage2/cicero/asymmetric_rapidity_V0tests_LHC23_pass4_Thin_small/
+# Analyzing:
+root -l -q 'extract_analysis_results.cxx("/home/cicero/Datasets/asymmetric_rapidity_tests_LHC23_pass4_Thin_small/results/AnalysisResults-fineYbinning_ITSAndTPCEnforced-LargerTauCut.root", "/home/cicero/Datasets/asymmetric_rapidity_tests_LHC23_pass4_Thin_small/results/")'
+
+# Running all checks at once -- first the least strict exclusively TPC-only cut, then the most strict "use exclusively TPC-only V0s", then the cut that just skips TPC:
+./run_analysis_multithreaded.sh input_data_storage.txt dpl-config-atLeastOneProngTPConly.json 16; ./run_analysis_multithreaded.sh input_data_storage.txt dpl-config-bothProngsTPConly.json 16; ./run_analysis_multithreaded.sh input_data_storage.txt dpl-config-finerY_ITSEnforced_skipTPCOnly.json 16
+
+# Running the noITS, withTPC:
+./run_analysis_multithreaded.sh input_data_storage.txt dpl-config-hasTPCnoITS.json 16
+
+# In order: exclusive TPC less restrictive, exclusive TPC most restrictive, skip TPC-only tracks, exclusively tracks that have no ITS but have TPC onwards, raw selection with all tracks
+./run_analysis_multithreaded.sh input_data_storage.txt dpl-config-atLeastOneProngTPConly.json 16; ./run_analysis_multithreaded.sh input_data_storage.txt dpl-config-bothProngsTPConly.json 16; ./run_analysis_multithreaded.sh input_data_storage.txt dpl-config-finerY_ITSEnforced_skipTPCOnly.json 16; ./run_analysis_multithreaded.sh input_data_storage.txt dpl-config-hasTPCnoITS.json 16; ./run_analysis_multithreaded.sh input_data_storage.txt dpl-config-ITSEnforced.json 16; ./run_analysis_multithreaded.sh input_data_storage.txt dpl-config-RawAssymetryTest.json 16
+
+# Processing all of these into projections:
+root -l -q 'extract_analysis_results.cxx("/home/cicero/Datasets/asymmetric_rapidity_tests_LHC23_pass4_Thin_small/results/AnalysisResults-atLeastOneProngTPConly.root", "/home/cicero/Datasets/asymmetric_rapidity_tests_LHC23_pass4_Thin_small/results/")'; root -l -q 'extract_analysis_results.cxx("/home/cicero/Datasets/asymmetric_rapidity_tests_LHC23_pass4_Thin_small/results/AnalysisResults-bothProngsTPConly.root", "/home/cicero/Datasets/asymmetric_rapidity_tests_LHC23_pass4_Thin_small/results/")'; root -l -q 'extract_analysis_results.cxx("/home/cicero/Datasets/asymmetric_rapidity_tests_LHC23_pass4_Thin_small/results/AnalysisResults-finerY_ITSEnforced_skipTPCOnly.root", "/home/cicero/Datasets/asymmetric_rapidity_tests_LHC23_pass4_Thin_small/results/")'; root -l -q 'extract_analysis_results.cxx("/home/cicero/Datasets/asymmetric_rapidity_tests_LHC23_pass4_Thin_small/results/AnalysisResults-hasTPCnoITS.root", "/home/cicero/Datasets/asymmetric_rapidity_tests_LHC23_pass4_Thin_small/results/")'; root -l -q 'extract_analysis_results.cxx("/home/cicero/Datasets/asymmetric_rapidity_tests_LHC23_pass4_Thin_small/results/AnalysisResults-RawAssymetryTest.root", "/home/cicero/Datasets/asymmetric_rapidity_tests_LHC23_pass4_Thin_small/results/")'; 
