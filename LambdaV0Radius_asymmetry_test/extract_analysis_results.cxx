@@ -52,19 +52,20 @@ void extract_analysis_results(const char* inputPath, const char* outputFolder)
 {
     // Find where "AnalysisResults" occurs
     std::string key = "AnalysisResults";
-    size_t pos = inputPath.find(key);
+    std::string inputPath_string = (std::string) inputPath;
+    size_t pos = inputPath_string.find(key);
 
     std::string suffix = "";
     if (pos != std::string::npos) {
         pos += key.length(); // jump to after "AnalysisResults"
-        size_t end = inputPath.rfind(".root");
+        size_t end = inputPath_string.rfind(".root");
         if (end != std::string::npos && end > pos) {
-            suffix = inputPath.substr(pos, end - pos);  // e.g. "-hasTPCnoITS"
+            suffix = inputPath_string.substr(pos, end - pos);  // e.g. "-hasTPCnoITS"
         }
     }
 
-    std::string outputName = outputFolder + "ProcessedProjections" + suffix + ".root";
-    TFile* fout = new TFile(outputName.c_str(), "RECREATE");
+    std::string outFileName = (std::string) outputFolder + "ProcessedProjections" + suffix + ".root";
+    TFile* fout = new TFile(outFileName.c_str(), "RECREATE");
     if (!fout || fout->IsZombie()) {
         std::cerr << "ERROR: Cannot create output ROOT file in folder: " << outputFolder << std::endl;
         return;
@@ -842,6 +843,126 @@ void extract_analysis_results(const char* inputPath, const char* outputFolder)
         cO->Write();
         std::cout << "Created coarse-ratio overlay plot.\n";
     }
+
+    // ======================================================================
+    // PART C extension: Build NEW normalized coarse ratios
+    //         RECOMPUTE A(x) and B(x) using the original TH2D
+    // ======================================================================
+
+    std::cout << "Building normalized coarse ratios from scratch...\n";
+
+    // 1. Compute total positive and total negative rapidity yields
+    double totalPos = 0.0;
+    double totalNeg = 0.0;
+
+    int yMid = h2_massFiltered->GetYaxis()->FindBin(0.0);
+
+    for (int i = 1; i <= mid_f; i++) {
+        int yPlus  = mid_f + i;
+        int yMinus = mid_f + 1 - i;
+
+        TString namePlus  = TString::Format("Inv_plus_%d",  yPlus);
+        TString nameMinus = TString::Format("Inv_minus_%d", yMinus);
+
+        TH1D* projPos = h2_massFiltered->ProjectionX(namePlus,  yPlus,  yPlus);
+        TH1D* projNeg = h2_massFiltered->ProjectionX(nameMinus, yMinus, yMinus);
+        totalPos += projPos->GetEntries();
+        totalNeg += projNeg->GetEntries();
+    }
+
+    std::cout << "  Total +y Λ = " << totalPos << "\n"
+            << "  Total -y Λ = " << totalNeg << "\n";
+
+    if (totalPos <= 0 || totalNeg <= 0) {
+        std::cerr << "ERROR: Zero totalPos or totalNeg; cannot normalize.\n";
+    } else {
+
+        fout->cd("XProjectionRatios_InvMassFiltered_CoarseY");
+
+        std::vector<TH1D*> coarseRatiosNorm;
+
+        // Loop over each coarse pair
+        for (int i = 0; i < 4; i++) {
+
+            // Determine coarse Y ranges
+            double pos_low  = coarseEdges[4 + i];
+            double pos_high = coarseEdges[5 + i];
+            double neg_low  = coarseEdges[3 - i];
+            double neg_high = coarseEdges[4 - i];
+
+            auto [ypL, ypH] = getFineBinRange(pos_low,  pos_high);
+            auto [ymL, ymH] = getFineBinRange(neg_low,  neg_high);
+
+            // Recompute A(x) and B(x) from the original TH2D
+            TH1D* Araw = h2_massFiltered->ProjectionX(
+                TString::Format("CoarseNorm_PosRaw_%d", i), ypL, ypH);
+
+            TH1D* Braw = h2_massFiltered->ProjectionX(
+                TString::Format("CoarseNorm_NegRaw_%d", i), ymL, ymH);
+
+            Araw->Sumw2();
+            Braw->Sumw2();
+
+            int nXB = Araw->GetNbinsX();
+
+            // Create normalized ratio histogram
+            TH1D* R = new TH1D(
+                TString::Format("CoarseRatio_%d_Norm", i),
+                TString::Format("Normalized coarse ratio y=[%.2f,%.2f] / y=[%.2f,%.2f]",
+                                pos_low,pos_high, neg_low,neg_high),
+                nXB,
+                Araw->GetXaxis()->GetXmin(),
+                Araw->GetXaxis()->GetXmax()
+            );
+
+            R->Sumw2();
+            R->GetXaxis()->SetTitle("#Lambda V0 Radius (cm)");
+            R->GetYaxis()->SetTitle(" (A/N_pos) / (B/N_neg) ");
+
+            // Fill R(x) = [A(x)/totalPos] / [B(x)/totalNeg]
+            for (int bx = 1; bx <= nXB; bx++) {
+
+                double A = Araw->GetBinContent(bx);
+                double B = Braw->GetBinContent(bx);
+                double eA = Araw->GetBinError(bx);
+                double eB = Braw->GetBinError(bx);
+
+                if (A < 0) A = 0;
+                if (B < 0) B = 0;
+
+                if (B == 0) {
+                    R->SetBinContent(bx, 0);
+                    R->SetBinError(bx, 0);
+                    continue;
+                }
+
+                double A_norm = A / totalPos;
+                double B_norm = B / totalNeg;
+
+                double ratio = A_norm / B_norm;
+
+                // Propagate uncertainty correctly
+                double err = 0;
+                if (A > 0 && B > 0) {
+                    err = ratio * std::sqrt(
+                        (eA*eA)/(A*A) + (eB*eB)/(B*B)
+                    );
+                }
+
+                R->SetBinContent(bx, ratio);
+                R->SetBinError(bx, err);
+            }
+
+            R->Write();
+            coarseRatiosNorm.push_back(R);
+
+            delete Araw;
+            delete Braw;
+        }
+
+        std::cout << "Normalized coarse ratios successfully created.\n";
+    }
+
 
     std::cout << "=== Finished Part C (coarse Y ratios). ===\n\n";
     
