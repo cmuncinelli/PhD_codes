@@ -62,3 +62,4 @@ done < "$INPUT_FILE"
 # This code now runs as:
 # ./download_files.sh /path/to/input /path/to/output
 # or ./download_files.sh /path/to/input/ /path/to/output/, now that I included that helper function
+# For instance: ./download_files.sh ../asymmetric_rapidity_tests_LHC24_pass1_MinBias/ /storage2/cicero/asymmetric_rapidity_V0tests_LHC24_pass1_MinBias/
