@@ -17,7 +17,7 @@ Output:
      - Copies of raw and correction histograms for provenance
 """
 
-import sys, os, array
+import sys, os, re, array
 import ROOT, math
 ROOT.gErrorIgnoreLevel = 6001  # silence some ROOT warnings
 
@@ -74,6 +74,7 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
     - processed_projections_path: root with TF1 fit named "hMass_gausPlusQuadratic"
     """
     # 1) basic checks & open files
+    print("\nStarting code -- Basic checks and opening files")
     for p in (analysis_results_path, corrections_path, processed_projections_path):
         if not os.path.isfile(p):
             raise FileNotFoundError(f"Input file not found: {p}")
@@ -81,6 +82,8 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
     fin = ROOT.TFile.Open(analysis_results_path, "READ")
     fcor = ROOT.TFile.Open(corrections_path, "READ")
     fproc = ROOT.TFile.Open(processed_projections_path, "READ")
+
+
 
     if not fin or fin.IsZombie():
         raise RuntimeError(f"Could not open {analysis_results_path}")
@@ -240,120 +243,115 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
 
     # get raw pT bin edges (for variable binning)
     raw_edges = getBinEdges(h_pt_fullZ)
-    # array.array('d') of edges, as required by RebinX
     edges_array = raw_edges
 
-    # Rebin the TH2D correction histograms in X (pT) to the raw pT binning if necessary.
-    # Use RebinX to preserve Z axis.
-    # def rebin2d_in_x_to_edges(h2_in, edges_array, new_name):
-    #     # if same nbins in X already, clone
-    #     if h2_in.GetNbinsX() == len(edges_array) - 1:
-    #         return h2_in.Clone(new_name)
-    #     # RebinX returns a new histogram with specified x-binning, keeping Y unchanged
-    #     reb = h2_in.RebinX(len(edges_array) - 1, new_name, edges_array)
-    #     return reb
-    # Had to reimplement as RebinX was a method for TH1Ds!!!
+    # --- Load 1D Corrections directly ---
+    # Better than calculating this here, we can just use the result directly!
+    # These names must match what you wrote in CalculateEfficiency.py
+    hEff1D_Full_in = fcor.Get("hEfficiency1D_Full")
+    hEff1D_Pos_in  = fcor.Get("hEfficiency1D_Pos")
+    hEff1D_Neg_in  = fcor.Get("hEfficiency1D_Neg")
+    
+    hSig1D_Full_in = fcor.Get("hSignalLoss1D_Full")
+    hSig1D_Pos_in  = fcor.Get("hSignalLoss1D_Pos")
+    hSig1D_Neg_in  = fcor.Get("hSignalLoss1D_Neg")
+
+    # Check
+    if not hEff1D_Full_in or not hSig1D_Full_in:
+        raise RuntimeError("1D Correction histograms not found in file!")
+
+    # Reworked this function to avoid the N_entries not being set appropriately!
     def rebin2d_in_x_to_edges(h2_in, edges_array, new_name):
         """
         Rebin a TH2D in X using variable bin edges.
-        Keeps Y-axis binning unchanged.
-        ROOT lacks TH2::RebinX with variable edges, so we do it manually.
+        accumulates Content and Error manually to preserve N_eff.
         """
-
         old_nx = h2_in.GetNbinsX()
         old_ny = h2_in.GetNbinsY()
-
         new_nx = len(edges_array) - 1
 
-        # If no rebinning needed:
+        # If no rebinning needed (and simple clone is desired):
         if old_nx == new_nx:
+            # Note: If edges don't match exactly, this might be risky, 
+            # but usually implies same binning.
             return h2_in.Clone(new_name)
 
-        # Get original Y binning (variable or fixed)
         yaxis = h2_in.GetYaxis()
         y_edges = yaxis.GetXbins().GetArray()
         if not y_edges:
             y_edges = array.array('d', [yaxis.GetBinLowEdge(i+1) for i in range(old_ny+1)])
 
-        # Create new TH2D with desired X binning and original Y binning
-        h2_out = ROOT.TH2D(
-            new_name,
-            h2_in.GetTitle(),
-            new_nx, edges_array,
-            old_ny, y_edges
-        )
+        h2_out = ROOT.TH2D(new_name, h2_in.GetTitle(), new_nx, edges_array, old_ny, y_edges)
         h2_out.Sumw2()
 
-        # Loop over all original bins and transfer their contents
         for ix in range(1, old_nx + 1):
             x_center = h2_in.GetXaxis().GetBinCenter(ix)
-
             for iy in range(1, old_ny + 1):
-                y_center = h2_in.GetYaxis().GetBinCenter(iy)
-
                 content = h2_in.GetBinContent(ix, iy)
                 error   = h2_in.GetBinError(ix, iy)
-
+                
                 if content != 0 or error != 0:
-                    # Add content to new bin
-                    h2_out.Fill(x_center, y_center, content)
-
-                    # ROOT's Fill() does NOT preserve errors, so set error manually:
+                    y_center = h2_in.GetYaxis().GetBinCenter(iy)
+                    
+                    # Find new bin
                     new_ix = h2_out.GetXaxis().FindBin(x_center)
                     new_iy = h2_out.GetYaxis().FindBin(y_center)
-                    current_err = h2_out.GetBinError(new_ix, new_iy)
-
-                    # Add errors in quadrature
-                    h2_out.SetBinError(new_ix, new_iy, (current_err**2 + error**2)**0.5)
+                    
+                    # Manual Accumulation (Fixes "Fill" weight bug)
+                    cur_val = h2_out.GetBinContent(new_ix, new_iy)
+                    cur_err = h2_out.GetBinError(new_ix, new_iy)
+                    
+                    h2_out.SetBinContent(new_ix, new_iy, cur_val + content)
+                    h2_out.SetBinError(new_ix, new_iy, math.sqrt(cur_err**2 + error**2))
 
         return h2_out
 
-
+    def rebin1d_to_edges(h1_in, edges_array, new_name):
+        """
+        Rebin a TH1D using variable bin edges with manual error accumulation.
+        """
+        old_nx = h1_in.GetNbinsX()
+        new_nx = len(edges_array) - 1
+        
+        if old_nx == new_nx:
+            return h1_in.Clone(new_name)
+            
+        h1_out = ROOT.TH1D(new_name, h1_in.GetTitle(), new_nx, edges_array)
+        h1_out.Sumw2()
+        
+        for ix in range(1, old_nx + 1):
+            content = h1_in.GetBinContent(ix)
+            error   = h1_in.GetBinError(ix)
+            
+            if content != 0 or error != 0:
+                x_center = h1_in.GetXaxis().GetBinCenter(ix)
+                new_ix = h1_out.GetXaxis().FindBin(x_center)
+                
+                # Manual Accumulation
+                cur_val = h1_out.GetBinContent(new_ix)
+                cur_err = h1_out.GetBinError(new_ix)
+                
+                h1_out.SetBinContent(new_ix, cur_val + content)
+                h1_out.SetBinError(new_ix, math.sqrt(cur_err**2 + error**2))
+                
+        return h1_out
+    
+    # A) Rebin 2D maps (Just for saving to "CorrectionsUsed", not used for calculation anymore)
     hEffAcc_reb2d = rebin2d_in_x_to_edges(hEffAcc, edges_array, "hEffAcc_reb2d")
     hSignalLoss_reb2d = rebin2d_in_x_to_edges(hSignalLoss, edges_array, "hSignalLoss_reb2d")
 
+    # B) Rebin 1D Efficiency & Signal Loss (Used for calculation)
+    # We use the new rebin1d helper to ensure errors are preserved
+    hEff_fullZ = rebin1d_to_edges(hEff1D_Full_in, edges_array, "hEff_fullZ")
+    hEff_Zpos  = rebin1d_to_edges(hEff1D_Pos_in,  edges_array, "hEff_Zpos")
+    hEff_Zneg  = rebin1d_to_edges(hEff1D_Neg_in,  edges_array, "hEff_Zneg")
+
+    hSig_fullZ = rebin1d_to_edges(hSig1D_Full_in, edges_array, "hSig_fullZ")
+    hSig_Zpos  = rebin1d_to_edges(hSig1D_Pos_in,  edges_array, "hSig_Zpos")
+    hSig_Zneg  = rebin1d_to_edges(hSig1D_Neg_in,  edges_array, "hSig_Zneg")
+
     hEffAcc_reb2d.Sumw2()
     hSignalLoss_reb2d.Sumw2()
-
-    # ------------------------------
-    # Create 1D correction histograms for each Z-region by projecting the TH2D along Z
-    # ------------------------------
-    nbins_y_eff = hEffAcc_reb2d.GetNbinsY()
-
-    # helper to project TH2D->TH1D over a range of Y (Z) bins and name/label properly
-    def project_corr_2d_to_1d(h2_corr, y_bin_min, y_bin_max, out_name, out_title):
-        # ProjectX takes (name, y_bin_min, y_bin_max)
-        h1 = h2_corr.ProjectionX(out_name, y_bin_min, y_bin_max)
-        h1.SetTitle(out_title)
-        h1.Sumw2()
-        return h1
-
-    # full Z: project all Y bins
-    hEff_fullZ = project_corr_2d_to_1d(hEffAcc_reb2d, 1, nbins_y_eff, "hEff_fullZ", "EffAcc (full Z)")
-    hSig_fullZ = project_corr_2d_to_1d(hSignalLoss_reb2d, 1, nbins_y_eff, "hSig_fullZ", "SignalLoss (full Z)")
-
-    # Z >= 0:
-    if first_nonneg_bin <= nbins_y_eff:
-        hEff_Zpos = project_corr_2d_to_1d(hEffAcc_reb2d, first_nonneg_bin, nbins_y_eff, "hEff_Zpos", "EffAcc (Z>=0)")
-        hSig_Zpos = project_corr_2d_to_1d(hSignalLoss_reb2d, first_nonneg_bin, nbins_y_eff, "hSig_Zpos", "SignalLoss (Z>=0)")
-    else:
-        # create zeroed clones with same binning
-        hEff_Zpos = hEff_fullZ.Clone("hEff_Zpos")
-        hSig_Zpos = hSig_fullZ.Clone("hSig_Zpos")
-        for ib in range(1, hEff_Zpos.GetNbinsX() + 1):
-            hEff_Zpos.SetBinContent(ib, 0.0); hEff_Zpos.SetBinError(ib, 0.0)
-            hSig_Zpos.SetBinContent(ib, 0.0); hSig_Zpos.SetBinError(ib, 0.0)
-
-    # Z < 0:
-    if first_nonneg_bin > 1:
-        hEff_Zneg = project_corr_2d_to_1d(hEffAcc_reb2d, 1, first_nonneg_bin - 1, "hEff_Zneg", "EffAcc (Z<0)")
-        hSig_Zneg = project_corr_2d_to_1d(hSignalLoss_reb2d, 1, first_nonneg_bin - 1, "hSig_Zneg", "SignalLoss (Z<0)")
-    else:
-        hEff_Zneg = hEff_fullZ.Clone("hEff_Zneg")
-        hSig_Zneg = hSig_fullZ.Clone("hSig_Zneg")
-        for ib in range(1, hEff_Zneg.GetNbinsX() + 1):
-            hEff_Zneg.SetBinContent(ib, 0.0); hEff_Zneg.SetBinError(ib, 0.0)
-            hSig_Zneg.SetBinContent(ib, 0.0); hSig_Zneg.SetBinError(ib, 0.0)
 
     # ------------------------------
     # 8) Calculate corrected spectra per region:
@@ -403,6 +401,10 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
             B = h_den.GetBinContent(ib)
             eA = h_num.GetBinError(ib)
             eB = h_den.GetBinError(ib)
+            # # It makes more sense to divide the Full Z value by two,
+            # # as we are comparing two halves of it:
+            # B /= 2.0
+            # eB /= 2.0
 
             if B > 0:
                 R = A / B
@@ -511,8 +513,11 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
     hRaw_Zneg_norm  = normalize_spectrum(h_pt_Zneg,  NEV, "hRaw_Zneg_norm")
 
     # Ratio histos
-    hRaw_ratio_Zpos = make_ratio_hist(hRaw_Zpos_norm, hRaw_fullZ_norm, "hRawRatio_ZposFull")
-    hRaw_ratio_Zneg = make_ratio_hist(hRaw_Zneg_norm, hRaw_fullZ_norm, "hRawRatio_ZnegFull")
+    # Halving the FullZ histogram for direct comparison with the corrected histograms:
+    hRaw_fullZ_norm_halved = hRaw_fullZ_norm.Clone("hRaw_fullZ_norm_halved")
+    hRaw_fullZ_norm_halved.Scale(0.5)
+    hRaw_ratio_Zpos = make_ratio_hist(hRaw_Zpos_norm, hRaw_fullZ_norm_halved, "hRawRatio_ZposFull")
+    hRaw_ratio_Zneg = make_ratio_hist(hRaw_Zneg_norm, hRaw_fullZ_norm_halved, "hRawRatio_ZnegFull")
 
     c_raw = ROOT.TCanvas("cRawSpectra", "Raw pT spectra", 1200, 1000)
     # Larger bottom panel (35%)
@@ -533,12 +538,12 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
 
     # Upper panel
     pad1.cd()
-    hRaw_fullZ_norm.GetXaxis().SetRangeUser(0, 20)
+    hRaw_fullZ_norm_halved.GetXaxis().SetRangeUser(0, 20)
     hRaw_Zpos_norm.GetXaxis().SetRangeUser(0, 20)
     hRaw_Zneg_norm.GetXaxis().SetRangeUser(0, 20)
 
     for h, col in [
-        (hRaw_fullZ_norm, ROOT.kBlack),
+        (hRaw_fullZ_norm_halved, ROOT.kBlack),
         (hRaw_Zpos_norm,  ROOT.kRed+1),
         (hRaw_Zneg_norm,  ROOT.kBlue+1)
     ]:
@@ -548,12 +553,13 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
         h.SetTitle(";p_{T} (GeV/c);(1/N_{evt}) dN/dp_{T}")
         h.GetYaxis().SetTitleOffset(1.3)
 
-    hRaw_fullZ_norm.Draw("E")
+    # hRaw_fullZ_norm.Draw("E")
+    hRaw_fullZ_norm_halved.Draw("E")
     hRaw_Zpos_norm.Draw("E SAME")
     hRaw_Zneg_norm.Draw("E SAME")
 
     leg3 = ROOT.TLegend(0.60, 0.70, 0.88, 0.88)
-    leg3.AddEntry(hRaw_fullZ_norm, "#Lambda full Z", "lep")
+    leg3.AddEntry(hRaw_fullZ_norm_halved, "#Lambda full Z (x0.5)", "lep")
     leg3.AddEntry(hRaw_Zpos_norm,  "#Lambda Z >= 0", "lep")
     leg3.AddEntry(hRaw_Zneg_norm,  "#Lambda Z < 0", "lep")
     leg3.Draw()
@@ -586,8 +592,11 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
     hCorr_Zpos_norm  = normalize_spectrum(hCorr_Zpos, NEV, "hCorr_Zpos_norm")
     hCorr_Zneg_norm  = normalize_spectrum(hCorr_Zneg, NEV, "hCorr_Zneg_norm")
 
-    hCorr_ratio_Zpos = make_ratio_hist(hCorr_Zpos_norm, hCorr_fullZ_norm, "hCorrRatio_ZposFull")
-    hCorr_ratio_Zneg = make_ratio_hist(hCorr_Zneg_norm, hCorr_fullZ_norm, "hCorrRatio_ZnegFull")
+    # Also having the corrected spectra:
+    hCorr_fullZ_norm_halved = hCorr_fullZ_norm.Clone("hCorr_fullZ_norm_halved")
+    hCorr_fullZ_norm_halved.Scale(0.5)
+    hCorr_ratio_Zpos = make_ratio_hist(hCorr_Zpos_norm, hCorr_fullZ_norm_halved, "hCorrRatio_ZposFull")
+    hCorr_ratio_Zneg = make_ratio_hist(hCorr_Zneg_norm, hCorr_fullZ_norm_halved, "hCorrRatio_ZnegFull")
 
     c_corr = ROOT.TCanvas("cCorrectedSpectra", "Corrected pT spectra", 1200, 1000)
     pad1c = ROOT.TPad("pad1c", "pad1c", 0, 0.35, 1, 1.0)
@@ -607,11 +616,11 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
 
     # Upper panel
     pad1c.cd()
-    hCorr_fullZ_norm.GetXaxis().SetRangeUser(0, 20)
+    hCorr_fullZ_norm_halved.GetXaxis().SetRangeUser(0, 20)
     hCorr_Zpos_norm.GetXaxis().SetRangeUser(0, 20)
     hCorr_Zneg_norm.GetXaxis().SetRangeUser(0, 20)
     for h, col in [
-        (hCorr_fullZ_norm, ROOT.kBlack),
+        (hCorr_fullZ_norm_halved, ROOT.kBlack),
         (hCorr_Zpos_norm,  ROOT.kRed+1),
         (hCorr_Zneg_norm,  ROOT.kBlue+1)
     ]:
@@ -621,12 +630,13 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
         h.SetTitle(";p_{T} (GeV/c);(1/N_{evt}) dN/dp_{T}")
         h.GetYaxis().SetTitleOffset(1.3)
 
-    hCorr_fullZ_norm.Draw("E")
+    # hCorr_fullZ_norm.Draw("E")
+    hCorr_fullZ_norm_halved.Draw("E")
     hCorr_Zpos_norm.Draw("E SAME")
     hCorr_Zneg_norm.Draw("E SAME")
 
     leg4 = ROOT.TLegend(0.60, 0.70, 0.88, 0.88)
-    leg4.AddEntry(hCorr_fullZ_norm, "#Lambda full Z", "lep")
+    leg4.AddEntry(hCorr_fullZ_norm_halved, "#Lambda full Z (x0.5)", "lep")
     leg4.AddEntry(hCorr_Zpos_norm,  "#Lambda Z >= 0", "lep")
     leg4.AddEntry(hCorr_Zneg_norm,  "#Lambda Z < 0", "lep")
     leg4.Draw()
@@ -656,8 +666,25 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
     # ------------------------------
     # 10) prepare output file (in same folder as analysis_results_path)
     # ------------------------------
+    # input_dir = os.path.dirname(os.path.abspath(analysis_results_path))
+    # output_name = os.path.join(input_dir, "CorrectedpTSpectra.root")
+    
+    # Determine config tag from input file name:
+    # Expected pattern: "AnalysisResults-<config>.root"
+    base = os.path.basename(analysis_results_path)  # e.g. AnalysisResults-hasTPCnoITS.root
+
+    match = re.match(r"AnalysisResults-(.+)\.root", base)
+    if match:
+        config_tag = match.group(1)  # e.g. "hasTPCnoITS"
+    else:
+        print("Warning: could not extract config tag from input filename. Using 'UnknownConfig'.")
+        config_tag = "UnknownConfig"
+
+    # Prepare output file name
     input_dir = os.path.dirname(os.path.abspath(analysis_results_path))
-    output_name = os.path.join(input_dir, "CorrectedpTSpectra_Lambda.root")
+    output_name = os.path.join(input_dir, f"CorrectedpTSpectra-{config_tag}.root")
+
+    print(f"Writing corrected spectra to: {output_name}")
     fout = ROOT.TFile.Open(output_name, "RECREATE")
 
     # Create subdirectories

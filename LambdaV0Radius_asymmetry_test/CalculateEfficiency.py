@@ -197,8 +197,8 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
             h3d_gen_recoed = f"{main_dir}/h3dGenLambdaVsZVsMultMC_RecoedEvt"
             return h3d_gen_recoed, h3d_gen
         elif spec == "ALambda":
-            h3d_gen = f"{main_dir}/h2dGenAntiLambdaVsZVsMultMC"
-            h3d_gen_recoed = f"{main_dir}/h2dGenAntiLambdaVsZVsMultMC_RecoedEvt"
+            h3d_gen = f"{main_dir}/h3dGenAntiLambdaVsZVsMultMC"
+            h3d_gen_recoed = f"{main_dir}/h3dGenAntiLambdaVsZVsMultMC_RecoedEvt"
             return h3d_gen_recoed, h3d_gen
         elif spec == "LambdaALambda":
             # will fetch both and sum
@@ -212,16 +212,14 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
 
     h3d_gen_recoed_name, h3d_gen_name = get_gen_hist_names(species)
 
-    # === Load TH3D: Generated Λ with ≥1 reco event ===
+    # === Load TH3D: Generated Λ with >=1 reco event ===
     h3dGen_RecoedEvt = fin.Get(h3d_gen_recoed_name)
     if not h3dGen_RecoedEvt:
         print(f"Warning: could not find {h3d_gen_recoed_name} in file.")
     else:
-        # Project TH3D(event, Z, pT) → TH2D(pT, Z)
-        # ROOT syntax: Project3D("zy") → x'=Z, y'=Y? No:
-        #  For TH3D( X=event , Y=Z , Z=pT ):
-        #    Project3D("zy") → Z→X', Y→Y' = (pT , Z)
-        hGenRecoEvt = h3dGen_RecoedEvt.Project3D("zy")
+        # hGenRecoEvt = h3dGen_RecoedEvt.Project3D("zy") # This was giving the wrong ordering!
+        # For a TH3D( X=event , Y=Z , Z=pT ), the projection below will give (pT , Z)
+        hGenRecoEvt = h3dGen_RecoedEvt.Project3D("yz")
         hGenRecoEvt.SetName(f"Gen{species}_RecoEvts")
         hGenRecoEvt.SetTitle(f"Gen{species}_RecoEvts")
 
@@ -230,8 +228,7 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
     if not h3dGen:
         print(f"Warning: could not find {h3d_gen_name} in file.")
     else:
-        # Same projection: TH3D(event, Z, pT) → TH2D(pT, Z)
-        hGen = h3dGen.Project3D("zy")
+        hGen = h3dGen.Project3D("yz") # Same fix as previous block
         hGen.SetName(f"Gen{species}_GenEvts")
         hGen.SetTitle(f"Gen{species}_GenEvts")
     
@@ -276,7 +273,7 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
         raise RuntimeError(f"Could not find {main_dir}/hGenEvents in input file.")
 
     # For event counts we still want 1D, even though MC histos are 3D.
-    # Project X (event-axis) → 1D two-bin hist:
+    # Project X (event-axis) --> 1D two-bin hist:
     hGenAndRecoEvts = h2dGenAndRecoEvents.ProjectionX("EventGenReco")
     hGenAndRecoEvts.Sumw2()
 
@@ -285,7 +282,7 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
     hGenEvent.SetBinContent(1, hGenAndRecoEvts.GetBinContent(1))
     hGenEvent.SetBinError(1, hGenAndRecoEvts.GetBinError(1))
 
-    # Gen events with ≥1 reco = bin 2
+    # Gen events with >=1 reco = bin 2
     hGenRecoEvt_events = ROOT.TH1D("hGenRecoEvt_events", "hGenRecoEvt_events", 1, 0, 1)
     hGenRecoEvt_events.SetBinContent(1, hGenAndRecoEvts.GetBinContent(2))
     hGenRecoEvt_events.SetBinError(1, hGenAndRecoEvts.GetBinError(2))
@@ -347,7 +344,7 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
     # Original Z binning stays the same
     nZBins = hGenRecoEvt.GetNbinsY()
     zBinsArray = hGenRecoEvt.GetYaxis().GetXbins().GetArray()
-    # If uniform, zBinsArray may be None → handle that:
+    # If uniform, zBinsArray may be None --> handle that:
     if not zBinsArray:
         zBinsArray = array.array(
             'd',
@@ -373,27 +370,75 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
     hGenRecoEvt_rebinned.Sumw2()
     hGen_rebinned.Sumw2()
 
-    # Fill new histograms by mapping old bin centers
+    # Using Fill here messes everything up as ROOT does not propagate the error bars appropriately!
+    # # Fill new histograms by mapping old bin centers
+    # for ix in range(1, hGenRecoEvt.GetNbinsX() + 1):
+    #     for iy in range(1, nZBins + 1):
+
+    #         # get old values
+    #         content_evt = hGenRecoEvt.GetBinContent(ix, iy)
+    #         err_evt = hGenRecoEvt.GetBinError(ix, iy)
+
+    #         content_gen = hGen.GetBinContent(ix, iy)
+    #         err_gen = hGen.GetBinError(ix, iy)
+
+    #         # find coordinates
+    #         x = hGenRecoEvt.GetXaxis().GetBinCenter(ix)
+    #         y = hGenRecoEvt.GetYaxis().GetBinCenter(iy)
+
+    #         # fill new histograms
+    #         if content_evt != 0:
+    #             hGenRecoEvt_rebinned.Fill(x, y, content_evt)
+
+    #         if content_gen != 0:
+    #             hGen_rebinned.Fill(x, y, content_gen)
+    # New version:
+    # =====================================================================
+    # CORRECTED REBINNING LOOP
+    # =====================================================================
+    # Fill new histograms by mapping old bin centers manually
+    # We do NOT use Fill(x, y, weight) because it destroys N_eff (Effective Entries).
+    # We must accumulate Content and Error^2 manually.
+
     for ix in range(1, hGenRecoEvt.GetNbinsX() + 1):
         for iy in range(1, nZBins + 1):
-
-            # get old values
+            # --- Handle Reco Events ---
             content_evt = hGenRecoEvt.GetBinContent(ix, iy)
             err_evt = hGenRecoEvt.GetBinError(ix, iy)
+            
+            if content_evt != 0:
+                # Find the corresponding bin in the new (rebinned) histogram
+                x_center = hGenRecoEvt.GetXaxis().GetBinCenter(ix)
+                y_center = hGenRecoEvt.GetYaxis().GetBinCenter(iy)
+                
+                bin_new = hGenRecoEvt_rebinned.FindBin(x_center, y_center)
+                
+                # Get current values in that new bin (in case multiple old bins merge into one)
+                current_val = hGenRecoEvt_rebinned.GetBinContent(bin_new)
+                current_err = hGenRecoEvt_rebinned.GetBinError(bin_new)
+                
+                # Accumulate
+                hGenRecoEvt_rebinned.SetBinContent(bin_new, current_val + content_evt)
+                hGenRecoEvt_rebinned.SetBinError(bin_new, np.sqrt(current_err**2 + err_evt**2))
 
+            # --- Handle All Gen Events ---
             content_gen = hGen.GetBinContent(ix, iy)
             err_gen = hGen.GetBinError(ix, iy)
 
-            # find coordinates
-            x = hGenRecoEvt.GetXaxis().GetBinCenter(ix)
-            y = hGenRecoEvt.GetYaxis().GetBinCenter(iy)
-
-            # fill new histograms
-            if content_evt != 0:
-                hGenRecoEvt_rebinned.Fill(x, y, content_evt)
-
             if content_gen != 0:
-                hGen_rebinned.Fill(x, y, content_gen)
+                # Find the corresponding bin (same geometry)
+                x_center = hGen.GetXaxis().GetBinCenter(ix)
+                y_center = hGen.GetYaxis().GetBinCenter(iy)
+                
+                bin_new = hGen_rebinned.FindBin(x_center, y_center)
+                
+                # Get current values
+                current_val = hGen_rebinned.GetBinContent(bin_new)
+                current_err = hGen_rebinned.GetBinError(bin_new)
+                
+                # Accumulate
+                hGen_rebinned.SetBinContent(bin_new, current_val + content_gen)
+                hGen_rebinned.SetBinError(bin_new, np.sqrt(current_err**2 + err_gen**2))
 
 
     # =====================================================================
@@ -402,7 +447,10 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
     # Calculate Efficiency x Acc x B.R
     # N. Reco in the selected reco colls / N. Gen V0s with at least one reco coll
     hEffAcc = rawMCSpectra.Clone("hEfficiencyXAcceptance2D")
-    hEffAcc.Divide(hGenRecoEvt_rebinned)
+    # hEffAcc.Divide(hGenRecoEvt_rebinned)
+        # An explicitly binomial error propagation -- These two histograms are of course correlated!!!
+        # The error bars add differently!
+    hEffAcc.Divide(rawMCSpectra, hGenRecoEvt_rebinned, 1, 1, "B")
 
     # =====================================================================
     # SIGNAL LOSS (2D)
@@ -410,8 +458,10 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
     # Calculate Signal loss
     # Signal Loss = N. Gen V0s with at least one reco coll / N. Gen V0s in ALL Generated colls
 
-    hSignalLoss = hGenRecoEvt_rebinned.Clone("hSignalLoss2D")
-    hSignalLoss.Divide(hGen_rebinned)
+    hSignalLoss2D = hGenRecoEvt_rebinned.Clone("hSignalLoss2D")
+    # hSignalLoss2D.Divide(hGen_rebinned)
+        # Same correction as above -- binomial error bars!
+    hSignalLoss2D.Divide(hGenRecoEvt_rebinned, hGen_rebinned, 1, 1, "B")
 
     # =====================================================================
     # EVENT LOSS (scalar)
@@ -430,6 +480,90 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
     hEventSplitting.Divide(hRecoEvents)
 
     # =====================================================================
+    # 1D Projections: Efficiency & Signal Loss (Z-integrated, Z>0, Z<0)
+    # =====================================================================
+    print("Computing 1D Efficiency and Signal Loss for Z ranges (Pos, Neg, Full)...")
+
+    def get_z_projections(h2d, hist_name_base):
+        """
+        Helper to project 2D (pT, Z) into 1D (pT) for Full, Pos (Z>0), and Neg (Z<0).
+        """
+        yaxis = h2d.GetYaxis()
+        n_bins_y = h2d.GetNbinsY()
+        
+        # Find the bin index corresponding to Z=0
+        bin_zero = yaxis.FindBin(0.0)
+        bin_center = yaxis.GetBinCenter(bin_zero)
+        
+        # Determine split indices based on where 0 falls
+        if bin_center < 0:
+            bin_neg_end = bin_zero
+            bin_pos_start = bin_zero + 1
+        else:
+            # If center >= 0, include this bin in Positive
+            bin_neg_end = bin_zero - 1
+            bin_pos_start = bin_zero
+            
+        # 1. Full Projection (Bin 1 to N)
+        h1d_full = h2d.ProjectionX(f"{hist_name_base}_Full", 1, n_bins_y, "e")
+        
+        # 2. Negative Z Projection
+        if bin_neg_end >= 1:
+            h1d_neg = h2d.ProjectionX(f"{hist_name_base}_Neg", 1, bin_neg_end, "e")
+        else:
+            # Handle edge case where no bins are negative
+            h1d_neg = h2d.ProjectionX(f"{hist_name_base}_Neg", 0, 0, "e") 
+            h1d_neg.Reset()
+
+        # 3. Positive Z Projection
+        if bin_pos_start <= n_bins_y:
+            h1d_pos = h2d.ProjectionX(f"{hist_name_base}_Pos", bin_pos_start, n_bins_y, "e")
+        else:
+            h1d_pos = h2d.ProjectionX(f"{hist_name_base}_Pos", 0, 0, "e")
+            h1d_pos.Reset()
+            
+        return h1d_full, h1d_pos, h1d_neg
+
+    # --- Step A: Project Numerators and Denominators ---
+
+    # 1. Reco (Numerator for Efficiency) -> from rawMCSpectra
+    rec_full, rec_pos, rec_neg = get_z_projections(rawMCSpectra, "hRec1D")
+    
+    # 2. GenReco (Denominator for Efficiency / Numerator for Signal Loss) -> from hGenRecoEvt_rebinned
+    genrec_full, genrec_pos, genrec_neg = get_z_projections(hGenRecoEvt_rebinned, "hGenRec1D")
+    
+    # 3. GenAll (Denominator for Signal Loss) -> from hGen_rebinned
+    genall_full, genall_pos, genall_neg = get_z_projections(hGen_rebinned, "hGenAll1D")
+
+    # --- Step B: Calculate Ratios (Efficiency & Signal Loss) with "B" Option ---
+
+    # Efficiency * Acceptance = Reco / GenReco
+    hEff_Full = rec_full.Clone("hEfficiency1D_Full")
+    hEff_Full.SetTitle("Efficiency x Acceptance (Full Z)")
+    hEff_Full.Divide(rec_full, genrec_full, 1, 1, "B") # <--- Added "B" for binomial errors
+
+    hEff_Pos = rec_pos.Clone("hEfficiency1D_Pos")
+    hEff_Pos.SetTitle("Efficiency x Acceptance (Z > 0)")
+    hEff_Pos.Divide(rec_pos, genrec_pos, 1, 1, "B")    # <--- Added "B"
+
+    hEff_Neg = rec_neg.Clone("hEfficiency1D_Neg")
+    hEff_Neg.SetTitle("Efficiency x Acceptance (Z < 0)")
+    hEff_Neg.Divide(rec_neg, genrec_neg, 1, 1, "B")    # <--- Added "B"
+
+    # Signal Loss = GenReco / GenAll
+    hSigLoss_Full = genrec_full.Clone("hSignalLoss1D_Full")
+    hSigLoss_Full.SetTitle("Signal Loss (Full Z)")
+    hSigLoss_Full.Divide(genrec_full, genall_full, 1, 1, "B") # <--- Added "B"
+
+    hSigLoss_Pos = genrec_pos.Clone("hSignalLoss1D_Pos")
+    hSigLoss_Pos.SetTitle("Signal Loss (Z > 0)")
+    hSigLoss_Pos.Divide(genrec_pos, genall_pos, 1, 1, "B")    # <--- Added "B"
+
+    hSigLoss_Neg = genrec_neg.Clone("hSignalLoss1D_Neg")
+    hSigLoss_Neg.SetTitle("Signal Loss (Z < 0)")
+    hSigLoss_Neg.Divide(genrec_neg, genall_neg, 1, 1, "B")    # <--- Added "B"
+
+    # =====================================================================
     # Write output file
     # =====================================================================
 
@@ -443,7 +577,7 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
 
     hEffAcc.Write()          # 2D pT×Z efficiency × acceptance # Efficiency x Acc x B.R. Output name is hEfficiencyXAcceptance2D
     hRecoEvents.Write()       # Reco events
-    hSignalLoss.Write()      # 2D pT×Z signal loss. Output name is hSignalLoss2D
+    hSignalLoss2D.Write()      # 2D pT×Z signal loss. Output name is hSignalLoss2D
     hEventLoss.Write()       # scalar. Output name is hEventLoss
     hEventSplitting.Write()  # scalar. Output name is hEventSplitting
 
@@ -453,6 +587,15 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
     hCentrality.Write()
     hGenEvent.Write()
     hGenRecoEvt_events.Write()
+
+    # 1D Projections:
+    hEff_Full.Write()
+    hEff_Pos.Write()
+    hEff_Neg.Write()
+    
+    hSigLoss_Full.Write()
+    hSigLoss_Pos.Write()
+    hSigLoss_Neg.Write()
 
     fout.Close()
     fin.Close()
