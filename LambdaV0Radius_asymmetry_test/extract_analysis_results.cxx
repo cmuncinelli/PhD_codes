@@ -752,7 +752,7 @@ void extract_analysis_results(const char* inputPath, const char* outputFolder)
         TString nameA = TString::Format("CoarsePos_%d", i);
         TString nameB = TString::Format("CoarseNeg_%d", i);
 
-        // Integrate over many Y bins → produce a TH1D for X
+        // Integrate over many Y bins --> produce a TH1D for X
         TH1D* A = h2_massFiltered->ProjectionX(nameA, ypL, ypH);
         TH1D* B = h2_massFiltered->ProjectionX(nameB, ymL, ymH);
 
@@ -917,7 +917,7 @@ void extract_analysis_results(const char* inputPath, const char* outputFolder)
 
             R->Sumw2();
             R->GetXaxis()->SetTitle("#Lambda V0 Radius (cm)");
-            R->GetYaxis()->SetTitle(" (A/N_pos) / (B/N_neg) ");
+            R->GetYaxis()->SetTitle("(N_pos(r,y)/int N_pos(r,y) dr) / (N_neg(r,y)/int N_neg(r,y) dr)");
 
             // Fill R(x) = [A(x)/totalPos] / [B(x)/totalNeg]
             for (int bx = 1; bx <= nXB; bx++) {
@@ -965,8 +965,727 @@ void extract_analysis_results(const char* inputPath, const char* outputFolder)
 
 
     std::cout << "=== Finished Part C (coarse Y ratios). ===\n\n";
-    
 
+
+    // ==================================================================
+    // PART D: Repeat workflow, but for Z vertex position instead of y
+    // ==================================================================
+
+    std::cout << "\n\n========== PART D: Z-vertex projection analysis ==========\n";
+
+    // Load TH3D for Z coordinate
+    TH3D* h3_ZPos = dynamic_cast<TH3D*>( fin->Get("asymmetric_rapidity_test/Lambda/hV0RadiusVsZVsMass") );
+    if (!h3_ZPos) {
+        std::cerr << "ERROR: TH3D hV0RadiusVsZVsMass not found! Skipping Part D." << std::endl;
+    } 
+    // Convert the mass window (mLow, mHigh) to Z-bins
+    int zbinLow2  = h3_ZPos->GetZaxis()->FindBin(mLow);
+    int zbinHigh2 = h3_ZPos->GetZaxis()->FindBin(mHigh);
+    if (zbinLow2 > zbinHigh2) std::swap(zbinLow2, zbinHigh2);
+
+    // Restrict Z range for projection
+    h3_ZPos->GetZaxis()->SetRange(zbinLow2, zbinHigh2);
+
+    // Project 3D --> 2D (X = radius, Y = Z-vertex)
+    TH2D* h2_ZPos = (TH2D*) h3_ZPos->Project3D("yx");
+    h2_ZPos->SetName("hV0RadiusVsZ_InvMassFiltered");
+
+    // Restore original range
+    h3_ZPos->GetZaxis()->SetRange(0, 0);
+
+    // Write original filtered 2D
+    fout->cd();
+    h2_ZPos->Sumw2();
+    h2_ZPos->Write("hV0RadiusVsZ_InvMassFiltered_original");
+
+    std::cout << "Created mass-filtered TH2D: hV0RadiusVsZ_InvMassFiltered\n";
+
+
+    // ============================
+    // Now perform the Z-based workflow
+    // ============================
+
+    const int nBinsX_Z = h2_ZPos->GetNbinsX();
+    const int nBinsZ   = h2_ZPos->GetNbinsY();   // IMPORTANT: second coordinate is Z, not y
+
+    // Directories for Z projections
+    fout->mkdir("ZProjections_InvMassFiltered");
+    fout->mkdir("XProjectionRatios_Z_InvMassFiltered");
+
+    // ==================================================================
+    // (1) PROJECT ONTO Z FOR EACH X-BIN
+    // ==================================================================
+
+    fout->cd("ZProjections_InvMassFiltered");
+
+    std::vector<TH1D*> ZProjs;
+    ZProjs.reserve(nBinsX_Z);
+
+    for (int xbin = 1; xbin <= nBinsX_Z; xbin++) {
+
+        TString name = TString::Format("InvProjZ_xbin%d", xbin);
+
+        TH1D* hproj = h2_ZPos->ProjectionY(name, xbin, xbin);
+
+        if (!hproj->GetSumw2N()) hproj->Sumw2();
+
+        double xlow  = h2_ZPos->GetXaxis()->GetBinLowEdge(xbin);
+        double xhigh = h2_ZPos->GetXaxis()->GetBinUpEdge(xbin);
+
+        hproj->SetTitle(
+            TString::Format("InvMass filtered Z counts, X-bin=%d (Radius=%.3f-%.3f)",
+                            xbin, xlow, xhigh)
+        );
+
+        hproj->GetXaxis()->SetTitle("V0 Z vertex (cm)");
+        hproj->GetYaxis()->SetTitle("#Lambda Counts");
+
+        hproj->Write();
+        ZProjs.push_back(hproj);
+    }
+
+    std::cout << "Created Z projections for each X bin.\n";
+
+
+    // ==================================================================
+    // (2) BUILD RATIO OF Z-SYMMETRIC PROJECTIONS
+    // ==================================================================
+
+    if (nBinsZ % 2 != 0) {
+        std::cerr << "ERROR: Z-axis does not have an even number of bins! Aborting Z-ratios.\n";
+    } else {
+
+        const int midZ = nBinsZ / 2;
+
+        fout->cd("XProjectionRatios_Z_InvMassFiltered");
+
+        std::vector<TH1D*> ZRatios;
+        ZRatios.reserve(midZ);
+
+        for (int i = 1; i <= midZ; i++) {
+
+            int zPlus  = midZ + i;
+            int zMinus = midZ + 1 - i;
+
+            TString namePlus  = TString::Format("InvZ_plus_%d",  zPlus);
+            TString nameMinus = TString::Format("InvZ_minus_%d", zMinus);
+
+            TH1D* A = h2_ZPos->ProjectionX(namePlus,  zPlus,  zPlus);
+            TH1D* B = h2_ZPos->ProjectionX(nameMinus, zMinus, zMinus);
+
+            if (A->GetSumw2N() == 0) A->Sumw2();
+            if (B->GetSumw2N() == 0) B->Sumw2();
+
+            double A_zlow  = h2_ZPos->GetYaxis()->GetBinLowEdge(zPlus);
+            double A_zhigh = h2_ZPos->GetYaxis()->GetBinUpEdge(zPlus);
+            double B_zlow  = h2_ZPos->GetYaxis()->GetBinLowEdge(zMinus);
+            double B_zhigh = h2_ZPos->GetYaxis()->GetBinUpEdge(zMinus);
+
+            TString rname =
+                TString::Format("InvZ_ratio_z%d_over_z%d", zPlus, zMinus);
+
+            TH1D* R = (TH1D*) A->Clone(rname);
+            R->Reset();
+            R->SetTitle(
+                TString::Format("InvMass Z-ratio Z=[%.2f,%.2f] / Z=[%.2f,%.2f]",
+                                A_zlow,A_zhigh, B_zlow,B_zhigh)
+            );
+
+            R->GetXaxis()->SetTitle("#Lambda V0 Radius (cm)");
+            R->GetYaxis()->SetTitle("Counts zPlus / Counts zMinus");
+
+            // Compute ratio with errors
+            for (int bx = 1; bx <= R->GetNbinsX(); bx++) {
+
+                double a  = A->GetBinContent(bx);
+                double b  = B->GetBinContent(bx);
+                double ea = A->GetBinError(bx);
+                double eb = B->GetBinError(bx);
+
+                if (b <= 0) {
+                    R->SetBinContent(bx, 0);
+                    R->SetBinError(bx, 0);
+                    continue;
+                }
+
+                double ratio = a / b;
+                double err   = 0;
+
+                if (a > 0 && b > 0) {
+                    err = ratio * std::sqrt(
+                        (ea*ea)/(a*a) + (eb*eb)/(b*b)
+                    );
+                }
+
+                R->SetBinContent(bx, ratio);
+                R->SetBinError(bx, err);
+            }
+
+            R->Write();
+            ZRatios.push_back(R);
+
+            delete A;
+            delete B;
+        }
+
+        std::cout << "Created symmetric Z-projection ratios (InvMassFiltered).\n";
+    }
+
+    // ======================================================================
+    // PART D-extra: Additional coarse-bin ratios, differences, and full 2D asymmetries
+    // ======================================================================
+
+    std::cout << "\n\n========== PART D-extra: Additional Z-vertex asymmetry analyses ==========\n";
+
+    // Safety check
+    if (!h2_ZPos) {
+        std::cerr << "ERROR: h2_ZPos not available — cannot run Part D-extra.\n";
+    } else {
+
+        const int nBinsZ_d = h2_ZPos->GetNbinsY();
+        if (nBinsZ_d % 2 != 0) {
+            std::cerr << "ERROR: Z-axis has an odd number of bins — cannot build symmetric structures.\n";
+        } else {
+
+            const int midZ_d = nBinsZ_d / 2;
+
+            // Build coarse binning identical to Part E
+            const int nCoarseZ = 8;  // → 4 symmetric pairs
+            double coarseEdgesZ[nCoarseZ + 1];
+
+            double zMin = h2_ZPos->GetYaxis()->GetXmin();
+            double zMax = h2_ZPos->GetYaxis()->GetXmax();
+            double zStep = (zMax - zMin) / nCoarseZ;
+
+            for (int i = 0; i <= nCoarseZ; i++)
+                coarseEdgesZ[i] = zMin + i * zStep;
+
+            auto getZBins = [&](double z1, double z2) {
+                int b1 = h2_ZPos->GetYaxis()->FindBin(z1);
+                int b2 = h2_ZPos->GetYaxis()->FindBin(z2);
+                if (b1 > b2) std::swap(b1, b2);
+                return std::pair<int,int>(b1, b2);
+            };
+
+            // ------------------------------------------------------------------
+            // (1) RAW coarse ratios (A/B) — NO normalization
+            // ------------------------------------------------------------------
+
+            fout->mkdir("XProjectionRatios_Z_InvMassFiltered_CoarseZ_raw");
+            fout->cd("XProjectionRatios_Z_InvMassFiltered_CoarseZ_raw");
+
+            for (int i = 0; i < 4; i++) {
+
+                double pos_low  = coarseEdgesZ[4 + i];
+                double pos_high = coarseEdgesZ[5 + i];
+                double neg_low  = coarseEdgesZ[3 - i];
+                double neg_high = coarseEdgesZ[4 - i];
+
+                auto [zpL, zpH] = getZBins(pos_low, pos_high);
+                auto [zmL, zmH] = getZBins(neg_low, neg_high);
+
+                TH1D* A = h2_ZPos->ProjectionX(
+                    TString::Format("CoarseZ_PosRawNoNorm_%d", i), zpL, zpH);
+                TH1D* B = h2_ZPos->ProjectionX(
+                    TString::Format("CoarseZ_NegRawNoNorm_%d", i), zmL, zmH);
+
+                A->Sumw2();
+                B->Sumw2();
+
+                int nXB = A->GetNbinsX();
+                TH1D* R = new TH1D(
+                    TString::Format("CoarseZRatio_%d_Raw", i),
+                    TString::Format("Raw coarse Z ratio Z=[%.1f,%.1f] / Z=[%.1f,%.1f]",
+                                    pos_low, pos_high, neg_low, neg_high),
+                    nXB, A->GetXaxis()->GetXmin(), A->GetXaxis()->GetXmax()
+                );
+
+                R->Sumw2();
+                R->GetXaxis()->SetTitle("#Lambda V0 Radius (cm)");
+                R->GetYaxis()->SetTitle("Raw ratio A/B");
+
+                for (int bx = 1; bx <= nXB; bx++) {
+
+                    double a  = A->GetBinContent(bx);
+                    double b  = B->GetBinContent(bx);
+                    double ea = A->GetBinError(bx);
+                    double eb = B->GetBinError(bx);
+
+                    if (b == 0) {
+                        R->SetBinContent(bx, 0);
+                        R->SetBinError(bx, 0);
+                        continue;
+                    }
+
+                    double ratio = a / b;
+                    double err = 0;
+                    if (a > 0 && b > 0)
+                        err = ratio * std::sqrt((ea*ea)/(a*a) + (eb*eb)/(b*b));
+
+                    R->SetBinContent(bx, ratio);
+                    R->SetBinError(bx, err);
+                }
+
+                R->Write();
+                delete A;
+                delete B;
+            }
+
+            // ------------------------------------------------------------------
+            // (2) RAW coarse differences: A(x) - B(x)
+            // ------------------------------------------------------------------
+
+            fout->mkdir("XProjectionDiff_Z_InvMassFiltered_CoarseZ_raw");
+            fout->cd("XProjectionDiff_Z_InvMassFiltered_CoarseZ_raw");
+
+            for (int i = 0; i < 4; i++) {
+
+                double pos_low  = coarseEdgesZ[4 + i];
+                double pos_high = coarseEdgesZ[5 + i];
+                double neg_low  = coarseEdgesZ[3 - i];
+                double neg_high = coarseEdgesZ[4 - i];
+
+                auto [zpL, zpH] = getZBins(pos_low, pos_high);
+                auto [zmL, zmH] = getZBins(neg_low, neg_high);
+
+                TH1D* A = h2_ZPos->ProjectionX(
+                    TString::Format("CoarseZ_PosRawDiff_%d", i), zpL, zpH);
+                TH1D* B = h2_ZPos->ProjectionX(
+                    TString::Format("CoarseZ_NegRawDiff_%d", i), zmL, zmH);
+
+                A->Sumw2();
+                B->Sumw2();
+
+                TH1D* D = (TH1D*) A->Clone(TString::Format("CoarseZDiff_%d", i));
+                D->SetTitle(
+                    TString::Format("Coarse Z difference: Z=[%.1f,%.1f] - Z=[%.1f,%.1f]",
+                                    pos_low,pos_high, neg_low,neg_high)
+                );
+                D->Add(B, -1.0);
+
+                D->GetXaxis()->SetTitle("#Lambda V0 Radius (cm)");
+                D->GetYaxis()->SetTitle("A - B");
+
+                D->Write();
+
+                delete A;
+                delete B;
+            }
+
+            // ------------------------------------------------------------------
+            // (3) Full TH2D raw difference: Z>0 minus Z<0, but KEEP ONLY Z>0 range
+            // ------------------------------------------------------------------
+
+            fout->mkdir("ZFull2D_Differences_PosOnly");
+            fout->cd("ZFull2D_Differences_PosOnly");
+
+            int nX = h2_ZPos->GetNbinsX();
+            int nZ = h2_ZPos->GetNbinsY();
+            int midZcut = nZ / 2;   // index separating -Z and +Z (Z=0 boundary)
+
+            // Build output TH2D with *only positive Z half*
+            int nZpos = nZ - midZcut;
+
+            // Z range edges
+            double zPosMin = h2_ZPos->GetYaxis()->GetBinLowEdge(midZcut+1);
+            double zPosMax = h2_ZPos->GetYaxis()->GetBinUpEdge(nZ);
+
+            // Create final differential histogram
+            TH2D* h2_Z_diff_raw_posOnly = new TH2D(
+                "h2_ZFull_Diff_raw_PosMinusNeg_PosOnly",
+                "Raw 2D Difference: (Z>0) - (Z<0)  [Only +Z bins]",
+                nX,
+                h2_ZPos->GetXaxis()->GetXmin(),
+                h2_ZPos->GetXaxis()->GetXmax(),
+                nZpos,
+                zPosMin,
+                zPosMax
+            );
+
+            h2_Z_diff_raw_posOnly->Sumw2();
+            h2_Z_diff_raw_posOnly->GetXaxis()->SetTitle("V0 Radius (cm)");
+            h2_Z_diff_raw_posOnly->GetYaxis()->SetTitle("Z vertex (cm)");
+            h2_Z_diff_raw_posOnly->SetTitle("Raw Z Difference D(x,z) = N(+z) - N(-z)");
+
+            for (int ix = 1; ix <= nX; ix++) {
+                for (int izp = 1; izp <= nZpos; izp++) {
+
+                    int zPlusBin  = midZcut + izp;
+                    int zMinusBin = midZcut + 1 - izp;
+
+                    double plus  = h2_ZPos->GetBinContent(ix, zPlusBin);
+                    double minus = h2_ZPos->GetBinContent(ix, zMinusBin);
+
+                    double diff = plus - minus;
+
+                    h2_Z_diff_raw_posOnly->SetBinContent(ix, izp, diff);
+                    // For simplicity, use sqrt(sum of variances)
+                    double eplus  = h2_ZPos->GetBinError(ix, zPlusBin);
+                    double eminus = h2_ZPos->GetBinError(ix, zMinusBin);
+                    h2_Z_diff_raw_posOnly->SetBinError(
+                        ix, izp,
+                        std::sqrt(eplus*eplus + eminus*eminus)
+                    );
+                }
+            }
+
+            h2_Z_diff_raw_posOnly->Write();
+
+
+            // ------------------------------------------------------------------
+            // (4) Normalized full 2D difference (Z>0-only version)
+            // ------------------------------------------------------------------
+
+            fout->mkdir("ZFull2D_Normalized_PosOnly");
+            fout->cd("ZFull2D_Normalized_PosOnly");
+
+            // Compute total yields for normalization
+            double totPosZ_full = 0.0;
+            double totNegZ_full = 0.0;
+
+            for (int ix = 1; ix <= nX; ix++) {
+                for (int iz = 1; iz <= nZ; iz++) {
+
+                    double zc = h2_ZPos->GetYaxis()->GetBinCenter(iz);
+                    double v  = h2_ZPos->GetBinContent(ix, iz);
+
+                    if (zc > 0) totPosZ_full += v;
+                    if (zc < 0) totNegZ_full += v;
+                }
+            }
+
+            if (totPosZ_full <= 0 || totNegZ_full <= 0) {
+                std::cerr << "ERROR: zero positive or negative Z totals! Cannot normalize.\n";
+            } else {
+
+                TH2D* h2_Z_diff_norm_posOnly = (TH2D*) h2_Z_diff_raw_posOnly->Clone(
+                    "h2_ZFull_Diff_norm_PosMinusNeg_PosOnly"
+                );
+                h2_Z_diff_norm_posOnly->SetTitle("Normalized 2D Asymmetry: f(+z) - f(-z) [Only +Z]");
+
+                for (int ix = 1; ix <= nX; ix++) {
+                    for (int izp = 1; izp <= nZpos; izp++) {
+
+                        int zPlusBin  = midZcut + izp;
+                        int zMinusBin = midZcut + 1 - izp;
+
+                        double A = h2_ZPos->GetBinContent(ix, zPlusBin)  / totPosZ_full;
+                        double B = h2_ZPos->GetBinContent(ix, zMinusBin) / totNegZ_full;
+
+                        double eA = h2_ZPos->GetBinError(ix, zPlusBin)  / totPosZ_full;
+                        double eB = h2_ZPos->GetBinError(ix, zMinusBin) / totNegZ_full;
+
+                        double diff = A - B;
+                        double err  = std::sqrt(eA*eA + eB*eB);
+
+                        h2_Z_diff_norm_posOnly->SetBinContent(ix, izp, diff);
+                        h2_Z_diff_norm_posOnly->SetBinError(ix, izp, err);
+                    }
+                }
+
+                h2_Z_diff_norm_posOnly->Write();
+            }
+            std::cout << "Saved positive-Z-only difference histograms.\n";
+        }
+    }
+
+    std::cout << "=== Finished Part D-extra. ===\n\n";
+
+    // ======================================================================
+    // PART E: Normalized coarse Z-ratios
+    //         (recompute A(x) and B(x) from the original TH2D)
+    // ======================================================================
+
+    std::cout << "\n\n========== PART E: Normalized coarse Z-ratios ==========\n";
+
+    if (!h2_ZPos) {
+        std::cerr << "ERROR: h2_ZPos (InvMassFiltered Z TH2D) not found! Skipping Part E.\n";
+    } else {
+
+    // Ensure even number of Z bins
+    const int nBinsZ_f = h2_ZPos->GetNbinsY();
+    if (nBinsZ_f % 2 != 0) {
+        std::cerr << "ERROR: Z-axis has odd number of bins (" 
+                << nBinsZ_f << ")! Cannot form symmetric ratios.\n";
+    }
+    const int midZ_f = nBinsZ_f / 2;
+
+    // Create output directory
+    fout->mkdir("XProjectionRatios_Z_InvMassFiltered_CoarseZ");
+    fout->cd("XProjectionRatios_Z_InvMassFiltered_CoarseZ");
+
+    std::cout << "Building normalized coarse Z-ratios from scratch...\n";
+
+    // --------------------------------------------------------
+    // 1. Compute total positive-Z and negative-Z Λ counts
+    // --------------------------------------------------------
+    double totalPosZ = 0.0;
+    double totalNegZ = 0.0;
+
+    for (int i = 1; i <= midZ_f; i++) {
+
+        int zPlus  = midZ_f + i;       // positive side
+        int zMinus = midZ_f + 1 - i;   // negative side
+
+        TH1D* projPos = h2_ZPos->ProjectionX(
+            TString::Format("ZNorm_PosRaw_tmp_%d", i), zPlus, zPlus);
+
+        TH1D* projNeg = h2_ZPos->ProjectionX(
+            TString::Format("ZNorm_NegRaw_tmp_%d", i), zMinus, zMinus);
+
+        totalPosZ += projPos->GetEntries();
+        totalNegZ += projNeg->GetEntries();
+
+        delete projPos;
+        delete projNeg;
+    }
+
+    std::cout << "  Total +Z Λ = " << totalPosZ << "\n";
+    std::cout << "  Total -Z Λ = " << totalNegZ << "\n";
+
+    if (totalPosZ <= 0 || totalNegZ <= 0) {
+        std::cerr << "ERROR: Zero totalPosZ or totalNegZ — cannot normalize.\n";
+    } else {
+
+        // Number of coarse bins we want: Z in [-100,100], 60 bins --> coarse as you choose.
+        // Following your Part C choice: 8 coarse bins --> 4 symmetric pairs.
+        // Let’s define coarse Z edges explicitly:
+        const int nCoarse = 8;
+        double coarseEdgesZ[nCoarse + 1];
+        double zMin = h2_ZPos->GetYaxis()->GetXmin(); // should be -100
+        double zMax = h2_ZPos->GetYaxis()->GetXmax(); // should be +100
+        double zStep = (zMax - zMin) / nCoarse;
+
+        for (int i = 0; i <= nCoarse; i++)
+            coarseEdgesZ[i] = zMin + i * zStep;
+
+        auto getZFineBins = [&](double z1, double z2) {
+            int b1 = h2_ZPos->GetYaxis()->FindBin(z1);
+            int b2 = h2_ZPos->GetYaxis()->FindBin(z2);
+            if (b1 > b2) std::swap(b1, b2);
+            return std::pair<int,int>(b1, b2);
+        };
+
+        std::vector<TH1D*> coarseZNormRatios;
+
+        // --------------------------------------------------------
+        // 2. Build 4 symmetric coarse Z-ratio histograms
+        // --------------------------------------------------------
+        for (int i = 0; i < 4; i++) {
+
+            double pos_low  = coarseEdgesZ[4 + i];
+            double pos_high = coarseEdgesZ[5 + i];
+            double neg_low  = coarseEdgesZ[3 - i];
+            double neg_high = coarseEdgesZ[4 - i];
+
+            auto [zpL, zpH] = getZFineBins(pos_low, pos_high);
+            auto [zmL, zmH] = getZFineBins(neg_low, neg_high);
+
+            TH1D* Araw = h2_ZPos->ProjectionX(
+                TString::Format("CoarseZ_PosRaw_%d", i), zpL, zpH);
+
+            TH1D* Braw = h2_ZPos->ProjectionX(
+                TString::Format("CoarseZ_NegRaw_%d", i), zmL, zmH);
+
+            Araw->Sumw2();
+            Braw->Sumw2();
+
+            int nXB = Araw->GetNbinsX();
+
+            TH1D* R = new TH1D(
+                TString::Format("CoarseZRatio_%d_Norm", i),
+                TString::Format("Normalized coarse Z ratio Z=[%.1f,%.1f] / Z=[%.1f,%.1f]",
+                                pos_low,pos_high, neg_low,neg_high),
+                nXB,
+                Araw->GetXaxis()->GetXmin(),
+                Araw->GetXaxis()->GetXmax()
+            );
+
+            R->Sumw2();
+            R->GetXaxis()->SetTitle("#Lambda V0 Radius (cm)");
+            R->GetYaxis()->SetTitle("(N_pos/N_totPosZ) / (N_neg/N_totNegZ)");
+
+            // Fill ratio
+            for (int bx = 1; bx <= nXB; bx++) {
+
+                double A = Araw->GetBinContent(bx);
+                double B = Braw->GetBinContent(bx);
+                double eA = Araw->GetBinError(bx);
+                double eB = Braw->GetBinError(bx);
+
+                if (A < 0) A = 0;
+                if (B < 0) B = 0;
+
+                if (B == 0) {
+                    R->SetBinContent(bx, 0);
+                    R->SetBinError(bx, 0);
+                    continue;
+                }
+
+                double A_norm = A / totalPosZ;
+                double B_norm = B / totalNegZ;
+                double ratio  = A_norm / B_norm;
+
+                double err = 0;
+                if (A > 0 && B > 0) {
+                    err = ratio * std::sqrt(
+                        (eA*eA)/(A*A) + (eB*eB)/(B*B)
+                    );
+                }
+
+                R->SetBinContent(bx, ratio);
+                R->SetBinError(bx, err);
+            }
+
+            R->Write();
+            coarseZNormRatios.push_back(R);
+
+            delete Araw;
+            delete Braw;
+        }
+        std::cout << "Normalized coarse Z ratios created.\n";
+    }
+    } // end even number of Z bins check
+
+    std::cout << "=== Finished Part E (coarse Z normalized ratios). ===\n\n";
+
+    // ======================================================================
+    // PART F: V0 XY vertex asymmetry (posZ vs negZ)
+    // ======================================================================
+
+    std::cout << "\n\n========== PART F: XY vertex asymmetry (posZ vs negZ) ==========\n";
+
+    // ---------------------------------------------------------------
+    // Load the TH3Ds for XY vertex vs invariant mass, split by Z sign
+    // ---------------------------------------------------------------
+    TH3D* h3_XY_posZ = dynamic_cast<TH3D*>( fin->Get("asymmetric_rapidity_test/Lambda/hV0XYvsMass_posZ") );
+    TH3D* h3_XY_negZ = dynamic_cast<TH3D*>( fin->Get("asymmetric_rapidity_test/Lambda/hV0XYvsMass_negZ") );
+
+    if (!h3_XY_posZ || !h3_XY_negZ) {
+        std::cerr << "ERROR: XY vs Mass histograms not found! Skipping Part F.\n";
+    } else {
+
+    // ==================================================================
+    // (1) Save original histograms
+    // ==================================================================
+    fout->mkdir("XY_original");
+    fout->cd("XY_original");
+
+    h3_XY_posZ->Write("hV0XYvsMass_posZ_original");
+    h3_XY_negZ->Write("hV0XYvsMass_negZ_original");
+
+    // ==================================================================
+    // (2) Define folders we will need
+    // ==================================================================
+    fout->mkdir("XY_MassFiltered");
+    fout->mkdir("XY_Differences");
+    fout->mkdir("XY_Normalized");
+    fout->mkdir("XY_Normalized_Differences");
+
+    // ==================================================================
+    // (3) Mass filtering of both XY histograms using mLow, mHigh
+    // ==================================================================
+    fout->cd("XY_MassFiltered");
+
+    int zbinLow_p  = h3_XY_posZ->GetZaxis()->FindBin(mLow);
+    int zbinHigh_p = h3_XY_posZ->GetZaxis()->FindBin(mHigh);
+    if (zbinLow_p > zbinHigh_p) std::swap(zbinLow_p, zbinHigh_p);
+
+    int zbinLow_n  = h3_XY_negZ->GetZaxis()->FindBin(mLow);
+    int zbinHigh_n = h3_XY_negZ->GetZaxis()->FindBin(mHigh);
+    if (zbinLow_n > zbinHigh_n) std::swap(zbinLow_n, zbinHigh_n);
+
+    // Restrict range and project XY plane
+    h3_XY_posZ->GetZaxis()->SetRange(zbinLow_p, zbinHigh_p);
+    TH2D* h2_XY_posZ = (TH2D*) h3_XY_posZ->Project3D("yx");
+    h2_XY_posZ->SetName("hV0XY_posZ_InvMassFiltered");
+
+    h3_XY_negZ->GetZaxis()->SetRange(zbinLow_n, zbinHigh_n);
+    TH2D* h2_XY_negZ = (TH2D*) h3_XY_negZ->Project3D("yx");
+    h2_XY_negZ->SetName("hV0XY_negZ_InvMassFiltered");
+
+    // Restore full ranges
+    h3_XY_posZ->GetZaxis()->SetRange(0, 0);
+    h3_XY_negZ->GetZaxis()->SetRange(0, 0);
+
+    // Save filtered TH2Ds
+    h2_XY_posZ->Sumw2();
+    h2_XY_negZ->Sumw2();
+    h2_XY_posZ->Write();
+    h2_XY_negZ->Write();
+
+    std::cout << "Mass-filtered XY histograms written.\n";
+
+    // ==================================================================
+    // (3.5) Build UNNORMALIZED DIFFERENCE: posZ - negZ
+    // ==================================================================
+    fout->cd("XY_Differences");
+
+    TH2D* h2_XY_diff_raw =
+        (TH2D*) h2_XY_posZ->Clone("hV0XY_Diff_raw_posZ_minus_negZ");
+
+    h2_XY_diff_raw->Add(h2_XY_negZ, -1.0);
+    h2_XY_diff_raw->SetTitle("Raw difference: XY(posZ) - XY(negZ)");
+
+    h2_XY_diff_raw->Write();
+
+    std::cout << "Raw XY difference histogram written.\n";
+
+    // ==================================================================
+    // (4) Create NORMALIZED versions (divide each by total yield)
+    // ==================================================================
+
+    fout->cd("XY_Normalized");
+
+    // Compute total positive-Z and total negative-Z counts
+    double totalPosXY = h2_XY_posZ->Integral();
+    double totalNegXY = h2_XY_negZ->Integral();
+
+    std::cout << "Total +Z mass-filtered XY counts = " << totalPosXY << "\n";
+    std::cout << "Total -Z mass-filtered XY counts = " << totalNegXY << "\n";
+
+    if (totalPosXY <= 0 || totalNegXY <= 0) {
+        std::cerr << "ERROR: Zero totalPosXY or totalNegXY — cannot normalize Part F.\n";
+    } else {
+
+        // Normalize copies
+        TH2D* h2_XY_posZ_norm =
+            (TH2D*) h2_XY_posZ->Clone("hV0XY_posZ_InvMassFiltered_normalized");
+        TH2D* h2_XY_negZ_norm =
+            (TH2D*) h2_XY_negZ->Clone("hV0XY_negZ_InvMassFiltered_normalized");
+
+        h2_XY_posZ_norm->Scale(1.0 / totalPosXY);
+        h2_XY_negZ_norm->Scale(1.0 / totalNegXY);
+
+        h2_XY_posZ_norm->SetTitle("Normalized XY(+Z): f(x,y | Z>0)");
+        h2_XY_negZ_norm->SetTitle("Normalized XY(-Z): f(x,y | Z<0)");
+
+        h2_XY_posZ_norm->Write();
+        h2_XY_negZ_norm->Write();
+
+        std::cout << "Normalized XY histograms written.\n";
+
+        // --------------------------------------------------------------
+        // (4.5) NORMALIZED DIFFERENCE: posZ_norm - negZ_norm
+        // --------------------------------------------------------------
+
+        fout->cd("XY_Normalized_Differences");
+
+        TH2D* h2_XY_diff_norm =
+            (TH2D*) h2_XY_posZ_norm->Clone("hV0XY_Diff_norm_posZ_minus_negZ");
+
+        h2_XY_diff_norm->Add(h2_XY_negZ_norm, -1.0);
+        h2_XY_diff_norm->SetTitle(
+            "Normalized difference: XY(+Z)/N_{+Z} - XY(-Z)/N_{-Z}"
+        );
+
+        h2_XY_diff_norm->Write();
+
+        std::cout << "Normalized XY difference histogram written.\n";
+    } // end successful normalization case
+    } // end if both XY TH3Ds found
+
+    std::cout << "=== Finished Part F (XY vertex asymmetry) ===\n\n";
 
     // -----------------------------------------------------------------
     // Finalize: write and close files
