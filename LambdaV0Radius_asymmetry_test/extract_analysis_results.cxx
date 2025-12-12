@@ -996,6 +996,7 @@ void extract_analysis_results(const char* inputPath, const char* outputFolder)
     // Write original filtered 2D
     fout->cd();
     h2_ZPos->Sumw2();
+    h2_ZPos->SetOption("COLZ");
     h2_ZPos->Write("hV0RadiusVsZ_InvMassFiltered_original");
 
     std::cout << "Created mass-filtered TH2D: hV0RadiusVsZ_InvMassFiltered\n";
@@ -1329,6 +1330,7 @@ void extract_analysis_results(const char* inputPath, const char* outputFolder)
                 }
             }
 
+            h2_Z_diff_raw_posOnly->SetOption("COLZ");
             h2_Z_diff_raw_posOnly->Write();
 
 
@@ -1382,7 +1384,7 @@ void extract_analysis_results(const char* inputPath, const char* outputFolder)
                         h2_Z_diff_norm_posOnly->SetBinError(ix, izp, err);
                     }
                 }
-
+                h2_Z_diff_norm_posOnly->SetOption("COLZ");
                 h2_Z_diff_norm_posOnly->Write();
             }
             std::cout << "Saved positive-Z-only difference histograms.\n";
@@ -1608,6 +1610,11 @@ void extract_analysis_results(const char* inputPath, const char* outputFolder)
     h3_XY_posZ->GetZaxis()->SetRange(0, 0);
     h3_XY_negZ->GetZaxis()->SetRange(0, 0);
 
+    // --- VISUALIZATION SETTINGS (Standard plots) ---
+    h2_XY_posZ->SetOption("COLZ");
+    h2_XY_negZ->SetOption("COLZ");
+    // -----------------------------------------------
+
     // Save filtered TH2Ds
     h2_XY_posZ->Sumw2();
     h2_XY_negZ->Sumw2();
@@ -1626,10 +1633,46 @@ void extract_analysis_results(const char* inputPath, const char* outputFolder)
 
     h2_XY_diff_raw->Add(h2_XY_negZ, -1.0);
     h2_XY_diff_raw->SetTitle("Raw difference: XY(posZ) - XY(negZ)");
+    // --- VISUALIZATION SETTINGS ---
+    h2_XY_diff_raw->SetOption("COLZ");
 
     h2_XY_diff_raw->Write();
 
     std::cout << "Raw XY difference histogram written.\n";
+
+    // ==================================================================
+    // (3.6) Build RELATIVE ASYMMETRY: (Pos - Neg) / (Pos + Neg)
+    // ==================================================================
+    
+    // 1. Prepare Numerator: (Pos - Neg)
+    // We can just clone the diff we calculated in 3.5, or recalculate to be safe/clean
+    TH2D* h2_XY_rel_num = (TH2D*) h2_XY_posZ->Clone("hV0XY_RelDiff_Numerator");
+    h2_XY_rel_num->Add(h2_XY_negZ, -1.0);
+
+    // 2. Prepare Denominator: (Pos + Neg) / 2
+    TH2D* h2_XY_rel_den = (TH2D*) h2_XY_posZ->Clone("hV0XY_RelDiff_Denominator");
+    h2_XY_rel_den->Add(h2_XY_negZ, 1.0); // Add Neg (Sum)
+    // h2_XY_rel_den->Scale(0.5);           // Divide by 2 (Average)
+    // No need to take the average with that factor of 2!
+
+    // 3. Divide: Num / Den
+    // Note: We use the numerator as the base for the final histogram
+    TH2D* h2_XY_rel_asym = (TH2D*) h2_XY_rel_num->Clone("hV0XY_Relative_Asymmetry");
+    h2_XY_rel_asym->Divide(h2_XY_rel_den);
+
+    // 4. Clean up Labels and Titles
+    h2_XY_rel_asym->SetTitle("Relative Asymmetry: (XY(+Z) - XY(-Z))/(XY(+Z) + XY(-Z))");
+    // h2_XY_rel_asym->GetZaxis()->SetTitle("(N_{+} - N_{-}) / <N>");
+
+    // 5. Visualization Settings
+    h2_XY_rel_asym->SetOption("COLZ");
+    h2_XY_rel_asym->Write();
+    
+    // Clean up temporary histograms to free memory
+    delete h2_XY_rel_num;
+    delete h2_XY_rel_den;
+
+    std::cout << "Relative Asymmetry histogram written.\n";
 
     // ==================================================================
     // (4) Create NORMALIZED versions (divide each by total yield)
@@ -1657,6 +1700,11 @@ void extract_analysis_results(const char* inputPath, const char* outputFolder)
         h2_XY_posZ_norm->Scale(1.0 / totalPosXY);
         h2_XY_negZ_norm->Scale(1.0 / totalNegXY);
 
+        // --- VISUALIZATION SETTINGS (Standard plots) ---
+        h2_XY_posZ_norm->SetOption("COLZ");
+        h2_XY_negZ_norm->SetOption("COLZ");
+        // -----------------------------------------------
+
         h2_XY_posZ_norm->SetTitle("Normalized XY(+Z): f(x,y | Z>0)");
         h2_XY_negZ_norm->SetTitle("Normalized XY(-Z): f(x,y | Z<0)");
 
@@ -1678,14 +1726,53 @@ void extract_analysis_results(const char* inputPath, const char* outputFolder)
         h2_XY_diff_norm->SetTitle(
             "Normalized difference: XY(+Z)/N_{+Z} - XY(-Z)/N_{-Z}"
         );
+        h2_XY_diff_norm->SetOption("COLZ"); // Show color bar
 
         h2_XY_diff_norm->Write();
 
         std::cout << "Normalized XY difference histogram written.\n";
+
+        // --------------------------------------------------------------
+        // (4.6) NORMALIZED RELATIVE ASYMMETRY: DiffNorm / SumNorm (SumNorm = AverageNorm*2, if you'd prefer)
+        // Formula: (PosNorm - NegNorm) / (PosNorm + NegNorm)
+        // --------------------------------------------------------------
+
+        // 1. Numerator: We already have (PosNorm - NegNorm) in h2_XY_diff_norm.
+        // We clone it so we don't modify the original difference plot.
+        TH2D* h2_XY_rel_norm_num = 
+            (TH2D*) h2_XY_diff_norm->Clone("hV0XY_RelDiff_Norm_Num");
+
+        // 2. Denominator: (PosNorm + NegNorm)
+        TH2D* h2_XY_rel_norm_den = 
+            (TH2D*) h2_XY_posZ_norm->Clone("hV0XY_RelDiff_Norm_Den");
+        h2_XY_rel_norm_den->Add(h2_XY_negZ_norm, 1.0); // Add (Sum)
+        // h2_XY_rel_norm_den->Scale(0.5);                // Divide by 2 (Average)
+        // Actuallu this factor of 2 is not that useful. Just remove it!
+
+        // 3. Divide: Num / Den
+        TH2D* h2_XY_rel_norm_asym = 
+            (TH2D*) h2_XY_rel_norm_num->Clone("hV0XY_RelNorm_Asymmetry");
+        h2_XY_rel_norm_asym->Divide(h2_XY_rel_norm_den);
+
+        // 4. Set Titles and Option
+        h2_XY_rel_norm_asym->SetTitle(
+            "((XY(+Z)/N_{+Z}) - (XY(-Z)/N_{-Z})) / (XY(+Z)/N_{+Z} + XY(-Z)/N_{-Z})"
+        );
+        h2_XY_rel_norm_asym->SetOption("COLZ");
+
+        h2_XY_rel_norm_asym->Write();
+
+        // Clean up temporary helper histograms
+        delete h2_XY_rel_norm_num;
+        delete h2_XY_rel_norm_den;
+
+        std::cout << "Normalized Relative Asymmetry histogram written.\n";
     } // end successful normalization case
     } // end if both XY TH3Ds found
 
     std::cout << "=== Finished Part F (XY vertex asymmetry) ===\n\n";
+
+    
 
     // -----------------------------------------------------------------
     // Finalize: write and close files
