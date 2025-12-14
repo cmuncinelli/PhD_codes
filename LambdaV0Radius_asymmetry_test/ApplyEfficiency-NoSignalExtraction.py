@@ -7,8 +7,7 @@ Simplified, Lambda-only version of calculateCorrectedpTSpectra.py.
 Inputs:
  - AnalysisResults_root : contains "Lambda/hLambdaPtZMass" (TH3D)
  - EfficiencyCorrections_root : contains hEfficiencyXAcceptance, hSignalLoss, hEventSplitting, hEventLoss
-#  - ProcessedProjections_root : contains TF1 "hMass_gausPlusQuadratic" used to determine mass mean & sigma --> Deprecated!
- - LambdaSignalExtraction_root : contains the signal-extracted pT spectra.
+ - ProcessedProjections_root : contains TF1 "hMass_gausPlusQuadratic" used to determine mass mean & sigma
 
 Output:
  - CorrectedpTSpectra_Lambda.root (saved in same folder as AnalysisResults_root)

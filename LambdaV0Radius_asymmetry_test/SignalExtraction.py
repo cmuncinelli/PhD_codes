@@ -310,6 +310,8 @@ for ipt in range(1, n_pt_bins + 1):
 
         h_sideband = h_mass.Clone(f"hSideband_pt{ipt}_z{iz}")
         # This selection code to exclude the region between the two background ranges does NOT work with log-likelihood!!!
+        # The part below is NOT necessary for the current version of the fit -- it is only to properly visualize the
+        # sideband that was fitted alongside with the original sidebands when doing QA!
         h_sideband.Reset("ICES")
         for ibin in range(1, h_mass.GetNbinsX() + 1):
             x = h_mass.GetXaxis().GetBinCenter(ibin)
@@ -317,11 +319,50 @@ for ipt in range(1, n_pt_bins + 1):
                (mean + 4*sigma <= x <= mean + 6*sigma):
                 h_sideband.SetBinContent(ibin, h_mass.GetBinContent(ibin))
                 h_sideband.SetBinError(ibin, h_mass.GetBinError(ibin))
-            else:
-                # By doing this, only the sideband bins are considered in
-                # the fit, as signal + small gap range has negative errors!
-                # (This is the part that only works for chi2 minimization)
-                h_sideband.SetBinError(ibin, -1.0)
+            # else:
+            #     # By doing this, only the sideband bins are considered in
+            #     # the fit, as signal + small gap range has negative errors!
+            #     # (This is the part that only works for chi2 minimization)
+            #     h_sideband.SetBinError(ibin, -1.0)
+
+        # Defining the sidebands in a RooFit-like way, but will conduct the fit using :
+            # Nominal sidebands
+        sb_left_low  = mean - 6.0 * sigma
+        sb_left_high = mean - 4.0 * sigma
+        sb_right_low = mean + 4.0 * sigma
+        sb_right_high= mean + 6.0 * sigma
+
+        # Protect against histogram boundaries:
+        if sb_left_low < mass_min:
+            sb_left_low  = mass_min
+            sb_left_high = mean - 3.0 * sigma
+        if sb_right_high > mass_max:
+            sb_right_low  = mean + 3.0 * sigma
+            sb_right_high = mass_max
+
+        # Defining the sidebands in a TGraphError, which should only include the desired points for the fit:
+        graph_sideband = ROOT.TGraphErrors()
+        point = 0
+        for ibin in range(1, h_mass.GetNbinsX() + 1):
+            x = h_mass.GetBinCenter(ibin)
+
+            in_left_sb  = sb_left_low  <= x <= sb_left_high
+            in_right_sb = sb_right_low <= x <= sb_right_high
+
+            if not (in_left_sb or in_right_sb):
+                continue
+
+            y  = h_mass.GetBinContent(ibin)
+            ey = h_mass.GetBinError(ibin)
+
+            # Skip empty bins to avoid zero-error issues
+            if ey <= 0:
+                continue
+            ex = 0.5 * h_mass.GetBinWidth(ibin)
+
+            graph_sideband.SetPoint(point, x, y)
+            graph_sideband.SetPointError(point, ex, ey)
+            point += 1
 
         # Background model (quadratic by default)
         bkg_fit = ROOT.TF1(
@@ -330,7 +371,7 @@ for ipt in range(1, n_pt_bins + 1):
             mass_min,
             mass_max
         )
-        # This does not work! The fit is empty in the end!
+        # This does not work! The fit is empty in the end! This is a C++ only thing!
         # # Redefining the background model to exclude the central, signal+gap, region!
         # def bkg_func(x, p):
         #     xx = x[0]
@@ -347,7 +388,8 @@ for ipt in range(1, n_pt_bins + 1):
         # )
 
         # fit_result_bkg = h_sideband.Fit(bkg_fit, "QS0L") # Also doing this with log-likelihood
-        fit_result_bkg = h_sideband.Fit(bkg_fit, "QS0") # Switched back to chi2 fitting because the -1 error is only skipped with chi2 fitting!
+        # fit_result_bkg = h_sideband.Fit(bkg_fit, "QS0") # Switched back to chi2 fitting because the -1 error is only skipped with chi2 fitting!
+        fit_result_bkg = graph_sideband.Fit(bkg_fit, "QS0")
 
         # Save sideband fit for QA
         dir_fits_sidebands.cd()
@@ -423,11 +465,6 @@ for ipt in range(1, n_pt_bins + 1):
         # bins the errors might have occurred.
         # (Notice that low statistics bins are expected to give an error in the
         # integration process!)
-        bkg_err = bkg_fit.IntegralError(
-            x_low, x_high,
-            fit_result_bkg.GetParams(),
-            fit_result_bkg.GetCovarianceMatrix().GetMatrixArray()
-        )
         try:
             if fit_result_bkg.Status() != 0: # Also added a check to see if the quality of the fit was good enough.
                 print(f"\t[Fit FAILED] ipt={ipt}, iz={iz}")
