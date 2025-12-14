@@ -31,6 +31,7 @@ import ROOT
 import math
 
 ROOT.gROOT.SetBatch(True)  # Do not pop up canvases
+ROOT.gErrorIgnoreLevel = ROOT.kFatal # Overkill, but otherwise code wrote too much on screen!
 ROOT.TH1.SetDefaultSumw2(True)
 ROOT.TH2.SetDefaultSumw2(True)
 ROOT.TH3.SetDefaultSumw2(True)
@@ -458,7 +459,10 @@ for ipt in range(1, n_pt_bins + 1):
 
         # One-shot integration (includes covariance matrix!)
         # bkg_val = fit_result_bkg.Integral(x_low, x_high)
-        bkg_val = bkg_fit.Integral(x_low, x_high) # Actual proper way to do this
+        if h_sideband.GetEntries() > 0:
+            bkg_val = bkg_fit.Integral(x_low, x_high) # Actual proper way to do this
+        else:
+            bkg_val = 0
 
         ##################################
         # Encapsulating everything under a "try...except" block to see in which
@@ -467,7 +471,7 @@ for ipt in range(1, n_pt_bins + 1):
         # integration process!)
         try:
             if fit_result_bkg.Status() != 0: # Also added a check to see if the quality of the fit was good enough.
-                print(f"\t[Fit FAILED] ipt={ipt}, iz={iz}")
+                # print(f"\t[Fit FAILED] ipt={ipt}, iz={iz}") # Silenced too many prints
                 bkg_val = 0.0
                 bkg_err = 0.0
             else:
@@ -478,11 +482,12 @@ for ipt in range(1, n_pt_bins + 1):
                     fit_result_bkg.GetCovarianceMatrix().GetMatrixArray()
                 )
         except Exception as e:
-            print(
-                f"\t[IntegralError FAILED] ipt={ipt}, iz={iz} "
-                f"\t| range=({x_low:.3f}, {x_high:.3f})"
-            )
-            print(f"  Reason: {e}")
+            # Silenced too many prints:
+            # print(
+            #     f"\t[IntegralError FAILED] ipt={ipt}, iz={iz} "
+            #     f"\t| range=({x_low:.3f}, {x_high:.3f})"
+            # )
+            # print(f"  Reason: {e}")
 
             bkg_val = 0.0
             bkg_err = 0.0
