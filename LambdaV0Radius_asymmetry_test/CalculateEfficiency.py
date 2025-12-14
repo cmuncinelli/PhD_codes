@@ -187,8 +187,11 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
     output_name = f"EfficiencyCorrections-{clean_name}.root"
     output_path = os.path.join(input_dir, output_name)
 
+    signal_extracted_root_path = f"LambdaSignalExtraction-{clean_name}.root"
+    signal_extracted_root_path = os.path.join(input_dir, signal_extracted_root_path) # This is in the same folder as the Data/MC analysis results!
 
     print(f"Input file : {input_root_path}")
+    print(f"Signal extraction file : {signal_extracted_root_path}")
     print(f"Main dir   : {main_dir}")
     print(f"Species    : {species}")
     print(f"Output file: {output_path}")
@@ -197,6 +200,9 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
     fin = ROOT.TFile.Open(input_root_path, "READ")
     if not fin or fin.IsZombie():
         raise RuntimeError(f"Could not open input ROOT file: {input_root_path}")
+    fsigExtracted = ROOT.TFile.Open(signal_extracted_root_path, "READ")
+    if not fsigExtracted or fsigExtracted.IsZombie():
+        raise RuntimeError(f"Could not open input ROOT file: {signal_extracted_root_path}")
 
     # Determine histogram names for Lambda
     # The user wanted replacements:
@@ -266,20 +272,28 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
     # N. Reco in the selected reco colls :
     # =====================================================================
     # raw MC spectra: TH2D(pT,Z)
-    rawMCSpectraPtVsZ = fin.Get(f"{main_dir}/Lambda/hLambdaPtZ") # --> This is the guy you will need to change for the signal extraction code!!!
-    if not rawMCSpectraPtVsZ:
-        raise RuntimeError(f"Could not find '{main_dir}/Lambda/hLambdaPtZ' in the input file.")
-    rawMCSpectraPtVsZ.Sumw2()
+    # rawMCSpectraPtVsZ = fin.Get(f"{main_dir}/Lambda/hLambdaPtZ") # --> This is the guy you will need to change for the signal extraction code!!!
+    # Fetching the 2D plot:
+    rawMCSpectraPtVsZ_SigExtracted2D = fsigExtracted.Get(f"SignalExtractionMaps/hSignalPtZ")
+    if not rawMCSpectraPtVsZ_SigExtracted2D:
+        raise RuntimeError(f"Could not find 'SignalExtractionMaps/hSignalPtZ' in the input file.")
+    rawMCSpectraPtVsZ_SigExtracted2D.Sumw2()
+    
+    # This will get you the 1D version:
+    # rawMCSpectraPtVsZ_SigExtracted = fsigExtracted.Get(f"FinalPtSpectra/hPt_FullZ")
+    # if not rawMCSpectraPtVsZ_SigExtracted:
+    #     raise RuntimeError(f"Could not find 'FinalPtSpectra/hPt_FullZ' in the input file.")
+    # rawMCSpectraPtVsZ_SigExtracted.Sumw2()
 
-        # Rebinning other histograms (hGenLambdaRecoEvtPtVsZ) to match this rawMCSpectraPtVsZ:
+        # Rebinning other histograms (hGenLambdaRecoEvtPtVsZ) to match this rawMCSpectraPtVsZ_SigExtracted:
     # First, get the desired geometry via a clone + error elimination:
-    hGenLambdaRecoEvtPtVsZ_rebinned = rawMCSpectraPtVsZ.Clone("hGenLambdaRecoEvtPtVsZ_rebinned")
+    hGenLambdaRecoEvtPtVsZ_rebinned = rawMCSpectraPtVsZ_SigExtracted2D.Clone("hGenLambdaRecoEvtPtVsZ_rebinned")
     hGenLambdaRecoEvtPtVsZ_rebinned.Reset("ICES")  # reset contents + errors
     hGenLambdaRecoEvtPtVsZ_rebinned.Sumw2()
     rebinTH2D(src = hGenLambdaRecoEvtPtVsZ, dst = hGenLambdaRecoEvtPtVsZ_rebinned)
 
     # Same for hGenLambdaPtVsZ:
-    hGenLambdaPtVsZ_rebinned = rawMCSpectraPtVsZ.Clone("hGenLambdaPtVsZ_rebinned")
+    hGenLambdaPtVsZ_rebinned = rawMCSpectraPtVsZ_SigExtracted2D.Clone("hGenLambdaPtVsZ_rebinned")
     hGenLambdaPtVsZ_rebinned.Reset("ICES")  # reset contents + errors
     hGenLambdaPtVsZ_rebinned.Sumw2()
     rebinTH2D(src = hGenLambdaPtVsZ, dst = hGenLambdaPtVsZ_rebinned)
@@ -344,20 +358,26 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
     hRecoEvents.Sumw2()
 
     # =====================================================================
-    # EFF × ACC (2D: pT vs Z)
+    # EFF × ACC x BR (2D: pT vs Z)
     # =====================================================================
     # Calculate Efficiency x Acc x B.R
     # N. Reco in the selected reco colls / N. Gen V0s with at least one reco coll
-    hEffAcc = rawMCSpectraPtVsZ.Clone("hEfficiencyXAcceptance2D")
+    hEffAcc = rawMCSpectraPtVsZ_SigExtracted2D.Clone("hEfficiencyXAcceptance2D")
     # An explicitly binomial error propagation -- These two histograms are of course correlated!!!
     # The error bars add differently!
-    hEffAcc.Divide(rawMCSpectraPtVsZ, hGenLambdaRecoEvtPtVsZ_rebinned, 1, 1, "B")
+    hEffAcc.Divide(rawMCSpectraPtVsZ_SigExtracted2D, hGenLambdaRecoEvtPtVsZ_rebinned, 1, 1, "B")
 
     # =====================================================================
     # SIGNAL LOSS (2D)
     # =====================================================================
     # Calculate Signal loss
     # Signal Loss = N. Gen V0s with at least one reco coll / N. Gen V0s in ALL Generated colls
+    ################
+    ### Notice this odd metric does NOT need signal extraction as it is a Generator-level only
+    ### metric! Also, by multiplying signal loss and this particular definition of efficiency,
+    ### we recover the usual:
+    ### Efficiency*Acceptance*BR = N. Reco in the selected reco colls / N. Gen V0s in ALL Generated colls
+    ################
 
     hSignalLoss2D = hGenLambdaRecoEvtPtVsZ_rebinned.Clone("hSignalLoss2D")
     # Same correction as above -- binomial error bars!
@@ -426,8 +446,18 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
 
     # --- Step A: Project Numerators and Denominators ---
 
-    # 1. Reco (Numerator for Efficiency) -> from rawMCSpectraPtVsZ
-    rec_full, rec_pos, rec_neg = get_z_projections(rawMCSpectraPtVsZ, "hRec1D")
+    # 1. Reco (Numerator for Efficiency) -> from rawMCSpectraPtVsZ_SigExtracted2D
+    # rec_full, rec_pos, rec_neg = get_z_projections(rawMCSpectraPtVsZ_SigExtracted2D, "hRec1D")
+    #########################
+    ### In the newer version of the code, which uses signal extraction beforehand, you cannot do these kinds 
+    ### of projections with rawMCSpectraPtVsZ_SigExtracted2D! The errors are no longer Poissonian (we did
+    ### a fancy background subtraction that introduces errors from the fit covariance matrix!), so they
+    ### need to be properly propagated. This was already done in the SignalExtraction.py code, so we can just
+    ### fetch the project histograms from there!
+    #########################
+    rec_full = fsigExtracted.Get("FinalPtSpectra/hPt_FullZ") # full Z projection
+    rec_pos = fsigExtracted.Get("FinalPtSpectra/hPt_PosZ") # Z >= 0 projection
+    rec_neg = fsigExtracted.Get("FinalPtSpectra/hPt_NegZ") # Z < 0 projection
     
     # 2. GenReco (Denominator for Efficiency / Numerator for Signal Loss) -> from hGenLambdaRecoEvtPtVsZ_rebinned
     genrec_full, genrec_pos, genrec_neg = get_z_projections(hGenLambdaRecoEvtPtVsZ_rebinned, "hGenRec1D")
@@ -473,7 +503,7 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
     hGenAndRecoEvts.Write() # Generated and reco events
     hGenLambdaPtVsZ.Write() # Generated Lambda (all generated)
     hGenLambdaRecoEvtPtVsZ.Write() # Generated Lambda with at least one reco
-    rawMCSpectraPtVsZ.Write() # Raw MC Spectra
+    rawMCSpectraPtVsZ_SigExtracted2D.Write() # Raw MC Spectra, in 2D
 
     hEffAcc.Write()          # 2D pT×Z efficiency × acceptance # Efficiency x Acc x B.R. Output name is hEfficiencyXAcceptance2D
     hRecoEvents.Write()       # Reco events

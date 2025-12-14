@@ -67,135 +67,52 @@ def getErrorHist(CorrSpectra, RawSpectra, EffAcc):
     return hCorrSpectraErrors, hRawSpectraErrors, hEffAccErrors
 
 # --------------------------- Core routine --------------------------------
-def apply_efficiency(analysis_results_path, corrections_path, processed_projections_path, main_dir="asymmetric_rapidity_test"):
+def apply_efficiency(analysis_results_path, corrections_path, main_dir="asymmetric_rapidity_test"):
     """
     Main function.
     - analysis_results_path: AnalysisResults root with Lambda/hLambdaPtZMass
     - corrections_path: root with MC corrections (hEfficiencyXAcceptance, hSignalLoss, hEventSplitting, hEventLoss)
-    - processed_projections_path: root with TF1 fit named "hMass_gausPlusQuadratic"
     """
+    # - processed_projections_path: root with TF1 fit named "hMass_gausPlusQuadratic" --> NO LONGER NEED THIS. Now using Signal Extraction codes!
     # 1) basic checks & open files
     print("\nStarting code -- Basic checks and opening files")
-    for p in (analysis_results_path, corrections_path, processed_projections_path):
+    for p in (analysis_results_path, corrections_path):
         if not os.path.isfile(p):
             raise FileNotFoundError(f"Input file not found: {p}")
 
     fin = ROOT.TFile.Open(analysis_results_path, "READ")
     fcor = ROOT.TFile.Open(corrections_path, "READ")
-    fproc = ROOT.TFile.Open(processed_projections_path, "READ")
+    # fproc = ROOT.TFile.Open(processed_projections_path, "READ")
+
+    # Extracting the file path from the current directory of the AnalysisResults -- Makes things a lot simpler!
+        # Can't do the same about the MC efficiency calculation, as the
+        # names of the folders of anchored datasets are never obvious!
+    input_dir = os.path.dirname(os.path.abspath(analysis_results_path))
+        # Extract the base name without extension
+    base_input_name = os.path.splitext(os.path.basename(analysis_results_path))[0]
+        # Remove leading "AnalysisResults-" if present
+    clean_name = base_input_name.replace("AnalysisResults-", "", 1)
+    signal_extracted_root_path = f"LambdaSignalExtraction-{clean_name}.root"
+    signal_extracted_root_path = os.path.join(input_dir, signal_extracted_root_path) # This is in the same folder as the Data/MC analysis results!
+    fsigExtractedData = ROOT.TFile.Open(signal_extracted_root_path, "READ")
 
     if not fin or fin.IsZombie():
         raise RuntimeError(f"Could not open {analysis_results_path}")
     if not fcor or fcor.IsZombie():
         raise RuntimeError(f"Could not open {corrections_path}")
-    if not fproc or fproc.IsZombie():
-        raise RuntimeError(f"Could not open {processed_projections_path}")
-
-    # 2) retrieve TF1 fit from ProcessedProjections to get mean and sigma
-    fit_name = "hMass_gausPlusQuadratic"
-    fitFunc = fproc.Get(fit_name)
-    if not fitFunc or not isinstance(fitFunc, ROOT.TF1):
-        # Try to search for the function in the file (some tasks store TF1s as primitives)
-        print(f"Warning: TF1 '{fit_name}' not found directly in {processed_projections_path}. Trying file search...")
-        fitFunc = None
-        for key in fproc.GetListOfKeys():
-            obj = key.ReadObj()
-            if isinstance(obj, ROOT.TF1) and obj.GetName() == fit_name:
-                fitFunc = obj
-                break
-        if not fitFunc:
-            raise RuntimeError(f"TF1 '{fit_name}' not found in {processed_projections_path}. Needed to determine +/- 3sigma mass window.")
-
-    mean = fitFunc.GetParameter(1)  # gaussian mean at par 1 for gaus
-    sigma = abs(fitFunc.GetParameter(2))  # sigma at par 2
-    mass_min = mean - 3.0 * sigma
-    mass_max = mean + 3.0 * sigma
-
-    print(f"Using mass window: mean = {mean:.6f}, sigma = {sigma:.6f} -> [{mass_min:.6f}, {mass_max:.6f}]")
-
-    # 3) get raw 3D histogram: Lambda/hLambdaPtZMass
-    th3_path = f"{main_dir}/Lambda/hLambdaPtZMass"
-    th3 = fin.Get(th3_path)
-    if not th3:
-        # try without nested Lambda dir
-        th3 = fin.Get("Lambda/hLambdaPtZMass") or fin.Get("hLambdaPtZMass")
-    if not th3:
-        raise RuntimeError(f"TH3D 'Lambda/hLambdaPtZMass' not found in {analysis_results_path} under '{main_dir}' or root. Make sure the path is correct.")
-
-    if not isinstance(th3, ROOT.TH3):
-        raise RuntimeError("Found object is not a TH3. Aborting.")
-
-    # 4) determine mass axis bin indices and project TH3 -> TH2 (pT vs Z) integrating over mass window
-    mass_axis = th3.GetZaxis()  # per your definition: (axisPt, axisZPos, axisLambdaMass) => mass is axis 3 (z)
-    bin_min = mass_axis.FindBin(mass_min)
-    bin_max = mass_axis.FindBin(mass_max)
-    # clamp bin ranges
-    if bin_min < 1: bin_min = 1
-    if bin_max > mass_axis.GetNbins(): bin_max = mass_axis.GetNbins()
-
-    print(f"Mass axis bins used: {bin_min} .. {bin_max} of {mass_axis.GetNbins()}")
-
-    # ProjectionXY integrates over z-axis bins (3rd axis) -> gives TH2: x=pt, y=zpos
-    # h2_pt_z_masswindow = th3.ProjectionXY("hLambdaPtZ_MassWindow", bin_min, bin_max)
-    # h2_pt_z_masswindow.SetTitle("Lambda p_{T} vs Z (mass window +/- 3sigma)")
-    # h2_pt_z_masswindow.Sumw2()
-    # Had to actually create a ROOT 6.36 version equivalent -- Same problem as in extract_analysis_results.cxx!
-    # This version does not have ProjectionXY yet!
-        # Set the Z-axis to the desired mass window
-    th3.GetZaxis().SetRange(bin_min, bin_max)
-
-    # Equivalent to ProjectionXY: integrates over z, keeps X=pt, Y=zpos
-    h2_pt_z_masswindow = th3.Project3D("yx")
-    h2_pt_z_masswindow.SetName("hLambdaPtZ_MassWindow")
-    h2_pt_z_masswindow.SetTitle("Lambda p_{T} vs Z (mass window +/- 3sigma)")
-    # Restore full range of Z
-    th3.GetZaxis().SetRange(0, 0)
-
-    h2_pt_z_masswindow.Sumw2()
-
+    if not fsigExtractedData or fsigExtractedData.IsZombie():
+        raise RuntimeError(f"Could not open {signal_extracted_root_path}")
 
     # ------------------------------
-    # 5) produce 1D pT spectra (projection on X) for:
+    # 5) Fetch 1D pT spectra (projection on X) for:
     #   - full Z (all y bins)
     #   - Z >= 0  (y bins with center >= 0)
     #   - Z < 0   (y bins with center < 0)
     # ------------------------------
-    yaxis = h2_pt_z_masswindow.GetYaxis()
-    nbins_y = yaxis.GetNbins()
-    # find first bin with center >= 0
-    first_nonneg_bin = None
-    for by in range(1, nbins_y + 1):
-        center = yaxis.GetBinCenter(by)
-        if center >= 0:
-            first_nonneg_bin = by
-            break
-    if first_nonneg_bin is None:
-        first_nonneg_bin = nbins_y + 1  # no non-negative bins
-
-    # full Z projection
-    h_pt_fullZ = h2_pt_z_masswindow.ProjectionX("hRaw_pT_fullZ", 1, nbins_y)
-    h_pt_fullZ.SetTitle("Raw Lambda p_{T} (full Z) within mass window")
-    h_pt_fullZ.Sumw2()
-
-    # Z >= 0 projection
-    if first_nonneg_bin <= nbins_y:
-        h_pt_Zpos = h2_pt_z_masswindow.ProjectionX("hRaw_pT_Zpos", first_nonneg_bin, nbins_y)
-    else:
-        h_pt_Zpos = h_pt_fullZ.Clone("hRaw_pT_Zpos")
-        for i in range(1, h_pt_Zpos.GetNbinsX() + 1):
-            h_pt_Zpos.SetBinContent(i, 0.0); h_pt_Zpos.SetBinError(i, 0.0)
-    h_pt_Zpos.SetTitle("Raw Lambda p_{T} (Z >= 0) within mass window")
-    h_pt_Zpos.Sumw2()
-
-    # Z < 0 projection
-    if first_nonneg_bin > 1:
-        h_pt_Zneg = h2_pt_z_masswindow.ProjectionX("hRaw_pT_Zneg", 1, first_nonneg_bin - 1)
-    else:
-        h_pt_Zneg = h_pt_fullZ.Clone("hRaw_pT_Zneg")
-        for i in range(1, h_pt_Zneg.GetNbinsX() + 1):
-            h_pt_Zneg.SetBinContent(i, 0.0); h_pt_Zneg.SetBinError(i, 0.0)
-    h_pt_Zneg.SetTitle("Raw Lambda p_{T} (Z < 0) within mass window")
-    h_pt_Zneg.Sumw2()
+    h_pt_fullZ_2D = fsigExtractedData.Get("SignalExtractionMaps/hSignalPtZ")
+    h_pt_fullZ = fsigExtractedData.Get("FinalPtSpectra/hPt_FullZ") # full Z projection
+    h_pt_Zpos = fsigExtractedData.Get("FinalPtSpectra/hPt_PosZ") # Z >= 0 projection
+    h_pt_Zneg = fsigExtractedData.Get("FinalPtSpectra/hPt_NegZ") # Z < 0 projection
 
     # ------------------------------
     # 6) load corrections from corrections file (TH2D: pT vs Z)
@@ -205,9 +122,8 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
     hSignalLoss = fcor.Get("hSignalLoss2D")     # Signal Loss (TH2D pT×Z)
 
     # Load scalar event-level corrections
-    hEvtSplitting = fcor.Get("hEventLoss")
-    hEvtLoss      = fcor.Get("hEventSplitting")
-
+    hEvtSplitting = fcor.Get("hEventSplitting")
+    hEvtLoss      = fcor.Get("hEventLoss")
 
     # Basic checks
     if not hEffAcc or not hSignalLoss or not hEvtSplitting or not hEvtLoss:
@@ -226,9 +142,9 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
 
     # get event-level scalars
     EvtSplitValue = hEvtSplitting.GetBinContent(1)
-    EvtSplitError = hEvtSplitting.GetBinError(1)
+    # EvtSplitError = hEvtSplitting.GetBinError(1)
     EvtLossValue = hEvtLoss.GetBinContent(1)
-    EvtLossError = hEvtLoss.GetBinError(1)
+    # EvtLossError = hEvtLoss.GetBinError(1)
 
     if EvtSplitValue == 0:
         raise RuntimeError("Event splitting value is zero -> division by zero in scaling.")
@@ -381,8 +297,6 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
     # ------------------------------
     hCorrErrors, hRawErrors, hEffErrors = getErrorHist(hCorr_fullZ, h_pt_fullZ, hEff_fullZ)
 
-
-
     # =====================================================================
     # 9.5) Diagnostic plots: efficiencies, signal-loss, raw and corrected spectra
     # =====================================================================
@@ -418,7 +332,7 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
         return h_ratio
 
     def normalize_spectrum(h, Nev, label):
-        """Convert histogram to (1/Nev)*(1/ΔpT)*counts."""
+        """Convert histogram to (1/Nev)*(1/dpT)*counts."""
         out = h.Clone(label)
         for ib in range(1, out.GetNbinsX() + 1):
             bw = out.GetBinWidth(ib)
@@ -429,9 +343,12 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
         return out
 
     # Event normalization = total reconstructed events (same as in corrections)
-    NEV = hEvtSplitting.GetBinContent(1) * hEvtLoss.GetBinContent(1)
-    if NEV <= 0:
-        raise RuntimeError("Got a null number of events!")
+    # NEV = hEvtSplitting.GetBinContent(1) * hEvtLoss.GetBinContent(1)
+    # if NEV <= 0:
+    #     raise RuntimeError("Got a null number of events!")
+    # Getting the actual number of events from the DATA part -- We don't want the Nev from MC!!!
+    hCentrality = fin.Get(f"{main_dir}/hEventCentrality") # Just to get the number of entries!
+    NEV = hCentrality.GetEntries()
 
     # ------------------------------
     # PLOT 1: Signal Loss vs pT
@@ -510,13 +427,21 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
     hRaw_fullZ_norm = normalize_spectrum(h_pt_fullZ, NEV, "hRaw_fullZ_norm")
     hRaw_Zpos_norm  = normalize_spectrum(h_pt_Zpos,  NEV, "hRaw_Zpos_norm")
     hRaw_Zneg_norm  = normalize_spectrum(h_pt_Zneg,  NEV, "hRaw_Zneg_norm")
+    # Also normalizing by the size of the dz projection -- These should be d^{2}N/dp_{T}dz plots!
+        # Getting the range of Z values used:
+    yaxis = h_pt_fullZ_2D.GetYaxis()  # Z position
+    full_z_range_size = abs(yaxis.GetXmax() - yaxis.GetXmin())
+    hRaw_fullZ_norm.Scale(1./full_z_range_size)
+    hRaw_Zpos_norm.Scale(1./(full_z_range_size/2))
+    hRaw_Zneg_norm.Scale(1./(full_z_range_size/2))
 
     # Ratio histos
-    # Halving the FullZ histogram for direct comparison with the corrected histograms:
-    hRaw_fullZ_norm_halved = hRaw_fullZ_norm.Clone("hRaw_fullZ_norm_halved")
-    hRaw_fullZ_norm_halved.Scale(0.5)
-    hRaw_ratio_Zpos = make_ratio_hist(hRaw_Zpos_norm, hRaw_fullZ_norm_halved, "hRawRatio_ZposFull")
-    hRaw_ratio_Zneg = make_ratio_hist(hRaw_Zneg_norm, hRaw_fullZ_norm_halved, "hRawRatio_ZnegFull")
+    # No need for halves when we already have d^2N/dpT dz!
+    # # Halving the FullZ histogram for direct comparison with the corrected histograms:
+    # hRaw_fullZ_norm_halved = hRaw_fullZ_norm.Clone("hRaw_fullZ_norm_halved")
+    # hRaw_fullZ_norm_halved.Scale(0.5)
+    hRaw_ratio_Zpos = make_ratio_hist(hRaw_Zpos_norm, hRaw_fullZ_norm, "hRawRatio_ZposFull")
+    hRaw_ratio_Zneg = make_ratio_hist(hRaw_Zneg_norm, hRaw_fullZ_norm, "hRawRatio_ZnegFull")
 
     c_raw = ROOT.TCanvas("cRawSpectra", "Raw pT spectra", 1200, 1000)
     # Larger bottom panel (35%)
@@ -537,28 +462,28 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
 
     # Upper panel
     pad1.cd()
-    hRaw_fullZ_norm_halved.GetXaxis().SetRangeUser(0, 20)
+    hRaw_fullZ_norm.GetXaxis().SetRangeUser(0, 20)
     hRaw_Zpos_norm.GetXaxis().SetRangeUser(0, 20)
     hRaw_Zneg_norm.GetXaxis().SetRangeUser(0, 20)
 
     for h, col in [
-        (hRaw_fullZ_norm_halved, ROOT.kBlack),
+        (hRaw_fullZ_norm, ROOT.kBlack),
         (hRaw_Zpos_norm,  ROOT.kRed+1),
         (hRaw_Zneg_norm,  ROOT.kBlue+1)
     ]:
         h.SetLineColor(col)
         h.SetMarkerColor(col)
         h.SetMarkerStyle(20)
-        h.SetTitle(";p_{T} (GeV/c);(1/N_{evt}) dN/dp_{T}")
+        h.SetTitle(";p_{T} (GeV/c);(1/N_{evt}) d^{2}N/dp_{T}dz")
         h.GetYaxis().SetTitleOffset(1.3)
 
     # hRaw_fullZ_norm.Draw("E")
-    hRaw_fullZ_norm_halved.Draw("E")
+    hRaw_fullZ_norm.Draw("E")
     hRaw_Zpos_norm.Draw("E SAME")
     hRaw_Zneg_norm.Draw("E SAME")
 
     leg3 = ROOT.TLegend(0.60, 0.70, 0.88, 0.88)
-    leg3.AddEntry(hRaw_fullZ_norm_halved, "#Lambda full Z (x0.5)", "lep")
+    leg3.AddEntry(hRaw_fullZ_norm, "#Lambda full Z", "lep")
     leg3.AddEntry(hRaw_Zpos_norm,  "#Lambda Z >= 0", "lep")
     leg3.AddEntry(hRaw_Zneg_norm,  "#Lambda Z < 0", "lep")
     leg3.Draw()
@@ -590,12 +515,17 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
     hCorr_fullZ_norm = normalize_spectrum(hCorr_fullZ, NEV, "hCorr_fullZ_norm")
     hCorr_Zpos_norm  = normalize_spectrum(hCorr_Zpos, NEV, "hCorr_Zpos_norm")
     hCorr_Zneg_norm  = normalize_spectrum(hCorr_Zneg, NEV, "hCorr_Zneg_norm")
+    # Also normalizing by the size of the dz projection -- These should be d^{2}N/dp_{T}dz plots!
+    hCorr_fullZ_norm.Scale(1./full_z_range_size)
+    hCorr_Zpos_norm.Scale(1./(full_z_range_size/2))
+    hCorr_Zneg_norm.Scale(1./(full_z_range_size/2))
 
-    # Also having the corrected spectra:
-    hCorr_fullZ_norm_halved = hCorr_fullZ_norm.Clone("hCorr_fullZ_norm_halved")
-    hCorr_fullZ_norm_halved.Scale(0.5)
-    hCorr_ratio_Zpos = make_ratio_hist(hCorr_Zpos_norm, hCorr_fullZ_norm_halved, "hCorrRatio_ZposFull")
-    hCorr_ratio_Zneg = make_ratio_hist(hCorr_Zneg_norm, hCorr_fullZ_norm_halved, "hCorrRatio_ZnegFull")
+    # No need for halves when we already have d^2N/dpT dz!
+    # # Also halving the corrected spectra:
+    # hCorr_fullZ_norm_halved = hCorr_fullZ_norm.Clone("hCorr_fullZ_norm_halved")
+    # hCorr_fullZ_norm_halved.Scale(0.5)
+    hCorr_ratio_Zpos = make_ratio_hist(hCorr_Zpos_norm, hCorr_fullZ_norm, "hCorrRatio_ZposFull")
+    hCorr_ratio_Zneg = make_ratio_hist(hCorr_Zneg_norm, hCorr_fullZ_norm, "hCorrRatio_ZnegFull")
 
     c_corr = ROOT.TCanvas("cCorrectedSpectra", "Corrected pT spectra", 1200, 1000)
     pad1c = ROOT.TPad("pad1c", "pad1c", 0, 0.35, 1, 1.0)
@@ -615,27 +545,27 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
 
     # Upper panel
     pad1c.cd()
-    hCorr_fullZ_norm_halved.GetXaxis().SetRangeUser(0, 20)
+    hCorr_fullZ_norm.GetXaxis().SetRangeUser(0, 20)
     hCorr_Zpos_norm.GetXaxis().SetRangeUser(0, 20)
     hCorr_Zneg_norm.GetXaxis().SetRangeUser(0, 20)
     for h, col in [
-        (hCorr_fullZ_norm_halved, ROOT.kBlack),
+        (hCorr_fullZ_norm, ROOT.kBlack),
         (hCorr_Zpos_norm,  ROOT.kRed+1),
         (hCorr_Zneg_norm,  ROOT.kBlue+1)
     ]:
         h.SetLineColor(col)
         h.SetMarkerColor(col)
         h.SetMarkerStyle(20)
-        h.SetTitle(";p_{T} (GeV/c);(1/N_{evt}) dN/dp_{T}")
+        h.SetTitle(";p_{T} (GeV/c);(1/N_{evt}) d^{2}N/dp_{T}dz")
         h.GetYaxis().SetTitleOffset(1.3)
 
     # hCorr_fullZ_norm.Draw("E")
-    hCorr_fullZ_norm_halved.Draw("E")
+    hCorr_fullZ_norm.Draw("E")
     hCorr_Zpos_norm.Draw("E SAME")
     hCorr_Zneg_norm.Draw("E SAME")
 
     leg4 = ROOT.TLegend(0.60, 0.70, 0.88, 0.88)
-    leg4.AddEntry(hCorr_fullZ_norm_halved, "#Lambda full Z (x0.5)", "lep")
+    leg4.AddEntry(hCorr_fullZ_norm, "#Lambda full Z", "lep")
     leg4.AddEntry(hCorr_Zpos_norm,  "#Lambda Z >= 0", "lep")
     leg4.AddEntry(hCorr_Zneg_norm,  "#Lambda Z < 0", "lep")
     leg4.Draw()
@@ -693,7 +623,6 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
 
     # Write spectra and processed items
     dir_main.cd()
-    h2_pt_z_masswindow.Write()
     h_pt_fullZ.Write()
     h_pt_Zpos.Write()
     h_pt_Zneg.Write()
@@ -725,20 +654,19 @@ def apply_efficiency(analysis_results_path, corrections_path, processed_projecti
     fout.Close()
     fin.Close()
     fcor.Close()
-    fproc.Close()
+    fsigExtractedData.Close()
 
     print(f"Done. Output saved to: {output_name}")
 
 
 # --------------------------- CLI --------------------------------
 def usage_and_exit():
-    print("Usage: python ApplyEfficiency.py <AnalysisResults.root> <EfficiencyCorrections.root> <ProcessedProjections.root>")
+    print("Usage: python ApplyEfficiency.py <AnalysisResults.root> <EfficiencyCorrections.root>")
     sys.exit(1)
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
+    if len(sys.argv) != 3:
         usage_and_exit()
     analysis_results_path = sys.argv[1]
     corrections_path = sys.argv[2]
-    processed_projections_path = sys.argv[3]
-    apply_efficiency(analysis_results_path, corrections_path, processed_projections_path)
+    apply_efficiency(analysis_results_path, corrections_path)
