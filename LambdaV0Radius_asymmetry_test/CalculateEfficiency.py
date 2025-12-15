@@ -331,21 +331,31 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
     # =====================================================================
 
     hCentrality = fin.Get(f"{main_dir}/hEventCentrality")
-    if not hCentrality:
-        print("Warning: hEventCentrality not found, creating fallback from event histogram.")
-        hCentrality = ROOT.TH1D("hEventCentrality", "hEventCentrality", 1, 0, 1)
-        hCentrality.SetBinContent(1, hGenAndRecoEvts.GetBinContent(2))
+    # This block below is not valid! hGenAndRecoEvts.GetBinContent(2) is actually the number of
+    # reconstructed MC events before all the full cuts!
+    # if not hCentrality:
+    #     print("Warning: hEventCentrality not found, creating fallback from event histogram.")
+    #     hCentrality = ROOT.TH1D("hEventCentrality", "hEventCentrality", 1, 0, 1)
+    #     hCentrality.SetBinContent(1, hGenAndRecoEvts.GetBinContent(2)) # Only in the worst case scenario! They should be equivalent, but they aren't!
 
-    try:
-        hCentrality.Rebin(12)
-    except Exception:
-        pass
+    
+    ###################################
+    ### HAHA! This was the single block of code that was messing up my closure test!
+    ### When you do this type of rebinning, the closure test does not work, as you are
+    ### throwing some of the entries into overflow! The standard ROOT behavior is to then
+    ### not consider them into the Integral() function and you end up losing events!
+    # try:
+    #     hCentrality.Rebin(12)
+    # except Exception:
+    #     pass
+    ###################################
 
     hRecoEvents = ROOT.TH1D("hRecoEvents", "hRecoEvents", 1, 0, 1)    
     hRecoEvents.SetBinContent(1, hCentrality.Integral()) # Number of reconstructed collisions!
     hRecoEvents.SetBinError(1, 0)
     hRecoEvents.Sumw2()
-    print("hCentrality.GetBinContent(1): ", hCentrality.GetBinContent(1))
+    # print("hCentrality.GetBinContent(1) -- The number of Reco Events AFTER selection: ", hCentrality.GetBinContent(1)) # This is actually only the first bin number!
+    print("hGenAndRecoEvts.GetBinContent(2) -- The number of Reco Events BEFORE selection, right at the detector level: ", hGenAndRecoEvts.GetBinContent(2))
     print("hCentrality.Integral()", hCentrality.Integral())
 
     # =====================================================================
@@ -371,7 +381,7 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
     # SIGNAL LOSS (2D)
     # =====================================================================
     # Calculate Signal loss
-    # Signal Loss = N. Gen V0s with at least one reco coll / N. Gen V0s in ALL Generated colls
+    # Signal Loss = N. Gen V0s with **at least one** reco coll / N. Gen V0s in ALL Generated colls
     ################
     ### Notice this odd metric does NOT need signal extraction as it is a Generator-level only
     ### metric! Also, by multiplying signal loss and this particular definition of efficiency,
@@ -503,7 +513,7 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
     hGenAndRecoEvts.Write() # Generated and reco events
     hGenLambdaPtVsZ.Write() # Generated Lambda (all generated)
     hGenLambdaRecoEvtPtVsZ.Write() # Generated Lambda with at least one reco
-    rawMCSpectraPtVsZ_SigExtracted2D.Write() # Raw MC Spectra, in 2D
+    rawMCSpectraPtVsZ_SigExtracted2D.Write() # Raw MC Spectra, corrected, in 2D
 
     hEffAcc.Write()          # 2D pT×Z efficiency × acceptance # Efficiency x Acc x B.R. Output name is hEfficiencyXAcceptance2D
     hRecoEvents.Write()       # Reco events
@@ -527,6 +537,12 @@ def calculate_efficiency(input_root_path, main_dir="asymmetric_rapidity_test", s
     hSigLoss_Full.Write()
     hSigLoss_Pos.Write()
     hSigLoss_Neg.Write()
+
+    # 1D Spectra projections to facilitate stuff in the MC closure test:
+        # Storing only the spectra that are generator level
+    genall_full.Write("hLambdaGeneratorLevelPt_full")
+    genall_pos.Write("hLambdaGeneratorLevelPt_pos")
+    genall_neg.Write("hLambdaGeneratorLevelPt_neg")
 
     fout.Close()
     fin.Close()

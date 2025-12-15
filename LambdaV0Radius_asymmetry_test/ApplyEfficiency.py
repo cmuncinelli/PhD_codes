@@ -88,6 +88,16 @@ def apply_efficiency(analysis_results_path, corrections_path, main_dir="asymmetr
         # Can't do the same about the MC efficiency calculation, as the
         # names of the folders of anchored datasets are never obvious!
     input_dir = os.path.dirname(os.path.abspath(analysis_results_path))
+    
+    running_OO = False
+    if "OO" in input_dir or "LF_LHC25h3_pass2_Strangeness" in input_dir:
+        print("\t\tHandling OO collisions from run 3.")
+        running_OO = True
+    running_MC = False
+    if "LF_LHC" in input_dir:
+        print("\t\tRunning in MC -- Closure tests")
+        running_MC = True
+    
         # Extract the base name without extension
     base_input_name = os.path.splitext(os.path.basename(analysis_results_path))[0]
         # Remove leading "AnalysisResults-" if present
@@ -157,8 +167,8 @@ def apply_efficiency(analysis_results_path, corrections_path, main_dir="asymmetr
     # ------------------------------
 
     # get raw pT bin edges (for variable binning)
-    raw_edges = getBinEdges(h_pt_fullZ)
-    edges_array = raw_edges
+    # raw_edges = getBinEdges(h_pt_fullZ)
+    # edges_array = raw_edges
 
     # --- Load 1D Corrections directly ---
     # Better than calculating this here, we can just use the result directly!
@@ -175,98 +185,109 @@ def apply_efficiency(analysis_results_path, corrections_path, main_dir="asymmetr
     if not hEff1D_Full_in or not hSig1D_Full_in:
         raise RuntimeError("1D Correction histograms not found in file!")
 
-    # Reworked this function to avoid the N_entries not being set appropriately!
-    def rebin2d_in_x_to_edges(h2_in, edges_array, new_name):
-        """
-        Rebin a TH2D in X using variable bin edges.
-        accumulates Content and Error manually to preserve N_eff.
-        """
-        old_nx = h2_in.GetNbinsX()
-        old_ny = h2_in.GetNbinsY()
-        new_nx = len(edges_array) - 1
+    # # Reworked this function to avoid the N_entries not being set appropriately!
+    # def rebin2d_in_x_to_edges(h2_in, edges_array, new_name):
+    #     """
+    #     Rebin a TH2D in X using variable bin edges.
+    #     accumulates Content and Error manually to preserve N_eff.
+    #     """
+    #     old_nx = h2_in.GetNbinsX()
+    #     old_ny = h2_in.GetNbinsY()
+    #     new_nx = len(edges_array) - 1
 
-        # If no rebinning needed (and simple clone is desired):
-        if old_nx == new_nx:
-            # Note: If edges don't match exactly, this might be risky, 
-            # but usually implies same binning.
-            return h2_in.Clone(new_name)
+    #     # If no rebinning needed (and simple clone is desired):
+    #     if old_nx == new_nx:
+    #         # Note: If edges don't match exactly, this might be risky, 
+    #         # but usually implies same binning.
+    #         return h2_in.Clone(new_name)
 
-        yaxis = h2_in.GetYaxis()
-        y_edges = yaxis.GetXbins().GetArray()
-        if not y_edges:
-            y_edges = array.array('d', [yaxis.GetBinLowEdge(i+1) for i in range(old_ny+1)])
+    #     yaxis = h2_in.GetYaxis()
+    #     y_edges = yaxis.GetXbins().GetArray()
+    #     if not y_edges:
+    #         y_edges = array.array('d', [yaxis.GetBinLowEdge(i+1) for i in range(old_ny+1)])
 
-        h2_out = ROOT.TH2D(new_name, h2_in.GetTitle(), new_nx, edges_array, old_ny, y_edges)
-        h2_out.Sumw2()
+    #     h2_out = ROOT.TH2D(new_name, h2_in.GetTitle(), new_nx, edges_array, old_ny, y_edges)
+    #     h2_out.Sumw2()
 
-        for ix in range(1, old_nx + 1):
-            x_center = h2_in.GetXaxis().GetBinCenter(ix)
-            for iy in range(1, old_ny + 1):
-                content = h2_in.GetBinContent(ix, iy)
-                error   = h2_in.GetBinError(ix, iy)
+    #     for ix in range(1, old_nx + 1):
+    #         x_center = h2_in.GetXaxis().GetBinCenter(ix)
+    #         for iy in range(1, old_ny + 1):
+    #             content = h2_in.GetBinContent(ix, iy)
+    #             error   = h2_in.GetBinError(ix, iy)
                 
-                if content != 0 or error != 0:
-                    y_center = h2_in.GetYaxis().GetBinCenter(iy)
+    #             if content != 0 or error != 0:
+    #                 y_center = h2_in.GetYaxis().GetBinCenter(iy)
                     
-                    # Find new bin
-                    new_ix = h2_out.GetXaxis().FindBin(x_center)
-                    new_iy = h2_out.GetYaxis().FindBin(y_center)
+    #                 # Find new bin
+    #                 new_ix = h2_out.GetXaxis().FindBin(x_center)
+    #                 new_iy = h2_out.GetYaxis().FindBin(y_center)
                     
-                    # Manual Accumulation (Fixes "Fill" weight bug)
-                    cur_val = h2_out.GetBinContent(new_ix, new_iy)
-                    cur_err = h2_out.GetBinError(new_ix, new_iy)
+    #                 # Manual Accumulation (Fixes "Fill" weight bug)
+    #                 cur_val = h2_out.GetBinContent(new_ix, new_iy)
+    #                 cur_err = h2_out.GetBinError(new_ix, new_iy)
                     
-                    h2_out.SetBinContent(new_ix, new_iy, cur_val + content)
-                    h2_out.SetBinError(new_ix, new_iy, math.sqrt(cur_err**2 + error**2))
+    #                 h2_out.SetBinContent(new_ix, new_iy, cur_val + content)
+    #                 h2_out.SetBinError(new_ix, new_iy, math.sqrt(cur_err**2 + error**2))
 
-        return h2_out
+    #     return h2_out
 
-    def rebin1d_to_edges(h1_in, edges_array, new_name):
-        """
-        Rebin a TH1D using variable bin edges with manual error accumulation.
-        """
-        old_nx = h1_in.GetNbinsX()
-        new_nx = len(edges_array) - 1
+    # def rebin1d_to_edges(h1_in, edges_array, new_name):
+    #     """
+    #     Rebin a TH1D using variable bin edges with manual error accumulation.
+    #     """
+    #     old_nx = h1_in.GetNbinsX()
+    #     new_nx = len(edges_array) - 1
         
-        if old_nx == new_nx:
-            return h1_in.Clone(new_name)
+    #     if old_nx == new_nx:
+    #         return h1_in.Clone(new_name)
             
-        h1_out = ROOT.TH1D(new_name, h1_in.GetTitle(), new_nx, edges_array)
-        h1_out.Sumw2()
+    #     h1_out = ROOT.TH1D(new_name, h1_in.GetTitle(), new_nx, edges_array)
+    #     h1_out.Sumw2()
         
-        for ix in range(1, old_nx + 1):
-            content = h1_in.GetBinContent(ix)
-            error   = h1_in.GetBinError(ix)
+    #     for ix in range(1, old_nx + 1):
+    #         content = h1_in.GetBinContent(ix)
+    #         error   = h1_in.GetBinError(ix)
             
-            if content != 0 or error != 0:
-                x_center = h1_in.GetXaxis().GetBinCenter(ix)
-                new_ix = h1_out.GetXaxis().FindBin(x_center)
+    #         if content != 0 or error != 0:
+    #             x_center = h1_in.GetXaxis().GetBinCenter(ix)
+    #             new_ix = h1_out.GetXaxis().FindBin(x_center)
                 
-                # Manual Accumulation
-                cur_val = h1_out.GetBinContent(new_ix)
-                cur_err = h1_out.GetBinError(new_ix)
+    #             # Manual Accumulation
+    #             cur_val = h1_out.GetBinContent(new_ix)
+    #             cur_err = h1_out.GetBinError(new_ix)
                 
-                h1_out.SetBinContent(new_ix, cur_val + content)
-                h1_out.SetBinError(new_ix, math.sqrt(cur_err**2 + error**2))
+    #             h1_out.SetBinContent(new_ix, cur_val + content)
+    #             h1_out.SetBinError(new_ix, math.sqrt(cur_err**2 + error**2))
                 
-        return h1_out
-    
-    # A) Rebin 2D maps (Just for saving to "CorrectionsUsed", not used for calculation anymore)
-    hEffAcc_reb2d = rebin2d_in_x_to_edges(hEffAcc, edges_array, "hEffAcc_reb2d")
-    hSignalLoss_reb2d = rebin2d_in_x_to_edges(hSignalLoss, edges_array, "hSignalLoss_reb2d")
+    #     return h1_out
 
-    # B) Rebin 1D Efficiency & Signal Loss (Used for calculation)
-    # We use the new rebin1d helper to ensure errors are preserved
-    hEff_fullZ = rebin1d_to_edges(hEff1D_Full_in, edges_array, "hEff_fullZ")
-    hEff_Zpos  = rebin1d_to_edges(hEff1D_Pos_in,  edges_array, "hEff_Zpos")
-    hEff_Zneg  = rebin1d_to_edges(hEff1D_Neg_in,  edges_array, "hEff_Zneg")
+    ###################################################
+    ### Can't rebin efficiency, goddamnit! The data is already made to be rebinned!
+    ###################################################
+    # # A) Rebin 2D maps (Just for saving to "CorrectionsUsed", not used for calculation anymore)
+    # hEffAcc_reb2d = rebin2d_in_x_to_edges(hEffAcc, edges_array, "hEffAcc_reb2d")
+    # hSignalLoss_reb2d = rebin2d_in_x_to_edges(hSignalLoss, edges_array, "hSignalLoss_reb2d")
+    #
+    # # B) Rebin 1D Efficiency & Signal Loss (Used for calculation)
+    # # We use the new rebin1d helper to ensure errors are preserved
+    # hEff_fullZ = rebin1d_to_edges(hEff1D_Full_in, edges_array, "hEff_fullZ")
+    # hEff_Zpos  = rebin1d_to_edges(hEff1D_Pos_in,  edges_array, "hEff_Zpos")
+    # hEff_Zneg  = rebin1d_to_edges(hEff1D_Neg_in,  edges_array, "hEff_Zneg")
+    #
+    # hSig_fullZ = rebin1d_to_edges(hSig1D_Full_in, edges_array, "hSig_fullZ")
+    # hSig_Zpos  = rebin1d_to_edges(hSig1D_Pos_in,  edges_array, "hSig_Zpos")
+    # hSig_Zneg  = rebin1d_to_edges(hSig1D_Neg_in,  edges_array, "hSig_Zneg")
+    #
+    # hEffAcc_reb2d.Sumw2()
+    # hSignalLoss_reb2d.Sumw2()
+        # These are the right corrections:
+    hEff_fullZ = hEff1D_Full_in.Clone("hEff_fullZ")
+    hEff_Zpos = hEff1D_Pos_in.Clone("hEff_Zpos")
+    hEff_Zneg = hEff1D_Neg_in.Clone("hEff_Zneg")
 
-    hSig_fullZ = rebin1d_to_edges(hSig1D_Full_in, edges_array, "hSig_fullZ")
-    hSig_Zpos  = rebin1d_to_edges(hSig1D_Pos_in,  edges_array, "hSig_Zpos")
-    hSig_Zneg  = rebin1d_to_edges(hSig1D_Neg_in,  edges_array, "hSig_Zneg")
-
-    hEffAcc_reb2d.Sumw2()
-    hSignalLoss_reb2d.Sumw2()
+    hSig_fullZ = hSig1D_Full_in.Clone("hSig_fullZ")
+    hSig_Zpos = hSig1D_Pos_in.Clone("hSig_Zpos")
+    hSig_Zneg = hSig1D_Neg_in.Clone("hSig_Zneg")
 
     # ------------------------------
     # 8) Calculate corrected spectra per region:
@@ -348,7 +369,8 @@ def apply_efficiency(analysis_results_path, corrections_path, main_dir="asymmetr
     #     raise RuntimeError("Got a null number of events!")
     # Getting the actual number of events from the DATA part -- We don't want the Nev from MC!!!
     hCentrality = fin.Get(f"{main_dir}/hEventCentrality") # Just to get the number of entries!
-    NEV = hCentrality.GetEntries()
+    NEV = hCentrality.Integral()
+    print("\tNEV from hCentrality:", NEV)
 
     # ------------------------------
     # PLOT 1: Signal Loss vs pT
@@ -383,7 +405,10 @@ def apply_efficiency(analysis_results_path, corrections_path, main_dir="asymmetr
     text = ROOT.TLatex()
     text.SetNDC(True)
     text.SetTextSize(0.04)
-    text.DrawLatex(0.18, 0.86, "pp, 13.6 TeV, #Lambda")
+    if not running_OO:
+        text.DrawLatex(0.18, 0.86, "pp, 13.6 TeV, #Lambda")
+    else:
+        text.DrawLatex(0.18, 0.86, "OO, 5.36 TeV, #Lambda")
 
     diag_canvases.append(c_sig)
 
@@ -415,7 +440,10 @@ def apply_efficiency(analysis_results_path, corrections_path, main_dir="asymmetr
     leg2.AddEntry(hEff_Zneg,  "#Lambda Z < 0", "lep")
     leg2.Draw()
 
-    text.DrawLatex(0.18, 0.86, "pp, 13.6 TeV, #Lambda")
+    if not running_OO:
+        text.DrawLatex(0.18, 0.86, "pp, 13.6 TeV, #Lambda")
+    else:
+        text.DrawLatex(0.18, 0.86, "OO, 5.36 TeV, #Lambda")
 
     diag_canvases.append(c_eff)
 
@@ -488,7 +516,10 @@ def apply_efficiency(analysis_results_path, corrections_path, main_dir="asymmetr
     leg3.AddEntry(hRaw_Zneg_norm,  "#Lambda Z < 0", "lep")
     leg3.Draw()
 
-    text.DrawLatex(0.18, 0.86, "pp, 13.6 TeV, #Lambda")
+    if not running_OO:
+        text.DrawLatex(0.18, 0.86, "pp, 13.6 TeV, #Lambda")
+    else:
+        text.DrawLatex(0.18, 0.86, "OO, 5.36 TeV, #Lambda")
 
     # Lower ratio subplot
     pad2.cd()
@@ -519,6 +550,11 @@ def apply_efficiency(analysis_results_path, corrections_path, main_dir="asymmetr
     hCorr_fullZ_norm.Scale(1./full_z_range_size)
     hCorr_Zpos_norm.Scale(1./(full_z_range_size/2))
     hCorr_Zneg_norm.Scale(1./(full_z_range_size/2))
+
+    # Checking to see the number of particles per event in those bins:
+    print("Integrated d^2N/dpTdz spectra, Full Z:", hCorr_fullZ_norm.Integral("width") * full_z_range_size)
+    print("Integrated d^2N/dpTdz spectra, Z>=0:", hCorr_Zpos_norm.Integral("width")* (full_z_range_size/2))
+    print("Integrated d^2N/dpTdz spectra, Z<0:", hCorr_Zneg_norm.Integral("width")* (full_z_range_size/2))
 
     # No need for halves when we already have d^2N/dpT dz!
     # # Also halving the corrected spectra:
@@ -570,7 +606,10 @@ def apply_efficiency(analysis_results_path, corrections_path, main_dir="asymmetr
     leg4.AddEntry(hCorr_Zneg_norm,  "#Lambda Z < 0", "lep")
     leg4.Draw()
 
-    text.DrawLatex(0.18, 0.86, "pp, 13.6 TeV, #Lambda")
+    if not running_OO:
+        text.DrawLatex(0.18, 0.86, "pp, 13.6 TeV, #Lambda")
+    else:
+        text.DrawLatex(0.18, 0.86, "OO, 5.36 TeV, #Lambda")
 
     # Lower panel
     pad2c.cd()
@@ -590,7 +629,226 @@ def apply_efficiency(analysis_results_path, corrections_path, main_dir="asymmetr
 
     diag_canvases.append(c_corr)
 
+    # ------------------------------
+    # 9.6) MC Closure test
+    # ------------------------------
+    if running_MC:
+        closure_canvases = []
+        # # h2d_PtVsZ_GenMC = fcor.Get("h3dGenLambdaVsZVsMultMC_RecoedEvt_yz") # Despite the name, this is the TH2D of pT vs Z
+        #     # The actual proper version should not be Recoed!!! It should be the actual Generated data!
+        # # h2d_PtVsZ_GenMC = fcor.Get("hGenLambdaPtVsZ")
+        # h2d_PtVsZ_GenMC = fcor.Get("hGenLambdaPtVsZ_rebinned") # Now using the rebinned version to make sure it matches Reco MC
+        
+        # # Creating TH1D structures as in SignalExtraction, with the same binning as the TH2D at first:
+        # def make_TH1D(name, title, axis):
+        #     """
+        #     Build a TH1D using the binning of a TAxis.
+        #     Works for both fixed and variable binning.
+        #     """
+        #     nbins = axis.GetNbins()
 
+        #     if axis.GetXbins().GetSize() > 0:
+        #         # Variable binning
+        #         bins = axis.GetXbins().GetArray()
+        #         h = ROOT.TH1D(name, title, nbins, bins)
+        #     else:
+        #         # Fixed binning
+        #         xmin = axis.GetXmin()
+        #         xmax = axis.GetXmax()
+        #         h = ROOT.TH1D(name, title, nbins, xmin, xmax)
+
+        #     h.Sumw2()
+        #     return h
+        
+        # xaxis = h2d_PtVsZ_GenMC.GetXaxis() # pT
+        # yaxis = h2d_PtVsZ_GenMC.GetYaxis() # Z position
+
+        # n_pt_bins = xaxis.GetNbins()
+        # n_z_bins  = yaxis.GetNbins()
+
+        # h_pt_fullZ_GenMC = make_TH1D(
+        #     "h_pt_fullZ_GenMC",
+        #     "#Lambda p_{T} spectrum (full Z); p_{T} (GeV/c); dN/dp_{T}",
+        #     xaxis
+        # )
+        # # h_pt_fullZ_GenMC = h_pt_fullZ.Clone("h_pt_fullZ_GenMC")
+        # hPt_NegZ_GenMC = h_pt_fullZ_GenMC.Clone("hPt_NegZ_GenMC")
+        # hPt_PosZ_GenMC = h_pt_fullZ_GenMC.Clone("hPt_PosZ_GenMC")
+        
+        # h_pt_fullZ_GenMC.Reset("ICES")
+        # hPt_NegZ_GenMC.Reset("ICES")
+        # hPt_PosZ_GenMC.Reset("ICES")
+        
+        # # =========================
+        # # 8.1) Loop over pT bins and summing Z bins
+        # # =========================
+        # for ipt in range(1, n_pt_bins + 1):
+
+        #     sum_full   = 0.0
+        #     err2_full  = 0.0
+
+        #     sum_pos    = 0.0
+        #     err2_pos   = 0.0
+
+        #     sum_neg    = 0.0
+        #     err2_neg   = 0.0
+
+        #     for iz in range(1, n_z_bins + 1):
+
+        #         z_center = yaxis.GetBinCenter(iz)
+
+        #         val = h2d_PtVsZ_GenMC.GetBinContent(ipt, iz)
+        #         err = h2d_PtVsZ_GenMC.GetBinError(ipt, iz)
+
+        #         # Full Z
+        #         sum_full  += val
+        #         err2_full += err * err
+
+        #         # Z >= 0
+        #         if z_center >= 0.0:
+        #             sum_pos  += val
+        #             err2_pos += err * err
+        #         else:
+        #             sum_neg  += val
+        #             err2_neg += err * err
+
+        #     # Fill pT spectra
+        #     h_pt_fullZ_GenMC.SetBinContent(ipt, sum_full)
+        #     h_pt_fullZ_GenMC.SetBinError(ipt, math.sqrt(err2_full))
+
+        #     hPt_PosZ_GenMC.SetBinContent(ipt, sum_pos)
+        #     hPt_PosZ_GenMC.SetBinError(ipt, math.sqrt(err2_pos))
+
+        #     hPt_NegZ_GenMC.SetBinContent(ipt, sum_neg)
+        #     hPt_NegZ_GenMC.SetBinError(ipt, math.sqrt(err2_neg))
+            
+        # # Applying some rebins to make this the same as the Reco MC -- Binning should actually already be the same! No need to do so!
+        # # h_pt_fullZ_GenMC = rebin1d_to_edges(h_pt_fullZ_GenMC, edges_array, "h_pt_fullZ_GenMC_rebinned")
+        # # hPt_NegZ_GenMC  = rebin1d_to_edges(hPt_NegZ_GenMC,  edges_array, "hPt_NegZ_GenMC_rebinned")
+        # # hPt_PosZ_GenMC  = rebin1d_to_edges(hPt_PosZ_GenMC,  edges_array, "hPt_PosZ_GenMC_rebinned")
+        
+        # Getting the spectra already in a TH1D form:
+            # Could use the full block above, but this is way shorter!
+        h_pt_fullZ_GenMC = fcor.Get("hLambdaGeneratorLevelPt_full")
+        hPt_NegZ_GenMC = fcor.Get("hLambdaGeneratorLevelPt_pos")
+        hPt_PosZ_GenMC = fcor.Get("hLambdaGeneratorLevelPt_neg")
+        
+        # Now normalizing these plots:
+        hGenEvent = fcor.Get("hGenEvent")
+        NEV_Gen = hGenEvent.GetBinContent(1)
+        print("\tNumber of events generated is {}, while NEV reconstructed is {}".format(NEV_Gen, NEV))
+        h_pt_fullZ_GenMC_norm = normalize_spectrum(h_pt_fullZ_GenMC, NEV_Gen, "h_pt_fullZ_GenMC_norm")
+        hPt_NegZ_GenMC_norm  = normalize_spectrum(hPt_NegZ_GenMC, NEV_Gen, "hPt_NegZ_GenMC_norm")
+        hPt_PosZ_GenMC_norm  = normalize_spectrum(hPt_PosZ_GenMC, NEV_Gen, "hPt_PosZ_GenMC_norm")
+        # Also normalizing by the size of the dz projection -- These should be d^{2}N/dp_{T}dz plots!
+        h_pt_fullZ_GenMC_norm.Scale(1./full_z_range_size)
+        hPt_NegZ_GenMC_norm.Scale(1./(full_z_range_size/2))
+        hPt_PosZ_GenMC_norm.Scale(1./(full_z_range_size/2))
+
+        # Checking to see the number of particles per event in those bins:
+        print("\tIntegrated d^2N/dpTdz spectra, MC_Gen, Full Z:", h_pt_fullZ_GenMC_norm.Integral("width") * full_z_range_size)
+        print("\tIntegrated d^2N/dpTdz spectra, MC_Gen, Z>=0:", hPt_NegZ_GenMC_norm.Integral("width")* (full_z_range_size/2))
+        print("\tIntegrated d^2N/dpTdz spectra, MC_Gen, Z<0:", hPt_PosZ_GenMC_norm.Integral("width")* (full_z_range_size/2))
+        
+        # Now drawing these plots along with the MC corrected spectra -- Things should match exactly!
+            # This is a copy of the related section of the diagnostics plots
+        # ------------------------------
+        # Corrected spectra + Ratios with the Generated spectra
+        # ------------------------------
+        # hCorr_fullZ_norm_rebinned = rebin1d_to_edges(hCorr_fullZ_norm, edges_array, "hCorr_fullZ_norm_rebinned")
+        # hCorr_Zpos_norm_rebinned  = rebin1d_to_edges(hCorr_Zpos_norm,  edges_array, "hCorr_Zpos_norm_rebinned")
+        # hCorr_Zneg_norm_rebinned  = rebin1d_to_edges(hCorr_Zneg_norm,  edges_array, "hCorr_Zneg_norm_rebinned")
+
+        hCorrectedReco_over_Gen_ratio_FullZ = make_ratio_hist(hCorr_fullZ_norm, h_pt_fullZ_GenMC_norm, "hCorrectedReco_over_Gen_ratio_FullZ")
+        hCorrectedReco_over_Gen_ratio_Zpos = make_ratio_hist(hCorr_Zpos_norm, hPt_NegZ_GenMC_norm, "hCorrectedReco_over_Gen_ratio_Zpos")
+        hCorrectedReco_over_Gen_ratio_Zneg = make_ratio_hist(hCorr_Zneg_norm, hPt_PosZ_GenMC_norm, "hCorrectedReco_over_Gen_ratio_Zneg")
+
+        c_corr = ROOT.TCanvas("cCorrectedSpectra_RatioWithGenMC", "Corrected pT spectra - RatioWithGenMC", 1200, 1000)
+        pad1cGenVsReco = ROOT.TPad("pad1cGenVsReco", "pad1cGenVsReco", 0, 0.35, 1, 1.0)
+        pad2cGenVsReco = ROOT.TPad("pad2cGenVsReco", "pad2cGenVsReco", 0, 0.00, 1, 0.35)
+
+        pad1cGenVsReco.SetBottomMargin(0.02)
+        pad1cGenVsReco.SetLeftMargin(0.12)
+        pad1cGenVsReco.SetRightMargin(0.05)
+
+        pad2cGenVsReco.SetTopMargin(0.03)
+        pad2cGenVsReco.SetBottomMargin(0.35)
+        pad2cGenVsReco.SetLeftMargin(0.12)
+        pad2cGenVsReco.SetRightMargin(0.05)
+
+        pad1cGenVsReco.Draw()
+        pad2cGenVsReco.Draw()
+
+        # Upper panel
+        pad1cGenVsReco.cd()
+        hCorr_fullZ_norm.GetXaxis().SetRangeUser(0, 20)
+        hCorr_Zpos_norm.GetXaxis().SetRangeUser(0, 20)
+        hCorr_Zneg_norm.GetXaxis().SetRangeUser(0, 20)
+        h_pt_fullZ_GenMC_norm.GetXaxis().SetRangeUser(0, 20)
+        hPt_NegZ_GenMC_norm.GetXaxis().SetRangeUser(0, 20)
+        hPt_PosZ_GenMC_norm.GetXaxis().SetRangeUser(0, 20)
+        for h, col in [
+            (hCorr_fullZ_norm, ROOT.kBlack),
+            (hCorr_Zpos_norm, ROOT.kRed+1),
+            (hCorr_Zneg_norm, ROOT.kBlue+1),
+            (h_pt_fullZ_GenMC_norm, ROOT.kGreen+2),
+            (hPt_NegZ_GenMC_norm, ROOT.kMagenta+1),
+            (hPt_PosZ_GenMC_norm, ROOT.kOrange+7),
+        ]:
+            h.SetLineColor(col)
+            h.SetMarkerColor(col)
+            h.SetMarkerStyle(20)
+
+            h.SetTitle(";p_{T} (GeV/c);(1/N_{evt}) d^{2}N/dp_{T}dz")
+            h.GetYaxis().SetTitleOffset(1.3)
+
+        # hCorr_fullZ_norm.Draw("E")
+        hCorr_fullZ_norm.Draw("E")
+        hCorr_Zpos_norm.Draw("E SAME")
+        hCorr_Zneg_norm.Draw("E SAME")
+        h_pt_fullZ_GenMC_norm.Draw("E SAME")
+        hPt_NegZ_GenMC_norm.Draw("E SAME")
+        hPt_PosZ_GenMC_norm.Draw("E SAME")
+
+        leg4 = ROOT.TLegend(0.60, 0.52, 0.88, 0.88)
+        leg4.AddEntry(hCorr_fullZ_norm, "#Lambda MC corr. full Z", "lep")
+        leg4.AddEntry(hCorr_Zpos_norm,  "#Lambda MC corr. Z >= 0", "lep")
+        leg4.AddEntry(hCorr_Zneg_norm,  "#Lambda MC corr. Z < 0", "lep")
+        leg4.AddEntry(h_pt_fullZ_GenMC_norm, "#Lambda Gen full Z", "lep")
+        leg4.AddEntry(hPt_NegZ_GenMC_norm,  "#Lambda Gen Z >= 0", "lep")
+        leg4.AddEntry(hPt_PosZ_GenMC_norm,  "#Lambda Gen Z < 0", "lep")
+        leg4.Draw()
+
+        if not running_OO:
+            text.DrawLatex(0.18, 0.86, "pp, 13.6 TeV, #Lambda")
+        else:
+            text.DrawLatex(0.18, 0.86, "OO, 5.36 TeV, #Lambda")
+
+        # Lower panel
+        pad2cGenVsReco.cd()
+        hCorrectedReco_over_Gen_ratio_FullZ.GetXaxis().SetRangeUser(0, 20)
+        hCorrectedReco_over_Gen_ratio_Zpos.GetXaxis().SetRangeUser(0, 20)
+        hCorrectedReco_over_Gen_ratio_Zneg.GetXaxis().SetRangeUser(0, 20)
+        
+        hCorrectedReco_over_Gen_ratio_FullZ.SetLineColor(ROOT.kBlack)
+        hCorrectedReco_over_Gen_ratio_Zpos.SetLineColor(ROOT.kRed+1)
+        hCorrectedReco_over_Gen_ratio_Zneg.SetLineColor(ROOT.kBlue+1)
+        
+        hCorrectedReco_over_Gen_ratio_FullZ.SetMarkerColor(ROOT.kBlack)
+        hCorrectedReco_over_Gen_ratio_Zpos.SetMarkerColor(ROOT.kRed+1)
+        hCorrectedReco_over_Gen_ratio_Zneg.SetMarkerColor(ROOT.kBlue+1)
+        
+        hCorrectedReco_over_Gen_ratio_FullZ.SetMarkerStyle(20)
+        hCorrectedReco_over_Gen_ratio_Zpos.SetMarkerStyle(20)
+        hCorrectedReco_over_Gen_ratio_Zneg.SetMarkerStyle(20)
+
+        hCorrectedReco_over_Gen_ratio_FullZ.SetTitle(";p_{T} (GeV/c);Corrected Reco MC / Gen MC")
+
+        hCorrectedReco_over_Gen_ratio_FullZ.Draw("E")
+        hCorrectedReco_over_Gen_ratio_Zpos.Draw("E SAME")
+        hCorrectedReco_over_Gen_ratio_Zneg.Draw("E SAME")
+
+        closure_canvases.append(c_corr)
 
     # ------------------------------
     # 10) prepare output file (in same folder as analysis_results_path)
@@ -620,6 +878,8 @@ def apply_efficiency(analysis_results_path, corrections_path, main_dir="asymmetr
     dir_main = fout.mkdir("ProcessedSpectra")
     dir_corr = fout.mkdir("CorrectionsUsed")
     dir_diag = fout.mkdir("Diagnostics")
+    if running_MC:
+        dir_closure = fout.mkdir("ClosureTest")
 
     # Write spectra and processed items
     dir_main.cd()
@@ -635,8 +895,8 @@ def apply_efficiency(analysis_results_path, corrections_path, main_dir="asymmetr
 
     # Write correction inputs
     dir_corr.cd()
-    hEffAcc_reb2d.Write()
-    hSignalLoss_reb2d.Write()
+    # hEffAcc_reb2d.Write()
+    # hSignalLoss_reb2d.Write()
     hEff_fullZ.Write()
     hEff_Zpos.Write()
     hEff_Zneg.Write()
@@ -649,6 +909,11 @@ def apply_efficiency(analysis_results_path, corrections_path, main_dir="asymmetr
     # Write Diagnostic canvases
     dir_diag.cd()
     for c in diag_canvases:
+        c.Write()
+    
+    # Writ MC closure canvases:
+    dir_closure.cd()
+    for c in closure_canvases:
         c.Write()
 
     fout.Close()
