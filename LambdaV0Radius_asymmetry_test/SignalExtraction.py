@@ -247,6 +247,13 @@ for ipt in range(1, n_pt_bins + 1):
             hSignalPtZ.SetBinError(ipt, iz, 0.0)
             continue
 
+        # Now performing a slight rebinning to make the fit more well behaved
+        # Current analysis defaults are 450 bins from 1.08 to 1.15 GeV/c^2 (0.00015 bin width),
+        # whilst the mean should be 1.115 (PDG Lambda mass) and the sigma is ~ 0.003 (20 times
+        # larger than the current bin width, so it should be rebinned to reduced error bars!)
+        h_mass.Rebin(10) # Rebinning by a factor of 10, which should still leave us with a sensible
+                         # selection of bins outside the +/- 3.0 * sigma sideband.
+
         # =========================
         # 7.1) Full fit: Gaussian + quadratic
         #       (ONLY to get mean and sigma)

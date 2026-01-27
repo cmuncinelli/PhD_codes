@@ -355,12 +355,8 @@ def apply_efficiency(analysis_results_path, corrections_path, main_dir="asymmetr
     def normalize_spectrum(h, Nev, label):
         """Convert histogram to (1/Nev)*(1/dpT)*counts."""
         out = h.Clone(label)
-        for ib in range(1, out.GetNbinsX() + 1):
-            bw = out.GetBinWidth(ib)
-            val = out.GetBinContent(ib)
-            err = out.GetBinError(ib)
-            out.SetBinContent(ib, val / (Nev * bw))
-            out.SetBinError(ib, err / (Nev * bw))
+        out.Scale(1, "width") # Shorthands
+        out.Scale(1./Nev) # Shorthands
         return out
 
     # Event normalization = total reconstructed events (same as in corrections)

@@ -764,7 +764,7 @@ void extract_analysis_results(const char* inputPath, const char* outputFolder)
         R->Reset();
 
         R->SetTitle(
-            TString::Format("Coarse ratio y=[%.3f,%.3f] / y=[%.3f,%.3f]",
+            TString::Format("Ratio y=[%.3f,%.3f] / y=[%.3f,%.3f]",
                             pos_low,pos_high, neg_low,neg_high)
         );
 
@@ -908,7 +908,7 @@ void extract_analysis_results(const char* inputPath, const char* outputFolder)
             // Create normalized ratio histogram
             TH1D* R = new TH1D(
                 TString::Format("CoarseRatio_%d_Norm", i),
-                TString::Format("Normalized coarse ratio y=[%.2f,%.2f] / y=[%.2f,%.2f]",
+                TString::Format("Normalized ratio y=[%.2f,%.2f] / y=[%.2f,%.2f]",
                                 pos_low,pos_high, neg_low,neg_high),
                 nXB,
                 Araw->GetXaxis()->GetXmin(),
@@ -1196,14 +1196,14 @@ void extract_analysis_results(const char* inputPath, const char* outputFolder)
                 int nXB = A->GetNbinsX();
                 TH1D* R = new TH1D(
                     TString::Format("CoarseZRatio_%d_Raw", i),
-                    TString::Format("Raw coarse Z ratio Z=[%.1f,%.1f] / Z=[%.1f,%.1f]",
+                    TString::Format("Z ratio Z=[%.1f,%.1f] / Z=[%.1f,%.1f]",
                                     pos_low, pos_high, neg_low, neg_high),
                     nXB, A->GetXaxis()->GetXmin(), A->GetXaxis()->GetXmax()
                 );
 
                 R->Sumw2();
                 R->GetXaxis()->SetTitle("#Lambda V0 Radius (cm)");
-                R->GetYaxis()->SetTitle("Raw ratio A/B");
+                R->GetYaxis()->SetTitle("Counts zPlus / Counts zMinus");
 
                 for (int bx = 1; bx <= nXB; bx++) {
 
