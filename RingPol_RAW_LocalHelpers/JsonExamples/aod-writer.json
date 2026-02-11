@@ -1,0 +1,18 @@
+{
+  "OutputDirector": {
+    "debugmode": false,
+    "resfile": "AO2D_LambdaJetsRing_DerivedTest",
+    "resfilemode": "RECREATE",
+    "ntfmerge": 1,
+    "OutputDescriptors": [
+      {
+        "table": "AOD/LAMBDALIKEV0SRING/0",
+        "treename": "O2lambdalikev0sring"
+      },
+      {
+        "table": "AOD/JETSRING/0",
+        "treename": "O2jetsring"
+      }
+    ]
+  }
+}

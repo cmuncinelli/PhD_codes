@@ -12,24 +12,27 @@
 
 INPUT_LIST="$1"
 JSON_CONFIG_PATH="$2"
-MAX_JOBS="${3:-16}" # Number of CPU threads to use
+AOD_WRITER_JSON="$3"
+MAX_JOBS="${4:-16}" # Number of CPU threads to use
 
 # --- TUNING PARAMETERS ---
 SHM_SIZE="4000000000"        # 4GB Shared Memory (Enough for most AO2Ds)
 MEM_RATE_LIMIT="500000000"   # 500MB Rate Limit
 FILES_PER_CHUNK=5            # Set this to 5 to save SSD space (5 * 20 jobs = 100 active files, or about 60 GB)
 
-if [[ -z "$INPUT_LIST" ]] || [[ -z "$JSON_CONFIG_PATH" ]]; then
-    echo "Usage: $0 <input_list.txt> <config.json> [num_jobs]"
+if [[ -z "$INPUT_LIST" ]] || [[ -z "$JSON_CONFIG_PATH" ]] || [[ -z "$AOD_WRITER_JSON" ]]; then
+    echo "Usage: $0 <input_list.txt> <config.json> <aod-writer.json> [num_jobs]"
     exit 1
 fi
 
 INPUT_LIST=$(realpath "$INPUT_LIST")
 JSON_CONFIG_PATH=$(realpath "$JSON_CONFIG_PATH")
+AOD_WRITER_JSON=$(realpath "$AOD_WRITER_JSON")
 WORK_DIR=$(pwd)
 TEMP_BASE="${WORK_DIR}/temp_staging_area"
 RESULTS_DIR="${WORK_DIR}/results"
 LOGS_DIR="${RESULTS_DIR}/logs"  # <--- NEW: Permanent Log Directory
+DERIVED_AOD_DIR="${RESULTS_DIR}/derived_aods" # New folder, to save derived aod data!
 
 # --- SAFETY TRAP ---
 # This ensures the temp folder is ALWAYS deleted, even if you Ctrl+C or the script crashes.
@@ -68,6 +71,7 @@ mkdir -p "$TEMP_BASE/lists"
 mkdir -p "$TEMP_BASE/outputs"
 mkdir -p "$RESULTS_DIR"
 mkdir -p "$LOGS_DIR" # Ensure log dir exists
+mkdir -p "$DERIVED_AOD_DIR"
 
 # --- 2. SPLIT INPUT ---
 
@@ -82,10 +86,11 @@ run_staged_job() {
     BATCH_LIST="$1"
     JOB_ID="$2"
     JSON="$3"
-    BASE_TMP="$4"
-    SHM="$5"
-    MEM_LIMIT="$6"
-    LOG_DIR="$7" # Pass the log dir
+    AOD_WRITER_JSON="$4"
+    BASE_TMP="$5"
+    SHM="$6"
+    MEM_LIMIT="$7"
+    LOG_DIR="$8" # Pass the log dir
 
     # Define Log File in the PERMANENT directory
     LOG_FILE="${LOG_DIR}/job_${JOB_ID}.log"
@@ -114,10 +119,15 @@ run_staged_job() {
     cd "$JOB_DIR" || return 1
     OPTION="-b --configuration json://${JSON}"
 
-    # We redirect output to the persistent log file
+    o2-analysis-event-selection-service ${OPTION} | \
+    o2-analysis-multcenttable ${OPTION} | \
+    o2-analysis-propagationservice ${OPTION} | \
+    o2-analysis-pid-tpc-service ${OPTION} | \
+    o2-analysis-ft0-corrected-table ${OPTION} | \
+    o2-analysis-pid-tof-base ${OPTION} | \
     o2-analysis-lf-strangenesstofpid ${OPTION} | \
-    o2-analysis-lf-v0mlscoresconverter ${OPTION} | \
-    o2-analysis-lf-asymmetric-rapidity-test ${OPTION} \
+    o2-analysis-lf-lambdajetpolarizationions ${OPTION} \
+        --aod-writer-json "${AOD_WRITER_JSON}" \
         --aod-file "@${LOCAL_LIST_FILE}" \
         --aod-memory-rate-limit "$MEM_LIMIT" \
         --shm-segment-size "$SHM" \
@@ -126,12 +136,28 @@ run_staged_job() {
     RC=$?
 
     # STAGE-OUT
-    if [ $RC -eq 0 ] && [ -f "AnalysisResults.root" ]; then
-        mv "AnalysisResults.root" "${BASE_TMP}/outputs/AnalysisResults_${JOB_ID}.root"
+    if [ $RC -eq 0 ]; then
         STATUS="OK"
+
+        # --- Physics output ---
+        if [ -f "AnalysisResults.root" ]; then
+            mv "AnalysisResults.root" \
+               "${BASE_TMP}/outputs/AnalysisResults_${JOB_ID}.root"
+        else
+            echo "Warning: AnalysisResults.root missing (job ${JOB_ID})" >> "$LOG_FILE"
+        fi
+
+        # --- Derived AOD output ---
+        DERIVED_AOD_NAME="AO2D_LambdaJetsRing_DerivedTest.root"
+        if [ -f "${DERIVED_AOD_NAME}" ]; then
+            mv "${DERIVED_AOD_NAME}" \
+               "${DERIVED_AOD_DIR}/AO2D_LambdaJetsRing_job${JOB_ID}.root"
+        else
+            echo "Warning: Derived AOD missing (job ${JOB_ID})" >> "$LOG_FILE"
+        fi
     else
         STATUS="Error!!!"
-        echo "   !!! JOB FAILED. See log: $LOG_FILE" # Print to main screen
+        echo "   !!! JOB FAILED. See log: $LOG_FILE"
     fi
 
     # CLEANUP DATA ONLY
@@ -145,7 +171,8 @@ export -f run_staged_job
 
 echo "  Processing queue... (Logs are in $LOGS_DIR)"
 find "$TEMP_BASE/lists" -name "batch_*" | parallel --progress --eta -j "$MAX_JOBS" \
-    run_staged_job {} {#} "$JSON_CONFIG_PATH" "$TEMP_BASE" "$SHM_SIZE" "$MEM_RATE_LIMIT" "$LOGS_DIR"
+    run_staged_job {} {#} "$JSON_CONFIG_PATH" "$AOD_WRITER_JSON" \
+    "$TEMP_BASE" "$SHM_SIZE" "$MEM_RATE_LIMIT" "$LOGS_DIR"
 # # --bar provides a cleaner visual bar than --progress
 # find "$TEMP_BASE/lists" -name "batch_*" | parallel --bar -j "$MAX_JOBS" \
 #     run_staged_job {} {#} "$JSON_CONFIG_PATH" "$TEMP_BASE" "$SHM_SIZE" "$MEM_RATE_LIMIT" "$LOGS_DIR"
@@ -172,6 +199,10 @@ if ls "$TEMP_BASE/outputs"/AnalysisResults_*.root 1> /dev/null 2>&1; then
     # Also copy the JSON with a matching name for records:
     cp "$JSON_CONFIG_PATH" "${RESULTS_DIR}/dpl-config${SUFFIX}.json" 2>/dev/null
     echo "  Done. Final file: $TARGET_FILE"
+
+    #####################################################################################################
+    ### NOTICE THERE IS NO NEED TO HADD THE DERIVED DATA!!! O2 ALREADY EXPECTS AN OUTPUT LIKE THAT!!! ###
+    #####################################################################################################
 else
     echo "!!! No results found to merge."
     echo "   Check the log files in $LOGS_DIR for details."
