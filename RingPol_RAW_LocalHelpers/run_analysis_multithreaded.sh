@@ -13,12 +13,12 @@
 INPUT_LIST="$1"
 JSON_CONFIG_PATH="$2"
 AOD_WRITER_JSON="$3"
-MAX_JOBS="${4:-16}" # Number of CPU threads to use
+MAX_JOBS="${4:-4}" # Number of CPU threads to use. Uses only 4 due to small jarvis4 available disk space.
 
 # --- TUNING PARAMETERS ---
-SHM_SIZE="4000000000"        # 4GB Shared Memory (Enough for most AO2Ds)
-MEM_RATE_LIMIT="500000000"   # 500MB Rate Limit
-FILES_PER_CHUNK=5            # Set this to 5 to save SSD space (5 * 20 jobs = 100 active files, or about 60 GB)
+SHM_SIZE="12000000000"        # 12GB Shared Memory (Increased to deal with RAW AO2Ds and many pipelines)
+MEM_RATE_LIMIT="600000000"   # 600MB Rate Limit
+FILES_PER_CHUNK=5            # Set this to 5 to save SSD space (5 * 4 jobs = 20 active files of 3GB each (raw data), or about 60 GB)
 
 if [[ -z "$INPUT_LIST" ]] || [[ -z "$JSON_CONFIG_PATH" ]] || [[ -z "$AOD_WRITER_JSON" ]]; then
     echo "Usage: $0 <input_list.txt> <config.json> <aod-writer.json> [num_jobs]"
@@ -91,6 +91,7 @@ run_staged_job() {
     SHM="$6"
     MEM_LIMIT="$7"
     LOG_DIR="$8" # Pass the log dir
+    DERIVED_AOD_DIR="$9"
 
     # Define Log File in the PERMANENT directory
     LOG_FILE="${LOG_DIR}/job_${JOB_ID}.log"
@@ -103,17 +104,34 @@ run_staged_job() {
     LOCAL_LIST_FILE="${JOB_DIR}/local_input.txt"
     touch "$LOCAL_LIST_FILE"
     
-    # STAGE-IN
-    while IFS= read -r RAW_LINE; do
-        HDD_PATH="${RAW_LINE#"file:"}"
-        FILENAME=$(basename "$HDD_PATH")
-        if [ -f "$HDD_PATH" ]; then
-            cp "$HDD_PATH" "${DATA_DIR}/${FILENAME}"
-            echo "file:${DATA_DIR}/${FILENAME}" >> "$LOCAL_LIST_FILE"
-        else
-            echo "Warning: Source file not found: $HDD_PATH" >> "$LOG_FILE"
-        fi
-    done < "$BATCH_LIST"
+    # ============================
+    # STAGE-IN (Serialized HDD I/O)
+    # ============================
+    # Made something like an OMP_CRITICAL block, so that multiple parallel workers can't rush to copy files.
+    # The throughtput is larger when running sequential reads instead of MAX_JOBS calls of cp, which will read
+    # as if random access reads (thrashing), not sequential reads. This should increase the speed of copy before 
+    # processing truly starts. At this stage of parallelization, it seemed like a true bottleneck to be solved.
+    LOCKFILE="${BASE_TMP}/hdd_copy.lock"
+    {
+        echo "[Job ${JOB_ID}] Waiting for HDD lock..." >> "$LOG_FILE"
+        flock -x 200
+        echo "[Job ${JOB_ID}] Acquired HDD lock. Starting copy..." >> "$LOG_FILE"
+
+        while IFS= read -r RAW_LINE; do
+            HDD_PATH="${RAW_LINE#"file:"}"
+            FILENAME=$(basename "$HDD_PATH")
+
+            if [ -f "$HDD_PATH" ]; then
+                # # Lower disk priority to reduce interference
+                # ionice -c2 -n7 cp "$HDD_PATH" "${DATA_DIR}/${FILENAME}"
+                cp "$HDD_PATH" "${DATA_DIR}/${FILENAME}"
+                echo "file:${DATA_DIR}/${FILENAME}" >> "$LOCAL_LIST_FILE"
+            else
+                echo "Warning: Source file not found: $HDD_PATH" >> "$LOG_FILE"
+            fi
+        done < "$BATCH_LIST"
+        echo "[Job ${JOB_ID}] Copy finished. Releasing HDD lock." >> "$LOG_FILE"
+    } 200>"$LOCKFILE"
 
     # EXECUTE O2
     cd "$JOB_DIR" || return 1
@@ -172,7 +190,7 @@ export -f run_staged_job
 echo "  Processing queue... (Logs are in $LOGS_DIR)"
 find "$TEMP_BASE/lists" -name "batch_*" | parallel --progress --eta -j "$MAX_JOBS" \
     run_staged_job {} {#} "$JSON_CONFIG_PATH" "$AOD_WRITER_JSON" \
-    "$TEMP_BASE" "$SHM_SIZE" "$MEM_RATE_LIMIT" "$LOGS_DIR"
+    "$TEMP_BASE" "$SHM_SIZE" "$MEM_RATE_LIMIT" "$LOGS_DIR" "$DERIVED_AOD_DIR"
 # # --bar provides a cleaner visual bar than --progress
 # find "$TEMP_BASE/lists" -name "batch_*" | parallel --bar -j "$MAX_JOBS" \
 #     run_staged_job {} {#} "$JSON_CONFIG_PATH" "$TEMP_BASE" "$SHM_SIZE" "$MEM_RATE_LIMIT" "$LOGS_DIR"
