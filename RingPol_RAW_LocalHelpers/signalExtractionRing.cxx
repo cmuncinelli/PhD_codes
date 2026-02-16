@@ -613,9 +613,9 @@ void signalExtractionRing(const std::string& inputFilePath, const std::string& o
     };
 
     for (const auto& var : variations){
-        std::cout << "\n#########################################"
+        std::cout << "\n#########################################" << std::endl;
         std::cout << "-> Processing variation: " << var << std::endl;
-        std::cout << "#########################################\n"
+        std::cout << "#########################################\n" << std::endl;
         
         // Step 3.1: Output file should have these 4 cases as subfolders
         TDirectory* outDirVar = outFile->mkdir(var.c_str());
@@ -833,9 +833,9 @@ void signalExtractionRing(const std::string& inputFilePath, const std::string& o
     } // <--- This closes the variation loop ("Ring", "RingKinematicCuts", etc.)
 
     // Clean up files
-    std::cout << "\n#############################################"
+    std::cout << "\n#############################################" << std::endl;
     std::cout << "Writing everything to disk and closing output files!" << std::endl;
-    std::cout << "#############################################\n"
+    std::cout << "#############################################\n" << std::endl;
     outFile->Close();
     inFile->Close();
     
