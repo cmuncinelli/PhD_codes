@@ -6,12 +6,16 @@
     "ntfmerge": 1,
     "OutputDescriptors": [
       {
-        "table": "AOD/LAMBDALIKEV0SRING/0",
-        "treename": "O2lambdalikev0sring"
+        "table": "AOD/RINGLAV0S/0",
+        "treename": "O2ringlav0s"
       },
       {
-        "table": "AOD/JETSRING/0",
-        "treename": "O2jetsring"
+        "table": "AOD/RINGJETS/0",
+        "treename": "O2ringjets"
+      },
+      {
+        "table": "AOD/RINGCOLLISIONS/0",
+        "treename": "O2ringcollisions"
       }
     ]
   }

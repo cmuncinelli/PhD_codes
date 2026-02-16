@@ -10,6 +10,7 @@
 #   3. Run ONE massive O2 pipeline with high internal parallelism.
 #   4. Clean up immediately to free space for next batch.
 # ==============================================================================
+# Run as: ./runAnalysisInternalMultithreading.sh ./input_data_storage.txt ./dpl-config-JustTOFBase-FullQA_permissivePt.json ./aod-writer.json
 
 # --- INPUT ARGUMENTS ---
 INPUT_LIST="$1"
@@ -139,7 +140,8 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
     cd "$BATCH_WORK_DIR" || exit 1
     
     # Common Configuration options
-    OPTION="-b --configuration json://$JSON_CONFIG_PATH"
+    # Notice you need to pass the --aod-writer argument to all tasks, otherwise we will not write the appropriate tables!
+    OPTION="-b --configuration json://$JSON_CONFIG_PATH --aod-writer-json "${AOD_WRITER_JSON}""
 
     # Updates based on the workflow_dump.log:
     # 1. Event Selection -> eventselection-run3
@@ -164,11 +166,12 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
         --pipeline strangenesstofpid:8 | \
     o2-analysis-lf-lambdajetpolarizationions ${OPTION} \
         --pipeline lambdajetpolarizationions:24 \
-        --aod-writer-json "${AOD_WRITER_JSON}" \
         --aod-file "@${LOCAL_INPUT_LIST}" \
         --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
         --shm-segment-size "$SHM_SIZE" \
         >> "$BATCH_LOG" 2>&1
+    # Notice that the instructions on which tables to write are actually contained in $JSON_CONFIG_PATH (the config json).
+    # The aod-writer-json just helps with formatting! For more info, read the "internal-dpl-aod-writer" key in the .json.
 
     EXIT_CODE=$?
 
@@ -183,6 +186,7 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
             # Name format: AnalysisResults-ITSEnforced_00.root
             TARGET_RES="$RESULTS_DIR/AnalysisResults${SUFFIX}_${BATCH_ID}.root"
             mv "AnalysisResults.root" "$TARGET_RES"
+            echo "    Saved AnalysisResults to ${TARGET_RES}."
             echo "$TARGET_RES" >> "$MERGE_LIST_FILE"
         else
             echo "    ERROR: AnalysisResults.root not found!"
@@ -191,11 +195,12 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
         # 2. Handle Derived AODs with SUFFIX
         # Note: Derived AODs usually have fixed names defined in the JSON writer,
         # but we are overriding that anyways via the wildcard "AO2D_*.root".
-        DERIVED_FILE=$(find . -maxdepth 1 -name "AO2D_*.root" | head -n 1)
+        DERIVED_FILE=$(find . -maxdepth 1 -name "AO2D_LambdaJetsRing_DerivedTest.root" | head -n 1)
         if [ -n "$DERIVED_FILE" ]; then
             # Name format: AO2D_Derived-ITSEnforced_00.root
+            echo "    Moving file $DERIVED_FILE"
             mv "$DERIVED_FILE" "$DERIVED_AOD_DIR/AO2D_Derived${SUFFIX}_${BATCH_ID}.root"
-            echo "    Saved derived AOD."
+            echo "    Saved derived AOD to \"$DERIVED_AOD_DIR/AO2D_Derived${SUFFIX}_${BATCH_ID}.root\"."
         else
             echo "    Warning: No derived AOD found."
         fi
