@@ -1,0 +1,72 @@
+ ./run_analysis_multithreaded.sh ./input_data_storage.txt ./dpl-config-JustTOFBase-FullQA_permissivePt.json ./aod-writer.json 4
+========================================================
+   Starting O2 Staged Analysis
+   Strategy: Copy Batch -> Process -> Delete
+   Threads: 4
+   Batch Size: 5 files
+   Logs: /home/cicero/RingPol/LHC25ae_pass2_small/results/logs
+========================================================
+   Cleaning old logs...
+   Splitting input list...
+   Created 26 batches.
+  Processing queue... (Logs are in /home/cicero/RingPol/LHC25ae_pass2_small/results/logs)
+
+Computers / CPU cores / Max jobs to run
+1:local / 128 / 4
+
+Computer:jobs running/jobs completed/%of started jobs/Average seconds to complete
+ETA: 0s Left: 26 AVG: 0.00s  local:4/0/100%/0.0s    [Batch 1] OK
+ETA: 1201s Left: 25 AVG: 72.00s  local:4/1/100%/2174.0s    [Batch 2] OK
+ETA: 1920s Left: 24 AVG: 86.00s  local:4/2/100%/1137.0s    [Batch 3] OK
+ETA: 2004s Left: 23 AVG: 89.67s  local:4/3/100%/790.3s    [Batch 4] OK
+ETA: 3058s Left: 22 AVG: 140.50s  local:4/4/100%/666.0s ^C
+  [Cleanup] Removing temp staging area...
+
+
+
+################################################
+
+
+./runAnalysisInternalMultithreading.sh ./input_data_storage.txt ./dpl-config-JustTOFBase-FullQA_permissivePt.json ./aod-writer.json
+========================================================
+  Step 1: Splitting Input List
+========================================================
+  Total Batches: 7
+  Files per Batch: 20
+========================================================
+  Processing Batch 00 / 6
+========================================================
+  [I/O] Staging files to NVMe...
+    WARNING: Source file missing: /storage2/cicero/RingPol/LHC25ae_pass2_small_OO/AO2D_17.root
+  [O2] Launching internal pipeline...
+       (Check /home/cicero/RingPol/LHC25ae_pass2_small/results/logs/batch_00.log for live details)
+
+real    10m34,598s
+user    201m38,450s
+sys     17m59,517s
+  [OK] O2 finished successfully.
+    Saved derived AOD.
+  [Clean] Batch workspace removed.
+
+========================================================
+  Processing Batch 01 / 6
+========================================================
+  [I/O] Staging files to NVMe...
+  [O2] Launching internal pipeline...
+       (Check /home/cicero/RingPol/LHC25ae_pass2_small/results/logs/batch_01.log for live details)
+
+real    10m46,781s
+user    224m38,247s
+sys     21m19,526s
+  [OK] O2 finished successfully.
+    Saved derived AOD.
+  [Clean] Batch workspace removed.
+
+
+
+
+
+
+
+# Dump workflows (to get proper device names for parallelization):
+o2-analysis-event-selection-service | o2-analysis-multcenttable | o2-analysis-propagationservice | o2-analysis-pid-tpc-service | o2-analysis-ft0-corrected-table | o2-analysis-pid-tof-base | o2-analysis-lf-strangenesstofpid | o2-analysis-lf-lambdajetpolarizationions   --aod-writer-json aod-writer.json   --dump-workflow > workflow_dump.log 2>&1
