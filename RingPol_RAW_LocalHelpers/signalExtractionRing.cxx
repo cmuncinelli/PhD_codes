@@ -60,6 +60,493 @@
 
 constexpr double lambdaPDGMassApprox = 1.11568;
 
+// =================================================================================================
+// HELPER FUNCTION: Full 2D to 1D Signal Extraction Engine
+// =================================================================================================
+void ExtractObservable2D(TH2D* h2dCounts, TH2D* h2dNum, TH2D* h2dSqNum, TDirectory* parentDir, TString extractionName, TString axisTitle, double massMin, double massMax, bool printHeader = true){
+    if (printHeader) std::cout << "\n[ExtractObservable2D] Starting extraction: " << extractionName << std::endl;
+    // Create subdirectories for organized output
+    TDirectory* dirBase = parentDir->mkdir(extractionName);
+    TDirectory* dirFits = dirBase->mkdir("MassFits");
+    TDirectory* dirQARingMass = dirBase->mkdir("QA_RingObservable_vs_Mass");
+    TDirectory* dirBkgFits = dirBase->mkdir("BackgroundFits");
+    TDirectory* dirBkgNumFits = dirBase->mkdir("BkgNumFits");
+    TDirectory* dirResults = dirBase->mkdir("Results");
+
+    int nBins = h2dCounts->GetNbinsX();
+    
+    // Prepare output histograms (Cloning ProjectionX to keep exact angular binning)
+    TH1D* hSigYield = (TH1D*)h2dCounts->ProjectionX(Form("hSigYield_%s", extractionName.Data())); hSigYield->Reset();
+    hSigYield->SetTitle(Form("Signal Yield vs %s;%s;Counts", axisTitle.Data(), axisTitle.Data()));
+    
+    TH1D* hBkgYield = (TH1D*)hSigYield->Clone(Form("hBkgYield_%s", extractionName.Data()));
+    hBkgYield->SetTitle(Form("Background Yield vs %s;%s;Counts", axisTitle.Data(), axisTitle.Data()));
+    
+    TH1D* hRSig = (TH1D*)hSigYield->Clone(Form("hRSig_%s", extractionName.Data()));
+    hRSig->SetTitle(Form("Extracted <R>_{signal} vs %s;%s;<R>_{S}", axisTitle.Data(), axisTitle.Data()));
+    
+    TH1D* hRBkg = (TH1D*)hSigYield->Clone(Form("hRBkg_%s", extractionName.Data()));
+    hRBkg->SetTitle(Form("Background <R>_{bkg} vs %s;%s;<R>_{B}", axisTitle.Data(), axisTitle.Data()));
+
+    // --- NEW QA HISTOGRAMS: statistical significance and purity ---
+    TH1D* hPurity = (TH1D*)hSigYield->Clone(Form("hPurity_%s", extractionName.Data()));
+    hPurity->SetTitle(Form("Purity S/(S+B) vs %s;%s;Purity", axisTitle.Data(), axisTitle.Data()));
+    
+    TH1D* hSigStat = (TH1D*)hSigYield->Clone(Form("hSigStat_%s", extractionName.Data()));
+    hSigStat->SetTitle(Form("Significance S/#sqrt{S+B} vs %s;%s;Significance", axisTitle.Data(), axisTitle.Data()));
+
+    // We will need to store the extracted mu and sigma for Step 5 & 6
+    // Using a simple struct to hold the fit results for each bin
+    struct FitResult { double mu; double sigma; bool valid; };
+    std::vector<FitResult> fitResults(nBins + 1);
+
+    // =========================================================================================
+    // Step 4: Mass Projections, Fits, and QA Plots for each Bin
+    // =========================================================================================
+    if (printHeader) std::cout << "  -> Step 4: Mass fits and QA..." << std::endl;
+    for (int iBin = 1; iBin <= nBins; ++iBin){
+        // 1. Project the mass spectrum (Counts/Denominator) using "e" for error propagation
+        TString projName = Form("hMass_Bin%d", iBin);
+        TH1D* hMassProj = h2dCounts->ProjectionY(projName, iBin, iBin, "e");
+        hMassProj->SetTitle(Form("Mass Projection Bin %d;M_{p#pi} (GeV/c^{2});Counts", iBin));
+
+        // --- STABILITY CHECK: Does this bin even have data? ---
+        // If there are fewer than 30 counts in the entire mass window, a good fit is probably
+        // impossible (and if possible, useless).
+        if (hMassProj->GetEntries() < 30 || hMassProj->Integral() <= 30) {
+            fitResults[iBin] = {0, 0, false};
+            // We don't even want to see these problematic histograms, so just skip right away!
+            continue;
+        }
+
+        // 2. Project the Numerator to calculate <R>(m) QA plot
+        TString numProjName = Form("hNum_Bin%d", iBin);
+        TH1D* hNumProj = h2dNum->ProjectionY(numProjName, iBin, iBin, "e");
+        
+        TString qaName = Form("hQARingVsMass_Bin%d", iBin);
+        TH1D* hQARing = (TH1D*)hNumProj->Clone(qaName);
+        hQARing->SetTitle(Form("<R> vs Mass for Bin %d;M_{p#pi} (GeV/c^{2});<R>", iBin));
+        hQARing->Divide(hNumProj, hMassProj, 1.0, 1.0, "B"); // Binomial errors might be tricky here, standard divide is okay for now as it's weighted
+        
+        dirQARingMass->cd();
+        hQARing->Write();
+
+        // 3. Setup the Fit Function (gaus + pol2)
+        TString fitName = Form("fit_Bin%d", iBin);
+        TF1* fitFunc = new TF1(fitName, "gaus(0) + pol2(3)", massMin, massMax); // Short-hand initialization of fit function
+        
+        // Smart initialization (starting parameters should be somewhat physical)
+        double maxCount = hMassProj->GetMaximum();
+        fitFunc->SetParameter(0, maxCount);        // Constant
+        fitFunc->SetParameter(1, lambdaPDGMassApprox);         // Mean close to PDG value
+        fitFunc->SetParameter(2, 0.002);           // Sigma (typical for Lambda, derived from some earlier analysis of mine)
+
+        // 4. Apply Stability Constraints
+        fitFunc->SetParameter(0, maxCount);        // Constant (Height)
+        // - Constrain mean within mass axis limits
+        fitFunc->SetParLimits(1, lambdaPDGMassApprox-0.01, lambdaPDGMassApprox+0.01); // Constraints close to mass (1.15 to 1.125)
+        // Sigma: Restrict to physical limits (e.g., 0.1 to 5 MeV)
+        fitFunc->SetParLimits(2, 0.0001, 0.005);
+
+        // 5. Fit using Binned Poisson Log-Likelihood ("L"), Quiet ("Q"), No Draw ("0"), Respect Range ("R")
+        // We use "S" to get the TFitResultPtr to check if the fit converged
+        TFitResultPtr r = hMassProj->Fit(fitFunc, "Q 0 R S"); // Removed log-likelihood to make fits behave better in high-statistics 1D environment!
+
+        dirFits->cd();
+        hMassProj->GetListOfFunctions()->Add(fitFunc); // Attach fit to histogram for saving later
+            // Save the histogram only if the projection is not empty!
+        if (hMassProj->GetEntries() > 0) hMassProj->Write(); // For QA
+
+        // Store results if fit is somewhat reasonable
+        int fitStatus = int(r); // Extract the integer status code from the fit result
+        
+        // 0 = perfectly converged. 
+        if (fitStatus == 0) {
+            fitResults[iBin] = {fitFunc->GetParameter(1), fitFunc->GetParameter(2), true};
+        } else {
+            // Most of the other errors in this stage are simply error code 1, which means Minuit had problems with
+            // the covariance matrix (the parameter "error" matrix). As we don't care about errors right now, this
+            // is perfectly fine and we can just proceed. Thus, added a "salvage" block that just checks if the
+            // fit parameters are somewhat OK before proceeding.
+
+            // --- Salvage Logic ---
+            // If the mean and sigma are within a physically reasonable window, keep them!
+            double mu = fitFunc->GetParameter(1);
+            double sig = fitFunc->GetParameter(2);
+            
+            // We can adjust these "sane" bounds later on, if needed
+            if (mu > 1.105 && mu < 1.125 && sig > 0.0005 && sig < 0.008) {
+                fitResults[iBin] = {mu, sig, true};
+            } else {
+                fitResults[iBin] = {0, 0, false};
+            }
+        }
+    }
+
+    // =========================================================================================
+    // Step 5 & 6: Discontinuous Sideband Fits and Signal Extraction
+    // =========================================================================================
+    if (printHeader) std::cout << "  -> Step 5/6: Sidebands and signal extraction..." << std::endl;
+    for (int iBin = 1; iBin <= nBins; ++iBin){
+        if (!fitResults[iBin].valid) {
+            if (printHeader) std::cout << "    Bin " << iBin << ": invalid mu/sigma, skipped.\n";
+            continue;
+        }
+
+        double mu = fitResults[iBin].mu;
+        double sigma = fitResults[iBin].sigma;
+
+        // Re-fetch the mass projections
+        TH1D* hMassProj = (TH1D*)dirFits->Get(Form("hMass_Bin%d", iBin));
+        TH1D* hNumProj = h2dNum->ProjectionY(Form("hNum_Ext_Bin%d", iBin), iBin, iBin, "e");
+        // Also fetch the squared observable projection to get the variance of R_peak
+        TH1D* hSqNumProj = h2dSqNum->ProjectionY(Form("hSqNum_Ext_Bin%d", iBin), iBin, iBin, "e");
+        
+        if (!hMassProj || !hNumProj || !hSqNumProj) continue;
+
+        // --- Step 5: Discontinuous Sideband Background Fit using TGraphErrors (TH1D's are bad at that!) ---
+        
+        // Create a TGraphErrors to hold ONLY the sideband points
+        TGraphErrors* grBkg = new TGraphErrors();
+        grBkg->SetName(Form("grBkg_Bin%d", iBin));
+        grBkg->SetTitle(Form("Sideband Bkg Bin %d;M_{p#pi} (GeV/c^{2});Counts", iBin));
+
+        TGraphErrors* grBkgNum = new TGraphErrors();
+        grBkgNum->SetName(Form("grBkgNum_Bin%d", iBin));
+        grBkgNum->SetTitle(Form("Numerator Sidebands Bin %d;M_{p#pi} (GeV/c^{2});#Sigma r_{i}", iBin));
+
+        int ptIdx = 0;
+        // Loop over histogram bins and select only those in the sidebands
+        for (int jBin = 1; jBin <= hMassProj->GetNbinsX(); ++jBin){
+            double x = hMassProj->GetBinCenter(jBin);
+
+            // UPDATE! Fixed to use larger bands. With 175 bins from 1.08 to 1.15 GeV/c^2, [4sigma,6sigma]
+            // would mean to use only 10 bins on the right side! (same for other side!)
+            // Now considering all bins in the left and right sides!
+            // UPDATE 2! Now using a 6 sigma exclusion zone -- the peak was getting into the fit!
+            // This uses ALL available statistics outside the 6-sigma exclusion zone:
+            bool inLeftSideband = (x >= massMin && x <= (mu - 6.0 * sigma));
+            bool inRightSideband = (x >= (mu + 6.0 * sigma) && x <= massMax);
+
+            if (inLeftSideband || inRightSideband){
+                grBkg->SetPoint(ptIdx, x, hMassProj->GetBinContent(jBin));
+                grBkg->SetPointError(ptIdx, 0.0, hMassProj->GetBinError(jBin)); // Standard x-error is 0 for fits, y-error is standard bin error
+                
+                grBkgNum->SetPoint(ptIdx, x, hNumProj->GetBinContent(jBin));
+                grBkgNum->SetPointError(ptIdx, 0.0, hNumProj->GetBinError(jBin));
+                ptIdx++;
+            }
+        }
+
+        // --- STABILITY CHECK 1: Enough points for a pol2? ---
+        // NEW: Adding some stability checks because the 3D histogram projections have much smaller statistics to be handled!
+        // A pol2 has 3 parameters. We want at least 4 points to have 1 degree of freedom.
+        if (grBkg->GetN() < 4 || grBkgNum->GetN() < 4) {
+            fitResults[iBin].valid = false; // Invalidate this bin
+            delete grBkg; delete grBkgNum;
+            continue; // Skip fitting
+        }
+
+        // --- STABILITY CHECK 1.5: Are the sidebands just empty zeros? ---
+        // If the sum of the background counts is 0, the matrix inversion will fail and we get a looooot of Minuit errors:
+        double sumBkg = 0;
+        for (int k = 0; k < grBkg->GetN(); ++k) {
+            sumBkg += grBkg->GetY()[k];
+        }
+        if (sumBkg <= 5) { // 5 counts is still way to little
+            fitResults[iBin].valid = false;
+            delete grBkg; delete grBkgNum;
+            continue;
+        }
+
+        // Fit the discontinuous graph with a pol2
+        // We use pol2 to cover the small curvature in Lambda background
+        TF1* bkgFitFunc = new TF1(Form("bkgFit_Bin%d", iBin), "pol2", massMin, massMax);
+        TFitResultPtr rBkg = grBkg->Fit(bkgFitFunc, "Q 0 S"); // "Q" = quiet, "0" = don't draw, "S" = return TFitResultPtr
+        
+        // Fit the Numerator Sidebands to get Background Polarization
+        TF1* bkgNumFitFunc = new TF1(Form("bkgNumFit_Bin%d", iBin), "pol2", massMin, massMax);
+        TFitResultPtr rBkgNum = grBkgNum->Fit(bkgNumFitFunc, "Q 0 S");
+
+        // --- STABILITY CHECK 2: Did the fits converge properly? ---
+        if (!rBkg->IsValid() || !rBkgNum->IsValid()) {
+            fitResults[iBin].valid = false;
+            delete bkgFitFunc; delete bkgNumFitFunc; // Here you still need to delete them manually, as they have not yet been taken ownership of by ROOT due to an "Add()" call!
+            delete grBkg; delete grBkgNum;
+            continue;
+        }
+
+        dirBkgFits->cd();
+        grBkg->GetListOfFunctions()->Add(bkgFitFunc); // Attach fit for viewing in TBrowser
+        grBkg->Write();
+
+        // Writing bkgNum histograms in a specific folder for QA:
+        dirBkgNumFits->cd();
+        grBkgNum->GetListOfFunctions()->Add(bkgNumFitFunc); // Attach the fit function to the graph for easy viewing in TBrowser
+        grBkgNum->Write(); // Write both the sideband graph (with fit) and the raw projected histogram
+        hNumProj->Write();
+
+        // --- Step 6: Define Signal Region and Exact Limits ---
+        int firstBin = hMassProj->FindBin(mu - 3.0 * sigma);
+        int lastBin  = hMassProj->FindBin(mu + 3.0 * sigma);
+        double x_low  = hMassProj->GetBinLowEdge(firstBin);
+        double x_high = hMassProj->GetBinLowEdge(lastBin) + hMassProj->GetBinWidth(lastBin);
+        double binWidth = hMassProj->GetBinWidth(1); // Assuming uniform binning
+
+        // Raw Signal Counts (Peak Region)
+        double totCounts = 0;
+        double totCountsErrSq = 0;
+        double totNum = 0;
+        double totNumErrSq = 0;
+        double totSqNum = 0; // For variance of the observable
+
+        for (int jBin = firstBin; jBin <= lastBin; ++jBin){
+            totCounts += hMassProj->GetBinContent(jBin);
+            totCountsErrSq += std::pow(hMassProj->GetBinError(jBin), 2);
+            
+            totNum += hNumProj->GetBinContent(jBin);
+            totNumErrSq += std::pow(hNumProj->GetBinError(jBin), 2);
+            
+            totSqNum += hSqNumProj->GetBinContent(jBin);
+        }
+        double errTotCounts = std::sqrt(totCountsErrSq);
+
+        // --- STABILITY CHECK 3: Ensure there are actually any counts to divide by ---
+        if (totCounts <= 0) {
+            delete grBkg; delete grBkgNum;
+            continue;
+        }
+
+        /*
+         * MEDIUM COMMENT: BACKGROUND INTEGRATION AND COVARIANCE
+         * ----------------------------------------------------------------------------------
+         * The background must be integrated in one step using the full covariance matrix
+         * because polynomial parameters are highly correlated. 
+         * Performing per-bin integrations and summing the errors in quadrature incorrectly 
+         * assumes independent uncertainties between bins. This artificial inflation of the 
+         * background error severely overestimates the final signal uncertainty.
+         * TF1::IntegralError correctly uses the Jacobian of the integral with respect to 
+         * the parameters and the full parameter covariance matrix.
+         */
+        
+        // Background Estimation in ONE STEP
+        double bkgCounts = bkgFitFunc->Integral(x_low, x_high) / binWidth;
+        double errBkgCounts = bkgFitFunc->IntegralError(x_low, x_high, rBkg->GetParams(), rBkg->GetCovarianceMatrix().GetMatrixArray()) / binWidth;
+
+        double bkgNum = bkgNumFitFunc->Integral(x_low, x_high) / binWidth;
+        double errBkgNum = bkgNumFitFunc->IntegralError(x_low, x_high, rBkgNum->GetParams(), rBkgNum->GetCovarianceMatrix().GetMatrixArray()) / binWidth;
+
+        // Final Signal Yield
+        double sigCounts = totCounts - bkgCounts;
+        double errSigCounts = std::sqrt(totCountsErrSq + errBkgCounts * errBkgCounts);
+
+        if (sigCounts <= 0 || totCounts <= 0){
+            std::cout << "    Bin " << iBin << ": non-positive signal, skipped.\n";
+            delete grBkg; delete grBkgNum;
+            continue;
+        }
+
+        // Fractions
+        double fB = bkgCounts / totCounts;
+        double fS = sigCounts / totCounts; // Equivalent to 1 - fB
+        
+        // Calculate Observables
+        double R_peak = totNum / totCounts;
+        double R_B = bkgNum / bkgCounts;
+        
+        // True Signal Polarization: R_S = (R_peak - f_B * R_B) / f_S
+        double R_S = (R_peak - fB * R_B) / fS;
+
+        // --- Error Propagation for Polarization ---
+        // Variance of R_peak (using squared observable data)
+        // double varR_peak = ((totSqNum / totCounts) - (R_peak * R_peak)) / totCounts; // Standard error of the mean
+           // Variance of R_peak (using the unbiased estimator with Bessel's correction for unbiased estimators)
+        double varR_peak = ((totSqNum / totCounts) - (R_peak * R_peak)) / (totCounts - 1.0);
+
+        // Variance of R_B (simple error propagation for ratio B_num / B_counts)
+        double varR_B = std::pow(R_B, 2) * (std::pow(errBkgNum/bkgNum, 2) + std::pow(errBkgCounts/bkgCounts, 2));
+        
+        // Variance of f_B
+        double var_fB = std::pow(fB, 2) * (std::pow(errBkgCounts/bkgCounts, 2) + (totCountsErrSq/std::pow(totCounts, 2)));
+
+        // Final Variance Formula:
+        // sigma^2(R_S) = (1/f_S^2)*sigma^2(R_peak) + (f_B^2/f_S^2)*sigma^2(R_B) + ((R_peak - R_B)/f_S^2)^2 * sigma^2(f_B)
+        double errR_S = std::sqrt(varR_peak/std::pow(fS, 2) + (std::pow(fB, 2)/std::pow(fS, 2))*varR_B + std::pow((R_peak - R_B)/std::pow(fS, 2), 2)*var_fB);
+        
+        // --- Calculate Purity & Significance ---
+        double purity = fS; 
+        double errPurity = std::sqrt(var_fB); // Since fS = 1 - fB, the variance is identical
+
+        double significance = sigCounts / std::sqrt(totCounts);
+        // Standard error propagation for Z = S/sqrt(N)
+        double errSignificance = std::sqrt( (errSigCounts*errSigCounts)/totCounts + (sigCounts*sigCounts*totCountsErrSq)/(4.0*std::pow(totCounts, 3)) );
+
+        // Fill Histograms
+        hSigYield->SetBinContent(iBin, sigCounts);
+        hSigYield->SetBinError(iBin, errSigCounts);
+
+        hBkgYield->SetBinContent(iBin, bkgCounts);
+        hBkgYield->SetBinError(iBin, errBkgCounts);
+
+        hRSig->SetBinContent(iBin, R_S);
+        hRSig->SetBinError(iBin, errR_S);
+
+        hRBkg->SetBinContent(iBin, R_B);
+        hRBkg->SetBinError(iBin, std::sqrt(varR_B));
+
+        hPurity->SetBinContent(iBin, purity);
+        hPurity->SetBinError(iBin, errPurity);
+
+        hSigStat->SetBinContent(iBin, significance);
+        hSigStat->SetBinError(iBin, errSignificance);
+
+        // Note: We do NOT delete bkgFitFunc or bkgNumFitFunc here anymore because ROOT takes ownership 
+        // when we add it to the graph's list of functions. Deleting it will cause a crash!
+        delete grBkg; 
+        delete grBkgNum;
+    }
+
+    dirResults->cd();
+    // Resetting stats boxes to get an estimate of Signal vs Background Lambda counts:
+    hSigYield->ResetStats();
+    hBkgYield->ResetStats();
+
+    hSigYield->Write();
+    hBkgYield->Write();
+    hRSig->Write();
+    hRBkg->Write();
+    hPurity->Write();
+    hSigStat->Write();
+
+    // =========================================================================================
+    // Step 8: Calculate the Angle-Integrated Ring Observable
+    // =========================================================================================
+    // Repeating the same procedure, but for an integrated observable!
+    if (printHeader) std::cout << "  -> Step 8: Calculating Integrated Observable..." << std::endl;
+    
+    // Project the entire TH2D onto the Y-axis (Mass) to integrate over all angles
+    TH1D* hMassInt  = h2dCounts->ProjectionY(Form("hMassInt_%s", extractionName.Data()), 1, nBins, "e");
+    TH1D* hNumInt   = h2dNum->ProjectionY(Form("hNumInt_%s", extractionName.Data()), 1, nBins, "e");
+    TH1D* hSqNumInt = h2dSqNum->ProjectionY(Form("hSqNumInt_%s", extractionName.Data()), 1, nBins, "e");
+
+    // We need a place to save the final integrated value
+    TH1D* hIntegratedRSig = new TH1D(Form("hIntegratedRSig_%s", extractionName.Data()), 
+                                        Form("Integrated R_{S} - %s; ;R_{S}", extractionName.Data()), 
+                                        1, 0, 1);
+
+    // Only proceed if we have enough global statistics to fit a peak
+    if (hMassInt->GetEntries() > 50 && hMassInt->Integral() > 0) {
+        // 1. Global Mass Fit
+        TF1* fitFuncInt = new TF1(Form("fitMassInt_%s", extractionName.Data()), "gaus(0) + pol2(3)", massMin, massMax);
+        double maxValInt = hMassInt->GetMaximum();
+        fitFuncInt->SetParameters(maxValInt, lambdaPDGMassApprox, 0.002, 0, 0, 0);
+        fitFuncInt->SetParLimits(1, lambdaPDGMassApprox - 0.01, lambdaPDGMassApprox + 0.01);
+        fitFuncInt->SetParLimits(2, 0.0001, 0.005);
+        
+        TFitResultPtr rInt = hMassInt->Fit(fitFuncInt, "Q 0 S");
+        
+        if (rInt->IsValid()) {
+            double muInt = fitFuncInt->GetParameter(1);
+            double sigmaInt = fitFuncInt->GetParameter(2);
+
+            // 2. Global Sideband Extraction
+            TGraphErrors* grBkgInt = new TGraphErrors();
+            TGraphErrors* grBkgNumInt = new TGraphErrors();
+            int ptIdx = 0;
+            
+            for (int jBin = 1; jBin <= hMassInt->GetNbinsX(); ++jBin) {
+                double x = hMassInt->GetBinCenter(jBin);
+                if ((x >= massMin && x <= (muInt - 6.0 * sigmaInt)) || (x >= (muInt + 6.0 * sigmaInt) && x <= massMax)) {
+                    grBkgInt->SetPoint(ptIdx, x, hMassInt->GetBinContent(jBin));
+                    grBkgInt->SetPointError(ptIdx, 0.0, hMassInt->GetBinError(jBin));
+                    
+                    grBkgNumInt->SetPoint(ptIdx, x, hNumInt->GetBinContent(jBin));
+                    grBkgNumInt->SetPointError(ptIdx, 0.0, hNumInt->GetBinError(jBin));
+                    ptIdx++;
+                }
+            }
+
+            if (grBkgInt->GetN() >= 4 && grBkgNumInt->GetN() >= 4) {
+                TF1* bkgFitInt = new TF1(Form("bkgFitInt_%s", extractionName.Data()), "pol2", massMin, massMax);
+                TF1* bkgNumFitInt = new TF1(Form("bkgNumFitInt_%s", extractionName.Data()), "pol2", massMin, massMax);
+                
+                TFitResultPtr rBkgInt = grBkgInt->Fit(bkgFitInt, "Q 0 S");
+                TFitResultPtr rBkgNumInt = grBkgNumInt->Fit(bkgNumFitInt, "Q 0 S");
+
+                if (rBkgInt->IsValid() && rBkgNumInt->IsValid()) {
+                    
+                    // 3. Global Integration
+                    int firstBin = hMassInt->FindBin(muInt - 3.0 * sigmaInt);
+                    int lastBin  = hMassInt->FindBin(muInt + 3.0 * sigmaInt);
+                    double x_low  = hMassInt->GetBinLowEdge(firstBin);
+                    double x_high = hMassInt->GetBinLowEdge(lastBin) + hMassInt->GetBinWidth(lastBin);
+                    double binWidth = hMassInt->GetBinWidth(1);
+                    
+                    double totCountsInt = 0, totCountsErrSqInt = 0;
+                    double totNumInt = 0, totSqNumInt = 0;
+
+                    for (int jBin = firstBin; jBin <= lastBin; ++jBin){
+                        totCountsInt += hMassInt->GetBinContent(jBin);
+                        totCountsErrSqInt += std::pow(hMassInt->GetBinError(jBin), 2);
+                        totNumInt += hNumInt->GetBinContent(jBin);
+                        totSqNumInt += hSqNumInt->GetBinContent(jBin);
+                    }
+
+                    if (totCountsInt > 0 && binWidth > 0) {
+                        double bkgCountsInt = bkgFitInt->Integral(x_low, x_high) / binWidth;
+                        double errBkgCountsInt = bkgFitInt->IntegralError(x_low, x_high, rBkgInt->GetParams(), rBkgInt->GetCovarianceMatrix().GetMatrixArray()) / binWidth;
+
+                        double bkgNumInt_val = bkgNumFitInt->Integral(x_low, x_high) / binWidth;
+                        double errBkgNumInt = bkgNumFitInt->IntegralError(x_low, x_high, rBkgNumInt->GetParams(), rBkgNumInt->GetCovarianceMatrix().GetMatrixArray()) / binWidth;
+
+                        double sigCountsInt = totCountsInt - bkgCountsInt;
+
+                        if (sigCountsInt > 0) {
+                            double fB_Int = bkgCountsInt / totCountsInt;
+                            double fS_Int = sigCountsInt / totCountsInt; 
+                            
+                            double R_peak_Int = totNumInt / totCountsInt;
+                            double R_B_Int = (bkgCountsInt > 0) ? (bkgNumInt_val / bkgCountsInt) : 0;
+                            
+                            double R_S_Int = (R_peak_Int - fB_Int * R_B_Int) / fS_Int;
+
+                            // Error Propagation (Using Unbiased Estimator!)
+                            double varR_peak_Int = (totCountsInt > 1) ? ((totSqNumInt / totCountsInt) - (R_peak_Int * R_peak_Int)) / (totCountsInt - 1.0) : 0;
+                            
+                            double varR_B_Int = 0;
+                            if (bkgCountsInt > 0) {
+                                varR_B_Int = (std::pow(errBkgNumInt, 2) / std::pow(bkgCountsInt, 2)) + 
+                                                (std::pow(bkgNumInt_val, 2) * std::pow(errBkgCountsInt, 2) / std::pow(bkgCountsInt, 4));
+                            }
+                            
+                            double var_fB_Int = (std::pow(errBkgCountsInt, 2) / std::pow(totCountsInt, 2)) + 
+                                                (std::pow(bkgCountsInt, 2) * totCountsErrSqInt / std::pow(totCountsInt, 4));
+
+                            double errR_S_Int = std::sqrt(varR_peak_Int/std::pow(fS_Int, 2) + (std::pow(fB_Int, 2)/std::pow(fS_Int, 2))*varR_B_Int + std::pow((R_peak_Int - R_B_Int)/std::pow(fS_Int, 2), 2)*var_fB_Int);
+
+                            // Save to histogram
+                            hIntegratedRSig->SetBinContent(1, R_S_Int);
+                            hIntegratedRSig->SetBinError(1, errR_S_Int);
+                            
+                            // std::cout << Form("    [Global] Integrated R_S = %.5f +/- %.5f", R_S_Int, errR_S_Int) << std::endl;
+                        }
+                    }
+                }
+                delete bkgFitInt; delete bkgNumFitInt;
+            }
+            delete grBkgInt; delete grBkgNumInt;
+        }
+        delete fitFuncInt;
+    }
+    
+    // Write the integrated histogram into the main directory
+    dirResults->cd();
+    hIntegratedRSig->Write();
+
+    // (Clean up memory for the 1D projections)
+    delete hMassInt; delete hNumInt; delete hSqNumInt;
+}
+
 // ------------------------------------------------------------------------------------------------
 // Main Macro
 // ------------------------------------------------------------------------------------------------
@@ -126,7 +613,9 @@ void signalExtractionRing(const std::string& inputFilePath, const std::string& o
     };
 
     for (const auto& var : variations){
-        std::cout << "\n  -> Processing variation: " << var << std::endl;
+        std::cout << "\n#########################################"
+        std::cout << "-> Processing variation: " << var << std::endl;
+        std::cout << "#########################################\n"
         
         // Step 3.1: Output file should have these 4 cases as subfolders
         TDirectory* outDirVar = outFile->mkdir(var.c_str());
@@ -167,6 +656,16 @@ void signalExtractionRing(const std::string& inputFilePath, const std::string& o
         TH3D* h3dDeltaPhiVsMassVsLambdaPt = (TH3D*)inDir->Get("h3dDeltaPhiVsMassVsLambdaPt");
         TH3D* h3dDeltaThetaVsMassVsLambdaPt = (TH3D*)inDir->Get("h3dDeltaThetaVsMassVsLambdaPt");
 
+        // 3D: Observable vs Mass vs Lead Jet pT
+        TH3D* h3dRingObservableDeltaPhiVsMassVsLeadJetPt = (TH3D*)inDir->Get("h3dRingObservableDeltaPhiVsMassVsLeadJetPt");
+        TH3D* h3dRingObservableDeltaThetaVsMassVsLeadJetPt = (TH3D*)inDir->Get("h3dRingObservableDeltaThetaVsMassVsLeadJetPt");
+        // --- Squared version ---
+        TH3D* h3dRingObservableSquaredDeltaPhiVsMassVsLeadJetPt = (TH3D*)inDir->Get("h3dRingObservableSquaredDeltaPhiVsMassVsLeadJetPt");
+        TH3D* h3dRingObservableSquaredDeltaThetaVsMassVsLeadJetPt = (TH3D*)inDir->Get("h3dRingObservableSquaredDeltaThetaVsMassVsLeadJetPt");
+        // --- Counters ---
+        TH3D* h3dDeltaPhiVsMassVsLeadJetPt = (TH3D*)inDir->Get("h3dDeltaPhiVsMassVsLeadJetPt");
+        TH3D* h3dDeltaThetaVsMassVsLeadJetPt = (TH3D*)inDir->Get("h3dDeltaThetaVsMassVsLeadJetPt");
+
         // Basic check to ensure critical histograms loaded correctly
         if (!h2dRingObservableDeltaPhiVsMass || !hMassSigExtract){
             std::cerr << "  Error: Missing essential histograms for " << var << ". Skipping this variation." << std::endl;
@@ -174,697 +673,148 @@ void signalExtractionRing(const std::string& inputFilePath, const std::string& o
         }
 
         // =========================================================================================
-        // Step 4: Mass Projections, Fits, and QA Plots for each Angular Bin
+        // Steps 4, 5, and 6: Mass Projections, Fits, QA, and Signal Extraction (using Helper)
         // =========================================================================================
-        std::cout << "  [Step 4] Projecting mass bins, fitting mu/sigma, and building QA plots..." << std::endl;
+        std::cout << "[Steps 4-6] Projecting mass bins, fitting backgrounds, and extracting <R>..." << std::endl;
 
-        // Create subdirectories for organized output
-        TDirectory* dirFitsPhi = outDirVar->mkdir("MassFits_DeltaPhi");
-        TDirectory* dirFitsTheta = outDirVar->mkdir("MassFits_DeltaTheta");
-        TDirectory* dirQARingMass = outDirVar->mkdir("QA_RingObservable_vs_Mass");
-
-        // We will need to store the extracted mu and sigma for Step 5
-        // Using a simple struct to hold the fit results for each bin
-        struct FitResult { double mu; double sigma; bool valid; };
-        std::vector<FitResult> fitResultsPhi(h2dDeltaPhiVsMass->GetNbinsX() + 1);
-        std::vector<FitResult> fitResultsTheta(h2dDeltaThetaVsMass->GetNbinsX() + 1);
-
+        // Get the mass limits from your standard reference histogram
         double massMin = hMassSigExtract->GetXaxis()->GetXmin();
         double massMax = hMassSigExtract->GetXaxis()->GetXmax();
-        double massRange = massMax - massMin;
 
         // -----------------------------------------------------------------------------------------
-        // 4.A: Delta Phi Bins
+        // Extraction for Delta Phi Bins
         // -----------------------------------------------------------------------------------------
-        for (int iBin = 1; iBin <= h2dDeltaPhiVsMass->GetNbinsX(); ++iBin){
-            // 1. Project the mass spectrum (Counts/Denominator) using "e" for error propagation
-            TString projName = Form("hMass_DeltaPhi_Bin%d", iBin);
-            TH1D* hMassProj = h2dDeltaPhiVsMass->ProjectionY(projName, iBin, iBin, "e");
-            hMassProj->SetTitle(Form("Mass Projection #Delta#phi Bin %d;M_{p#pi} (GeV/c^{2});Counts", iBin));
+        std::cout << "    -> Processing Delta Phi observables..." << std::endl;
+        ExtractObservable2D(h2dDeltaPhiVsMass, 
+                            h2dRingObservableDeltaPhiVsMass, 
+                            h2dRingObservableSquaredDeltaPhiVsMass, 
+                            outDirVar,       // The parent TDirectory to save everything inside
+                            "DeltaPhi",      // This creates a "DeltaPhi" subfolder for organized output
+                            "#Delta#phi",    // Axis title for generated histograms
+                            massMin, 
+                            massMax);
 
-            // 2. Project the Numerator to calculate <R>(m) QA plot
-            TString numProjName = Form("hNum_DeltaPhi_Bin%d", iBin);
-            TH1D* hNumProj = h2dRingObservableDeltaPhiVsMass->ProjectionY(numProjName, iBin, iBin, "e");
+        // -----------------------------------------------------------------------------------------
+        // Extraction for Cos Theta Bins
+        // -----------------------------------------------------------------------------------------
+        std::cout << "    -> Processing Cos Theta observables..." << std::endl;
+        ExtractObservable2D(h2dDeltaThetaVsMass, 
+                            h2dRingObservableDeltaThetaVsMass, 
+                            h2dRingObservableSquaredDeltaThetaVsMass, 
+                            outDirVar,       // The parent TDirectory to save everything inside
+                            "DeltaTheta",    // This creates a "DeltaTheta" subfolder for organized output
+                            "cos(#theta)",   // Axis title for generated histograms
+                            massMin, 
+                            massMax);
+
+        // =========================================================================================
+        // Step 7: 3D Projections and Slicing (Moving Kinematic Windows)
+        // =========================================================================================
+        std::cout << "\n[Step 7] Slicing 3D histograms and extracting kinematic windows..." << std::endl;
+
+        // Define the kinematic windows for Lambda pT and Leading Jet pT
+            // (TODO: fix the axes definition so that you can use these windows here!)
+        // std::vector<std::pair<double, double>> lambdaPtWindows = {{0, 0.5}, {0.5, 1.5}, {1.5, 3.0}, {3.0, 5.0}, {5.0, 8.0}, {8.0, 15.0}, {15.0, 40.0}};
+        // std::vector<std::pair<double, double>> leadingJetPtWindows = {{0, 5}, {5, 10}, {10, 20}, {20, 30}, {30, 40}, {40, 60}, {60, 80}, {80, 100}};
+            // Temporary fix kinematic windows (TODO: remove these temporary fixes here):
+        std::vector<std::pair<double, double>> lambdaPtWindows = {{0.0, 0.6}, {0.6, 1.5}, {1.5, 3.0}, {3.0, 4.8}, {4.8, 8.0}, {8.0, 15.0}, {15.0, 40.0}};
+        std::vector<std::pair<double, double>> leadingJetPtWindows = {{0, 4}, {4, 8}, {8, 12}, {12, 20}, {20, 30}, {30, 40}, {40, 60}, {60, 100}};
+
+
+
+        // Helper lambda to format the Pt strings (e.g., "0.5" -> "05", "3.0" -> "3")
+        auto fmtWindow = [](double val) {
+            TString s = Form("%.1f", val);
+            s.ReplaceAll(".0", ""); // 3.0 -> 3
+            s.ReplaceAll(".", "");  // 0.5 -> 05, 1.5 -> 15
+            return s;
+        };
+
+        // -----------------------------------------------------------------------------------------
+        // 7.A: Lambda pT Projections
+        // -----------------------------------------------------------------------------------------
+        std::cout << "    -> Processing Lambda pT 3D windows..." << std::endl;
+        TDirectory* dir3D_LambdaPt = outDirVar->mkdir("3D_Projections_LambdaPt");
+
+        for (const auto& window : lambdaPtWindows) {
+            double ptMin = window.first;
+            double ptMax = window.second;
+            TString ptStr = Form("Pt_%s_%s", fmtWindow(ptMin).Data(), fmtWindow(ptMax).Data()); // Formats pt values such as 0.5 to 05 or 3.0 to 3 in the folder name!
             
-            TString qaName = Form("hQARingVsMass_DeltaPhi_Bin%d", iBin);
-            TH1D* hQARing = (TH1D*)hNumProj->Clone(qaName);
-            hQARing->SetTitle(Form("<R> vs Mass for #Delta#phi Bin %d;M_{p#pi} (GeV/c^{2});<R>", iBin));
-            hQARing->Divide(hNumProj, hMassProj, 1.0, 1.0, "B"); // Binomial errors might be tricky here, standard divide is okay for now as it's weighted
-            
-            dirQARingMass->cd();
-            hQARing->Write();
+            // Find bins on the Z-axis (using a tiny epsilon to ensure we are safely inside the bin)
+            int zBinMin = h3dDeltaPhiVsMassVsLambdaPt->GetZaxis()->FindBin(ptMin + 1e-4);
+            int zBinMax = h3dDeltaPhiVsMassVsLambdaPt->GetZaxis()->FindBin(ptMax - 1e-4);
 
-            // 3. Setup the Fit Function (gaus + pol2)
-            TString fitName = Form("fit_DeltaPhi_Bin%d", iBin);
-            TF1* fitFunc = new TF1(fitName, "gaus(0) + pol2(3)", massMin, massMax); // Short-hand initialization of fit function
-            
-            // Smart initialization (starting parameters should be somewhat physicaç)
-            double maxBinCenter = hMassProj->GetBinCenter(hMassProj->GetMaximumBin());
-            double maxCount = hMassProj->GetMaximum();
-            fitFunc->SetParameter(0, maxCount);        // Constant
-            fitFunc->SetParameter(1, lambdaPDGMassApprox);         // Mean close to PDG value
-            fitFunc->SetParameter(2, 0.002);           // Sigma (typical for Lambda, derived from some earlier analysis of mine)
+            // --- Delta Phi ---
+            // Set the Z-axis ranges for the 3D histograms (Lambda Pt ranges)
+            h3dDeltaPhiVsMassVsLambdaPt->GetZaxis()->SetRange(zBinMin, zBinMax);
+            h3dRingObservableDeltaPhiVsMassVsLambdaPt->GetZaxis()->SetRange(zBinMin, zBinMax);
+            h3dRingObservableSquaredDeltaPhiVsMassVsLambdaPt->GetZaxis()->SetRange(zBinMin, zBinMax);
 
-            // 4. Apply Stability Constraints
-            fitFunc->SetParameter(0, maxCount);        // Constant (Height)
-            // - Constrain mean within mass axis limits
-            fitFunc->SetParLimits(1, lambdaPDGMassApprox-0.01, massMax+0.01); // Constraints close to mass (1.15 to 1.125)
-            // Sigma: Restrict to physical limits (e.g., 0.1 to 5 MeV)
-            fitFunc->SetParLimits(2, 0.0001, 0.005);
+            // Project to 2D using "yx e" (Y vs X, which places Mass on the Y-axis and Angle on the X-axis)
+            // ROOT's Project3D allows naming the output histogram by putting the name followed by a space before the option
+            TH2D* h2dCountsPhi_Lpt = (TH2D*)h3dDeltaPhiVsMassVsLambdaPt->Project3D(Form("h2dCountsPhi_Lpt_%s yx e", ptStr.Data()));
+            TH2D* h2dNumPhi_Lpt    = (TH2D*)h3dRingObservableDeltaPhiVsMassVsLambdaPt->Project3D(Form("h2dNumPhi_Lpt_%s yx e", ptStr.Data()));
+            TH2D* h2dSqNumPhi_Lpt  = (TH2D*)h3dRingObservableSquaredDeltaPhiVsMassVsLambdaPt->Project3D(Form("h2dSqNumPhi_Lpt_%s yx e", ptStr.Data()));
 
-            // 5. Fit using Binned Poisson Log-Likelihood ("L"), Quiet ("Q"), No Draw ("0"), Respect Range ("R")
-            // We use "S" to get the TFitResultPtr to check if the fit converged
-            TFitResultPtr r = hMassProj->Fit(fitFunc, "Q 0 R S"); // Removed log-likelihood to make fits behave better in high-statistics 1D environment!
+            // Send to helper!
+            ExtractObservable2D(h2dCountsPhi_Lpt, h2dNumPhi_Lpt, h2dSqNumPhi_Lpt, dir3D_LambdaPt, Form("DeltaPhi_%s", ptStr.Data()), "#Delta#phi", massMin, massMax, false);
 
-            dirFitsPhi->cd();
-            hMassProj->GetListOfFunctions()->Add(fitFunc); // Attach fit to histogram for saving later
-            hMassProj->Write(); // For QA
+            // --- Cos Theta ---
+            // Set the Z-axis ranges (Lambda Pt ranges)
+            h3dDeltaThetaVsMassVsLambdaPt->GetZaxis()->SetRange(zBinMin, zBinMax);
+            h3dRingObservableDeltaThetaVsMassVsLambdaPt->GetZaxis()->SetRange(zBinMin, zBinMax);
+            h3dRingObservableSquaredDeltaThetaVsMassVsLambdaPt->GetZaxis()->SetRange(zBinMin, zBinMax);
 
-            // Store results if fit is somewhat reasonable
-            int fitStatus = int(r); // Extract the integer status code from the fit result
-            
-            // 0 = perfectly converged. 
-            if (fitStatus == 0) {
-                fitResultsPhi[iBin] = {fitFunc->GetParameter(1), fitFunc->GetParameter(2), true};
-            }
-            // Most of the other errors in this stage are simply error code 1, which means Minuit had problems with
-            // the covariance matrix (the parameter "error" matrix). As we don't care about errors right now, this
-            // is perfectly fine and we can just proceed. Thus, added a "salvage" block that just checks if the
-            // fit parameters are somewhat OK before proceeding.
-            else {
-                // std::cerr << "    [DEBUG] Fit 'failed' for DeltaPhi Bin " << iBin << " (Status: " << fitStatus << ")" << std::endl;
-                // std::cerr << "      -> Valid? " << (r->IsValid() ? "Yes" : "No") << std::endl;
-                
-                // // Loop through parameters and print their values vs limits
-                // for (int p = 0; p < fitFunc->GetNpar(); ++p) {
-                //     double val = fitFunc->GetParameter(p);
-                //     double err = fitFunc->GetParError(p);
-                //     double minLim, maxLim;
-                //     fitFunc->GetParLimits(p, minLim, maxLim);
-                    
-                //     std::cerr << "      Par " << p << " (" << fitFunc->GetParName(p) << "): " << val << " +/- " << err;
-                    
-                //     // Check if limits were applied
-                //     if (minLim != maxLim) {
-                //         std::cerr << "  [Limits: " << minLim << ", " << maxLim << "]";
-                //         // Check if the value is pegged to the boundary (within a tiny tolerance)
-                //         if (std::abs(val - minLim) < 1e-6 || std::abs(val - maxLim) < 1e-6) {
-                //             std::cerr << "  <--- PEGGED TO LIMIT!";
-                //         }
-                //     }
-                //     std::cerr << std::endl;
-                // }
+            TH2D* h2dCountsTheta_Lpt = (TH2D*)h3dDeltaThetaVsMassVsLambdaPt->Project3D(Form("h2dCountsTheta_Lpt_%s yx e", ptStr.Data()));
+            TH2D* h2dNumTheta_Lpt    = (TH2D*)h3dRingObservableDeltaThetaVsMassVsLambdaPt->Project3D(Form("h2dNumTheta_Lpt_%s yx e", ptStr.Data()));
+            TH2D* h2dSqNumTheta_Lpt  = (TH2D*)h3dRingObservableSquaredDeltaThetaVsMassVsLambdaPt->Project3D(Form("h2dSqNumTheta_Lpt_%s yx e", ptStr.Data()));
 
-                // --- Salvage Logic ---
-                // If the mean and sigma are within a physically reasonable window, keep them!
-                double mu = fitFunc->GetParameter(1);
-                double sig = fitFunc->GetParameter(2);
-                
-                // We can adjust these "sane" bounds later on, if needed
-                if (mu > 1.105 && mu < 1.125 && sig > 0.0005 && sig < 0.008) {
-                    // std::cerr << "      -> Salvaging fit: parameters are physically reasonable." << std::endl;
-                    fitResultsPhi[iBin] = {mu, sig, true};
-                } else {
-                    // std::cerr << "      -> Discarding fit: parameters are too wild." << std::endl;
-                    fitResultsPhi[iBin] = {0, 0, false};
-                }
-            }
+            // Send to helper!
+            ExtractObservable2D(h2dCountsTheta_Lpt, h2dNumTheta_Lpt, h2dSqNumTheta_Lpt, dir3D_LambdaPt, Form("DeltaTheta_%s", ptStr.Data()), "#Delta#theta", massMin, massMax, false);
         }
 
         // -----------------------------------------------------------------------------------------
-        // 4.B: Cos Theta Bins (same code, different input histogram)
+        // 7.B: Leading Jet pT Projections
         // -----------------------------------------------------------------------------------------
-        for (int iBin = 1; iBin <= h2dDeltaThetaVsMass->GetNbinsX(); ++iBin){
-            // Project Counts
-            TString projName = Form("hMass_DeltaTheta_Bin%d", iBin);
-            TH1D* hMassProj = h2dDeltaThetaVsMass->ProjectionY(projName, iBin, iBin, "e");
-            hMassProj->SetTitle(Form("Mass Projection cos(#theta) Bin %d;M_{p#pi} (GeV/c^{2});Counts", iBin));
+        std::cout << "    -> Processing Leading Jet pT 3D windows..." << std::endl;
+        TDirectory* dir3D_LeadJetPt = outDirVar->mkdir("3D_Projections_LeadJetPt");
 
-            // Project Numerator and create <R>(m) QA plot
-            TString numProjName = Form("hNum_DeltaTheta_Bin%d", iBin);
-            TH1D* hNumProj = h2dRingObservableDeltaThetaVsMass->ProjectionY(numProjName, iBin, iBin, "e");
+        for (const auto& window : leadingJetPtWindows) {
+            double ptMin = window.first;
+            double ptMax = window.second;
+            TString ptStr = Form("Pt_%s_%s", fmtWindow(ptMin).Data(), fmtWindow(ptMax).Data());
             
-            TString qaName = Form("hQARingVsMass_DeltaTheta_Bin%d", iBin);
-            TH1D* hQARing = (TH1D*)hNumProj->Clone(qaName);
-            hQARing->SetTitle(Form("<R> vs Mass for cos(#theta) Bin %d;M_{p#pi} (GeV/c^{2});<R>", iBin));
-            hQARing->Divide(hNumProj, hMassProj, 1.0, 1.0, "B"); 
-            
-            dirQARingMass->cd();
-            hQARing->Write();
+            int zBinMin = h3dDeltaPhiVsMassVsLeadJetPt->GetZaxis()->FindBin(ptMin + 1e-4);
+            int zBinMax = h3dDeltaPhiVsMassVsLeadJetPt->GetZaxis()->FindBin(ptMax - 1e-4);
 
-            // Fit Function
-            TString fitName = Form("fit_DeltaTheta_Bin%d", iBin);
-            TF1* fitFunc = new TF1(fitName, "gaus(0) + pol2(3)", massMin, massMax);
-            
-            double maxBinCenter = hMassProj->GetBinCenter(hMassProj->GetMaximumBin());
-            double maxCount = hMassProj->GetMaximum();
-            fitFunc->SetParameter(0, maxCount);
-            fitFunc->SetParameter(1, lambdaPDGMassApprox);
-            fitFunc->SetParameter(2, 0.002);
+            // --- Delta Phi ---
+            h3dDeltaPhiVsMassVsLeadJetPt->GetZaxis()->SetRange(zBinMin, zBinMax); // Leading jet Pt projection
+            h3dRingObservableDeltaPhiVsMassVsLeadJetPt->GetZaxis()->SetRange(zBinMin, zBinMax);
+            h3dRingObservableSquaredDeltaPhiVsMassVsLeadJetPt->GetZaxis()->SetRange(zBinMin, zBinMax);
 
-            fitFunc->SetParameter(0, maxCount);
-            fitFunc->SetParLimits(1, lambdaPDGMassApprox-0.01, massMax+0.01); // Constraints close to mass (1.15 to 1.125)
-            fitFunc->SetParLimits(2, 0.0001, 0.005);
+            TH2D* h2dCountsPhi_Jpt = (TH2D*)h3dDeltaPhiVsMassVsLeadJetPt->Project3D(Form("h2dCountsPhi_Jpt_%s yx e", ptStr.Data()));
+            TH2D* h2dNumPhi_Jpt    = (TH2D*)h3dRingObservableDeltaPhiVsMassVsLeadJetPt->Project3D(Form("h2dNumPhi_Jpt_%s yx e", ptStr.Data()));
+            TH2D* h2dSqNumPhi_Jpt  = (TH2D*)h3dRingObservableSquaredDeltaPhiVsMassVsLeadJetPt->Project3D(Form("h2dSqNumPhi_Jpt_%s yx e", ptStr.Data()));
 
-            TFitResultPtr r = hMassProj->Fit(fitFunc, "Q 0 R S"); // Removed log-likelihood to make fits behave better in high-statistics 1D environment!
+            ExtractObservable2D(h2dCountsPhi_Jpt, h2dNumPhi_Jpt, h2dSqNumPhi_Jpt, dir3D_LeadJetPt, Form("DeltaPhi_%s", ptStr.Data()), "#Delta#phi", massMin, massMax, false);
 
-            dirFitsTheta->cd();
-            hMassProj->GetListOfFunctions()->Add(fitFunc);
-            hMassProj->Write();
+            // --- Cos Theta ---
+            h3dDeltaThetaVsMassVsLeadJetPt->GetZaxis()->SetRange(zBinMin, zBinMax);
+            h3dRingObservableDeltaThetaVsMassVsLeadJetPt->GetZaxis()->SetRange(zBinMin, zBinMax);
+            h3dRingObservableSquaredDeltaThetaVsMassVsLeadJetPt->GetZaxis()->SetRange(zBinMin, zBinMax);
 
-            // Store results if fit is somewhat reasonable
-            int fitStatus = int(r); // Extract the integer status code from the fit result
-            
-            // 0 = perfectly converged. 
-            if (fitStatus == 0) {
-                fitResultsTheta[iBin] = {fitFunc->GetParameter(1), fitFunc->GetParameter(2), true};
-            }
-            else {
-                // --- Salvage Logic ---
-                // If the mean and sigma are within a physically reasonable window, keep them!
-                double muCheck = fitFunc->GetParameter(1);
-                double sigmaCheck = fitFunc->GetParameter(2);
-                
-                // We can adjust these "sane" bounds later on, if needed
-                if (muCheck > 1.105 && muCheck < 1.125 && sigmaCheck > 0.0005 && sigmaCheck < 0.008) {
-                    fitResultsTheta[iBin] = {muCheck, sigmaCheck, true};
-                } else {
-                    fitResultsTheta[iBin] = {0, 0, false};
-                }
-            }
+            TH2D* h2dCountsTheta_Jpt = (TH2D*)h3dDeltaThetaVsMassVsLeadJetPt->Project3D(Form("h2dCountsTheta_Jpt_%s yx e", ptStr.Data()));
+            TH2D* h2dNumTheta_Jpt    = (TH2D*)h3dRingObservableDeltaThetaVsMassVsLeadJetPt->Project3D(Form("h2dNumTheta_Jpt_%s yx e", ptStr.Data()));
+            TH2D* h2dSqNumTheta_Jpt  = (TH2D*)h3dRingObservableSquaredDeltaThetaVsMassVsLeadJetPt->Project3D(Form("h2dSqNumTheta_Jpt_%s yx e", ptStr.Data()));
+
+            ExtractObservable2D(h2dCountsTheta_Jpt, h2dNumTheta_Jpt, h2dSqNumTheta_Jpt, dir3D_LeadJetPt, Form("DeltaTheta_%s", ptStr.Data()), "#Delta#theta", massMin, massMax, false);
         }
 
         // =========================================================================================
-        // Step 5: Discontinuous Sideband Background Fit using TGraphErrors (TH1D's are bad at that!)
+        // Step 8: Save Input Histograms for Traceability
         // =========================================================================================
-        std::cout << "  [Step 5] Performing discontinuous sideband fits..." << std::endl;
-
-        // Subdirectories to store the background graphs and their fits
-        TDirectory* dirBkgFitsPhi = outDirVar->mkdir("BackgroundFits_DeltaPhi");
-        TDirectory* dirBkgFitsTheta = outDirVar->mkdir("BackgroundFits_DeltaTheta");
-
-        // -----------------------------------------------------------------------------------------
-        // 5.A: Background Fits for Delta Phi Bins
-        // -----------------------------------------------------------------------------------------
-        for (int iBin = 1; iBin <= h2dDeltaPhiVsMass->GetNbinsX(); ++iBin){
-            if (!fitResultsPhi[iBin].valid) continue; // Skip if step 4's fit failed
-
-            double mu = fitResultsPhi[iBin].mu;
-            double sigma = fitResultsPhi[iBin].sigma;
-
-            // Re-fetch the mass projection (we just need the bin contents)
-            TString projName = Form("hMass_DeltaPhi_Bin%d", iBin);
-            TH1D* hMassProj = (TH1D*)dirFitsPhi->Get(projName);
-            if (!hMassProj) continue;
-
-            // Create a TGraphErrors to hold ONLY the sideband points
-            TString graphName = Form("grBkg_DeltaPhi_Bin%d", iBin);
-            TGraphErrors* grBkg = new TGraphErrors();
-            grBkg->SetName(graphName);
-            grBkg->SetTitle(Form("Sideband Bkg #Delta#phi Bin %d;M_{p#pi} (GeV/c^{2});Counts", iBin));
-
-            int ptIdx = 0;
-            // Loop over histogram bins and select only those in the sidebands
-            for (int jBin = 1; jBin <= hMassProj->GetNbinsX(); ++jBin){
-                double x = hMassProj->GetBinCenter(jBin);
-                double y = hMassProj->GetBinContent(jBin);
-                double ey = hMassProj->GetBinError(jBin);
-
-                // Define intervals: [mu - 6*sigma, mu - 4*sigma] U [mu + 4*sigma, mu + 6*sigma]
-                // The gap [mu - 4*sigma, mu - 3*sigma] and [mu + 3*sigma, mu + 4*sigma] decouples the fit
-                // bool inLeftSideband = (x >= (mu - 6.0 * sigma) && x <= (mu - 4.0 * sigma));
-                // bool inRightSideband = (x >= (mu + 4.0 * sigma) && x <= (mu + 6.0 * sigma));
-                // UPDATE! Fixed to use larger bands. With 175 bins from 1.08 to 1.15 GeV/c^2, [4sigma,6sigma]
-                // would mean to use only 10 bins on the right side! (same for other side!)
-                // Now considering all bins in the left and right sides!
-                // UPDATE 2! Now using a 6 sigma exclusion zone -- the peak was getting into the fit!
-                    // This uses ALL available statistics outside the 6-sigma exclusion zone:
-                bool inLeftSideband = (x >= massMin && x <= (mu - 6.0 * sigma));
-                bool inRightSideband = (x >= (mu + 6.0 * sigma) && x <= massMax);
-
-                if (inLeftSideband || inRightSideband){
-                    grBkg->SetPoint(ptIdx, x, y);
-                    // Standard x-error is 0 for fits, y-error is standard bin error
-                    grBkg->SetPointError(ptIdx, 0.0, ey); 
-                    ptIdx++;
-                }
-            }
-
-            // Fit the discontinuous graph with a pol2
-            // We use pol2 to cover the small curvature in Lambda background
-            TString bkgFitName = Form("bkgFit_DeltaPhi_Bin%d", iBin);
-            TF1* bkgFitFunc = new TF1(bkgFitName, "pol2", massMin, massMax);
-            
-            // "Q" = quiet, "0" = don't draw, "S" = return TFitResultPtr
-            TFitResultPtr rBkg = grBkg->Fit(bkgFitFunc, "Q 0 S");
-
-            dirBkgFitsPhi->cd();
-            grBkg->GetListOfFunctions()->Add(bkgFitFunc); // Attach fit for viewing in TBrowser
-            grBkg->Write();
-        }
-
-        // -----------------------------------------------------------------------------------------
-        // 5.B: Background Fits for Cos Theta Bins
-        // -----------------------------------------------------------------------------------------
-        for (int iBin = 1; iBin <= h2dDeltaThetaVsMass->GetNbinsX(); ++iBin){
-            if (!fitResultsTheta[iBin].valid) continue;
-
-            double mu = fitResultsTheta[iBin].mu;
-            double sigma = fitResultsTheta[iBin].sigma;
-
-            TString projName = Form("hMass_DeltaTheta_Bin%d", iBin);
-            TH1D* hMassProj = (TH1D*)dirFitsTheta->Get(projName);
-            if (!hMassProj) continue;
-
-            TString graphName = Form("grBkg_DeltaTheta_Bin%d", iBin);
-            TGraphErrors* grBkg = new TGraphErrors();
-            grBkg->SetName(graphName);
-            grBkg->SetTitle(Form("Sideband Bkg cos(#theta) Bin %d;M_{p#pi} (GeV/c^{2});Counts", iBin));
-
-            int ptIdx = 0;
-            for (int jBin = 1; jBin <= hMassProj->GetNbinsX(); ++jBin){
-                double x = hMassProj->GetBinCenter(jBin);
-                double y = hMassProj->GetBinContent(jBin);
-                double ey = hMassProj->GetBinError(jBin);
-
-                bool inLeftSideband = (x >= massMin && x <= (mu - 6.0 * sigma));
-                bool inRightSideband = (x >= (mu + 6.0 * sigma) && x <= massMax);
-
-                if (inLeftSideband || inRightSideband){
-                    grBkg->SetPoint(ptIdx, x, y);
-                    grBkg->SetPointError(ptIdx, 0.0, ey);
-                    ptIdx++;
-                }
-            }
-
-            TString bkgFitName = Form("bkgFit_DeltaTheta_Bin%d", iBin);
-            TF1* bkgFitFunc = new TF1(bkgFitName, "pol2", massMin, massMax);
-            
-            TFitResultPtr rBkg = grBkg->Fit(bkgFitFunc, "Q 0 S");
-
-            dirBkgFitsTheta->cd();
-            grBkg->GetListOfFunctions()->Add(bkgFitFunc);
-            grBkg->Write();
-        }
-
-        // =========================================================================================
-        // Step 6: Signal Yield and Polarization Extraction
-        // =========================================================================================
-        std::cout << "  [Step 6] Extracting Signal Yields and <R>_signal..." << std::endl;
-
-        TDirectory* dirResultsPhi = outDirVar->mkdir("Results_DeltaPhi");
-        TDirectory* dirResultsTheta = outDirVar->mkdir("Results_DeltaTheta");
-        
-        // NEW: Directories for Numerator Fit QA
-        TDirectory* dirBkgNumFitsPhi = outDirVar->mkdir("BkgNumFits_DeltaPhi");
-        TDirectory* dirBkgNumFitsTheta = outDirVar->mkdir("BkgNumFits_DeltaTheta");
-
-        // Prepare output histograms (Cloning ProjectionX to keep exact angular binning)
-        TH1D* hSigYieldPhi = (TH1D*)h2dDeltaPhiVsMass->ProjectionX("hSigYieldPhi"); hSigYieldPhi->Reset();
-        hSigYieldPhi->SetTitle("Signal Yield vs #Delta#phi;#Delta#phi;Counts");
-        
-        TH1D* hBkgYieldPhi = (TH1D*)hSigYieldPhi->Clone("hBkgYieldPhi");
-        hBkgYieldPhi->SetTitle("Background Yield vs #Delta#phi;#Delta#phi;Counts");
-        
-        TH1D* hRSigPhi = (TH1D*)hSigYieldPhi->Clone("hRSigPhi");
-        hRSigPhi->SetTitle("Extracted <R>_{signal} vs #Delta#phi;#Delta#phi;<R>_{S}");
-        
-        TH1D* hRBkgPhi = (TH1D*)hSigYieldPhi->Clone("hRBkgPhi");
-        hRBkgPhi->SetTitle("Background <R>_{bkg} vs #Delta#phi;#Delta#phi;<R>_{B}");
-
-        // --- NEW QA HISTOGRAMS: Delta Phi statistical significance and purity ---
-        TH1D* hPurityPhi = (TH1D*)hSigYieldPhi->Clone("hPurityPhi");
-        hPurityPhi->SetTitle("Purity S/(S+B) vs #Delta#phi;#Delta#phi;Purity");
-        
-        TH1D* hSigStatPhi = (TH1D*)hSigYieldPhi->Clone("hSigStatPhi");
-        hSigStatPhi->SetTitle("Significance S/#sqrt{S+B} vs #Delta#phi;#Delta#phi;Significance");
-
-        // -----------------------------------------------------------------------------------------
-        // 6.A: Extraction for Delta Phi Bins
-        // -----------------------------------------------------------------------------------------
-        for (int iBin = 1; iBin <= h2dDeltaPhiVsMass->GetNbinsX(); ++iBin){
-            if (!fitResultsPhi[iBin].valid) continue;
-
-            double mu = fitResultsPhi[iBin].mu;
-            double sigma = fitResultsPhi[iBin].sigma;
-
-            // Fetch denominator (counts) and numerator (observable) mass projections
-            TString projName = Form("hMass_DeltaPhi_Bin%d", iBin);
-            TH1D* hMassProj = (TH1D*)dirFitsPhi->Get(projName);
-            
-            TString numProjName = Form("hNum_DeltaPhi_Bin%d", iBin);
-            TH1D* hNumProj = h2dRingObservableDeltaPhiVsMass->ProjectionY(numProjName, iBin, iBin, "e");
-            
-            // Also fetch the squared observable projection to get the variance of R_peak
-            TString sqProjName = Form("hSqNum_DeltaPhi_Bin%d", iBin);
-            TH1D* hSqNumProj = h2dRingObservableSquaredDeltaPhiVsMass->ProjectionY(sqProjName, iBin, iBin, "e");
-
-            // Fetch the background counts fit and its result pointer
-            TString bkgFitName = Form("bkgFit_DeltaPhi_Bin%d", iBin);
-            TGraphErrors* grBkg = (TGraphErrors*)dirBkgFitsPhi->Get(Form("grBkg_DeltaPhi_Bin%d", iBin));
-            if (!grBkg) continue;
-            TF1* bkgFitFunc = grBkg->GetFunction(bkgFitName);
-            TFitResultPtr rBkg = grBkg->Fit(bkgFitFunc, "Q 0 S"); // Re-fit quickly to grab the TFitResultPtr covariance
-
-            // --- Fit the Numerator Sidebands to get Background Polarization ---
-            TGraphErrors* grBkgNum = new TGraphErrors();
-            int ptIdx = 0;
-            for (int jBin = 1; jBin <= hNumProj->GetNbinsX(); ++jBin){
-                double x = hNumProj->GetBinCenter(jBin);
-                bool inLeft = (x >= massMin && x <= (mu - 6.0 * sigma)); // Updated to use larger sidebands
-                bool inRight = (x >= (mu + 6.0 * sigma) && x <= massMax);
-                if (inLeft || inRight){
-                    grBkgNum->SetPoint(ptIdx, x, hNumProj->GetBinContent(jBin));
-                    grBkgNum->SetPointError(ptIdx, 0.0, hNumProj->GetBinError(jBin));
-                    ptIdx++;
-                }
-            }
-            TF1* bkgNumFitFunc = new TF1(Form("bkgNumFit_Phi_%d", iBin), "pol2", massMin, massMax);
-            TFitResultPtr rBkgNum = grBkgNum->Fit(bkgNumFitFunc, "Q 0 S");
-
-            // --- 6.1 & 6.3: Define Signal Region and Exact Limits ---
-            int firstBin = hMassProj->FindBin(mu - 3.0 * sigma);
-            int lastBin  = hMassProj->FindBin(mu + 3.0 * sigma);
-            double x_low  = hMassProj->GetBinLowEdge(firstBin);
-            double x_high = hMassProj->GetBinLowEdge(lastBin) + hMassProj->GetBinWidth(lastBin);
-            double binWidth = hMassProj->GetBinWidth(1); // Assuming uniform binning
-
-            // --- 6.2: Raw Signal Counts (Peak Region) ---
-            double totCounts = 0;
-            double totCountsErrSq = 0;
-            double totNum = 0;
-            double totNumErrSq = 0;
-            double totSqNum = 0; // For variance of the observable
-
-            for (int jBin = firstBin; jBin <= lastBin; ++jBin){
-                totCounts += hMassProj->GetBinContent(jBin);
-                totCountsErrSq += std::pow(hMassProj->GetBinError(jBin), 2);
-                
-                totNum += hNumProj->GetBinContent(jBin);
-                totNumErrSq += std::pow(hNumProj->GetBinError(jBin), 2);
-                
-                totSqNum += hSqNumProj->GetBinContent(jBin);
-            }
-            double errTotCounts = std::sqrt(totCountsErrSq);
-
-            /*
-             * MEDIUM COMMENT: BACKGROUND INTEGRATION AND COVARIANCE
-             * ----------------------------------------------------------------------------------
-             * The background must be integrated in one step using the full covariance matrix
-             * because polynomial parameters are highly correlated. 
-             * Performing per-bin integrations and summing the errors in quadrature incorrectly 
-             * assumes independent uncertainties between bins. This artificial inflation of the 
-             * background error severely overestimates the final signal uncertainty.
-             * TF1::IntegralError correctly uses the Jacobian of the integral with respect to 
-             * the parameters and the full parameter covariance matrix.
-             */
-            
-            // --- 6.4: Background Estimation in ONE STEP ---
-            double bkgCounts = bkgFitFunc->Integral(x_low, x_high) / binWidth;
-            double errBkgCounts = bkgFitFunc->IntegralError(x_low, x_high, rBkg->GetParams(), rBkg->GetCovarianceMatrix().GetMatrixArray()) / binWidth;
-
-            double bkgNum = bkgNumFitFunc->Integral(x_low, x_high) / binWidth;
-            double errBkgNum = bkgNumFitFunc->IntegralError(x_low, x_high, rBkgNum->GetParams(), rBkgNum->GetCovarianceMatrix().GetMatrixArray()) / binWidth;
-
-            // --- 6.5: Final Signal Yield ---
-            double sigCounts = totCounts - bkgCounts;
-            double errSigCounts = std::sqrt(totCountsErrSq + errBkgCounts * errBkgCounts);
-
-            if (sigCounts <= 0 || totCounts <= 0) continue; // Safety check
-
-            // Fractions
-            double fB = bkgCounts / totCounts;
-            double fS = sigCounts / totCounts; // Equivalent to 1 - fB
-
-            // --- Calculate Observables ---
-            double R_peak = totNum / totCounts;
-            double R_B = bkgNum / bkgCounts;
-            
-            // True Signal Polarization: R_S = (R_peak - f_B * R_B) / f_S
-            double R_S = (R_peak - fB * R_B) / fS;
-
-            // --- 6.6: Error Propagation for Polarization ---
-            // Variance of R_peak (using squared observable data)
-            double varR_peak = (totSqNum / totCounts) - (R_peak * R_peak);
-            varR_peak = varR_peak / totCounts; // Standard error of the mean
-
-            // Variance of R_B (simple error propagation for ratio B_num / B_counts)
-            double varR_B = std::pow(R_B, 2) * ( std::pow(errBkgNum/bkgNum, 2) + std::pow(errBkgCounts/bkgCounts, 2) );
-
-            // Variance of f_B
-            double var_fB = std::pow(fB, 2) * ( std::pow(errBkgCounts/bkgCounts, 2) + std::pow(errTotCounts/totCounts, 2) );
-
-            // Final Variance Formula:
-            // sigma^2(R_S) = (1/f_S^2)*sigma^2(R_peak) + (f_B^2/f_S^2)*sigma^2(R_B) + ((R_peak - R_B)/f_S^2)^2 * sigma^2(f_B)
-            double term1 = varR_peak / std::pow(fS, 2);
-            double term2 = (std::pow(fB, 2) / std::pow(fS, 2)) * varR_B;
-            double term3 = std::pow((R_peak - R_B) / std::pow(fS, 2), 2) * var_fB;
-            
-            double errR_S = std::sqrt(term1 + term2 + term3);
-
-            // Fill Histograms
-            hSigYieldPhi->SetBinContent(iBin, sigCounts);
-            hSigYieldPhi->SetBinError(iBin, errSigCounts);
-            
-            hBkgYieldPhi->SetBinContent(iBin, bkgCounts);
-            hBkgYieldPhi->SetBinError(iBin, errBkgCounts);
-
-            hRSigPhi->SetBinContent(iBin, R_S);
-            hRSigPhi->SetBinError(iBin, errR_S);
-
-            hRBkgPhi->SetBinContent(iBin, R_B);
-            hRBkgPhi->SetBinError(iBin, std::sqrt(varR_B));
-
-            // --- Calculate Purity & Significance ---
-            double purity = fS; 
-            double errPurity = std::sqrt(var_fB); // Since fS = 1 - fB, the variance is identical
-
-            double significance = sigCounts / std::sqrt(totCounts);
-            // Standard error propagation for Z = S/sqrt(N)
-            double errSignificance = std::sqrt( (errSigCounts*errSigCounts)/totCounts + 
-                                                (sigCounts*sigCounts*totCountsErrSq)/(4.0*std::pow(totCounts, 3)) );
-
-            hPurityPhi->SetBinContent(iBin, purity);
-            hPurityPhi->SetBinError(iBin, errPurity);
-
-            hSigStatPhi->SetBinContent(iBin, significance);
-            hSigStatPhi->SetBinError(iBin, errSignificance);
-
-            // Writing bkgNum histograms in a specific folder for QA:
-            dirBkgNumFitsPhi->cd();
-            
-            // Give the graph a unique name so it doesn't overwrite
-            grBkgNum->SetName(Form("grBkgNum_DeltaPhi_Bin%d", iBin));
-            grBkgNum->SetTitle(Form("Numerator Sidebands DeltaPhi Bin %d;Invariant Mass (GeV/c^{2});#Sigma r_{i}", iBin));
-            
-            // Attach the fit function to the graph for easy viewing in TBrowser
-            grBkgNum->GetListOfFunctions()->Add(bkgNumFitFunc);
-            
-            // Write both the sideband graph (with fit) and the raw projected histogram
-            grBkgNum->Write();
-            hNumProj->Write(); 
-            
-            delete grBkgNum;
-            // Note: We do NOT delete bkgNumFitFunc here anymore because ROOT takes ownership 
-            // when we add it to the graph's list of functions. Deleting it will cause a crash!
-            // delete bkgNumFitFunc;
-        }
-        
-        dirResultsPhi->cd();
-            // Resetting stats boxes to get an estimate of Signal vs Background Lambda counts:
-        hSigYieldPhi->ResetStats();
-        hBkgYieldPhi->ResetStats();
-        hSigYieldPhi->Write();
-        hBkgYieldPhi->Write();
-        hPurityPhi->Write();
-        hSigStatPhi->Write();
-        hRSigPhi->Write();
-        hRBkgPhi->Write();
-
-        // -----------------------------------------------------------------------------------------
-        // 6.B: Extraction for Cos Theta Bins
-        // -----------------------------------------------------------------------------------------
-        
-        // Prepare output histograms
-        TH1D* hSigYieldTheta = (TH1D*)h2dDeltaThetaVsMass->ProjectionX("hSigYieldTheta"); hSigYieldTheta->Reset();
-        hSigYieldTheta->SetTitle("Signal Yield vs cos(#theta);cos(#theta);Counts");
-        
-        TH1D* hBkgYieldTheta = (TH1D*)hSigYieldTheta->Clone("hBkgYieldTheta");
-        hBkgYieldTheta->SetTitle("Background Yield vs cos(#theta);cos(#theta);Counts");
-        
-        TH1D* hRSigTheta = (TH1D*)hSigYieldTheta->Clone("hRSigTheta");
-        hRSigTheta->SetTitle("Extracted <R>_{signal} vs cos(#theta);cos(#theta);<R>_{S}");
-        
-        TH1D* hRBkgTheta = (TH1D*)hSigYieldTheta->Clone("hRBkgTheta");
-        hRBkgTheta->SetTitle("Background <R>_{bkg} vs cos(#theta);cos(#theta);<R>_{B}");
-
-        // --- NEW QA HISTOGRAMS: Cos Theta ---
-        TH1D* hPurityTheta = (TH1D*)hSigYieldTheta->Clone("hPurityTheta");
-        hPurityTheta->SetTitle("Purity S/(S+B) vs cos(#theta);cos(#theta);Purity");
-        
-        TH1D* hSigStatTheta = (TH1D*)hSigYieldTheta->Clone("hSigStatTheta");
-        hSigStatTheta->SetTitle("Significance S/#sqrt{S+B} vs cos(#theta);cos(#theta);Significance");
-
-        for (int iBin = 1; iBin <= h2dDeltaThetaVsMass->GetNbinsX(); ++iBin){
-            if (!fitResultsTheta[iBin].valid) continue;
-
-            double mu = fitResultsTheta[iBin].mu;
-            double sigma = fitResultsTheta[iBin].sigma;
-
-            // Fetch denominator (counts) and numerator (observable) mass projections
-            TString projName = Form("hMass_DeltaTheta_Bin%d", iBin);
-            TH1D* hMassProj = (TH1D*)dirFitsTheta->Get(projName);
-            
-            TString numProjName = Form("hNum_DeltaTheta_Bin%d", iBin);
-            TH1D* hNumProj = h2dRingObservableDeltaThetaVsMass->ProjectionY(numProjName, iBin, iBin, "e");
-            
-            // Fetch squared observable projection
-            TString sqProjName = Form("hSqNum_DeltaTheta_Bin%d", iBin);
-            TH1D* hSqNumProj = h2dRingObservableSquaredDeltaThetaVsMass->ProjectionY(sqProjName, iBin, iBin, "e");
-
-            // Fetch the background counts fit and its result pointer
-            TString bkgFitName = Form("bkgFit_DeltaTheta_Bin%d", iBin);
-            TGraphErrors* grBkg = (TGraphErrors*)dirBkgFitsTheta->Get(Form("grBkg_DeltaTheta_Bin%d", iBin));
-            if (!grBkg) continue;
-            TF1* bkgFitFunc = grBkg->GetFunction(bkgFitName);
-            TFitResultPtr rBkg = grBkg->Fit(bkgFitFunc, "Q 0 S"); 
-
-            // --- Fit the Numerator Sidebands to get Background Polarization ---
-            TGraphErrors* grBkgNum = new TGraphErrors();
-            int ptIdx = 0;
-            for (int jBin = 1; jBin <= hNumProj->GetNbinsX(); ++jBin){
-                double x = hNumProj->GetBinCenter(jBin);
-                bool inLeft = (x >= massMin && x <= (mu - 6.0 * sigma)); // Updated to use larger sidebands
-                bool inRight = (x >= (mu + 6.0 * sigma) && x <= massMax);
-                if (inLeft || inRight){
-                    grBkgNum->SetPoint(ptIdx, x, hNumProj->GetBinContent(jBin));
-                    grBkgNum->SetPointError(ptIdx, 0.0, hNumProj->GetBinError(jBin));
-                    ptIdx++;
-                }
-            }
-            TF1* bkgNumFitFunc = new TF1(Form("bkgNumFit_Theta_%d", iBin), "pol2", massMin, massMax);
-            TFitResultPtr rBkgNum = grBkgNum->Fit(bkgNumFitFunc, "Q 0 S");
-
-            // --- Define Signal Region and Exact Limits ---
-            int firstBin = hMassProj->FindBin(mu - 3.0 * sigma);
-            int lastBin  = hMassProj->FindBin(mu + 3.0 * sigma);
-            double x_low  = hMassProj->GetBinLowEdge(firstBin);
-            double x_high = hMassProj->GetBinLowEdge(lastBin) + hMassProj->GetBinWidth(lastBin);
-            double binWidth = hMassProj->GetBinWidth(1); 
-
-            // --- Raw Signal Counts (Peak Region) ---
-            double totCounts = 0;
-            double totCountsErrSq = 0;
-            double totNum = 0;
-            double totNumErrSq = 0;
-            double totSqNum = 0; 
-
-            for (int jBin = firstBin; jBin <= lastBin; ++jBin){
-                totCounts += hMassProj->GetBinContent(jBin);
-                totCountsErrSq += std::pow(hMassProj->GetBinError(jBin), 2);
-                
-                totNum += hNumProj->GetBinContent(jBin);
-                totNumErrSq += std::pow(hNumProj->GetBinError(jBin), 2);
-                
-                totSqNum += hSqNumProj->GetBinContent(jBin);
-            }
-            double errTotCounts = std::sqrt(totCountsErrSq);
-            
-            // --- Background Estimation in ONE STEP (Covariance Integration) ---
-            double bkgCounts = bkgFitFunc->Integral(x_low, x_high) / binWidth;
-            double errBkgCounts = bkgFitFunc->IntegralError(x_low, x_high, rBkg->GetParams(), rBkg->GetCovarianceMatrix().GetMatrixArray()) / binWidth;
-
-            double bkgNum = bkgNumFitFunc->Integral(x_low, x_high) / binWidth;
-            double errBkgNum = bkgNumFitFunc->IntegralError(x_low, x_high, rBkgNum->GetParams(), rBkgNum->GetCovarianceMatrix().GetMatrixArray()) / binWidth;
-
-            // --- Final Signal Yield ---
-            double sigCounts = totCounts - bkgCounts;
-            double errSigCounts = std::sqrt(totCountsErrSq + errBkgCounts * errBkgCounts);
-
-            if (sigCounts <= 0 || totCounts <= 0) continue; 
-
-            // Fractions
-            double fB = bkgCounts / totCounts;
-            double fS = sigCounts / totCounts; 
-
-            // --- Calculate Observables ---
-            double R_peak = totNum / totCounts;
-            double R_B = bkgNum / bkgCounts;
-            double R_S = (R_peak - fB * R_B) / fS;
-
-            // --- Error Propagation for Polarization ---
-            double varR_peak = (totSqNum / totCounts) - (R_peak * R_peak);
-            varR_peak = varR_peak / totCounts; 
-
-            double varR_B = std::pow(R_B, 2) * ( std::pow(errBkgNum/bkgNum, 2) + std::pow(errBkgCounts/bkgCounts, 2) );
-            double var_fB = std::pow(fB, 2) * ( std::pow(errBkgCounts/bkgCounts, 2) + std::pow(errTotCounts/totCounts, 2) );
-
-            double term1 = varR_peak / std::pow(fS, 2);
-            double term2 = (std::pow(fB, 2) / std::pow(fS, 2)) * varR_B;
-            double term3 = std::pow((R_peak - R_B) / std::pow(fS, 2), 2) * var_fB;
-            
-            double errR_S = std::sqrt(term1 + term2 + term3);
-
-            // Fill Histograms
-            hSigYieldTheta->SetBinContent(iBin, sigCounts);
-            hSigYieldTheta->SetBinError(iBin, errSigCounts);
-            
-            hBkgYieldTheta->SetBinContent(iBin, bkgCounts);
-            hBkgYieldTheta->SetBinError(iBin, errBkgCounts);
-
-            hRSigTheta->SetBinContent(iBin, R_S);
-            hRSigTheta->SetBinError(iBin, errR_S);
-
-            hRBkgTheta->SetBinContent(iBin, R_B);
-            hRBkgTheta->SetBinError(iBin, std::sqrt(varR_B));
-
-            // --- Calculate Purity & Significance ---
-            double purity = fS; 
-            double errPurity = std::sqrt(var_fB); // Since fS = 1 - fB, the variance is identical
-
-            double significance = sigCounts / std::sqrt(totCounts);
-            // Standard error propagation for Z = S/sqrt(N)
-            double errSignificance = std::sqrt( (errSigCounts*errSigCounts)/totCounts + 
-                                                (sigCounts*sigCounts*totCountsErrSq)/(4.0*std::pow(totCounts, 3)) );
-
-            hPurityTheta->SetBinContent(iBin, purity);
-            hPurityTheta->SetBinError(iBin, errPurity);
-            
-            hSigStatTheta->SetBinContent(iBin, significance);
-            hSigStatTheta->SetBinError(iBin, errSignificance);
-            
-            // Writing bkgNum histograms in a specific folder for QA:
-            dirBkgNumFitsTheta->cd();
-            
-            // Give the graph a unique name so it doesn't overwrite
-            grBkgNum->SetName(Form("grBkgNum_DeltaTheta_Bin%d", iBin));
-            grBkgNum->SetTitle(Form("Numerator Sidebands DeltaTheta Bin %d;Invariant Mass (GeV/c^{2});#Sigma r_{i}", iBin));
-            
-            // Attach the fit function to the graph for easy viewing in TBrowser
-            grBkgNum->GetListOfFunctions()->Add(bkgNumFitFunc);
-            
-            // Write both the sideband graph (with fit) and the raw projected histogram
-            grBkgNum->Write();
-            hNumProj->Write(); 
-            
-            delete grBkgNum;
-        }
-        
-        dirResultsTheta->cd();
-            // Resetting stats boxes to get an estimate of Signal vs Background Lambda counts:
-        hSigYieldTheta->ResetStats();
-        hBkgYieldTheta->ResetStats();
-        hSigYieldTheta->Write();
-        hBkgYieldTheta->Write();
-        hSigStatTheta->Write();
-        hPurityTheta->Write();
-        hRSigTheta->Write();
-        hRBkgTheta->Write();
-
-        // =========================================================================================
-        // Step 7: Save Input Histograms for Traceability
-        // =========================================================================================
-        std::cout << "  [Step 7] Saving all input histograms for " << var << "..." << std::endl;
+        std::cout << "  [Step 8] Saving all input histograms for " << var << "..." << std::endl;
 
         TDirectory* dirInput = outDirVar->mkdir("Input_Histograms");
         
@@ -883,6 +833,9 @@ void signalExtractionRing(const std::string& inputFilePath, const std::string& o
     } // <--- This closes the variation loop ("Ring", "RingKinematicCuts", etc.)
 
     // Clean up files
+    std::cout << "\n#############################################"
+    std::cout << "Writing everything to disk and closing output files!" << std::endl;
+    std::cout << "#############################################\n"
     outFile->Close();
     inFile->Close();
     
