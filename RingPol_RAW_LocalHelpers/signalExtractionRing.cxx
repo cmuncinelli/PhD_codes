@@ -58,7 +58,190 @@
 #include <TMath.h>
 #include <TString.h>
 
-constexpr double lambdaPDGMassApprox = 1.11568;
+// Extra includes for simultaneous signal extraction fit to Ring Observable numerator and Counts denominator:
+#include "Math/Minimizer.h"
+#include "Math/Factory.h"
+#include "Math/Functor.h"
+
+
+constexpr double lambdaPDGMassApprox = 1.11568; // Just for some fit initial guesses
+
+// QA additional plot for signal extraction using Simultaneous Fit strategy:
+// (uses previously obtained values as initial guesses from the regular signal extraction strategy)
+    // Struct to hold the QA fit results:
+struct SimFitResult {
+    double R_S, err_R_S;
+    double R_B, err_R_B;
+    double SigYield, err_SigYield;
+    double BkgYield, err_BkgYield;
+    double Purity, err_Purity;
+    double Significance, err_Significance;
+    int status; 
+};
+    // The standalone simultaneous fit function:
+SimFitResult PerformSimultaneousFitQA(TH1D* hMass, TH1D* hNum, double massMin, double massMax, double init_sigYield, double init_mu, double init_sigma, TF1* bkgFitFunc, double init_RS, double init_RB){
+    SimFitResult result = { // Initialized as null result
+    0.0, 0.0, // R_S, err_R_S
+    0.0, 0.0, // R_B, err_R_B
+    0.0, 0.0, // SigYield, err_SigYield
+    0.0, 0.0, // BkgYield, err_BkgYield
+    0.0, 0.0, // Purity, err_Purity
+    0.0, 0.0, // Significance, err_Significance
+    -1        // status (Default to failed)
+    };
+    if (!hMass || !hNum || !bkgFitFunc) return result;
+
+    double binW = hMass->GetBinWidth(1);
+
+    // 1. Define the Joint Chi2
+    auto globalChi2 = [&](const double *par) {
+        double chi2 = 0;
+        
+        for (int i = 1; i <= hMass->GetNbinsX(); ++i) {
+            double m = hMass->GetBinCenter(i);
+            if (m < massMin || m > massMax) continue;
+
+            double y_mass = hMass->GetBinContent(i);
+            double err_mass = hMass->GetBinError(i);
+            double y_num  = hNum->GetBinContent(i);
+            double err_num  = hNum->GetBinError(i);
+
+            if (err_mass <= 0) err_mass = 1.0; 
+            if (err_num <= 0) err_num = 1.0;
+
+            // par[0] = Signal Yield. Multiplying by binW normalizes it to counts per bin.
+            // par[1] = mu, par[2] = sigma
+            double S_m = par[0] * binW * TMath::Gaus(m, par[1], par[2], true); // Normalizing to counts per bin (hadn't done that before, so implemented it now!)
+            
+            // par[3,4,5] = pol2 background
+            double B_m = par[3] + par[4]*m + par[5]*m*m;
+            
+            double M_val = S_m + B_m;
+            double Num_val = par[6] * S_m + par[7] * B_m;
+
+            chi2 += std::pow((y_mass - M_val) / err_mass, 2);
+            chi2 += std::pow((y_num - Num_val) / err_num, 2);
+        }
+        return chi2;
+    };
+
+    // 2. Setup Minimizer
+    ROOT::Math::Minimizer* min = ROOT::Math::Factory::CreateMinimizer("Minuit2", "Migrad");
+    if (!min) return result; // Fallback if Minuit2 isn't loaded
+    
+    min->SetMaxFunctionCalls(100000);
+    min->SetTolerance(0.01);
+    min->SetPrintLevel(0); // Keep it quiet so it doesn't flood the terminal
+
+    ROOT::Math::Functor f(globalChi2, 8); 
+    min->SetFunction(f);
+
+    // 3. Initialize Parameters with Sequential Seeds
+    min->SetVariable(0, "SigYield", init_sigYield, 10.0);
+    min->SetVariable(1, "Mu",       init_mu,       0.0001);
+    min->SetVariable(2, "Sigma",    init_sigma,    0.0001);
+    min->SetVariable(3, "Bkg_c0",   bkgFitFunc->GetParameter(0), 1.0);
+    min->SetVariable(4, "Bkg_c1",   bkgFitFunc->GetParameter(1), 1.0);
+    min->SetVariable(5, "Bkg_c2",   bkgFitFunc->GetParameter(2), 1.0);
+    min->SetVariable(6, "R_S",      init_RS,       0.01); 
+    min->SetVariable(7, "R_B",      init_RB,       0.01); 
+
+    // Lock the kinematics tight to prevent the fit from wandering
+    min->SetVariableLimits(1, init_mu - 0.002, init_mu + 0.002);
+    min->SetVariableLimits(2, init_sigma * 0.5, init_sigma * 1.5);
+    // Don't let yields go negative
+    min->SetVariableLowerLimit(0, 0.0);
+
+    // 4. Minimize
+    min->Minimize();
+
+    result.status = min->Status();
+    if (result.status == 0) {
+        const double *fitVals = min->X();
+        const double *fitErrs = min->Errors();
+        
+        result.R_S = fitVals[6];
+        result.err_R_S = fitErrs[6];
+        result.R_B = fitVals[7];
+        result.err_R_B = fitErrs[7];
+
+        // The signal yield in the +/- 4 sigma window is ~99.99366% of the total Gaussian integral
+        // Using that as an estimate of the total signal yield from the fits
+        result.SigYield = fitVals[0] * 0.9999366; 
+        result.err_SigYield = fitErrs[0] * 0.9999366;
+
+        // Reconstruct background polynomial to integrate it in the +/- 4 sigma window
+        // (another neat way of recovering the integrated background in this region, for comparison with regular signal extraction method)
+        double muVal = fitVals[1];
+        double sigma = fitVals[2];
+        double xLow = muVal - 4.0 * sigma; // Wrote as 4.0 * sigma to be easier to replace if I change the signal extraction region
+        double xHigh = muVal + 4.0 * sigma;
+
+        // Extract polynomial parameters
+        double c0 = fitVals[3];
+        double c1 = fitVals[4];
+        double c2 = fitVals[5];
+
+        // 1. Calculate the integration terms (derivatives wrt parameters)
+        // (polynomial integration is simple enough to do by hand!)
+        double dx1 = (xHigh - xLow);
+        double dx2 = (xHigh * xHigh - xLow * xLow) / 2.0;
+        double dx3 = (xHigh * xHigh * xHigh - xLow * xLow * xLow) / 3.0;
+        
+        // Analytically integrate c0 + c1*x + c2*x^2 from xLow to xHigh
+        double integral = (c0 * dx1) + (c1 * dx2) + (c2 * dx3);
+        result.BkgYield = integral / hMass->GetBinWidth(1);
+        
+        // 2. Analytically propagate the error using the Minuit Covariance Matrix
+        double dI_dc[3] = {dx1, dx2, dx3};
+        double var_integral = 0.0;
+        
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                // CovMatrix indices for c0, c1, c2 are 3, 4, 5
+                double cov_ij = min->CovMatrix(3 + i, 3 + j); 
+                var_integral += dI_dc[i] * dI_dc[j] * cov_ij;
+            }
+        }
+        
+        double err_integral = std::sqrt(var_integral);
+        result.err_BkgYield = err_integral / hMass->GetBinWidth(1);
+        
+        // ==========================================================
+        // Calculate Purity, Significance, and their propagated errors
+        // ==========================================================
+        if ((result.SigYield + result.BkgYield) > 0) {
+            double S = result.SigYield;
+            double errS = result.err_SigYield;
+            
+            double B = result.BkgYield;
+            double errB = result.err_BkgYield;
+            
+            double N = S + B;
+            
+            // Central values
+            result.Purity = S / N;
+            result.Significance = S / std::sqrt(N);
+            
+            // Propagated Error for Purity
+            double dP_dS = B / (N * N);
+            double dP_dB = -S / (N * N);
+            result.err_Purity = std::sqrt( (dP_dS * dP_dS * errS * errS) + (dP_dB * dP_dB * errB * errB) );
+            
+            // Propagated Error for Significance
+            double dSig_dS = (B + S/2.0) / std::pow(N, 1.5);
+            double dSig_dB = -(S/2.0) / std::pow(N, 1.5);
+            result.err_Significance = std::sqrt( (dSig_dS * dSig_dS * errS * errS) + (dSig_dB * dSig_dB * errB * errB) );
+        }
+        else {
+            result.Purity = 0; result.err_Purity = 0;
+            result.Significance = 0; result.err_Significance = 0;
+        }
+    }
+
+    delete min;
+    return result;
+}
 
 // =================================================================================================
 // HELPER FUNCTION: Full 2D to 1D Signal Extraction Engine
@@ -72,6 +255,7 @@ void ExtractObservable2D(TH2D* h2dCounts, TH2D* h2dNum, TH2D* h2dSqNum, TDirecto
     TDirectory* dirBkgFits = dirBase->mkdir("BackgroundFits");
     TDirectory* dirBkgNumFits = dirBase->mkdir("BkgNumFits");
     TDirectory* dirResults = dirBase->mkdir("Results");
+    TDirectory* dirResultsSim = dirBase->mkdir("ResultsCombinedFit");
 
     int nBins = h2dCounts->GetNbinsX();
     
@@ -88,12 +272,31 @@ void ExtractObservable2D(TH2D* h2dCounts, TH2D* h2dNum, TH2D* h2dSqNum, TDirecto
     TH1D* hRBkg = (TH1D*)hSigYield->Clone(Form("hRBkg_%s", extractionName.Data()));
     hRBkg->SetTitle(Form("Background <R>_{bkg} vs %s;%s;<R>_{B}", axisTitle.Data(), axisTitle.Data()));
 
-    // --- NEW QA HISTOGRAMS: statistical significance and purity ---
+    // --- QA HISTOGRAMS: statistical significance and purity ---
     TH1D* hPurity = (TH1D*)hSigYield->Clone(Form("hPurity_%s", extractionName.Data()));
     hPurity->SetTitle(Form("Purity S/(S+B) vs %s;%s;Purity", axisTitle.Data(), axisTitle.Data()));
     
     TH1D* hSigStat = (TH1D*)hSigYield->Clone(Form("hSigStat_%s", extractionName.Data()));
     hSigStat->SetTitle(Form("Significance S/#sqrt{S+B} vs %s;%s;Significance", axisTitle.Data(), axisTitle.Data()));
+
+    // --- SIMULTANEOUS FIT QA HISTOGRAMS ---
+    TH1D* hSigYield_Sim = (TH1D*)h2dCounts->ProjectionX(Form("hSigYield_Sim_%s", extractionName.Data())); hSigYield_Sim->Reset();
+    hSigYield_Sim->SetTitle(Form("SimFit Signal Yield vs %s;%s;Counts", axisTitle.Data(), axisTitle.Data()));
+    
+    TH1D* hBkgYield_Sim = (TH1D*)hSigYield_Sim->Clone(Form("hBkgYield_Sim_%s", extractionName.Data()));
+    hBkgYield_Sim->SetTitle(Form("SimFit Background Yield vs %s;%s;Counts", axisTitle.Data(), axisTitle.Data()));
+    
+    TH1D* hRSig_Sim = (TH1D*)hSigYield_Sim->Clone(Form("hRSig_Sim_%s", extractionName.Data()));
+    hRSig_Sim->SetTitle(Form("SimFit Extracted <R>_{signal} vs %s;%s;<R>_{S}", axisTitle.Data(), axisTitle.Data()));
+    
+    TH1D* hRBkg_Sim = (TH1D*)hSigYield_Sim->Clone(Form("hRBkg_Sim_%s", extractionName.Data()));
+    hRBkg_Sim->SetTitle(Form("SimFit Background <R>_{bkg} vs %s;%s;<R>_{B}", axisTitle.Data(), axisTitle.Data()));
+
+    TH1D* hPurity_Sim = (TH1D*)hSigYield_Sim->Clone(Form("hPurity_Sim_%s", extractionName.Data()));
+    hPurity_Sim->SetTitle(Form("SimFit Purity S/(S+B) vs %s;%s;Purity", axisTitle.Data(), axisTitle.Data()));
+    
+    TH1D* hSigStat_Sim = (TH1D*)hSigYield_Sim->Clone(Form("hSigStat_Sim_%s", extractionName.Data()));
+    hSigStat_Sim->SetTitle(Form("SimFit Significance S/#sqrt{S+B} vs %s;%s;Significance", axisTitle.Data(), axisTitle.Data()));
 
     // We will need to store the extracted mu and sigma for Step 5 & 6
     // Using a simple struct to hold the fit results for each bin
@@ -184,9 +387,9 @@ void ExtractObservable2D(TH2D* h2dCounts, TH2D* h2dNum, TH2D* h2dSqNum, TDirecto
     }
 
     // =========================================================================================
-    // Step 5 & 6: Discontinuous Sideband Fits and Signal Extraction
+    // Step 5: Discontinuous Sideband Fits
     // =========================================================================================
-    if (printHeader) std::cout << "  -> Step 5/6: Sidebands and signal extraction..." << std::endl;
+    if (printHeader) std::cout << "  -> Steps 5/6/6.5: Discontinuous sideband fits..." << std::endl; // Single print to avoid flooding screen
     for (int iBin = 1; iBin <= nBins; ++iBin){
         if (!fitResults[iBin].valid) {
             if (printHeader) std::cout << "    Bin " << iBin << ": invalid mu/sigma, skipped.\n";
@@ -265,6 +468,8 @@ void ExtractObservable2D(TH2D* h2dCounts, TH2D* h2dNum, TH2D* h2dSqNum, TDirecto
         TFitResultPtr rBkg = grBkg->Fit(bkgFitFunc, "Q 0 S"); // "Q" = quiet, "0" = don't draw, "S" = return TFitResultPtr
         
         // Fit the Numerator Sidebands to get Background Polarization
+            // From QA plots, you can see that the background is almost linear, maybe a bit quadratic,
+            // when studying <R>(m_\Lambda). Thus, regular signal extraction should work!
         TF1* bkgNumFitFunc = new TF1(Form("bkgNumFit_Bin%d", iBin), "pol2", massMin, massMax);
         TFitResultPtr rBkgNum = grBkgNum->Fit(bkgNumFitFunc, "Q 0 S");
 
@@ -286,9 +491,12 @@ void ExtractObservable2D(TH2D* h2dCounts, TH2D* h2dNum, TH2D* h2dSqNum, TDirecto
         grBkgNum->Write(); // Write both the sideband graph (with fit) and the raw projected histogram
         hNumProj->Write();
 
-        // --- Step 6: Define Signal Region and Exact Limits ---
-        int firstBin = hMassProj->FindBin(mu - 3.0 * sigma);
-        int lastBin  = hMassProj->FindBin(mu + 3.0 * sigma);
+        // =========================================================================================
+        // Step 6: Define Signal Region and Exact Limits
+        // =========================================================================================
+        // if (printHeader) std::cout << "  -> Step 6: Signal extraction..." << std::endl; // Removed to avoid print flood
+        int firstBin = hMassProj->FindBin(mu - 4.0 * sigma); // Now defining signal in the [mu-4sigma, mu+4sigma] region, to match Gianni's Sigma0 analysis codes
+        int lastBin  = hMassProj->FindBin(mu + 4.0 * sigma);
         double x_low  = hMassProj->GetBinLowEdge(firstBin);
         double x_high = hMassProj->GetBinLowEdge(lastBin) + hMassProj->GetBinWidth(lastBin);
         double binWidth = hMassProj->GetBinWidth(1); // Assuming uniform binning
@@ -329,7 +537,7 @@ void ExtractObservable2D(TH2D* h2dCounts, TH2D* h2dNum, TH2D* h2dSqNum, TDirecto
          * the parameters and the full parameter covariance matrix.
          */
         
-        // Background Estimation in ONE STEP
+        // Background Estimation in one step
         double bkgCounts = bkgFitFunc->Integral(x_low, x_high) / binWidth;
         double errBkgCounts = bkgFitFunc->IntegralError(x_low, x_high, rBkg->GetParams(), rBkg->GetCovarianceMatrix().GetMatrixArray()) / binWidth;
 
@@ -400,6 +608,31 @@ void ExtractObservable2D(TH2D* h2dCounts, TH2D* h2dNum, TH2D* h2dSqNum, TDirecto
         hSigStat->SetBinContent(iBin, significance);
         hSigStat->SetBinError(iBin, errSignificance);
 
+        // =========================================================================
+        // Step 6.5: Simultaneous Fit QA
+        // =========================================================================
+        // if (printHeader) std::cout << "  -> Step 6.5: Simultaneous fit QA..." << std::endl; // Removed to avoid print flood
+        SimFitResult qaResult = PerformSimultaneousFitQA(hMassProj, hNumProj, massMin, massMax, sigCounts, mu, sigma, bkgFitFunc, R_S, R_B);
+        if (qaResult.status == 0) {
+            hSigYield_Sim->SetBinContent(iBin, qaResult.SigYield);
+            hSigYield_Sim->SetBinError(iBin, qaResult.err_SigYield);
+
+            hBkgYield_Sim->SetBinContent(iBin, qaResult.BkgYield);
+            hBkgYield_Sim->SetBinError(iBin, qaResult.err_BkgYield);
+
+            hRSig_Sim->SetBinContent(iBin, qaResult.R_S);
+            hRSig_Sim->SetBinError(iBin, qaResult.err_R_S);
+
+            hRBkg_Sim->SetBinContent(iBin, qaResult.R_B);
+            hRBkg_Sim->SetBinError(iBin, qaResult.err_R_B);
+
+            hPurity_Sim->SetBinContent(iBin, qaResult.Purity);
+            hPurity_Sim->SetBinError(iBin, qaResult.err_Purity);
+
+            hSigStat_Sim->SetBinContent(iBin, qaResult.Significance);
+            hSigStat_Sim->SetBinError(iBin, qaResult.err_Significance);
+        }
+
         // Note: We do NOT delete bkgFitFunc or bkgNumFitFunc here anymore because ROOT takes ownership 
         // when we add it to the graph's list of functions. Deleting it will cause a crash!
         delete grBkg; 
@@ -417,6 +650,18 @@ void ExtractObservable2D(TH2D* h2dCounts, TH2D* h2dNum, TH2D* h2dSqNum, TDirecto
     hRBkg->Write();
     hPurity->Write();
     hSigStat->Write();
+
+    // Saving histograms from the Simultaneous Ring+Mass fit:
+    dirResultsSim->cd();
+    hSigYield_Sim->ResetStats();
+    hBkgYield_Sim->ResetStats();
+
+    hSigYield_Sim->Write();
+    hBkgYield_Sim->Write();
+    hRSig_Sim->Write();
+    hRBkg_Sim->Write();
+    hPurity_Sim->Write();
+    hSigStat_Sim->Write();
 
     // =========================================================================================
     // Step 8: Calculate the Angle-Integrated Ring Observable
@@ -476,8 +721,8 @@ void ExtractObservable2D(TH2D* h2dCounts, TH2D* h2dNum, TH2D* h2dSqNum, TDirecto
                 if (rBkgInt->IsValid() && rBkgNumInt->IsValid()) {
                     
                     // 3. Global Integration
-                    int firstBin = hMassInt->FindBin(muInt - 3.0 * sigmaInt);
-                    int lastBin  = hMassInt->FindBin(muInt + 3.0 * sigmaInt);
+                    int firstBin = hMassInt->FindBin(muInt - 4.0 * sigmaInt);
+                    int lastBin  = hMassInt->FindBin(muInt + 4.0 * sigmaInt);
                     double x_low  = hMassInt->GetBinLowEdge(firstBin);
                     double x_high = hMassInt->GetBinLowEdge(lastBin) + hMassInt->GetBinWidth(lastBin);
                     double binWidth = hMassInt->GetBinWidth(1);
@@ -714,13 +959,8 @@ void signalExtractionRing(const std::string& inputFilePath, const std::string& o
 
         // Define the kinematic windows for Lambda pT and Leading Jet pT
             // (TODO: fix the axes definition so that you can use these windows here!)
-        // std::vector<std::pair<double, double>> lambdaPtWindows = {{0, 0.5}, {0.5, 1.5}, {1.5, 3.0}, {3.0, 5.0}, {5.0, 8.0}, {8.0, 15.0}, {15.0, 40.0}};
-        // std::vector<std::pair<double, double>> leadingJetPtWindows = {{0, 5}, {5, 10}, {10, 20}, {20, 30}, {30, 40}, {40, 60}, {60, 80}, {80, 100}};
-            // Temporary fix kinematic windows (TODO: remove these temporary fixes here):
-        std::vector<std::pair<double, double>> lambdaPtWindows = {{0.0, 0.6}, {0.6, 1.5}, {1.5, 3.0}, {3.0, 4.8}, {4.8, 8.0}, {8.0, 15.0}, {15.0, 40.0}};
-        std::vector<std::pair<double, double>> leadingJetPtWindows = {{0, 4}, {4, 8}, {8, 12}, {12, 20}, {20, 30}, {30, 40}, {40, 60}, {60, 100}};
-
-
+        std::vector<std::pair<double, double>> lambdaPtWindows = {{0, 0.5}, {0.5, 1.5}, {1.5, 3.0}, {3.0, 6.0}, {6.0, 8.0}, {8.0, 15.0}, {15.0, 30.0}, {30.0, 50.0}};
+        std::vector<std::pair<double, double>> leadingJetPtWindows = {{0, 5}, {5, 10}, {10, 20}, {20, 30}, {30, 40}, {40, 60}, {60, 80}, {80, 100}, {100, 200}};
 
         // Helper lambda to format the Pt strings (e.g., "0.5" -> "05", "3.0" -> "3")
         auto fmtWindow = [](double val) {
