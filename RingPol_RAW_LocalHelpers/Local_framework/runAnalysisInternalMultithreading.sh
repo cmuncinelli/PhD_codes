@@ -11,6 +11,7 @@
 #   4. Clean up immediately to free space for next batch.
 # ==============================================================================
 # Run as: ./runAnalysisInternalMultithreading.sh ./input_data_storage.txt ./dpl-config-JustTOFBase-FullQA_permissivePt.json ./aod-writer.json
+# For reference, see https://github.com/gianniliveraro/ALICE_PhotonReconstruction/blob/main/Analysis/MultTest_Findables/runAnalysis.sh
 
 # --- INPUT ARGUMENTS ---
 INPUT_LIST="$1"
