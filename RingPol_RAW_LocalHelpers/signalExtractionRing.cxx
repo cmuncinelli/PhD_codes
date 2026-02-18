@@ -81,17 +81,23 @@ struct SimFitResult {
     // The standalone simultaneous fit function:
 SimFitResult PerformSimultaneousFitQA(TH1D* hMass, TH1D* hNum, double massMin, double massMax, double init_sigYield, double init_mu, double init_sigma, TF1* bkgFitFunc, double init_RS, double init_RB){
     SimFitResult result = { // Initialized as null result
-    0.0, 0.0, // R_S, err_R_S
-    0.0, 0.0, // R_B, err_R_B
-    0.0, 0.0, // SigYield, err_SigYield
-    0.0, 0.0, // BkgYield, err_BkgYield
-    0.0, 0.0, // Purity, err_Purity
-    0.0, 0.0, // Significance, err_Significance
-    -1        // status (Default to failed)
+        0.0, 0.0, // R_S, err_R_S
+        0.0, 0.0, // R_B, err_R_B
+        0.0, 0.0, // SigYield, err_SigYield
+        0.0, 0.0, // BkgYield, err_BkgYield
+        0.0, 0.0, // Purity, err_Purity
+        0.0, 0.0, // Significance, err_Significance
+        -1        // status (Default to failed)
     };
     if (!hMass || !hNum || !bkgFitFunc) return result;
 
     double binW = hMass->GetBinWidth(1);
+
+    // --- SCALING FACTOR ---
+    // We normalize the mass spectrum so the peak is at 1.0.
+    // This keeps Minuit parameters ~O(1) instead of O(10^5), fixing the "Status 1" convergence issues.
+    double normFactor = hMass->GetMaximum();
+    if (normFactor <= 0) normFactor = 1.0; 
 
     // 1. Define the Joint Chi2
     auto globalChi2 = [&](const double *par) {
@@ -101,26 +107,45 @@ SimFitResult PerformSimultaneousFitQA(TH1D* hMass, TH1D* hNum, double massMin, d
             double m = hMass->GetBinCenter(i);
             if (m < massMin || m > massMax) continue;
 
-            double y_mass = hMass->GetBinContent(i);
-            double err_mass = hMass->GetBinError(i);
-            double y_num  = hNum->GetBinContent(i);
-            double err_num  = hNum->GetBinError(i);
+            // Get Raw Data
+            double y_mass_raw = hMass->GetBinContent(i);
+            double e_mass_raw = hMass->GetBinError(i);
+            double y_num  = hNum->GetBinContent(i); // We do NOT scale numerator data
+            double e_num  = hNum->GetBinError(i);
 
-            if (err_mass <= 0) err_mass = 1.0; 
-            if (err_num <= 0) err_num = 1.0;
+            if (e_mass_raw <= 0) e_mass_raw = 1.0; 
+            if (e_num <= 0) e_num = 1.0;
 
-            // par[0] = Signal Yield. Multiplying by binW normalizes it to counts per bin.
+            // --- MASS COMPONENT (SCALED) ---
+            // par[0] = Normalized Signal Yield (approx 1.0).
             // par[1] = mu, par[2] = sigma
-            double S_m = par[0] * binW * TMath::Gaus(m, par[1], par[2], true); // Normalizing to counts per bin (hadn't done that before, so implemented it now!)
+            // par[3,4,5] = Normalized background coefficients
             
-            // par[3,4,5] = pol2 background
-            double B_m = par[3] + par[4]*m + par[5]*m*m;
+            double S_shape = TMath::Gaus(m, par[1], par[2], true); // Normalized Gaussian
+            double S_norm  = par[0] * binW * S_shape; 
             
-            double M_val = S_m + B_m;
-            double Num_val = par[6] * S_m + par[7] * B_m;
+            double B_norm  = par[3] + par[4]*m + par[5]*m*m;
+            
+            double M_model_norm = S_norm + B_norm;
 
-            chi2 += std::pow((y_mass - M_val) / err_mass, 2);
-            chi2 += std::pow((y_num - Num_val) / err_num, 2);
+            // Scale data down to compare with scaled model
+            double y_mass_norm = y_mass_raw / normFactor;
+            double e_mass_norm = e_mass_raw / normFactor;
+
+            chi2 += std::pow((y_mass_norm - M_model_norm) / e_mass_norm, 2);
+
+            // --- NUMERATOR COMPONENT (UNSCALED) ---
+            // The Numerator is "Weight * AbsoluteCount". 
+            // We must un-scale our model by multiplying by normFactor to match the raw hNum data.
+            
+            // Absolute Yields = Normalized Yields * normFactor
+            double S_abs = S_norm * normFactor; 
+            double B_abs = B_norm * normFactor;
+
+            // par[6] = R_S, par[7] = R_B
+            double Num_model = par[6] * S_abs + par[7] * B_abs;
+
+            chi2 += std::pow((y_num - Num_model) / e_num, 2);
         }
         return chi2;
     };
@@ -129,25 +154,27 @@ SimFitResult PerformSimultaneousFitQA(TH1D* hMass, TH1D* hNum, double massMin, d
     ROOT::Math::Minimizer* min = ROOT::Math::Factory::CreateMinimizer("Minuit2", "Migrad");
     if (!min) return result; // Fallback if Minuit2 isn't loaded
     
-    min->SetMaxFunctionCalls(100000);
+    // Increased tolerance and calls slightly for stability with the new scaling
+    min->SetMaxFunctionCalls(1000000);
     min->SetTolerance(0.01);
     min->SetPrintLevel(0); // Keep it quiet so it doesn't flood the terminal
 
     ROOT::Math::Functor f(globalChi2, 8); 
     min->SetFunction(f);
 
-    // 3. Initialize Parameters with Sequential Seeds
-    min->SetVariable(0, "SigYield", init_sigYield, 10.0);
-    min->SetVariable(1, "Mu",       init_mu,       0.0001);
-    min->SetVariable(2, "Sigma",    init_sigma,    0.0001);
-    min->SetVariable(3, "Bkg_c0",   bkgFitFunc->GetParameter(0), 1.0);
-    min->SetVariable(4, "Bkg_c1",   bkgFitFunc->GetParameter(1), 1.0);
-    min->SetVariable(5, "Bkg_c2",   bkgFitFunc->GetParameter(2), 1.0);
-    min->SetVariable(6, "R_S",      init_RS,       0.01); 
-    min->SetVariable(7, "R_B",      init_RB,       0.01); 
+    // 3. Initialize Parameters (SCALED)
+    // We must divide the yield and background guesses by the normFactor
+    min->SetVariable(0, "SigYield_Norm", init_sigYield / normFactor, 0.1);
+    min->SetVariable(1, "Mu",            init_mu,       0.0001);
+    min->SetVariable(2, "Sigma",         init_sigma,    0.0001);
+    min->SetVariable(3, "Bkg_c0_Norm",   bkgFitFunc->GetParameter(0) / normFactor, 0.1);
+    min->SetVariable(4, "Bkg_c1_Norm",   bkgFitFunc->GetParameter(1) / normFactor, 0.1);
+    min->SetVariable(5, "Bkg_c2_Norm",   bkgFitFunc->GetParameter(2) / normFactor, 0.1);
+    min->SetVariable(6, "R_S",           init_RS,       0.01); 
+    min->SetVariable(7, "R_B",           init_RB,       0.01); 
 
     // Lock the kinematics tight to prevent the fit from wandering
-    min->SetVariableLimits(1, init_mu - 0.002, init_mu + 0.002);
+    min->SetVariableLimits(1, init_mu - 0.003, init_mu + 0.003); // Slightly wider window
     min->SetVariableLimits(2, init_sigma * 0.5, init_sigma * 1.5);
     // Don't let yields go negative
     min->SetVariableLowerLimit(0, 0.0);
@@ -160,15 +187,21 @@ SimFitResult PerformSimultaneousFitQA(TH1D* hMass, TH1D* hNum, double massMin, d
         const double *fitVals = min->X();
         const double *fitErrs = min->Errors();
         
+        // R_S and R_B are scale-invariant!
         result.R_S = fitVals[6];
         result.err_R_S = fitErrs[6];
         result.R_B = fitVals[7];
         result.err_R_B = fitErrs[7];
 
+        // Yields must be RESCALED back to absolute counts
+        // The fit returned "Normalized Yield". Real Yield = Fit * normFactor.
+        double raw_SigYield = fitVals[0] * normFactor; 
+        double raw_errSigYield = fitErrs[0] * normFactor;
+
         // The signal yield in the +/- 4 sigma window is ~99.99366% of the total Gaussian integral
         // Using that as an estimate of the total signal yield from the fits
-        result.SigYield = fitVals[0] * 0.9999366; 
-        result.err_SigYield = fitErrs[0] * 0.9999366;
+        result.SigYield = raw_SigYield * 0.9999366; 
+        result.err_SigYield = raw_errSigYield * 0.9999366;
 
         // Reconstruct background polynomial to integrate it in the +/- 4 sigma window
         // (another neat way of recovering the integrated background in this region, for comparison with regular signal extraction method)
@@ -177,10 +210,10 @@ SimFitResult PerformSimultaneousFitQA(TH1D* hMass, TH1D* hNum, double massMin, d
         double xLow = muVal - 4.0 * sigma; // Wrote as 4.0 * sigma to be easier to replace if I change the signal extraction region
         double xHigh = muVal + 4.0 * sigma;
 
-        // Extract polynomial parameters
-        double c0 = fitVals[3];
-        double c1 = fitVals[4];
-        double c2 = fitVals[5];
+        // Extract SCALED polynomial parameters
+        double c0_norm = fitVals[3];
+        double c1_norm = fitVals[4];
+        double c2_norm = fitVals[5];
 
         // 1. Calculate the integration terms (derivatives wrt parameters)
         // (polynomial integration is simple enough to do by hand!)
@@ -188,24 +221,27 @@ SimFitResult PerformSimultaneousFitQA(TH1D* hMass, TH1D* hNum, double massMin, d
         double dx2 = (xHigh * xHigh - xLow * xLow) / 2.0;
         double dx3 = (xHigh * xHigh * xHigh - xLow * xLow * xLow) / 3.0;
         
-        // Analytically integrate c0 + c1*x + c2*x^2 from xLow to xHigh
-        double integral = (c0 * dx1) + (c1 * dx2) + (c2 * dx3);
-        result.BkgYield = integral / hMass->GetBinWidth(1);
+        // Analytically integrate c0 + c1*x + c2*x^2 from xLow to xHigh (Normalized Space)
+        double integral_norm = (c0_norm * dx1) + (c1_norm * dx2) + (c2_norm * dx3);
+        
+        // Rescale Background Result to Absolute counts
+        result.BkgYield = (integral_norm / binW) * normFactor;
         
         // 2. Analytically propagate the error using the Minuit Covariance Matrix
+        // We calculate variance in Normalized space, then scale the final error.
         double dI_dc[3] = {dx1, dx2, dx3};
-        double var_integral = 0.0;
+        double var_integral_norm = 0.0;
         
         for (int i = 0; i < 3; ++i) {
             for (int j = 0; j < 3; ++j) {
                 // CovMatrix indices for c0, c1, c2 are 3, 4, 5
                 double cov_ij = min->CovMatrix(3 + i, 3 + j); 
-                var_integral += dI_dc[i] * dI_dc[j] * cov_ij;
+                var_integral_norm += dI_dc[i] * dI_dc[j] * cov_ij;
             }
         }
         
-        double err_integral = std::sqrt(var_integral);
-        result.err_BkgYield = err_integral / hMass->GetBinWidth(1);
+        double err_integral_norm = std::sqrt(var_integral_norm);
+        result.err_BkgYield = (err_integral_norm / binW) * normFactor;
         
         // ==========================================================
         // Calculate Purity, Significance, and their propagated errors
@@ -243,6 +279,8 @@ SimFitResult PerformSimultaneousFitQA(TH1D* hMass, TH1D* hNum, double massMin, d
     return result;
 }
 
+// (TODO: make helper function numerically stable for full experimental statistics, i.e.,
+// normalize particle counters in a smart way that does not break signal extraction)
 // =================================================================================================
 // HELPER FUNCTION: Full 2D to 1D Signal Extraction Engine
 // =================================================================================================
@@ -260,7 +298,8 @@ void ExtractObservable2D(TH2D* h2dCounts, TH2D* h2dNum, TH2D* h2dSqNum, TDirecto
     int nBins = h2dCounts->GetNbinsX();
     
     // Prepare output histograms (Cloning ProjectionX to keep exact angular binning)
-    TH1D* hSigYield = (TH1D*)h2dCounts->ProjectionX(Form("hSigYield_%s", extractionName.Data())); hSigYield->Reset();
+    TH1D* hSigYield = (TH1D*)h2dCounts->ProjectionX(Form("hSigYield_%s", extractionName.Data()));
+    hSigYield->Reset();
     hSigYield->SetTitle(Form("Signal Yield vs %s;%s;Counts", axisTitle.Data(), axisTitle.Data()));
     
     TH1D* hBkgYield = (TH1D*)hSigYield->Clone(Form("hBkgYield_%s", extractionName.Data()));
@@ -280,7 +319,8 @@ void ExtractObservable2D(TH2D* h2dCounts, TH2D* h2dNum, TH2D* h2dSqNum, TDirecto
     hSigStat->SetTitle(Form("Significance S/#sqrt{S+B} vs %s;%s;Significance", axisTitle.Data(), axisTitle.Data()));
 
     // --- SIMULTANEOUS FIT QA HISTOGRAMS ---
-    TH1D* hSigYield_Sim = (TH1D*)h2dCounts->ProjectionX(Form("hSigYield_Sim_%s", extractionName.Data())); hSigYield_Sim->Reset();
+    TH1D* hSigYield_Sim = (TH1D*)h2dCounts->ProjectionX(Form("hSigYield_Sim_%s", extractionName.Data()));
+    hSigYield_Sim->Reset();
     hSigYield_Sim->SetTitle(Form("SimFit Signal Yield vs %s;%s;Counts", axisTitle.Data(), axisTitle.Data()));
     
     TH1D* hBkgYield_Sim = (TH1D*)hSigYield_Sim->Clone(Form("hBkgYield_Sim_%s", extractionName.Data()));
@@ -297,6 +337,14 @@ void ExtractObservable2D(TH2D* h2dCounts, TH2D* h2dNum, TH2D* h2dSqNum, TDirecto
     
     TH1D* hSigStat_Sim = (TH1D*)hSigYield_Sim->Clone(Form("hSigStat_Sim_%s", extractionName.Data()));
     hSigStat_Sim->SetTitle(Form("SimFit Significance S/#sqrt{S+B} vs %s;%s;Significance", axisTitle.Data(), axisTitle.Data()));
+
+        // Integrated fit result:
+    TH1D* hIntegratedRSig_Sim = new TH1D(Form("hIntegratedRSig_Sim_%s", extractionName.Data()), 
+                                         Form("Integrated R_{S} (SimFit) - %s; ;R_{S}", extractionName.Data()), 
+                                         1, 0, 1);
+    TH1D* hIntegratedRBkg_Sim = new TH1D(Form("hIntegratedRBkg_Sim_%s", extractionName.Data()), 
+                                         Form("Integrated R_{B} (SimFit) - %s; ;R_{B}", extractionName.Data()), 
+                                         1, 0, 1);
 
     // We will need to store the extracted mu and sigma for Step 5 & 6
     // Using a simple struct to hold the fit results for each bin
@@ -782,7 +830,7 @@ void ExtractObservable2D(TH2D* h2dCounts, TH2D* h2dNum, TH2D* h2dSqNum, TDirecto
             delete grBkgInt; delete grBkgNumInt;
         }
         delete fitFuncInt;
-    }
+    } // end of step 8 conditionals
     
     // Write the integrated histogram into the main directory
     dirResults->cd();
@@ -790,6 +838,117 @@ void ExtractObservable2D(TH2D* h2dCounts, TH2D* h2dNum, TH2D* h2dSqNum, TDirecto
 
     // (Clean up memory for the 1D projections)
     delete hMassInt; delete hNumInt; delete hSqNumInt;
+
+    // ==========================================================================================
+    // Simultaneous Fit - Integrated results (integrated over all angles)
+    // ==========================================================================================
+    // Instead of averaging the R_S values from individual bins (which requires complex error propagation 
+    // of weighted means), we sum the raw histograms first and fit ONCE.
+    // 1. It provides a "Global Anchor" with high statistics.
+    // 2. The error bar comes directly from the Global Hessian Matrix, automatically accounting 
+    //    for correlations between Signal Yield and Polarization.
+    if (printHeader) std::cout << "  -> Step 9: Integrated Simultaneous Fit..." << std::endl;
+
+    // 1. Project Total Statistics (Summing over all angular bins 1 to nBins)
+    TH1D* hTotalMass_Sim = h2dCounts->ProjectionY(Form("hTotalMass_Sim_%s", extractionName.Data()), 1, nBins, "e");
+    TH1D* hTotalNum_Sim  = h2dNum->ProjectionY(Form("hTotalNum_Sim_%s", extractionName.Data()), 1, nBins, "e");
+
+    // -----------------------------------------------------------------------------------------
+    // CONDENSED STABILITY CHECKS
+    // -----------------------------------------------------------------------------------------
+    bool doIntegratedFit = true;
+    // CHECK A: Data Existence & Matrix Safety
+    // If there are fewer than 30 counts in the entire mass window, a good fit is probably impossible.
+    // Also, if sumBkg is too low, the covariance matrix inversion for pol2 will fail.
+    double totalInteg = hTotalMass_Sim->Integral();
+    if (hTotalMass_Sim->GetEntries() < 30 || totalInteg <= 30) {
+        if (printHeader) std::cout << "    [SimFit Integrated] Skipped: Too few entries (" << totalInteg << ")" << std::endl;
+        doIntegratedFit = false;
+    }
+    // CHECK B: Ensure we have data in the sidebands (approximation of the "Enough points" check)
+    // If the histogram is empty in the wings, the background parabola cannot be constrained.
+    if (doIntegratedFit) {
+        int nBinsH = hTotalMass_Sim->GetNbinsX();
+        double leftWing  = hTotalMass_Sim->Integral(1, nBinsH/5); // First 20%
+        double rightWing = hTotalMass_Sim->Integral(nBinsH - nBinsH/5, nBinsH); // Last 20%
+        if (leftWing + rightWing < 5) { // Threshold for "empty zeros"
+            if (printHeader) std::cout << "    [SimFit Integrated] Skipped: Sidebands are empty (Matrix Inversion Risk)." << std::endl;
+            doIntegratedFit = false;
+        }
+    }
+    // -----------------------------------------------------------------------------------------
+    // PRE-FIT & SIMULTANEOUS EXTRACTION
+    // -----------------------------------------------------------------------------------------
+    // We only proceed if the histogram passed the stability checks
+    if (doIntegratedFit) {
+        // 2. Obtain robust seeds for the simultaneous fit using a standard pre-fit
+        TF1* preFit = new TF1(Form("preFit_%s", extractionName.Data()), "gaus(0) + pol2(3)", massMin, massMax);
+        
+        double maxVal = hTotalMass_Sim->GetMaximum();
+        double estimatedMu = hTotalMass_Sim->GetBinCenter(hTotalMass_Sim->GetMaximumBin());
+        
+        // Estimate background from the edges (average of first and last bin)
+        // (we NEED this type of initial guess to be better for the integrated fit because the statistics is just so much higher!)
+        double firstBinC = hTotalMass_Sim->GetBinContent(1);
+        double lastBinC  = hTotalMass_Sim->GetBinContent(hTotalMass_Sim->GetNbinsX());
+        double estBkgLevel = (firstBinC + lastBinC) / 2.0;
+        if (estBkgLevel < 0) estBkgLevel = 0;
+
+        // Estimate Signal Amplitude (Total Height - Background Level)
+        double estSigAmp = maxVal - estBkgLevel;
+        if (estSigAmp < 0) estSigAmp = maxVal * 0.5; // Fallback if shape is weird
+
+        // Set the Parameters
+        preFit->SetParameter(0, estSigAmp);   // Signal Amplitude
+        preFit->SetParameter(1, estimatedMu); // Mean
+        preFit->SetParameter(2, 0.002);       // Sigma
+        preFit->SetParameter(3, estBkgLevel); // c0 (Background constant)
+        preFit->SetParameter(4, 0);           // c1
+        preFit->SetParameter(5, 0);           // c2
+        
+        // Relax the sigma limit slightly (High stats might pick up slight resolution broadening)
+        preFit->SetParLimits(2, 0.0005, 0.008); 
+
+        // 3. Fit
+        TFitResultPtr rPre = hTotalMass_Sim->Fit(preFit, "Q N 0 R S");
+
+        // We check IsValid() instead of strictly == 0, as high stats sometimes gives status 4000 (Converged but non-pos-def covariance)
+        // which is perfectly fine for seeding values.
+        if (rPre->IsValid()) { 
+            double seed_sigma = preFit->GetParameter(2);
+            // Conversion: Area = Amplitude * Sigma * sqrt(2*pi)
+            double seed_Yield = preFit->GetParameter(0) * seed_sigma * std::sqrt(2 * TMath::Pi());
+            double seed_mu    = preFit->GetParameter(1);
+
+            // 4. Perform the Simultaneous Fit
+            SimFitResult simResTotal = PerformSimultaneousFitQA(
+                hTotalMass_Sim, hTotalNum_Sim, massMin, massMax,
+                seed_Yield, seed_mu, seed_sigma, preFit,
+                0.0, 0.0
+            );
+
+            if (simResTotal.status == 0) {
+                hIntegratedRSig_Sim->SetBinContent(1, simResTotal.R_S);
+                hIntegratedRSig_Sim->SetBinError(1, simResTotal.err_R_S); 
+
+                hIntegratedRBkg_Sim->SetBinContent(1, simResTotal.R_B);
+                hIntegratedRBkg_Sim->SetBinError(1, simResTotal.err_R_B);
+
+                if (printHeader) std::cout << "    [SimFit Integrated] Success. R_S: " << simResTotal.R_S << " +/- " << simResTotal.err_R_S << std::endl;
+            }
+            else if (printHeader) std::cout << "    [SimFit Integrated] Failed (Status " << simResTotal.status << ")" << std::endl;
+        }
+        else if (printHeader) std::cout << "    [SimFit Integrated] Skipped: Pre-fit failed to converge." << std::endl;
+        delete preFit;
+    }
+
+    // 5. Write to Disk
+    dirResultsSim->cd(); 
+    hIntegratedRSig_Sim->Write();
+    hIntegratedRBkg_Sim->Write();
+
+    delete hTotalMass_Sim;
+    delete hTotalNum_Sim;
 }
 
 // ------------------------------------------------------------------------------------------------
