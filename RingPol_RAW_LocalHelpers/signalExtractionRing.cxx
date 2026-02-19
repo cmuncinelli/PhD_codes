@@ -79,6 +79,7 @@ struct SimFitResult {
     int status; 
 };
     // The standalone simultaneous fit function:
+// (TODO: implement a more sophisticated method on PerformSimultaneousFitQA that actually does bin counting in the peak, whilst also using a covariance-matrix like entity for full error propagation)
 SimFitResult PerformSimultaneousFitQA(TH1D* hMass, TH1D* hNum, double massMin, double massMax, double init_sigYield, double init_mu, double init_sigma, TF1* bkgFitFunc, double init_RS, double init_RB){
     SimFitResult result = { // Initialized as null result
         0.0, 0.0, // R_S, err_R_S
@@ -1117,7 +1118,6 @@ void signalExtractionRing(const std::string& inputFilePath, const std::string& o
         std::cout << "\n[Step 7] Slicing 3D histograms and extracting kinematic windows..." << std::endl;
 
         // Define the kinematic windows for Lambda pT and Leading Jet pT
-            // (TODO: fix the axes definition so that you can use these windows here!)
         std::vector<std::pair<double, double>> lambdaPtWindows = {{0, 0.5}, {0.5, 1.5}, {1.5, 3.0}, {3.0, 6.0}, {6.0, 8.0}, {8.0, 15.0}, {15.0, 30.0}, {30.0, 50.0}};
         std::vector<std::pair<double, double>> leadingJetPtWindows = {{0, 5}, {5, 10}, {10, 20}, {20, 30}, {30, 40}, {40, 60}, {60, 80}, {80, 100}, {100, 200}};
 
