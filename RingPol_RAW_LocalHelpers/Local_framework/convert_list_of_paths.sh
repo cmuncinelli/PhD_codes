@@ -5,8 +5,8 @@
 #   convert_list_of_paths.sh
 #
 # Purpose:
-#   This script scans one or more XML files in the current directory and
-#   extracts all Logical File Name (lfn) paths found in <file ... /> entries.
+#   This script scans one or more XML files inside the ./aod_collections/ directory
+#   and extracts all Logical File Name (lfn) paths found in <file ... /> entries.
 #   These paths correspond to AO2D.root files stored in the ALICE grid.
 #
 #   The script collects all extracted lfn paths and writes them, one per line,
@@ -35,6 +35,15 @@
 # Stop the script if any command fails
 set -e
 
+# Directory containing XML collections
+INPUT_DIR="aod_collections"
+
+# Check if input directory exists
+if [ ! -d "${INPUT_DIR}" ]; then
+  echo "Error: Directory '${INPUT_DIR}' does not exist."
+  exit 1
+fi
+
 # Name of the output file that will contain the list of LFNs
 OUTPUT_FILE="DownloadListFromAlien.txt"
 
@@ -42,9 +51,19 @@ OUTPUT_FILE="DownloadListFromAlien.txt"
 # This avoids appending to an old file by accident
 rm -f "${OUTPUT_FILE}"
 
-# Loop over all XML files in the current directory
-# If you want to restrict this further, you can change "*.xml"
-for XML_FILE in *.xml; do
+# Enable nullglob so that *.xml expands to empty if no match
+shopt -s nullglob
+
+XML_FILES=("${INPUT_DIR}"/*.xml)
+
+# Check if no XML files found
+if [ ${#XML_FILES[@]} -eq 0 ]; then
+  echo "No XML files found inside ${INPUT_DIR}."
+  exit 0
+fi
+
+# Loop over XML files
+for XML_FILE in "${XML_FILES[@]}"; do
 
   # If there are no XML files, the glob will expand to "*.xml"
   # This check avoids trying to process a non-existing file

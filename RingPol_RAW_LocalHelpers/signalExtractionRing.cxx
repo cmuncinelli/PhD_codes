@@ -1605,6 +1605,103 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
     delete h2dNum;
 }
 
+// A small helper function that calculates the NSigma with which each bin deviates from zero (useful to easily spot signal in the ring observable plots!)
+TGraphErrors* makeSignificanceGraph(TProfile* prof, const char* name) {
+    if (!prof) return nullptr;
+    int nBins = prof->GetNbinsX();
+    TGraphErrors* gr = new TGraphErrors();
+    gr->SetName(name);
+    gr->SetTitle(prof->GetTitle());
+    int point = 0;
+    for (int i = 1; i <= nBins; ++i) {
+        double mean  = prof->GetBinContent(i);
+        double error = prof->GetBinError(i);
+        if (error <= 0) continue;  // skip empty bins
+        double x  = prof->GetBinCenter(i);
+        double ex = prof->GetBinWidth(i)/2.0; // Or 0.0, if you'd like them to have zero width
+        double y  = mean / error;
+
+        gr->SetPoint(point, x, y);
+        gr->SetPointError(point, ex, 0.0);
+        point++;
+    }
+    gr->GetXaxis()->SetTitle(prof->GetXaxis()->GetTitle());
+    gr->GetYaxis()->SetTitle("<R>/#sigma");
+
+    // Style options:
+    gr->SetMarkerStyle(20);
+    gr->SetMarkerSize(1.1);
+    gr->SetLineStyle(0);   // disable lines
+    gr->SetLineWidth(0);   // no line drawing
+    return gr;
+}
+
+void drawSigAndDashedLines(TGraphErrors* gr, TDirectory* outDir, const std::string& canvasName) {
+    if (!gr) return;
+    outDir->cd();
+    TCanvas* c = new TCanvas(canvasName.c_str(), "", 800, 600);
+    c->SetMargin(0.12, 0.04, 0.12, 0.04);
+
+    gr->SetMarkerStyle(20);
+    gr->SetMarkerSize(1.1);
+    gr->SetLineWidth(2);
+    gr->Draw("AP"); // Draw first to get the axes
+
+    double xmin = gr->GetXaxis()->GetXmin();
+    double xmax = gr->GetXaxis()->GetXmax();
+
+    // ----- 1-sigma compatibility band -----
+    TBox* band = new TBox(xmin, -1.0, xmax, 1.0);
+    // band->SetFillColorAlpha(kGray+1, 0.25);
+    band->SetFillColor(kGray);
+    band->SetFillStyle(3001);   // hatched or light fill
+    band->SetLineColor(0);
+    band->Draw("same");
+
+    // ----- dashed +/- 1-sigma lines -----
+    TLine* lineUp = new TLine(xmin, 1.0, xmax, 1.0);
+    TLine* lineDown = new TLine(xmin, -1.0, xmax, -1.0);
+
+    lineUp->SetLineStyle(2);
+    lineDown->SetLineStyle(2);
+    lineUp->SetLineWidth(2);
+    lineDown->SetLineWidth(2);
+
+    lineUp->Draw("same");
+    lineDown->Draw("same");
+    gr->Draw("P same"); // redraw points on top
+
+    // ----- legend -----
+    TLegend* leg = new TLegend(0.60, 0.75, 0.88, 0.88);
+    leg->SetBorderSize(0);
+    leg->SetFillStyle(0);
+
+    leg->AddEntry(gr, "<R>/#sigma", "p");
+    leg->AddEntry(band, "Compatible with 0 within 1#sigma", "f");
+
+    leg->Draw();
+
+    c->Write();
+}
+
+// void fillSignificance(TProfile* prof, TH1D* hist) {
+//     for (int i = 1; i <= prof->GetNbinsX(); ++i) {
+//         double content = prof->GetBinContent(i);
+//         double error   = prof->GetBinError(i);
+//         double significance = 0.0;
+//         if (error > 0.0) significance = content / error;
+//         hist->SetBinContent(i, significance);
+//         hist->SetBinError(i, 0.0); // There is no second order error here
+//     }
+// }
+
+// TH1D* makeHistFromProfile(TProfile* prof, const char* name) {
+//     if (!prof) return nullptr;
+//     const TAxis* ax = prof->GetXaxis();
+//     // return new TH1D(name, prof->GetTitle(), ax->GetNbins(), ax->GetXmin(), ax->GetXmax());
+//     return new TH1D(name, prof->GetTitle(), ax->GetNbins(), ax->GetXbins()->GetArray()); // For variable-binning histograms
+// }
+
 // ------------------------------------------------------------------------------------------------
 // Main Macro
 // ------------------------------------------------------------------------------------------------
@@ -1689,7 +1786,7 @@ void signalExtractionRing(const std::string& inputFilePath, const std::string& o
         // Step 3.2: Fetching Histograms
         // 1D QA & Mass
         TH1D* hMass = (TH1D*)inDir->Get("hMass");
-        TH1D* hMassSigExtract = (TH1D*)inDir->Get("hMassSigExtract"); // Loaded just to get 
+        TH1D* hMassSigExtract = (TH1D*)inDir->Get("hMassSigExtract");
         // TH1D* hRingObservableMass = (TH1D*)inDir->Get("hRingObservableMass");
         
         // 2D: Observable vs Invariant Mass (Now using TProfiles to get the proper errors!)
@@ -1903,6 +2000,36 @@ void signalExtractionRing(const std::string& inputFilePath, const std::string& o
             }
             delete obj; // Clean up memory after writing
         }
+
+        // =========================================================================================
+        // Step 9: Calculating significance plots for quick 1D QA
+        // =========================================================================================
+        std::cout << "  [Step 9] Calculating significance plots for quick 1D QA, in variation: " << var << "..." << std::endl;
+        // Significance plots based on all 1D TProfiles (NSigma with which each bin deviates from zero):
+        // (This has to be done AFTER processing the derived data, because these cannot be merged when code is pipelined!)
+        TDirectory* outDirSig = outDirVar->mkdir("1D_Significance");
+
+        // Fetching 1D TProfiles:
+        TProfile* pDeltaPhi = (TProfile*)inDir->Get("pRingObservableDeltaPhi");
+        TProfile* pDeltaTheta = (TProfile*)inDir->Get("pRingObservableDeltaTheta");
+        TProfile* pIntegrated = (TProfile*)inDir->Get("pRingObservableIntegrated");
+        TProfile* pLambdaPt = (TProfile*)inDir->Get("pRingObservableLambdaPt");
+        TProfile* pMass = (TProfile*)inDir->Get("pRingObservableMass"); 
+
+        outDirSig->cd();
+
+        TGraphErrors* gSigDeltaPhi   = makeSignificanceGraph(pDeltaPhi,   "gRingSignificanceDeltaPhi");
+        TGraphErrors* gSigDeltaTheta = makeSignificanceGraph(pDeltaTheta, "gRingSignificanceDeltaTheta");
+        TGraphErrors* gSigIntegrated = makeSignificanceGraph(pIntegrated, "gRingSignificanceIntegrated");
+        TGraphErrors* gSigLambdaPt   = makeSignificanceGraph(pLambdaPt,   "gRingSignificanceLambdaPt");
+        TGraphErrors* gSigMass       = makeSignificanceGraph(pMass,       "gRingSignificanceMass");
+
+        // Draw and save canvases
+        drawSigAndDashedLines(gSigDeltaPhi,   outDirSig, "cSigDeltaPhi_" + var);
+        drawSigAndDashedLines(gSigDeltaTheta, outDirSig, "cSigDeltaTheta_" + var);
+        drawSigAndDashedLines(gSigIntegrated, outDirSig, "cSigIntegrated_" + var);
+        drawSigAndDashedLines(gSigLambdaPt,   outDirSig, "cSigLambdaPt_" + var);
+        drawSigAndDashedLines(gSigMass,       outDirSig, "cSigMass_" + var);
     } // <--- This closes the variation loop ("Ring", "RingKinematicCuts", etc.)
 
     // Clean up files

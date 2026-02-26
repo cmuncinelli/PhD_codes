@@ -35,11 +35,11 @@ INPUT_FILE="${INPUT_DIR}/DownloadListFromAlien.txt"
 ########################################
 # Tunables (speed + robustness)
 ########################################
-PARALLEL_JOBS=2 # Lowered to 2 to keep some level of multi-jobs, while still robust.
-ALIEN_TIMEOUT=5     # seconds (default is 150... too slow)
-ALIEN_RETRY=1        # don’t retry broken replicas forever
+# PARALLEL_JOBS=2 # Lowered to 2 to keep some level of multi-jobs, while still robust.
+# ALIEN_TIMEOUT=5     # seconds (default is 150... too slow)
+# ALIEN_RETRY=1        # don’t retry broken replicas forever
 # ALIEN_CP_OPTS="-x -T ${ALIEN_TIMEOUT} -retry ${ALIEN_RETRY} -t ${PARALLEL_JOBS}"
-ALIEN_CP_OPTS="-T ${ALIEN_TIMEOUT} -retry ${ALIEN_RETRY} -t ${PARALLEL_JOBS}"
+# ALIEN_CP_OPTS="-T ${ALIEN_TIMEOUT} -retry ${ALIEN_RETRY} -t ${PARALLEL_JOBS}"
 # PERSONAL_TIMEOUT=45
 
 ########################################
