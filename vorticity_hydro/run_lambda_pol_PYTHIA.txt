@@ -66,3 +66,7 @@ g++ -O2 -std=c++17 -march=native -flto=2 -pipe lambda_pol_PYTHIA.cxx -o lambda_p
 # For PbPb:
 ./lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_PbPb_536tev_AllowLambdaDecays" 1e5 6 && ./lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_PbPb_536tev_AllowLambdaDecays" 1e5 1
 ./lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_PbPb_536tev_AllowLambdaDecays" 5e6 6 && ./lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_PbPb_536tev_AllowLambdaDecays" 5e6 1
+        # For the Joined dataset of 1e7 + 5e6 = 1.5e7:
+../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_PbPb_536tev_AllowLambdaDecays" 1.5e7 6 && ../vorticity_hydro/lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_PbPb_536tev_AllowLambdaDecays" 1.5e7 1
+        # For the second joined dataset:
+./lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_PbPb_536tev_AllowLambdaDecays" 3.5e7 6 && ./lambda_pol_PYTHIA.exe "/storage3/cicero/pythia_data/" "/home/users/cicerodm/results/hydro_vorticity/PythiaPol/" "pythia8_PbPb_536tev_AllowLambdaDecays" 3.5e7 1
