@@ -1,0 +1,22 @@
+{
+  "OutputDirector": {
+    "debugmode": true,
+    "resfile": "AO2D_LambdaJetsRing_DerivedTest",
+    "resfilemode": "RECREATE",
+    "ntfmerge": 1,
+    "OutputDescriptors": [
+      {
+        "table": "AOD/RINGLAV0/0"
+      },
+      {
+        "table": "AOD/RINGJET/0"
+      },
+      {
+        "table": "AOD/RINGLEADP/0"
+      },
+      {
+        "table": "AOD/RINGCOLLISION/0"
+      }
+    ]
+  }
+}

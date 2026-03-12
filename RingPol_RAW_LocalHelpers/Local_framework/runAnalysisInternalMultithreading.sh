@@ -11,7 +11,6 @@
 #   4. Clean up immediately to free space for next batch.
 # ==============================================================================
 # Run as: ./runAnalysisInternalMultithreading.sh ./input_data_storage.txt ./dpl-config-JustTOFBase-FullQA_permissivePt.json ./aod-writer.json
-# For reference, see https://github.com/gianniliveraro/ALICE_PhotonReconstruction/blob/main/Analysis/MultTest_Findables/runAnalysis.sh
 
 # --- INPUT ARGUMENTS ---
 INPUT_LIST="$1"
@@ -81,9 +80,10 @@ echo "  Suffix:   ${SUFFIX}"
 echo "========================================================"
 
 # Clean start
-rm -rf "$TEMP_BASE" "$LOGS_DIR"
+rm -rf "$TEMP_BASE"
 mkdir -p "$TEMP_BASE/batches"
 mkdir -p "$RESULTS_DIR"
+mkdir -p "$RESULTS_DIR/used_configs" # To store used dpl-configs for reference
 mkdir -p "$LOGS_DIR"
 mkdir -p "$DERIVED_AOD_DIR"
 
@@ -170,7 +170,7 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
         --aod-file "@${LOCAL_INPUT_LIST}" \
         --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
         --shm-segment-size "$SHM_SIZE" \
-        >> "$BATCH_LOG" 2>&1
+        > "$BATCH_LOG" 2>&1
     # Notice that the instructions on which tables to write are actually contained in $JSON_CONFIG_PATH (the config json).
     # The aod-writer-json just helps with formatting! For more info, read the "internal-dpl-aod-writer" key in the .json.
 
@@ -246,7 +246,7 @@ if [ -s "$MERGE_LIST_FILE" ]; then
         rm "$MERGE_LIST_FILE"
         
         # --- Copy Config for reproducibility ---
-        cp "$JSON_CONFIG_PATH" "$RESULTS_DIR/dpl-config${SUFFIX}.json"
+        cp "$JSON_CONFIG_PATH" "$RESULTS_DIR/used_configs/dpl-config${SUFFIX}.json"
     else
         echo "ERROR: hadd merge failed. Intermediate files NOT deleted."
         exit 1

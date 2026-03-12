@@ -23,7 +23,7 @@ CONSUMER_RESULTS="${WORK_DIR}/results_consumer"
 CONSUMER_LOGS="${CONSUMER_RESULTS}/logs"
 
 # --- TUNING KNOBS ---
-SHM_SIZE="16000000000"         # 16GB
+SHM_SIZE="32000000000"         # Increased from 16GB to 32GB after new 3D histograms
 MEM_RATE_LIMIT="2000000000"    # 2GB/s
 THREADS=32                     # Threads for the derived task
 
@@ -86,9 +86,11 @@ echo "  Final Suffix:    ${FINAL_SUFFIX}"
 echo "========================================================"
 
 # Clean start for consumer
-rm -rf "$CONSUMER_TEMP" "$CONSUMER_LOGS"
+# rm -rf "$CONSUMER_TEMP" "$CONSUMER_LOGS"
+rm -rf "$CONSUMER_TEMP" # Will not remove previous consumer logs due to current way implementation works. Also, I use the ">" operator when creating logs, so this exclusion shouldn't matter anyway
 mkdir -p "$CONSUMER_TEMP"
 mkdir -p "$CONSUMER_RESULTS"
+mkdir -p "$CONSUMER_RESULTS/used_configs" # To store used dpl-configs for reference
 mkdir -p "$CONSUMER_LOGS"
 
 # Generate the input list dynamically using the DATA_SUFFIX
@@ -151,7 +153,7 @@ if [ $EXIT_CODE -eq 0 ]; then
         echo "Output: $FINAL_OUTPUT"
         
         # Save the CONSUMER config used for this specific run
-        cp "$JSON_CONSUMER_CONFIG" "$CONSUMER_RESULTS/consumer-config_${FINAL_SUFFIX}.json"
+        cp "$JSON_CONSUMER_CONFIG" "$CONSUMER_RESULTS/used_configs/consumer-config_${FINAL_SUFFIX}.json"
     else
         echo "    ERROR: AnalysisResults.root not found in consumer output!"
     fi
