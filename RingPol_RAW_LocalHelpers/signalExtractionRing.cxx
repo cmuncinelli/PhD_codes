@@ -41,6 +41,7 @@
 #include <string>
 #include <vector>
 #include <cmath>
+#include <filesystem> // To create output folder whenever it is not present
 
 // ROOT Includes
 #include <TFile.h>
@@ -66,6 +67,7 @@
 #include "Math/Factory.h"
 #include "Math/Functor.h"
 
+namespace fs = std::filesystem;
 
 constexpr double lambdaPDGMassApprox = 1.11568; // Just for some fit initial guesses
 
@@ -1684,24 +1686,6 @@ void drawSigAndDashedLines(TGraphErrors* gr, TDirectory* outDir, const std::stri
     c->Write();
 }
 
-// void fillSignificance(TProfile* prof, TH1D* hist) {
-//     for (int i = 1; i <= prof->GetNbinsX(); ++i) {
-//         double content = prof->GetBinContent(i);
-//         double error   = prof->GetBinError(i);
-//         double significance = 0.0;
-//         if (error > 0.0) significance = content / error;
-//         hist->SetBinContent(i, significance);
-//         hist->SetBinError(i, 0.0); // There is no second order error here
-//     }
-// }
-
-// TH1D* makeHistFromProfile(TProfile* prof, const char* name) {
-//     if (!prof) return nullptr;
-//     const TAxis* ax = prof->GetXaxis();
-//     // return new TH1D(name, prof->GetTitle(), ax->GetNbins(), ax->GetXmin(), ax->GetXmax());
-//     return new TH1D(name, prof->GetTitle(), ax->GetNbins(), ax->GetXbins()->GetArray()); // For variable-binning histograms
-// }
-
 // ------------------------------------------------------------------------------------------------
 // Main Macro
 // ------------------------------------------------------------------------------------------------
@@ -1733,6 +1717,13 @@ void signalExtractionRing(const std::string& inputFilePath, const std::string& o
     else {
         suffix = "UnknownSuffix";
         std::cout << "  Warning: 'ConsumerResults_' not found in input path. Using 'UnknownSuffix'." << std::endl;
+    }
+
+    // Ensure output directory exists (like mkdir -p)
+    try {fs::create_directories(outputFolderPath);} 
+    catch (const fs::filesystem_error& e) {
+        std::cerr << "Error creating output directory: " << e.what() << std::endl;
+        return;
     }
 
     std::string outFileName = outputFolderPath + "signalExtractionRing_" + suffix + ".root";
@@ -1785,31 +1776,29 @@ void signalExtractionRing(const std::string& inputFilePath, const std::string& o
 
         // Step 3.2: Fetching Histograms
         // 1D QA & Mass
-        TH1D* hMass = (TH1D*)inDir->Get("hMass");
         TH1D* hMassSigExtract = (TH1D*)inDir->Get("hMassSigExtract");
-        // TH1D* hRingObservableMass = (TH1D*)inDir->Get("hRingObservableMass");
         
         // 2D: Observable vs Invariant Mass (Now using TProfiles to get the proper errors!)
         TProfile2D* p2dRingObservableDeltaPhiVsMass = (TProfile2D*)inDir->Get("p2dRingObservableDeltaPhiVsMass");
         TProfile2D* p2dRingObservableDeltaThetaVsMass = (TProfile2D*)inDir->Get("p2dRingObservableDeltaThetaVsMass");
         
-        // Counters (denominators)
-        TH2D* h2dDeltaPhiVsMass = (TH2D*)inDir->Get("h2dDeltaPhiVsMass");
-        TH2D* h2dDeltaThetaVsMass = (TH2D*)inDir->Get("h2dDeltaThetaVsMass");
+            // Counters
+        TH2D* h2dDeltaPhiVsMass = (TH2D*)inDir->Get("QA/h2dDeltaPhiVsMass");
+        TH2D* h2dDeltaThetaVsMass = (TH2D*)inDir->Get("QA/h2dDeltaThetaVsMass");
         
         // 3D: Observable vs Mass vs Lambda pT (Now using TProfiles to get the proper errors!)
         TProfile3D* p3dRingObservableDeltaPhiVsMassVsLambdaPt = (TProfile3D*)inDir->Get("p3dRingObservableDeltaPhiVsMassVsLambdaPt");
         TProfile3D* p3dRingObservableDeltaThetaVsMassVsLambdaPt = (TProfile3D*)inDir->Get("p3dRingObservableDeltaThetaVsMassVsLambdaPt");
-            // Counters:
-        TH3D* h3dDeltaPhiVsMassVsLambdaPt = (TH3D*)inDir->Get("h3dDeltaPhiVsMassVsLambdaPt");
-        TH3D* h3dDeltaThetaVsMassVsLambdaPt = (TH3D*)inDir->Get("h3dDeltaThetaVsMassVsLambdaPt");
+            // Counters
+        TH3D* h3dDeltaPhiVsMassVsLambdaPt = (TH3D*)inDir->Get("QA/h3dDeltaPhiVsMassVsLambdaPt");
+        TH3D* h3dDeltaThetaVsMassVsLambdaPt = (TH3D*)inDir->Get("QA/h3dDeltaThetaVsMassVsLambdaPt");
 
         // 3D: Observable vs Mass vs Lead Jet pT (Now using TProfiles to get the proper errors!)
         TProfile3D* p3dRingObservableDeltaPhiVsMassVsLeadJetPt = (TProfile3D*)inDir->Get("p3dRingObservableDeltaPhiVsMassVsLeadJetPt");
         TProfile3D* p3dRingObservableDeltaThetaVsMassVsLeadJetPt = (TProfile3D*)inDir->Get("p3dRingObservableDeltaThetaVsMassVsLeadJetPt"); 
-            // Counters:
-        TH3D* h3dDeltaPhiVsMassVsLeadJetPt = (TH3D*)inDir->Get("h3dDeltaPhiVsMassVsLeadJetPt");
-        TH3D* h3dDeltaThetaVsMassVsLeadJetPt = (TH3D*)inDir->Get("h3dDeltaThetaVsMassVsLeadJetPt");
+            // Counters
+        TH3D* h3dDeltaPhiVsMassVsLeadJetPt = (TH3D*)inDir->Get("QA/h3dDeltaPhiVsMassVsLeadJetPt");
+        TH3D* h3dDeltaThetaVsMassVsLeadJetPt = (TH3D*)inDir->Get("QA/h3dDeltaThetaVsMassVsLeadJetPt");
 
         // Basic check to ensure critical histograms were loaded correctly
         if (!h2dDeltaPhiVsMass || !hMassSigExtract || !p2dRingObservableDeltaPhiVsMass || !p2dRingObservableDeltaThetaVsMass || !p3dRingObservableDeltaPhiVsMassVsLambdaPt ||
@@ -1991,15 +1980,28 @@ void signalExtractionRing(const std::string& inputFilePath, const std::string& o
         // Iterate over all keys in the current variation's input directory
         TIter nextKey(inDir->GetListOfKeys());
         TKey *key;
-        while ((key = (TKey*)nextKey())){
+        while ((key = (TKey*)nextKey())) {
             TObject *obj = key->ReadObj();
-            // Check if the object is a histogram (1D, 2D, or 3D)
-            if (obj && obj->InheritsFrom(TH1::Class())){
+            if (!obj) continue;
+            if (obj->InheritsFrom(TH1::Class())) {
                 dirInput->cd();
-                obj->Write(); // Write to our new output subfolder
+                obj->Write();
+                delete obj;
             }
-            delete obj; // Clean up memory after writing
+            else if (obj->InheritsFrom(TDirectory::Class())) {
+                // Do NOT recurse or delete TDirectory objects here:
+                // their lifetime is managed by the file. Simply skip.
+                // (If you want to copy the QA subfolder too, handle it separately.)
+                continue;
+            }
+            else {
+                delete obj; // Safe for TTree, TNamed, etc.
+            }
         }
+
+        inFile->cd(fullFolderPath.c_str()); // Restore gDirectory to the input variation folder
+                                            // so Step 9's inDir->Get() calls associate objects
+                                            // with the input file, not the output file.
 
         // =========================================================================================
         // Step 9: Calculating significance plots for quick 1D QA
@@ -2023,6 +2025,12 @@ void signalExtractionRing(const std::string& inputFilePath, const std::string& o
         TGraphErrors* gSigIntegrated = makeSignificanceGraph(pIntegrated, "gRingSignificanceIntegrated");
         TGraphErrors* gSigLambdaPt   = makeSignificanceGraph(pLambdaPt,   "gRingSignificanceLambdaPt");
         TGraphErrors* gSigMass       = makeSignificanceGraph(pMass,       "gRingSignificanceMass");
+
+        gSigDeltaPhi->Write();
+        gSigDeltaTheta->Write();
+        gSigIntegrated->Write();
+        gSigLambdaPt->Write();
+        gSigMass->Write();
 
         // Draw and save canvases
         drawSigAndDashedLines(gSigDeltaPhi,   outDirSig, "cSigDeltaPhi_" + var);
