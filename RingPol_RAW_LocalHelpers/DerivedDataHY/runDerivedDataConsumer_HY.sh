@@ -34,8 +34,8 @@
 # ==============================================================================
 # TUNING KNOBS
 # ==============================================================================
-SHM_SIZE="32000000000"      # Shared memory: 32 GB (increased for 3D histograms)
-MEM_RATE_LIMIT="2000000000" # AOD memory rate limit: 2 GB/s
+SHM_SIZE="72000000000"      # Shared memory: 36 GB (increased for 3D histograms)
+MEM_RATE_LIMIT="4000000000" # AOD memory rate limit: 4 GB/s
 THREADS=32                  # Pipeline threads for the derived consumer task
 
 # ==============================================================================
@@ -172,6 +172,7 @@ o2-analysis-lf-lambdajetpolarizationionsderived \
     -b \
     --configuration "json://${JSON_CONSUMER_CONFIG}" \
     --pipeline "lambdajetpolarizationionsderived:${THREADS}" \
+    --readers 8 \
     --aod-file "@${DERIVED_LIST}" \
     --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
     --shm-segment-size "$SHM_SIZE" \
