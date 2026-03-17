@@ -67,7 +67,8 @@ DerivedDataHY/
 ├── download_files_without_timeout.sh      # Generic AliEN downloader (AO2D and AnalysisResults)
 ├── merge_analysis_results.sh              # hadd-merges AnalysisResults and cleans up temp folder
 ├── gen_input_paths.sh                     # Generates the O2 input file list (input_data_storage.txt)
-├── runDerivedDataConsumer_HY.sh           # Runs the O2 consumer task on the downloaded AODs
+├── runDerivedDataConsumer_HY.sh           # Runs the O2 consumer task on the downloaded AODs (batched)
+├── run_all_wagons.sh                      # Optional: runs the full analysis chain for all wagons
 └── convert_list_of_paths_XML_legacy.sh    # Legacy: extracts LFNs from MonALISA XML collections
 ```
 
@@ -119,6 +120,7 @@ the registry: one folder per dataset, one subfolder per wagon configuration.
 | [`merge_analysis_results.sh`](merge_analysis_results.sh) | 🔧 Called by orchestrator | Runs `hadd` on staged `AnalysisResults_*.root`; deletes temp folder |
 | [`gen_input_paths.sh`](gen_input_paths.sh) | 🔧 Called by orchestrator | Writes `input_data_storage.txt` with `file:` prefixed paths for O2 |
 | [`runDerivedDataConsumer_HY.sh`](runDerivedDataConsumer_HY.sh) | ✅ Yes | Runs the O2 consumer task; stages output into `results_consumer/` |
+| [`run_all_wagons.sh`](run_all_wagons.sh) | ✅ Optional | Runs consumer + ROOT macros for every wagon × config combination |
 | [`convert_list_of_paths_XML_legacy.sh`](convert_list_of_paths_XML_legacy.sh) | ⚙️ Legacy | Extracts LFNs from MonALISA XML files (old XML-based workflow) |
 
 ---
@@ -232,6 +234,22 @@ lands in:
 
 ---
 
+### Step 7 — (Optional) Run the full chain for all wagons at once
+
+If you want to process every registered wagon against every consumer config
+in a single unattended run:
+
+```bash
+./run_all_wagons.sh
+# or, with a non-default config directory:
+./run_all_wagons.sh /path/to/my_configs
+```
+
+See [Workflow B3](#b3--running-the-full-chain-unattended) and the
+[script reference](#run_all_wagonssh) for details.
+
+---
+
 ## 5. Workflow B — Appending or updating an existing analysis
 
 ### B1 — New train run on an already-known dataset
@@ -275,6 +293,35 @@ and `AnalysisResults_merged.root` are all regenerated from scratch to
 reflect the complete updated set.
 
 ---
+
+### B3 — Running the full chain unattended
+
+Once all wagons are downloaded and configs are in place, `run_all_wagons.sh`
+iterates over every registry entry and every config file automatically:
+
+```bash
+./run_all_wagons.sh
+```
+
+For each (wagon, config) pair it runs the consumer, then
+`extractDeltaErrors.cxx`, then `signalExtractionRing.cxx`. Failures are
+skipped without stopping the run and printed as a table at the end:
+
+```
+========================================================
+  FAILURES (2 total)
+
+  WAGON                                          CONFIG                                    FAILED STEP
+  ---------------------------------------------  ----------------------------------------  --------------------
+  LHC25ae_pass2_small/UsingTOF                  JustAntiLambda                            consumer
+  LHC25ae_pass2/ITSandTPC_min3ITS               BothHyperons_forceSign                    extractDeltaErrors
+========================================================
+```
+
+To use a non-default config directory:
+```bash
+./run_all_wagons.sh /home/users/cicerodm/RingPol/my_other_configs
+```
 
 ### B4 — Updating FRAMEWORK_DIR after a repo move
 
@@ -441,6 +488,37 @@ reported at the end; the merged file covers successful batches only.
 
 O2 scratch files are written to `temp_consumer_stage/` inside `WORK_DIR`
 and cleaned up automatically on exit.
+
+---
+
+### [`run_all_wagons.sh`](run_all_wagons.sh)
+
+```bash
+./run_all_wagons.sh [CONSUMER_CONFIGS_DIR]
+```
+
+Optional end-to-end wrapper. Reads `train_registry.conf` to enumerate all
+wagons, then for every `dpl-config-DerivedConsumer-*.json` found in
+`CONSUMER_CONFIGS_DIR` (default: `/home/users/cicerodm/RingPol/consumer_configs`)
+runs the following three steps:
+
+1. `runDerivedDataConsumer_HY.sh` — produces `ConsumerResults_<SUFFIX>.root`
+2. `extractDeltaErrors.cxx` (ROOT) — delta/error plots from the consumer output
+3. `signalExtractionRing.cxx` (ROOT) — signal extraction, output in `results_SigExtract/`
+
+Steps 2 and 3 are skipped if step 1 failed. All macro paths are derived from
+`REPO_DIR` at the top of the script — the only variable to update if the
+repository moves.
+
+The two ROOT macro paths it uses:
+
+| Variable | Default |
+|---|---|
+| `EXTRACT_DELTA_MACRO` | `$REPO_DIR/RingPol_RAW_LocalHelpers/extractDeltaErrors.cxx` |
+| `SIGNAL_EXTRACT_MACRO` | `$REPO_DIR/RingPol_RAW_LocalHelpers/signalExtractionRing.cxx` |
+
+All stdout from child processes is suppressed to keep the terminal readable.
+A failure summary table is printed at the end of the run.
 
 ---
 
