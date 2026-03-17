@@ -218,11 +218,15 @@ cp dpl-config-DerivedConsumer-JustLambda.json \
     ~/RingPol/LHC25ae_pass2/ITSandTPC_min3ITS/dpl-config-DerivedConsumer-JustLambda.json
 ```
 
-Output lands in:
+The script processes the AODs in batches of 50 files to avoid DPL
+scheduler stalls, then merges all batch outputs with `hadd`. Output
+lands in:
 ```
 ~/RingPol/LHC25ae_pass2/ITSandTPC_min3ITS/results_consumer/
-  ConsumerResults_JustLambda.root
-  logs/consumer_run_JustLambda.log
+  ConsumerResults_JustLambda.root          <- final merged file
+  logs/batch_00_JustLambda.log             <- one log per batch
+  logs/batch_01_JustLambda.log
+  ...
   used_configs/consumer-config_JustLambda.json
 ```
 
@@ -408,15 +412,31 @@ AliEN grid LFNs.
 ```
 
 Runs `o2-analysis-lf-lambdajetpolarizationionsderived` on all
-`AO2Ds/AO2D_*.root` files. The output filename is derived from the
-consumer config name by stripping the `dpl-config-DerivedConsumer-`
-prefix, so different configs produce distinct output files and never
-overwrite each other.
+`AO2Ds/AO2D_*.root` files in batches to avoid overwhelming the DPL
+shared-memory scheduler on large datasets (400+ files). The root cause
+of the scheduling stall (`Not enough resources to schedule computation`)
+is the reader flooding the pipeline faster than the consumer drains it;
+batching keeps the ring buffer manageable.
+
+Key tuning knobs at the top of the script:
+
+| Variable | Default | Description |
+|---|---|---|
+| `FILES_PER_BATCH` | 50 | AO2D files per batch; reduce if stalls persist |
+| `SHM_SIZE` | 128 GB | DPL shared memory segment |
+| `MEM_RATE_LIMIT` | 4 GB/s | AOD reader rate cap |
+| `THREADS` | 32 | Consumer pipeline threads |
+| `READERS` | 8 | Parallel AOD reader threads |
+
+Each batch produces a `ConsumerResults_<SUFFIX>_<BATCH_ID>.root` file.
+After all batches finish, `hadd` merges them into the final output and
+the intermediate files are deleted. Failed batches are skipped and
+reported at the end; the merged file covers successful batches only.
 
 | Path | Contents |
 |---|---|
-| `results_consumer/ConsumerResults_<SUFFIX>.root` | Analysis output |
-| `results_consumer/logs/consumer_run_<SUFFIX>.log` | Full O2 stdout/stderr |
+| `results_consumer/ConsumerResults_<SUFFIX>.root` | Final merged output |
+| `results_consumer/logs/batch_<ID>_<SUFFIX>.log` | Per-batch O2 stdout/stderr |
 | `results_consumer/used_configs/consumer-config_<SUFFIX>.json` | Config snapshot |
 
 O2 scratch files are written to `temp_consumer_stage/` inside `WORK_DIR`

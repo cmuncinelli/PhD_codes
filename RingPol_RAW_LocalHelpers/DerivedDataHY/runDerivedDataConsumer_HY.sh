@@ -6,13 +6,17 @@
 #
 # Purpose:
 #   Runs the ALICE O2 derived-data consumer task on AO2D files downloaded
-#   from Hyperloop. Unlike the raw-data workflow, there is no intermediate
-#   "derived AOD producer" step: the files in AO2Ds/ are already the derived
-#   input and are passed directly to the consumer task.
+#   from Hyperloop, processing them in batches to avoid overwhelming the DPL
+#   shared-memory scheduler on large datasets (400+ files).
+#
+#   For each batch the consumer produces a single AnalysisResults.root which
+#   is renamed to ConsumerResults_<SUFFIX>_<BATCH_ID>.root. After all batches
+#   finish, hadd merges the surviving results into a single final file and the
+#   intermediate per-batch files are deleted.
 #
 #   Input  : <WORK_DIR>/AO2Ds/AO2D_*.root
 #   Output : <WORK_DIR>/results_consumer/ConsumerResults_<CONS_SUFFIX>.root
-#   Log    : <WORK_DIR>/results_consumer/logs/consumer_run_<CONS_SUFFIX>.log
+#   Logs   : <WORK_DIR>/results_consumer/logs/batch_<BATCH_ID>_<CONS_SUFFIX>.log
 #   Config : <WORK_DIR>/results_consumer/used_configs/consumer-config_<CONS_SUFFIX>.json
 #
 # Usage:
@@ -34,9 +38,12 @@
 # ==============================================================================
 # TUNING KNOBS
 # ==============================================================================
-SHM_SIZE="72000000000"      # Shared memory: 36 GB (increased for 3D histograms)
+FILES_PER_BATCH=50          # Number of AO2D files per batch. Reduce if DPL
+                            # still reports scheduling stalls on this machine.
+SHM_SIZE="128000000000"     # Shared memory: 128 GB
 MEM_RATE_LIMIT="4000000000" # AOD memory rate limit: 4 GB/s
-THREADS=32                  # Pipeline threads for the derived consumer task
+THREADS=32                  # Pipeline threads for the consumer task
+READERS=4                   # Parallel AOD reader threads
 
 # ==============================================================================
 # 1. ARGUMENT PARSING AND VALIDATION
@@ -47,12 +54,11 @@ JSON_CONSUMER_CONFIG="$2"
 if [ -z "$WORK_DIR" ] || [ -z "$JSON_CONSUMER_CONFIG" ]; then
   echo "Usage: $0 <WORK_DIR> <consumer_config.json>"
   echo ""
-  echo "  WORK_DIR          : per-wagon working directory containing AO2Ds/"
-  echo "  consumer_config   : dpl-config JSON for the consumer task"
+  echo "  WORK_DIR        : per-wagon working directory containing AO2Ds/"
+  echo "  consumer_config : dpl-config JSON for the consumer task"
   exit 1
 fi
 
-# Resolve to absolute paths so cd later does not break them
 WORK_DIR="$(realpath "$WORK_DIR")"
 JSON_CONSUMER_CONFIG="$(realpath "$JSON_CONSUMER_CONFIG")"
 
@@ -77,13 +83,11 @@ fi
 # ==============================================================================
 # 2. DYNAMIC NAMING
 #
-# The output file and log are named after the consumer config suffix only.
-# For HY-derived data there is no data-producer suffix (unlike the raw
-# workflow where a second JSON tracked the aod-writer configuration).
+# Output files are named after the consumer config suffix only.
 #
 # Example:
 #   dpl-config-DerivedConsumer-JustLambda.json  ->  CONS_SUFFIX = JustLambda
-#   Output: ConsumerResults_JustLambda.root
+#   Final output: ConsumerResults_JustLambda.root
 # ==============================================================================
 CONS_BASENAME=$(basename "$JSON_CONSUMER_CONFIG" .json)
 CONS_SUFFIX="${CONS_BASENAME#dpl-config-DerivedConsumer-}"
@@ -100,17 +104,9 @@ mkdir -p "$CONSUMER_RESULTS"
 mkdir -p "$CONSUMER_LOGS"
 mkdir -p "$CONSUMER_CONFIGS"
 
-# Remove any leftover staging directory from a previous run
+# Remove any leftover staging area from a previous run
 rm -rf "$CONSUMER_TEMP"
 mkdir -p "$CONSUMER_TEMP"
-
-echo "========================================================"
-echo "  HY Derived Data Consumer"
-echo "  WORK_DIR         : ${WORK_DIR}"
-echo "  Consumer suffix  : ${CONS_SUFFIX}"
-echo "  Input            : ${AOD_DIR}/AO2D_*.root"
-echo "  Output           : ${CONSUMER_RESULTS}/ConsumerResults_${CONS_SUFFIX}.root"
-echo "========================================================"
 
 # ==============================================================================
 # 4. SIGNAL HANDLING
@@ -134,77 +130,166 @@ trap cleanup EXIT
 trap handle_interrupt INT TERM
 
 # ==============================================================================
-# 5. BUILD INPUT FILE LIST
+# 5. BUILD FULL SORTED FILE LIST AND SPLIT INTO BATCHES
 #
-# Finds all AO2D_*.root files in AO2Ds/, sorts them numerically by index,
-# and prepends "file:" so O2 treats them as local filesystem paths.
+# Files are sorted by numeric index (AO2D_1.root, AO2D_2.root, ...) using
+# version sort, then split into fixed-size chunks written to the staging area.
 # ==============================================================================
-DERIVED_LIST="${CONSUMER_TEMP}/derived_inputs.txt"
+FULL_LIST="${CONSUMER_TEMP}/all_inputs.txt"
 
 find "$AOD_DIR" -maxdepth 1 -name "AO2D_*.root" \
   | sort -t_ -k2 -V \
-  | awk '{print "file:"$0}' \
-  > "$DERIVED_LIST"
+  > "$FULL_LIST"
 
-TOTAL_FILES=$(wc -l < "$DERIVED_LIST")
+TOTAL_FILES=$(wc -l < "$FULL_LIST")
 
 if [ "$TOTAL_FILES" -eq 0 ]; then
   echo "Error: No AO2D_*.root files found in: ${AOD_DIR}"
   exit 1
 fi
 
-echo "  Found ${TOTAL_FILES} input files. Processing all at once."
-echo "--------------------------------------------------------"
+# Split into batch files: batch_00, batch_01, ...
+# Each batch file contains at most FILES_PER_BATCH paths (no "file:" prefix
+# yet; that is added per-batch when building the O2 input list below).
+split -d -l "$FILES_PER_BATCH" "$FULL_LIST" "${CONSUMER_TEMP}/batch_"
+
+NUM_BATCHES=$(find "$CONSUMER_TEMP" -maxdepth 1 -name "batch_*" | wc -l)
+
+echo "========================================================"
+echo "  HY Derived Data Consumer (batched)"
+echo "  WORK_DIR         : ${WORK_DIR}"
+echo "  Consumer suffix  : ${CONS_SUFFIX}"
+echo "  Total AOD files  : ${TOTAL_FILES}"
+echo "  Files per batch  : ${FILES_PER_BATCH}"
+echo "  Number of batches: ${NUM_BATCHES}"
+echo "  Final output     : ${CONSUMER_RESULTS}/ConsumerResults_${CONS_SUFFIX}.root"
+echo "========================================================"
 
 # ==============================================================================
-# 6. RUN THE CONSUMER PIPELINE
+# 6. BATCH LOOP
 # ==============================================================================
-MAIN_LOG="${CONSUMER_LOGS}/consumer_run_${CONS_SUFFIX}.log"
-FINAL_OUTPUT="${CONSUMER_RESULTS}/ConsumerResults_${CONS_SUFFIX}.root"
+MERGE_LIST="${CONSUMER_TEMP}/merge_list.txt"
+> "$MERGE_LIST"
 
-# Run inside the staging directory so O2 scratch files stay contained
-cd "$CONSUMER_TEMP" || exit 1
+FAILED_BATCHES=()
 
-echo "  [O2] Launching consumer pipeline..."
+for BATCH_FILE in $(find "$CONSUMER_TEMP" -maxdepth 1 -name "batch_*" | sort); do
 
-time \
-o2-analysis-lf-lambdajetpolarizationionsderived \
-    -b \
-    --configuration "json://${JSON_CONSUMER_CONFIG}" \
-    --pipeline "lambdajetpolarizationionsderived:${THREADS}" \
-    --readers 8 \
-    --aod-file "@${DERIVED_LIST}" \
-    --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
-    --shm-segment-size "$SHM_SIZE" \
-    > "$MAIN_LOG" 2>&1
+  BATCH_ID="${BATCH_FILE##*batch_}"
+  BATCH_SIZE=$(wc -l < "$BATCH_FILE")
 
-EXIT_CODE=$?
+  echo "--------------------------------------------------------"
+  echo "  Batch ${BATCH_ID} / $(( NUM_BATCHES - 1 ))  (${BATCH_SIZE} files)"
+  echo "--------------------------------------------------------"
 
-# ==============================================================================
-# 7. STAGE-OUT
-# ==============================================================================
-cd "$WORK_DIR" || exit 1
+  # Per-batch working directory: O2 scratch files stay contained here
+  BATCH_WORK_DIR="${CONSUMER_TEMP}/work_${BATCH_ID}"
+  mkdir -p "$BATCH_WORK_DIR"
 
-if [ $EXIT_CODE -eq 0 ]; then
-  echo "  [OK] Consumer finished successfully."
+  # Build the O2 input list for this batch (prepend "file:" prefix)
+  BATCH_INPUT_LIST="${BATCH_WORK_DIR}/inputs.txt"
+  awk '{print "file:"$0}' "$BATCH_FILE" > "$BATCH_INPUT_LIST"
 
-  if [ -f "${CONSUMER_TEMP}/AnalysisResults.root" ]; then
-    mv "${CONSUMER_TEMP}/AnalysisResults.root" "$FINAL_OUTPUT"
-    # Save a copy of the config used, for reproducibility
-    cp "$JSON_CONSUMER_CONFIG" "${CONSUMER_CONFIGS}/consumer-config_${CONS_SUFFIX}.json"
-    echo ""
-    echo "SUCCESS."
-    echo "  Output : ${FINAL_OUTPUT}"
-    echo "  Log    : ${MAIN_LOG}"
-    echo "  Config : ${CONSUMER_CONFIGS}/consumer-config_${CONS_SUFFIX}.json"
+  BATCH_LOG="${CONSUMER_LOGS}/batch_${BATCH_ID}_${CONS_SUFFIX}.log"
+  BATCH_OUTPUT="${CONSUMER_RESULTS}/ConsumerResults_${CONS_SUFFIX}_${BATCH_ID}.root"
+
+  # Run the consumer from inside the batch work directory
+  cd "$BATCH_WORK_DIR" || exit 1
+
+  echo "  [O2] Launching consumer for batch ${BATCH_ID}..."
+
+  time \
+  o2-analysis-lf-lambdajetpolarizationionsderived \
+      -b \
+      --configuration "json://${JSON_CONSUMER_CONFIG}" \
+      --pipeline "lambdajetpolarizationionsderived:${THREADS}" \
+      --readers "$READERS" \
+      --aod-file "@${BATCH_INPUT_LIST}" \
+      --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
+      --shm-segment-size "$SHM_SIZE" \
+      > "$BATCH_LOG" 2>&1
+
+  EXIT_CODE=$?
+
+  cd "$WORK_DIR" || exit 1
+
+  if [ $EXIT_CODE -eq 0 ]; then
+    if [ -f "${BATCH_WORK_DIR}/AnalysisResults.root" ]; then
+      mv "${BATCH_WORK_DIR}/AnalysisResults.root" "$BATCH_OUTPUT"
+      echo "$BATCH_OUTPUT" >> "$MERGE_LIST"
+      echo "  [OK] Batch ${BATCH_ID} done -> $(basename "$BATCH_OUTPUT")"
+    else
+      echo "  [WARN] Batch ${BATCH_ID}: O2 exited 0 but AnalysisResults.root not found."
+      echo "         Check log: ${BATCH_LOG}"
+      FAILED_BATCHES+=("$BATCH_ID")
+    fi
   else
-    echo "  Error: AnalysisResults.root not found in staging area."
-    echo "  Check log: ${MAIN_LOG}"
-    exit 1
+    echo "  [FAIL] Batch ${BATCH_ID} exited with code ${EXIT_CODE}. Skipping."
+    echo "         Check log: ${BATCH_LOG}"
+    FAILED_BATCHES+=("$BATCH_ID")
   fi
 
+  # Remove the per-batch work directory regardless of outcome; logs are safe
+  # in CONSUMER_LOGS and results (if any) are in CONSUMER_RESULTS.
+  rm -rf "$BATCH_WORK_DIR"
+
+done
+
+# ==============================================================================
+# 7. REPORT FAILED BATCHES
+# ==============================================================================
+if [ ${#FAILED_BATCHES[@]} -gt 0 ]; then
+  echo ""
+  echo "========================================================"
+  echo "  WARNING: The following batches failed or produced no output:"
+  for B in "${FAILED_BATCHES[@]}"; do
+    echo "    batch_${B}  ->  log: ${CONSUMER_LOGS}/batch_${B}_${CONS_SUFFIX}.log"
+  done
+  echo "  The final merged file will be based on the successful batches only."
+  echo "========================================================"
+fi
+
+# ==============================================================================
+# 8. MERGE BATCH RESULTS
+# ==============================================================================
+SUCCESSFUL=$(wc -l < "$MERGE_LIST")
+FINAL_OUTPUT="${CONSUMER_RESULTS}/ConsumerResults_${CONS_SUFFIX}.root"
+
+echo ""
+echo "========================================================"
+echo "  Merging ${SUCCESSFUL} / ${NUM_BATCHES} batch result(s)..."
+echo "========================================================"
+
+if [ "$SUCCESSFUL" -eq 0 ]; then
+  echo "Error: No batches produced output. Nothing to merge."
+  exit 1
+fi
+
+if [ "$SUCCESSFUL" -eq 1 ]; then
+  # Only one batch succeeded: rename instead of running hadd on a single file
+  mv "$(cat "$MERGE_LIST")" "$FINAL_OUTPUT"
 else
-  echo "  [FAIL] Consumer exited with code ${EXIT_CODE}."
-  echo "  Check log: ${MAIN_LOG}"
-  exit $EXIT_CODE
+  hadd -f "$FINAL_OUTPUT" $(cat "$MERGE_LIST")
+
+  if [ $? -ne 0 ]; then
+    echo "Error: hadd failed. Intermediate batch files NOT deleted."
+    exit 1
+  fi
+fi
+
+# Delete intermediate per-batch result files (keep only the merged output)
+while IFS= read -r BATCH_RESULT || [ -n "$BATCH_RESULT" ]; do
+  [ -f "$BATCH_RESULT" ] && rm -f "$BATCH_RESULT"
+done < "$MERGE_LIST"
+
+# Save a copy of the config used for this run
+cp "$JSON_CONSUMER_CONFIG" "${CONSUMER_CONFIGS}/consumer-config_${CONS_SUFFIX}.json"
+
+echo ""
+echo "SUCCESS."
+echo "  Output  : ${FINAL_OUTPUT}"
+echo "  Logs    : ${CONSUMER_LOGS}/"
+echo "  Config  : ${CONSUMER_CONFIGS}/consumer-config_${CONS_SUFFIX}.json"
+if [ ${#FAILED_BATCHES[@]} -gt 0 ]; then
+  echo "  NOTE    : ${#FAILED_BATCHES[@]} batch(es) failed -- results are partial."
 fi
