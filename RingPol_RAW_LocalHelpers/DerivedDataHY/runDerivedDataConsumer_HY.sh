@@ -10,9 +10,10 @@
 #   shared-memory scheduler on large datasets (400+ files).
 #
 #   For each batch the consumer produces a single AnalysisResults.root which
-#   is renamed to ConsumerResults_<SUFFIX>_<BATCH_ID>.root. After all batches
-#   finish, hadd merges the surviving results into a single final file and the
-#   intermediate per-batch files are deleted.
+#   is renamed to ConsumerResults_<SUFFIX>_<BATCH_ID>.root and kept in the
+#   temporary staging area. After all batches finish, hadd merges the
+#   surviving results into a single final file and the staging area
+#   (including all intermediate per-batch files) is deleted on exit.
 #
 #   Input  : <WORK_DIR>/AO2Ds/AO2D_*.root
 #   Output : <WORK_DIR>/results_consumer/ConsumerResults_<CONS_SUFFIX>.root
@@ -38,12 +39,12 @@
 # ==============================================================================
 # TUNING KNOBS
 # ==============================================================================
-FILES_PER_BATCH=50          # Number of AO2D files per batch. Reduce if DPL
+FILES_PER_BATCH=80          # Number of AO2D files per batch. Reduce if DPL
                             # still reports scheduling stalls on this machine.
-SHM_SIZE="128000000000"     # Shared memory: 128 GB
+SHM_SIZE="64000000000"      # Shared memory: 64 GB
 MEM_RATE_LIMIT="4000000000" # AOD memory rate limit: 4 GB/s
 THREADS=32                  # Pipeline threads for the consumer task
-READERS=4                   # Parallel AOD reader threads
+READERS=5                   # Parallel AOD reader threads
 
 # ==============================================================================
 # 1. ARGUMENT PARSING AND VALIDATION
@@ -191,7 +192,10 @@ for BATCH_FILE in $(find "$CONSUMER_TEMP" -maxdepth 1 -name "batch_*" | sort); d
   awk '{print "file:"$0}' "$BATCH_FILE" > "$BATCH_INPUT_LIST"
 
   BATCH_LOG="${CONSUMER_LOGS}/batch_${BATCH_ID}_${CONS_SUFFIX}.log"
-  BATCH_OUTPUT="${CONSUMER_RESULTS}/ConsumerResults_${CONS_SUFFIX}_${BATCH_ID}.root"
+  # Per-batch result files live in the temp staging area alongside the batch
+  # split files. They are deleted after hadd; only the merged final output
+  # lands in results_consumer/.
+  BATCH_OUTPUT="${CONSUMER_TEMP}/ConsumerResults_${CONS_SUFFIX}_${BATCH_ID}.root"
 
   # Run the consumer from inside the batch work directory
   cd "$BATCH_WORK_DIR" || exit 1
@@ -230,7 +234,7 @@ for BATCH_FILE in $(find "$CONSUMER_TEMP" -maxdepth 1 -name "batch_*" | sort); d
   fi
 
   # Remove the per-batch work directory regardless of outcome; logs are safe
-  # in CONSUMER_LOGS and results (if any) are in CONSUMER_RESULTS.
+  # in CONSUMER_LOGS and batch results (if any) are in CONSUMER_TEMP.
   rm -rf "$BATCH_WORK_DIR"
 
 done
