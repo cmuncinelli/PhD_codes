@@ -16,6 +16,7 @@
 #     5. Generates the O2 input file list (input_data_storage.txt).
 #     6. Merges the AnalysisResults files into a single
 #        AnalysisResults_merged.root and removes the staging folder.
+#     7. Writes a human-readable download summary log to <WORK_DIR>.
 #
 # Usage:
 #   ./download_hyperloop.sh <TRAIN_RUN_ID>
@@ -113,6 +114,12 @@ if ! grep -qE '[^[:space:]]' "${WORK_DIR}/alien_paths.txt"; then
 fi
 
 ###############################################################################
+# Temp files for per-type download stats (consumed at the end for the log)
+###############################################################################
+STATS_AOD="${WORK_DIR}/.stats_aod.tmp"
+STATS_AR="${WORK_DIR}/.stats_ar.tmp"
+
+###############################################################################
 # Step 1: Discover LFNs via alien_ls
 ###############################################################################
 echo ""
@@ -127,7 +134,8 @@ echo "[Step 2] Downloading AO2D files..."
 "$DOWNLOAD_SCRIPT" \
   "${WORK_DIR}/DownloadListFromAlien.txt" \
   "${WORK_DIR}/AO2Ds" \
-  "AO2D"
+  "AO2D" \
+  "$STATS_AOD"
 
 ###############################################################################
 # Step 3: Download AnalysisResults files into temp_analysis_results/
@@ -137,7 +145,8 @@ echo "[Step 3] Downloading AnalysisResults files..."
 "$DOWNLOAD_SCRIPT" \
   "${WORK_DIR}/DownloadListAnalysisResults.txt" \
   "${WORK_DIR}/temp_analysis_results" \
-  "AnalysisResults"
+  "AnalysisResults" \
+  "$STATS_AR"
 
 ###############################################################################
 # Step 4: Generate O2 input file list
@@ -154,6 +163,117 @@ echo ""
 echo "[Step 5] Merging AnalysisResults files..."
 "$MERGE_SCRIPT" "${WORK_DIR}"
 
+###############################################################################
+# Step 6: Write download summary log
+#
+# Reads the KEY=VALUE stats files produced by the two download calls and
+# writes a human-readable report to a timestamped log file in WORK_DIR.
+#
+# Metrics reported per file type:
+#   Total listed  : all LFNs found by alien_ls
+#   Already had   : files skipped because they existed on disk
+#   Newly fetched : files successfully downloaded in this run
+#   Failed        : files whose alien_cp exited non-zero (deleted, retriable)
+#   Remaining     : = Failed (files that still need to be downloaded)
+#   Complete      : Already had + Newly fetched
+###############################################################################
+echo ""
+echo "[Step 6] Writing download summary log..."
+
+# Helper: read a KEY=VALUE stats file into named variables with a prefix
+#   read_stats <file> <prefix>   ->  sets <PREFIX>_TOTAL, _SKIPPED, etc.
+read_stats() {
+  local FILE="$1"
+  local PFX="$2"
+  local TOTAL=0 SKIPPED=0 DOWNLOADED=0 FAILED=0
+  if [ -f "$FILE" ]; then
+    while IFS='=' read -r KEY VAL || [ -n "$KEY" ]; do
+      case "$KEY" in
+        TOTAL)      TOTAL="$VAL"      ;;
+        SKIPPED)    SKIPPED="$VAL"    ;;
+        DOWNLOADED) DOWNLOADED="$VAL" ;;
+        FAILED)     FAILED="$VAL"     ;;
+      esac
+    done < "$FILE"
+  fi
+  eval "${PFX}_TOTAL=${TOTAL}"
+  eval "${PFX}_SKIPPED=${SKIPPED}"
+  eval "${PFX}_DOWNLOADED=${DOWNLOADED}"
+  eval "${PFX}_FAILED=${FAILED}"
+}
+
+read_stats "$STATS_AOD" "AOD"
+read_stats "$STATS_AR"  "AR"
+
+# Helper: format a count and its percentage of total as "NNN (PP.PP%)"
+pct() {
+  local COUNT="$1"
+  local TOTAL="$2"
+  if [ "$TOTAL" -eq 0 ]; then
+    echo "${COUNT} (N/A)"
+  else
+    printf "%d (%.2f%%)" "$COUNT" "$(echo "scale=4; $COUNT * 100 / $TOTAL" | bc)"
+  fi
+}
+
+TIMESTAMP="$(date '+%Y-%m-%d %H:%M:%S')"
+TIMESTAMP_FILE="$(date '+%Y%m%d_%H%M%S')"
+LOG_FILE="${WORK_DIR}/download_summary_${TIMESTAMP_FILE}.log"
+
+{
+  echo "============================================================"
+  echo "  Download Summary"
+  echo "  Train run ID : ${TRAIN_RUN_ID}"
+  echo "  Dataset      : ${DATASET_NAME}"
+  echo "  Wagon        : ${WAGON_SHORTNAME}"
+  echo "  Timestamp    : ${TIMESTAMP}"
+  echo "============================================================"
+  echo ""
+
+  # ---- AO2D section -------------------------------------------------------
+  AOD_COMPLETE=$(( AOD_SKIPPED + AOD_DOWNLOADED ))
+  AOD_REMAINING=$AOD_FAILED
+
+  echo "  AO2D files"
+  echo "  ----------"
+  printf "  %-20s : %s\n" "Total listed"   "$(pct "$AOD_TOTAL"      "$AOD_TOTAL")"
+  printf "  %-20s : %s\n" "Already had"    "$(pct "$AOD_SKIPPED"    "$AOD_TOTAL")"
+  printf "  %-20s : %s\n" "Newly fetched"  "$(pct "$AOD_DOWNLOADED" "$AOD_TOTAL")"
+  printf "  %-20s : %s\n" "Failed"         "$(pct "$AOD_FAILED"     "$AOD_TOTAL")"
+  printf "  %-20s : %s\n" "Remaining"      "$(pct "$AOD_REMAINING"  "$AOD_TOTAL")"
+  printf "  %-20s : %s\n" "Complete"       "$(pct "$AOD_COMPLETE"   "$AOD_TOTAL")"
+  echo ""
+
+  # ---- AnalysisResults section --------------------------------------------
+  AR_COMPLETE=$(( AR_SKIPPED + AR_DOWNLOADED ))
+  AR_REMAINING=$AR_FAILED
+
+  echo "  AnalysisResults files"
+  echo "  ---------------------"
+  printf "  %-20s : %s\n" "Total listed"   "$(pct "$AR_TOTAL"      "$AR_TOTAL")"
+  printf "  %-20s : %s\n" "Already had"    "$(pct "$AR_SKIPPED"    "$AR_TOTAL")"
+  printf "  %-20s : %s\n" "Newly fetched"  "$(pct "$AR_DOWNLOADED" "$AR_TOTAL")"
+  printf "  %-20s : %s\n" "Failed"         "$(pct "$AR_FAILED"     "$AR_TOTAL")"
+  printf "  %-20s : %s\n" "Remaining"      "$(pct "$AR_REMAINING"  "$AR_TOTAL")"
+  printf "  %-20s : %s\n" "Complete"       "$(pct "$AR_COMPLETE"   "$AR_TOTAL")"
+  echo ""
+
+  # ---- Overall status line ------------------------------------------------
+  TOTAL_REMAINING=$(( AOD_REMAINING + AR_REMAINING ))
+  if [ "$TOTAL_REMAINING" -eq 0 ]; then
+    echo "  Status : ALL FILES COMPLETE -- no further runs needed."
+  else
+    echo "  Status : ${TOTAL_REMAINING} file(s) still pending. Re-run download_hyperloop.sh."
+  fi
+  echo "============================================================"
+
+} | tee "$LOG_FILE"
+
+# Clean up temp stats files
+rm -f "$STATS_AOD" "$STATS_AR"
+
+echo ""
+echo "  Log written to: ${LOG_FILE}"
 echo ""
 echo "============================================================"
 echo "  Done."

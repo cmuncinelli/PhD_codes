@@ -163,55 +163,50 @@ for LINE in "${WAGON_LINES[@]}"; do
     WRAPPER_LOG="${WORK_DIR}/results_consumer/logs/wrapper_${CONS_SUFFIX}.log"
     mkdir -p "${WORK_DIR}/results_consumer/logs"
 
-    echo "  Part [1/3], run consumers   : ${CONS_SUFFIX}"
-
     # ------------------------------------------------------------------
     # Step 1: run consumer
     # ------------------------------------------------------------------
+    echo -n "  [1/3] consumer        : ${CONS_SUFFIX}"
     # Consumer output goes to a per-config log file so failures are inspectable.
     "$CONSUMER_SCRIPT" "$WORK_DIR" "$CONFIG_FILE" > "$WRAPPER_LOG" 2>&1
     CONSUMER_EXIT=$?
 
     if [ $CONSUMER_EXIT -ne 0 ] || [ ! -f "$CONSUMER_RESULT" ]; then
-      echo "        -> FAILED  (log: ${WRAPPER_LOG})"
+      echo "  -> FAILED  (log: ${WRAPPER_LOG})"
       FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | consumer")
       continue
     fi
-
-    echo "        -> OK"
-
+    echo "  -> OK"
     # ------------------------------------------------------------------
     # Step 2: extractDeltaErrors
     # ------------------------------------------------------------------
-    echo "  Part [2/3], running DeltaErr estimators   : ${CONS_SUFFIX}"
-
+    echo -n "  [2/3] extractDeltaErr : ${CONS_SUFFIX}"
     root -l -b -q \
       "${EXTRACT_DELTA_MACRO}(\"${CONSUMER_RESULT}\")" \
       > /dev/null 2>&1
     DELTA_EXIT=$?
 
     if [ $DELTA_EXIT -ne 0 ]; then
-      echo "        -> FAILED"
+      echo "  -> FAILED"
       FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | extractDeltaErrors")
     else
-      echo "        -> OK"
+      echo "  -> OK"
     fi
 
     # ------------------------------------------------------------------
     # Step 3: signalExtractionRing
     # ------------------------------------------------------------------
-    echo "  Part [3/3], running SigExtract : ${CONS_SUFFIX}"
-
+    echo -n "  [3/3] sigExtract      : ${CONS_SUFFIX}"
     root -l -b -q \
       "${SIGNAL_EXTRACT_MACRO}(\"${CONSUMER_RESULT}\", \"${SIGNAL_EXTRACT_DIR}/\")" \
       > /dev/null 2>&1
     SIG_EXIT=$?
 
     if [ $SIG_EXIT -ne 0 ]; then
-      echo "        -> FAILED"
+      echo "  -> FAILED"
       FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | signalExtractionRing")
     else
-      echo "        -> OK"
+      echo "  -> OK"
     fi
 
     echo ""

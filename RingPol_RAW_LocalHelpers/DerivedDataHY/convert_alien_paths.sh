@@ -135,9 +135,17 @@ while IFS= read -r ALIEN_DIR || [ -n "$ALIEN_DIR" ]; do
 
     [ -z "$SUBDIR" ] && continue
 
+    # alien_ls sometimes returns non-directory entries such as
+    # "aod_collection.xml". Skip anything that is not a pure numeric
+    # subdirectory name (with or without a trailing slash).
+    CLEAN="${SUBDIR%/}"
+    if ! [[ "$CLEAN" =~ ^[0-9]+$ ]]; then
+      continue
+    fi
+
     # alien_ls may return entries with a trailing slash (e.g. "001/").
     # Strip it so the concatenated path does not contain a double slash.
-    SUBDIR="${SUBDIR%/}"
+    SUBDIR="${CLEAN}"
 
     echo "${ALIEN_DIR}/${SUBDIR}/AO2D.root"            >> "$AOD_LIST"
     echo "${ALIEN_DIR}/${SUBDIR}/AnalysisResults.root" >> "$AR_LIST"
