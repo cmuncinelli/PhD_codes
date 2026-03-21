@@ -40,6 +40,14 @@ are not included here.
 
 ---
 
+## Notes on Paths and Environment
+
+Some scripts contain hardcoded paths such as `/home/cicero/` or references
+to cluster nodes (e.g. `jarvis*`). These reflect the original computing
+environment at Unicamp and should be adapted to your local setup.
+
+---
+
 ## Acknowledgments
 
 This work is supported by the Fundação de Amparo à Pesquisa do Estado de São Paulo (FAPESP).
