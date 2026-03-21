@@ -4,7 +4,7 @@
 > This repository is an active, evolving research codebase spanning the full duration of a PhD (2025--2030).
 > Although every effort is made to keep the code correct and well-documented, some parts may be
 > unfinished, outdated, or in the process of being reworked. Earlier versions of some codes have been
-> deliberately preserved for bookkeeping purposes — they may contain naive approaches or undeveloped
+> deliberately preserved for bookkeeping purposes -- they may contain naive approaches or undeveloped
 > ideas that could still prove useful later. No guarantee of correctness (or more precisely, of *completeness*) is implied
 > for any file in this repository.
 
@@ -16,8 +16,7 @@ This repository collects most of the analysis and simulation codes developed dur
 [IFGW -- Instituto de Física Gleb Wataghin](https://portal.ifi.unicamp.br/), Universidade Estadual
 de Campinas (Unicamp), within the ALICE collaboration at CERN.
 
-The central physics goal is to **search for local Λ (and Λ̄) polarization induced by jets** -- and
-possibly by the vorticity ring structures that may form around them -- **in heavy-ion and hadronic
+The central physics goal is to **search for local Λ (and anti-Λ) polarization induced by jets** -- in a search for Hydro-predicted vorticity ring structures that may form around them -- **in heavy-ion and hadronic
 collisions** (Pb--Pb, O--O, and pp). PYTHIA and PYTHIA Angantyr Monte Carlo simulations, which
 contain no polarization signal by construction, serve as essential cross-checks. Some codes in this
 repository are more general-purpose and may not be directly tied to this specific analysis.
