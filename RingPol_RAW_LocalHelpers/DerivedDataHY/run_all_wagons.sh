@@ -6,24 +6,36 @@
 #
 # Purpose:
 #   Optional end-to-end wrapper that runs the full analysis chain for every
-#   wagon registered in train_registry.conf, against every consumer config
-#   found in CONSUMER_CONFIGS_DIR. For each (wagon, config) pair it:
+#   wagon registered in a train registry file, against every consumer config
+#   found in a given directory.
 #
-#     1. Runs runDerivedDataConsumer_HY.sh   -> ConsumerResults_<SUFFIX>.root
-#     2. Runs extractDeltaErrors.cxx (ROOT)  -> delta/error plots
-#     3. Runs signalExtractionRing.cxx (ROOT)-> results_SigExtract/
+#   For each (wagon, config) pair it will:
 #
-#   Steps 2 and 3 are skipped for a given pair if step 1 failed.
+#     1. Run runDerivedDataConsumer_HY.sh   -> ConsumerResults_<SUFFIX>.root
+#     2. Run extractDeltaErrors.cxx (ROOT)  -> delta/error plots
+#     3. Run signalExtractionRing.cxx (ROOT)-> results_SigExtract/
+#
+#   Steps 2 and 3 are skipped for a given pair if step 1 fails.
 #   All failures are collected and printed as a summary table at the end.
 #
 # Usage:
-#   ./run_all_wagons.sh [CONSUMER_CONFIGS_DIR]
+#   ./run_all_wagons.sh [REGISTRY] [CONSUMER_CONFIGS_DIR]
 #
-#   CONSUMER_CONFIGS_DIR is optional. If omitted, the default below is used.
+# Arguments:
+#   REGISTRY (optional):
+#     Path to a train_registry.conf file.
+#     Defaults to:
+#       ${FRAMEWORK_DIR}/train_registry.conf
 #
-# Example:
+#   CONSUMER_CONFIGS_DIR (optional):
+#     Directory containing dpl-config-DerivedConsumer-*.json files.
+#     Defaults to:
+#       /home/users/cicerodm/RingPol/consumer_configs
+#
+# Examples:
 #   ./run_all_wagons.sh
-#   ./run_all_wagons.sh /home/users/cicerodm/RingPol/my_other_configs
+#   ./run_all_wagons.sh /path/to/my_registry.conf
+#   ./run_all_wagons.sh /path/to/my_registry.conf /path/to/my_configs
 #
 ###############################################################################
 
@@ -41,12 +53,17 @@ SIGNAL_EXTRACT_MACRO="${REPO_DIR}/RingPol_RAW_LocalHelpers/signalExtractionRing.
 # Absolute path to the consumer launcher script.
 FRAMEWORK_DIR="${REPO_DIR}/RingPol_RAW_LocalHelpers/DerivedDataHY"
 CONSUMER_SCRIPT="${FRAMEWORK_DIR}/runDerivedDataConsumer_HY.sh"
-REGISTRY="${FRAMEWORK_DIR}/train_registry.conf"
+DEFAULT_REGISTRY="${FRAMEWORK_DIR}/train_registry.conf"
+
+# Use the first argument if provided, otherwise fall back to the legacy default
+# (this is meant essentially to be able to choose a .conf file for the locally
+#  produced derived data instead of the HY produced datasets)
+REGISTRY="${1:-$DEFAULT_REGISTRY}"
 
 # Directory containing dpl-config-DerivedConsumer-*.json files.
-# Can be overridden by passing a path as $1.
+# Can be overridden by passing a path as $2.
 DEFAULT_CONFIGS_DIR="/home/users/cicerodm/RingPol/consumer_configs"
-CONSUMER_CONFIGS_DIR="${1:-$DEFAULT_CONFIGS_DIR}"
+CONSUMER_CONFIGS_DIR="${2:-$DEFAULT_CONFIGS_DIR}"
 
 # ==============================================================================
 # SIGNAL HANDLING

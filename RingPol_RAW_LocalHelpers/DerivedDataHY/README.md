@@ -237,13 +237,36 @@ lands in:
 ### Step 7 — (Optional) Run the full chain for all wagons at once
 
 If you want to process every registered wagon against every consumer config
-in a single unattended run:
+in a single unattended run, use:
 
 ```bash
-./run_all_wagons.sh
-# or, with a non-default config directory:
-./run_all_wagons.sh /path/to/my_configs
+./run_all_wagons.sh [REGISTRY] [CONSUMER_CONFIGS_DIR]
 ```
+- REGISTRY (optional): Path to a train_registry.conf file. If omitted, the default registry inside the framework is used.
+- CONSUMER_CONFIGS_DIR (optional): Directory containing dpl-config-DerivedConsumer-*.json files.
+If omitted, the default configs directory is used.
+
+**Examples**
+```
+# Use all defaults
+./run_all_wagons.sh
+
+# Use a custom registry
+./run_all_wagons.sh /path/to/my_registry.conf
+
+# Use custom registry and configs directory
+./run_all_wagons.sh /path/to/my_registry.conf /path/to/my_configs
+```
+
+This script will:
+
+- Run the derived data consumer for each (wagon, config) pair
+- Run `extractDeltaErrors.cxx` (ROOT)
+- Run `signalExtractionRing.cxx` (ROOT)
+
+Steps 2 and 3 are skipped automatically if step 1 fails for a given pair.
+
+A summary table of all failures is printed at the end.
 
 See [Workflow B3](#b3--running-the-full-chain-unattended) and the
 [script reference](#run_all_wagonssh) for details.
