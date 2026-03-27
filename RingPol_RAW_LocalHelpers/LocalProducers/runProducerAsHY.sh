@@ -9,31 +9,48 @@
 #   stages data from a slow LAN to the local fast SSD in batches, processes it 
 #   with massive internal parallelism, and outputs structured, derived AO2Ds.
 #
-# Hardware Target: Jarvis15 (AMD EPYC 9634 84-Core/336T) | 512GB RAM | 4TB SSD
+# Hardware Target: 2x AMD EPYC 9634 84-Core Processor, 512 GB RAM, 
+# SSD is Micron_7450_MTFDKBG3T8TFR, with a whopping 5000 MB/s read speed! (Thus I increased the number of workers)
 # Strategy:
-#   1. Stage LAN data sequentially to SSD (overcoming the 1 Gbps bottleneck).
-#   2. Blast through the batch using O2 with scaled-up threads & 256GB SHM.
+#   1. Stage LAN data sequentially to SSD/NVMe (overcoming I/O bottlenecks).
+#   2. Blast through the batch using O2 with scaled-up threads & large SHM.
 #   3. Save derived AO2Ds and QA directly into the HY-style folder structure.
 #   4. Auto-generate input_data_storage.txt for immediate consumer use.
 #
 # Usage:
-#   ./runProducerAsHY.sh <OUTPUT_DATASET_DIR> <INPUT_LIST> <CONFIG_JSON> <AOD_WRITER_JSON>
-#
-# Example:
-#   ./runProducerAsHY.sh /home/users/cicerodm/RingPol/LHC25ae_pass2_local \
-#                        /path/to/input_data_storage.txt \
-#                        /home/users/cicerodm/RingPol/producer_configs/dpl-config-ITSandTPC.json \
-#                        /home/users/cicerodm/PhD_codes/.../aod-writer.json
+#   ./runProducerAsHY.sh [--TOF | --no-TOF] <OUTPUT_DATASET_DIR> <INPUT_LIST> <CONFIG_JSON> <AOD_WRITER_JSON>
 ###############################################################################
 
-# --- INPUT ARGUMENTS ---
-OUTPUT_DATASET_DIR="$1"
-INPUT_LIST="$2"
-JSON_CONFIG_PATH="$3"
-AOD_WRITER_JSON="$4"
+# --- INPUT ARGUMENTS & FLAG PARSING ---
+USE_TOF="auto"
+OUTPUT_DATASET_DIR=""
+INPUT_LIST=""
+JSON_CONFIG_PATH=""
+AOD_WRITER_JSON=""
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --TOF)
+      USE_TOF=true
+      shift
+      ;;
+    --no-TOF)
+      USE_TOF=false
+      shift
+      ;;
+    *)
+      if [[ -z "$OUTPUT_DATASET_DIR" ]]; then OUTPUT_DATASET_DIR="$1"
+      elif [[ -z "$INPUT_LIST" ]]; then INPUT_LIST="$1"
+      elif [[ -z "$JSON_CONFIG_PATH" ]]; then JSON_CONFIG_PATH="$1"
+      elif [[ -z "$AOD_WRITER_JSON" ]]; then AOD_WRITER_JSON="$1"
+      fi
+      shift
+      ;;
+  esac
+done
 
 if [[ -z "$OUTPUT_DATASET_DIR" ]] || [[ -z "$INPUT_LIST" ]] || [[ -z "$JSON_CONFIG_PATH" ]] || [[ -z "$AOD_WRITER_JSON" ]]; then
-    echo "Usage: $0 <OUTPUT_DATASET_DIR> <INPUT_LIST> <CONFIG_JSON> <AOD_WRITER_JSON>"
+    echo "Usage: $0 [--TOF | --no-TOF] <OUTPUT_DATASET_DIR> <INPUT_LIST> <CONFIG_JSON> <AOD_WRITER_JSON>"
     exit 1
 fi
 
@@ -63,15 +80,33 @@ mkdir -p "$WAGON_DIR/results_producer/used_configs"
 
 # Working/Staging area setup (kept inside the wagon folder to isolate runs)
 TEMP_BASE="${WAGON_DIR}/temp_staging_area"
-rm -rf "$TEMP_BASE"
+if [ -d "$TEMP_BASE" ]; then
+    rm -rf "$TEMP_BASE" 2>/dev/null
+fi
 mkdir -p "$TEMP_BASE/batches"
 
 # Copy the config for reproducibility
 cp "$JSON_CONFIG_PATH" "$WAGON_DIR/results_producer/used_configs/"
 
-# --- TUNING KNOBS (Supercharged for 336T / 512GB RAM) ---
-FILES_PER_BATCH=50             # ~150GB per batch (safe for 4TB SSD even with overlap)
-SHM_SIZE="200000000000"        # 200 GB (leave RAM headroom for system + cache)
+# --- TOF CONFIGURATION LOGIC ---
+if [[ "$USE_TOF" == "auto" ]]; then
+    if grep -E -q '"processDataWithTOF"\s*:\s*("true"|true)' "$JSON_CONFIG_PATH"; then
+        USE_TOF=true
+        TOF_SOURCE="JSON Config"
+    else
+        USE_TOF=false
+        TOF_SOURCE="JSON Config"
+    fi
+else
+    TOF_SOURCE="Manual CLI Flag"
+fi
+
+echo "  TOF Pipeline: ${USE_TOF^^} (Source: $TOF_SOURCE)"
+
+# --- TUNING KNOBS (Scaled for modern multi-core systems) ---
+FILES_PER_BATCH=40             # debug at 10 is fine, btw
+SHM_SIZE="128000000000"        # 128 GB
+MEM_RATE_LIMIT="8000000000"    # 8 GB/s, scaled for larger batches
 
 # --- DETECT HARDWARE ---
 TOTAL_CORES=$(lscpu | awk '/^Core\(s\) per socket:/ {cores=$4} /^Socket\(s\):/ {sockets=$2} END {print cores*sockets}')
@@ -82,19 +117,37 @@ MAX_CORES_ALLOWED=$((TOTAL_CORES / 2))
 MAX_THREADS_ALLOWED=$((MAX_CORES_ALLOWED * 2))   # assuming SMT (2 threads/core)
 
 # --- PIPELINE PARALLELISM ---
-PIPE_EVENTSEL=8
-PIPE_PROPAGATION=24
-PIPE_PIDTPC=8
-PIPE_TOF=4
-PIPE_STRANGE=6
-PIPE_LAMBDA=16
+# Rule of thumb: pid-tpc >= propagation (it is the CPU bottleneck).
+# Eventsel is lightweight (flag checking only), keep it moderate.
+# Lambda is the analysis task itself; keep it high to exploit parallelism.
+# Changes from previous iteration:
+PIPE_EVENTSEL=10
+PIPE_PROPAGATION=22
+PIPE_PIDTPC=28        # This is a real bottleneck in the analysis
+PIPE_MULTCENT=12      # Another bottleneck we had
+PIPE_TOF=8
+PIPE_STRANGE=8
+PIPE_LAMBDA=20
 
 # --- COMPUTE USED THREADS AUTOMATICALLY ---
-USED_THREADS=$((PIPE_EVENTSEL + PIPE_PROPAGATION + PIPE_PIDTPC + PIPE_TOF + PIPE_STRANGE + PIPE_LAMBDA))
+USED_THREADS=$((PIPE_EVENTSEL + PIPE_PROPAGATION + PIPE_PIDTPC + PIPE_MULTCENT + PIPE_TOF + PIPE_STRANGE + PIPE_LAMBDA))
 
 # --- I/O TUNING ---
-READERS=6
-MEM_RATE_LIMIT="3500000000" # 3.5 GB/s
+# Readers scale with FILES_PER_BATCH. Cap safeguard below handles overflow.
+# IO_THREADS scales with readers: ~1.5x is a reasonable write-side ratio.
+REQUESTED_READERS=15
+IO_THREADS=12
+# SPAWNERS=6 # Not using spawners explicitly. It fails to configure the links in a heavily pipelined workflow, as it seems
+             # It would appear as " --spawners "$SPAWNERS" " in the pipeline, though
+
+# --- SAFEGUARD: CAP READERS TO MAX FILES PER BATCH ---
+# If we don't do this, program crashes!!!
+if [ "$REQUESTED_READERS" -gt "$FILES_PER_BATCH" ]; then
+    echo "  [I/O Tuning] WARNING: Requested readers ($REQUESTED_READERS) exceeds files per batch ($FILES_PER_BATCH). Capping READERS to $FILES_PER_BATCH."
+    READERS=$FILES_PER_BATCH
+else
+    READERS=$REQUESTED_READERS
+fi
 
 echo "  Resource configuration:"
 echo "    Total cores        : $TOTAL_CORES"
@@ -103,6 +156,8 @@ echo "    Max usable cores   : $MAX_CORES_ALLOWED"
 echo "    Max usable threads : $MAX_THREADS_ALLOWED"
 echo "    Used threads       : $USED_THREADS"
 echo "    Readers            : $READERS"
+echo "    I/O Threads        : $IO_THREADS"
+# echo "    Spawners           : $SPAWNERS"
 
 # ==============================================================================
 # 2. SIGNAL HANDLING & CLEANUP
@@ -181,27 +236,49 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
     OPTION="-b --configuration json://$JSON_CONFIG_PATH --aod-writer-json ${AOD_WRITER_JSON}"
 
     # Use nice + ionice to prevent system lock-up
-    time \
-    nice -n 10 ionice -c2 -n7 \
-    o2-analysis-event-selection-service ${OPTION} \
-        --pipeline eventselection-run3:${PIPE_EVENTSEL} | \
-    o2-analysis-multcenttable ${OPTION} | \
-    o2-analysis-propagationservice ${OPTION} \
-        --pipeline propagation-service:${PIPE_PROPAGATION} | \
-    o2-analysis-pid-tpc-service ${OPTION} \
-        --pipeline pid-tpc-service:${PIPE_PIDTPC} | \
-    o2-analysis-ft0-corrected-table ${OPTION} | \
-    o2-analysis-pid-tof-base ${OPTION} \
-        --pipeline tof-event-time:${PIPE_TOF} | \
-    o2-analysis-lf-strangenesstofpid ${OPTION} \
-        --pipeline strangenesstofpid:${PIPE_STRANGE} | \
-    o2-analysis-lf-lambdajetpolarizationions ${OPTION} \
-        --pipeline lambdajetpolarizationions:${PIPE_LAMBDA} \
-        --readers "$READERS" \
-        --aod-file "@${LOCAL_INPUT_LIST}" \
-        --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
-        --shm-segment-size "$SHM_SIZE" \
-        > "$BATCH_LOG" 2>&1
+    if [ "$USE_TOF" = true ]; then
+        time o2-analysis-event-selection-service ${OPTION} \
+            --pipeline eventselection-run3:${PIPE_EVENTSEL} | \
+        o2-analysis-multcenttable ${OPTION} \
+            --pipeline mult-cent-table:${PIPE_MULTCENT} | \
+        o2-analysis-propagationservice ${OPTION} \
+            --pipeline propagation-service:${PIPE_PROPAGATION} | \
+        o2-analysis-pid-tpc-service ${OPTION} \
+            --pipeline pid-tpc-service:${PIPE_PIDTPC} | \
+        o2-analysis-ft0-corrected-table ${OPTION} | \
+        o2-analysis-pid-tof-base ${OPTION} \
+            --pipeline tof-event-time:${PIPE_TOF} | \
+        o2-analysis-lf-strangenesstofpid ${OPTION} \
+            --pipeline strangenesstofpid:${PIPE_STRANGE} | \
+        o2-analysis-lf-lambdajetpolarizationions ${OPTION} \
+            --pipeline lambdajetpolarizationions:${PIPE_LAMBDA} \
+            --readers "$READERS" \
+            --io-threads "$IO_THREADS" \
+            --aod-file "@${LOCAL_INPUT_LIST}" \
+            --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
+            --shm-segment-size "$SHM_SIZE" \
+            > "$BATCH_LOG" 2>&1
+    else
+        # If debugging code, insert the flag "--fairmq-rate-logging 1" in the end of the workflow.
+        # This can help diagnose bottlenecks
+        time o2-analysis-event-selection-service ${OPTION} \
+            --pipeline eventselection-run3:${PIPE_EVENTSEL} | \
+        o2-analysis-multcenttable ${OPTION} \
+            --pipeline mult-cent-table:${PIPE_MULTCENT} | \
+        o2-analysis-propagationservice ${OPTION} \
+            --pipeline propagation-service:${PIPE_PROPAGATION} | \
+        o2-analysis-pid-tpc-service ${OPTION} \
+            --pipeline pid-tpc-service:${PIPE_PIDTPC} | \
+        o2-analysis-ft0-corrected-table ${OPTION} | \
+        o2-analysis-lf-lambdajetpolarizationions ${OPTION} \
+            --pipeline lambdajetpolarizationions:${PIPE_LAMBDA} \
+            --readers "$READERS" \
+            --io-threads "$IO_THREADS" \
+            --aod-file "@${LOCAL_INPUT_LIST}" \
+            --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
+            --shm-segment-size "$SHM_SIZE" \
+            > "$BATCH_LOG" 2>&1
+    fi
 
     EXIT_CODE=$?
 

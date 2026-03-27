@@ -80,7 +80,9 @@ echo "  Suffix:   ${SUFFIX}"
 echo "========================================================"
 
 # Clean start
-rm -rf "$TEMP_BASE"
+if [ -d "$TEMP_BASE" ]; then
+    rm -rf "$TEMP_BASE" 2>/dev/null
+fi
 mkdir -p "$TEMP_BASE/batches"
 mkdir -p "$RESULTS_DIR"
 mkdir -p "$RESULTS_DIR/used_configs" # To store used dpl-configs for reference
