@@ -177,7 +177,7 @@ for CONFIG_FILE in "${CONFIG_FILES[@]}"; do
   echo "  Running Producer: ${CONFIG_BASENAME}"
   echo "--------------------------------------------------------"
 
-  "$RUN_SCRIPT" "$OUTPUT_DATASET_DIR" "$INPUT_LIST" "$CONFIG_FILE" "$AOD_WRITER"
+  numactl --cpunodebind=0 --preferred=0 "$RUN_SCRIPT" "$OUTPUT_DATASET_DIR" "$INPUT_LIST" "$CONFIG_FILE" "$AOD_WRITER"
   EXIT_CODE=$?
 
   JOB_END=$(date +%s)

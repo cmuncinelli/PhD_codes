@@ -111,8 +111,12 @@ if [ "$LOG_OUTPUT" = false ]; then
     echo "  File Logging: DISABLED (Sending all output to /dev/null)"
 fi
 
-# --- TUNING KNOBS (Scaled for modern multi-core systems) ---
-FILES_PER_BATCH=40             # debug at 10 is fine, btw
+# --- TUNING KNOBS ---
+# jarvis15 NUMA sweet spot: 20 files (~60 GB) perfectly balances Node 0's 257 GB RAM limit.
+# It allows Linux to hold the entire LAN-to-SSD transfer in the Page Cache for blazing-fast 
+# in-memory reads, without competing with our 128 GB SHM and forcing a cross-socket memory spill.
+# (remember that in run_all_producers.sh I am running with "numactl --cpunodebind=0 --preferred=0" options!)
+FILES_PER_BATCH=20             # debug at 10 is fine
 SHM_SIZE="128000000000"        # 128 GB
 MEM_RATE_LIMIT="8000000000"    # 8 GB/s, scaled for larger batches
 
@@ -231,17 +235,37 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
     # A. STAGE-IN (1 Gbps LAN -> Local SSD)
     # ---------------------------------------------------------
     echo "  [I/O] Staging files from LAN to local SSD..."
+
+    TOTAL_FILES=$(wc -l < "$BATCH_FILE")
+    CURRENT_FILE=0
+
     while read -r LINE; do
         CLEAN_PATH="${LINE#file:}"
         FILENAME=$(basename "$CLEAN_PATH")
-        
+
+        ((CURRENT_FILE++))
+
         if [ -f "$CLEAN_PATH" ]; then
             cp "$CLEAN_PATH" "$BATCH_WORK_DIR/$FILENAME"
             echo "file:$BATCH_WORK_DIR/$FILENAME" >> "$LOCAL_INPUT_LIST"
         else
-            echo "    WARNING: Source file missing: $CLEAN_PATH"
+            echo -e "\n    WARNING: Source file missing: $CLEAN_PATH"
         fi
+
+        # --- Progress bar ---
+        PERCENT=$((100 * CURRENT_FILE / TOTAL_FILES))
+        BAR_WIDTH=30
+        FILLED=$((PERCENT * BAR_WIDTH / 100))
+        EMPTY=$((BAR_WIDTH - FILLED))
+
+        printf "\r  Progress: [%.*s%*s] %3d%% (%d/%d)" \
+            "$FILLED" "##############################" \
+            "$EMPTY" "" \
+            "$PERCENT" "$CURRENT_FILE" "$TOTAL_FILES"
+
     done < "$BATCH_FILE"
+
+    echo ""  # newline after progress bar
 
     # ---------------------------------------------------------
     # B. EXECUTE PIPELINE (Scaled safely for shared system)
@@ -300,7 +324,7 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
                 --io-threads "$IO_THREADS" \
                 --aod-file "@${LOCAL_INPUT_LIST}" \
                 --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
-                --shm-segment-size "$SHM_SIZE"
+                --shm-segment-size "$SHM_SIZE" \
                 > /dev/null 2>&1
         fi
     else
@@ -340,7 +364,7 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
                 --io-threads "$IO_THREADS" \
                 --aod-file "@${LOCAL_INPUT_LIST}" \
                 --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
-                --shm-segment-size "$SHM_SIZE"
+                --shm-segment-size "$SHM_SIZE" \
                 > /dev/null 2>&1
         fi
     fi
