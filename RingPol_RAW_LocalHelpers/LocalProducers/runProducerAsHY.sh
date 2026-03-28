@@ -23,6 +23,7 @@
 
 # --- INPUT ARGUMENTS & FLAG PARSING ---
 USE_TOF="auto"
+LOG_OUTPUT=false
 OUTPUT_DATASET_DIR=""
 INPUT_LIST=""
 JSON_CONFIG_PATH=""
@@ -38,6 +39,10 @@ while [[ $# -gt 0 ]]; do
       USE_TOF=false
       shift
       ;;
+    --do-log)
+      LOG_OUTPUT=true
+      shift
+      ;;
     *)
       if [[ -z "$OUTPUT_DATASET_DIR" ]]; then OUTPUT_DATASET_DIR="$1"
       elif [[ -z "$INPUT_LIST" ]]; then INPUT_LIST="$1"
@@ -50,7 +55,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$OUTPUT_DATASET_DIR" ]] || [[ -z "$INPUT_LIST" ]] || [[ -z "$JSON_CONFIG_PATH" ]] || [[ -z "$AOD_WRITER_JSON" ]]; then
-    echo "Usage: $0 [--TOF | --no-TOF] <OUTPUT_DATASET_DIR> <INPUT_LIST> <CONFIG_JSON> <AOD_WRITER_JSON>"
+    echo "Usage: $0 [--TOF | --no-TOF] [--no-log] <OUTPUT_DATASET_DIR> <INPUT_LIST> <CONFIG_JSON> <AOD_WRITER_JSON>"
     exit 1
 fi
 
@@ -102,6 +107,9 @@ else
 fi
 
 echo "  TOF Pipeline: ${USE_TOF^^} (Source: $TOF_SOURCE)"
+if [ "$LOG_OUTPUT" = false ]; then
+    echo "  File Logging: DISABLED (Sending all output to /dev/null)"
+fi
 
 # --- TUNING KNOBS (Scaled for modern multi-core systems) ---
 FILES_PER_BATCH=40             # debug at 10 is fine, btw
@@ -116,27 +124,37 @@ TOTAL_THREADS=$(nproc)
 MAX_CORES_ALLOWED=$((TOTAL_CORES / 2))
 MAX_THREADS_ALLOWED=$((MAX_CORES_ALLOWED * 2))   # assuming SMT (2 threads/core)
 
-# --- PIPELINE PARALLELISM ---
-# Rule of thumb: pid-tpc >= propagation (it is the CPU bottleneck).
-# Eventsel is lightweight (flag checking only), keep it moderate.
-# Lambda is the analysis task itself; keep it high to exploit parallelism.
-# Changes from previous iteration:
-PIPE_EVENTSEL=10
-PIPE_PROPAGATION=22
-PIPE_PIDTPC=28        # This is a real bottleneck in the analysis
-PIPE_MULTCENT=12      # Another bottleneck we had
-PIPE_TOF=8
-PIPE_STRANGE=8
-PIPE_LAMBDA=20
+# # --- PIPELINE PARALLELISM ---
+# # Rule of thumb: pid-tpc >= propagation (it is the CPU bottleneck).
+# # Eventsel is lightweight (flag checking only), keep it moderate.
+# # Lambda is the analysis task itself; keep it high to exploit parallelism.
+# # Changes from previous iteration:
+# PIPE_EVENTSEL=10
+# PIPE_PROPAGATION=22
+# PIPE_PIDTPC=28        # This is a real bottleneck in the analysis
+# PIPE_MULTCENT=12      # Another bottleneck we had
+# PIPE_TOF=8
+# PIPE_STRANGE=8
+# PIPE_LAMBDA=20
 
-# --- COMPUTE USED THREADS AUTOMATICALLY ---
+# --- PIPELINE PARALLELISM (REVISED DOWN) ---
+# The sys > user timing proved the OS was overwhelmed by ZMQ inter-process 
+# communication overhead. We are reducing the total process count drastically.
+PIPE_EVENTSEL=4
+PIPE_PROPAGATION=8
+PIPE_PIDTPC=10
+PIPE_MULTCENT=4
+PIPE_TOF=4
+PIPE_STRANGE=4
+PIPE_LAMBDA=8
+
 USED_THREADS=$((PIPE_EVENTSEL + PIPE_PROPAGATION + PIPE_PIDTPC + PIPE_MULTCENT + PIPE_TOF + PIPE_STRANGE + PIPE_LAMBDA))
 
-# --- I/O TUNING ---
+# --- I/O TUNING (REVISED DOWN) ---
 # Readers scale with FILES_PER_BATCH. Cap safeguard below handles overflow.
 # IO_THREADS scales with readers: ~1.5x is a reasonable write-side ratio.
-REQUESTED_READERS=15
-IO_THREADS=12
+REQUESTED_READERS=8
+IO_THREADS=8
 # SPAWNERS=6 # Not using spawners explicitly. It fails to configure the links in a heavily pipelined workflow, as it seems
              # It would appear as " --spawners "$SPAWNERS" " in the pipeline, though
 
@@ -229,55 +247,102 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
     # B. EXECUTE PIPELINE (Scaled safely for shared system)
     # ---------------------------------------------------------
     echo "  [O2] Launching controlled parallel pipeline..."
-    echo "       (Check logs at: results_producer/logs/batch_$BATCH_ID.log)"
+    if [ "$LOG_OUTPUT" = true ]; then
+        echo "       (Check logs at: results_producer/logs/batch_$BATCH_ID.log)"
+    else
+        echo "       (Logging disabled. Killing output)"
+    fi
 
     cd "$BATCH_WORK_DIR" || exit 1
 
     OPTION="-b --configuration json://$JSON_CONFIG_PATH --aod-writer-json ${AOD_WRITER_JSON}"
 
-    # Use nice + ionice to prevent system lock-up
     if [ "$USE_TOF" = true ]; then
-        time o2-analysis-event-selection-service ${OPTION} \
-            --pipeline eventselection-run3:${PIPE_EVENTSEL} | \
-        o2-analysis-multcenttable ${OPTION} \
-            --pipeline mult-cent-table:${PIPE_MULTCENT} | \
-        o2-analysis-propagationservice ${OPTION} \
-            --pipeline propagation-service:${PIPE_PROPAGATION} | \
-        o2-analysis-pid-tpc-service ${OPTION} \
-            --pipeline pid-tpc-service:${PIPE_PIDTPC} | \
-        o2-analysis-ft0-corrected-table ${OPTION} | \
-        o2-analysis-pid-tof-base ${OPTION} \
-            --pipeline tof-event-time:${PIPE_TOF} | \
-        o2-analysis-lf-strangenesstofpid ${OPTION} \
-            --pipeline strangenesstofpid:${PIPE_STRANGE} | \
-        o2-analysis-lf-lambdajetpolarizationions ${OPTION} \
-            --pipeline lambdajetpolarizationions:${PIPE_LAMBDA} \
-            --readers "$READERS" \
-            --io-threads "$IO_THREADS" \
-            --aod-file "@${LOCAL_INPUT_LIST}" \
-            --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
-            --shm-segment-size "$SHM_SIZE" \
-            > "$BATCH_LOG" 2>&1
+        if [ "$LOG_OUTPUT" = true ]; then
+            time o2-analysis-event-selection-service ${OPTION} \
+                --pipeline eventselection-run3:${PIPE_EVENTSEL} | \
+            o2-analysis-multcenttable ${OPTION} \
+                --pipeline mult-cent-table:${PIPE_MULTCENT} | \
+            o2-analysis-propagationservice ${OPTION} \
+                --pipeline propagation-service:${PIPE_PROPAGATION} | \
+            o2-analysis-pid-tpc-service ${OPTION} \
+                --pipeline pid-tpc-service:${PIPE_PIDTPC} | \
+            o2-analysis-ft0-corrected-table ${OPTION} | \
+            o2-analysis-pid-tof-base ${OPTION} \
+                --pipeline tof-event-time:${PIPE_TOF} | \
+            o2-analysis-lf-strangenesstofpid ${OPTION} \
+                --pipeline strangenesstofpid:${PIPE_STRANGE} | \
+            o2-analysis-lf-lambdajetpolarizationions ${OPTION} \
+                --pipeline lambdajetpolarizationions:${PIPE_LAMBDA} \
+                --readers "$READERS" \
+                --io-threads "$IO_THREADS" \
+                --aod-file "@${LOCAL_INPUT_LIST}" \
+                --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
+                --shm-segment-size "$SHM_SIZE" \
+                > "$BATCH_LOG" 2>&1
+        else
+            time o2-analysis-event-selection-service ${OPTION} \
+                --pipeline eventselection-run3:${PIPE_EVENTSEL} | \
+            o2-analysis-multcenttable ${OPTION} \
+                --pipeline mult-cent-table:${PIPE_MULTCENT} | \
+            o2-analysis-propagationservice ${OPTION} \
+                --pipeline propagation-service:${PIPE_PROPAGATION} | \
+            o2-analysis-pid-tpc-service ${OPTION} \
+                --pipeline pid-tpc-service:${PIPE_PIDTPC} | \
+            o2-analysis-ft0-corrected-table ${OPTION} | \
+            o2-analysis-pid-tof-base ${OPTION} \
+                --pipeline tof-event-time:${PIPE_TOF} | \
+            o2-analysis-lf-strangenesstofpid ${OPTION} \
+                --pipeline strangenesstofpid:${PIPE_STRANGE} | \
+            o2-analysis-lf-lambdajetpolarizationions ${OPTION} \
+                --pipeline lambdajetpolarizationions:${PIPE_LAMBDA} \
+                --readers "$READERS" \
+                --io-threads "$IO_THREADS" \
+                --aod-file "@${LOCAL_INPUT_LIST}" \
+                --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
+                --shm-segment-size "$SHM_SIZE"
+                > /dev/null 2>&1
+        fi
     else
         # If debugging code, insert the flag "--fairmq-rate-logging 1" in the end of the workflow.
         # This can help diagnose bottlenecks
-        time o2-analysis-event-selection-service ${OPTION} \
-            --pipeline eventselection-run3:${PIPE_EVENTSEL} | \
-        o2-analysis-multcenttable ${OPTION} \
-            --pipeline mult-cent-table:${PIPE_MULTCENT} | \
-        o2-analysis-propagationservice ${OPTION} \
-            --pipeline propagation-service:${PIPE_PROPAGATION} | \
-        o2-analysis-pid-tpc-service ${OPTION} \
-            --pipeline pid-tpc-service:${PIPE_PIDTPC} | \
-        o2-analysis-ft0-corrected-table ${OPTION} | \
-        o2-analysis-lf-lambdajetpolarizationions ${OPTION} \
-            --pipeline lambdajetpolarizationions:${PIPE_LAMBDA} \
-            --readers "$READERS" \
-            --io-threads "$IO_THREADS" \
-            --aod-file "@${LOCAL_INPUT_LIST}" \
-            --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
-            --shm-segment-size "$SHM_SIZE" \
-            > "$BATCH_LOG" 2>&1
+        if [ "$LOG_OUTPUT" = true ]; then
+            time o2-analysis-event-selection-service ${OPTION} \
+                --pipeline eventselection-run3:${PIPE_EVENTSEL} | \
+            o2-analysis-multcenttable ${OPTION} \
+                --pipeline mult-cent-table:${PIPE_MULTCENT} | \
+            o2-analysis-propagationservice ${OPTION} \
+                --pipeline propagation-service:${PIPE_PROPAGATION} | \
+            o2-analysis-pid-tpc-service ${OPTION} \
+                --pipeline pid-tpc-service:${PIPE_PIDTPC} | \
+            o2-analysis-ft0-corrected-table ${OPTION} | \
+            o2-analysis-lf-lambdajetpolarizationions ${OPTION} \
+                --pipeline lambdajetpolarizationions:${PIPE_LAMBDA} \
+                --readers "$READERS" \
+                --io-threads "$IO_THREADS" \
+                --aod-file "@${LOCAL_INPUT_LIST}" \
+                --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
+                --shm-segment-size "$SHM_SIZE" \
+                > "$BATCH_LOG" 2>&1
+        else
+            time o2-analysis-event-selection-service ${OPTION} \
+                --pipeline eventselection-run3:${PIPE_EVENTSEL} | \
+            o2-analysis-multcenttable ${OPTION} \
+                --pipeline mult-cent-table:${PIPE_MULTCENT} | \
+            o2-analysis-propagationservice ${OPTION} \
+                --pipeline propagation-service:${PIPE_PROPAGATION} | \
+            o2-analysis-pid-tpc-service ${OPTION} \
+                --pipeline pid-tpc-service:${PIPE_PIDTPC} | \
+            o2-analysis-ft0-corrected-table ${OPTION} | \
+            o2-analysis-lf-lambdajetpolarizationions ${OPTION} \
+                --pipeline lambdajetpolarizationions:${PIPE_LAMBDA} \
+                --readers "$READERS" \
+                --io-threads "$IO_THREADS" \
+                --aod-file "@${LOCAL_INPUT_LIST}" \
+                --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
+                --shm-segment-size "$SHM_SIZE"
+                > /dev/null 2>&1
+        fi
     fi
 
     EXIT_CODE=$?
@@ -306,7 +371,9 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
         fi
     else
         echo "  [FAIL] Pipeline failed with code $EXIT_CODE"
-        echo "  Check log: $BATCH_LOG"
+        if [ "$LOG_OUTPUT" = true ]; then
+            echo "  Check log: $BATCH_LOG"
+        fi
     fi
 
     # ---------------------------------------------------------
