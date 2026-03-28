@@ -274,7 +274,7 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
     if [ "$LOG_OUTPUT" = true ]; then
         echo "       (Check logs at: results_producer/logs/batch_$BATCH_ID.log)"
     else
-        echo "       (Logging disabled. Killing output)"
+        echo "       (Logging disabled. Sending output to /dev/null)"
     fi
 
     cd "$BATCH_WORK_DIR" || exit 1
