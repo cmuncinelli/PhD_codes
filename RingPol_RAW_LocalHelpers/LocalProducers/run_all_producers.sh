@@ -1,4 +1,37 @@
 #!/usr/bin/env bash
+###############################################################################
+# Script name:
+#   run_all_producers.sh
+#
+# Purpose:
+#   Orchestrator script that sequentially runs multiple O2 DPL producer 
+#   configurations over a specified dataset. It handles dataset sampling, 
+#   progress tracking, and error reporting. 
+#
+# Hardware Strategy & NUMA Isolation:
+#   Targeted for dual-socket AMD EPYC systems (e.g., jarvis15 with 2x 9634).
+#   To prevent catastrophic OS context-switching and cross-socket memory 
+#   latency (Infinity Fabric penalty), this coordinator strictly enforces 
+#   NUMA isolation. It wraps every worker process in:
+#       numactl --cpunodebind=0 --preferred=0
+#   This locks the ~56-process pipeline and its 128 GB shared memory pool 
+#   entirely onto Node 0, maximizing CPU efficiency and utilizing the Linux 
+#   Page Cache safely without triggering OOM kills.
+#   CRITICAL: Do not run multiple instances of this script concurrently!
+#
+# Usage:
+#   ./run_all_producers.sh [--do-log] [PERCENTAGE] [OUTPUT_DIR] [INPUT_LIST] [CONFIGS_DIR]
+#
+# Examples:
+#   1. Run everything with default paths (100% of data):
+#      ./run_all_producers.sh
+#
+#   2. Run a quick 10% test with terminal logging enabled:
+#      ./run_all_producers.sh --do-log 10
+#
+#   3. Run 100% of data with custom paths, no logging:
+#      ./run_all_producers.sh 100 /data/output /data/input.txt /data/configs
+###############################################################################
 
 # ==============================================================================
 # DEFAULTS
@@ -7,10 +40,27 @@ DEFAULT_DATASET_DIR="/home/users/cicerodm/RingPol/LHC25ae_pass2_local"
 DEFAULT_INPUT_LIST="${DEFAULT_DATASET_DIR}/input_data_storage.txt"
 DEFAULT_CONFIGS_DIR="/home/users/cicerodm/RingPol/producer_configs"
 
-PERCENTAGE="${1:-100}"
-OUTPUT_DATASET_DIR="${2:-$DEFAULT_DATASET_DIR}"
-INPUT_LIST="${3:-$DEFAULT_INPUT_LIST}"
-PRODUCER_CONFIGS_DIR="${4:-$DEFAULT_CONFIGS_DIR}"
+# --- ARGUMENT PARSING ---
+DO_LOG_FLAG=""
+POS_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --do-log)
+      DO_LOG_FLAG="--do-log"
+      shift
+      ;;
+    *)
+      POS_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+PERCENTAGE="${POS_ARGS[0]:-100}"
+OUTPUT_DATASET_DIR="${POS_ARGS[1]:-$DEFAULT_DATASET_DIR}"
+INPUT_LIST="${POS_ARGS[2]:-$DEFAULT_INPUT_LIST}"
+PRODUCER_CONFIGS_DIR="${POS_ARGS[3]:-$DEFAULT_CONFIGS_DIR}"
 
 # ==============================================================================
 # PATHS
@@ -162,6 +212,11 @@ echo "  Configs found : ${TOTAL_CONFIGS}"
 echo "  Input List    : ${INPUT_LIST}"
 echo "  Data fraction : ${PERCENTAGE}%"
 echo "  Used files    : ${LINES_TO_KEEP}"
+if [ -n "$DO_LOG_FLAG" ]; then
+  echo "  Logging       : ENABLED (--do-log)"
+else
+  echo "  Logging       : DISABLED"
+fi
 echo "========================================================"
 echo ""
 
@@ -177,7 +232,8 @@ for CONFIG_FILE in "${CONFIG_FILES[@]}"; do
   echo "  Running Producer: ${CONFIG_BASENAME}"
   echo "--------------------------------------------------------"
 
-  numactl --cpunodebind=0 --preferred=0 "$RUN_SCRIPT" "$OUTPUT_DATASET_DIR" "$INPUT_LIST" "$CONFIG_FILE" "$AOD_WRITER"
+  # Notice the unquoted $DO_LOG_FLAG here. If it's empty, bash just ignores it.
+  numactl --cpunodebind=0 --preferred=0 "$RUN_SCRIPT" $DO_LOG_FLAG "$OUTPUT_DATASET_DIR" "$INPUT_LIST" "$CONFIG_FILE" "$AOD_WRITER"
   EXIT_CODE=$?
 
   JOB_END=$(date +%s)

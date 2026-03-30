@@ -245,6 +245,7 @@ in a single unattended run, use:
 - REGISTRY (optional): Path to a train_registry.conf file. If omitted, the default registry inside the framework is used.
 - CONSUMER_CONFIGS_DIR (optional): Directory containing dpl-config-DerivedConsumer-*.json files.
 If omitted, the default configs directory is used.
+- Added NUMActl options for convenience when running in machines with 2 or more NUMA nodes.
 
 **Examples**
 ```

@@ -117,8 +117,8 @@ fi
 # in-memory reads, without competing with our 128 GB SHM and forcing a cross-socket memory spill.
 # (remember that in run_all_producers.sh I am running with "numactl --cpunodebind=0 --preferred=0" options!)
 FILES_PER_BATCH=20             # debug at 10 is fine
-SHM_SIZE="128000000000"        # 128 GB
-MEM_RATE_LIMIT="8000000000"    # 8 GB/s, scaled for larger batches
+SHM_SIZE="64000000000"         # 64 GB should be more than enough!
+MEM_RATE_LIMIT="6000000000"    # 6 GB/s, scaled for larger batches
 
 # --- DETECT HARDWARE ---
 TOTAL_CORES=$(lscpu | awk '/^Core\(s\) per socket:/ {cores=$4} /^Socket\(s\):/ {sockets=$2} END {print cores*sockets}')
@@ -144,32 +144,33 @@ MAX_THREADS_ALLOWED=$((MAX_CORES_ALLOWED * 2))   # assuming SMT (2 threads/core)
 # --- PIPELINE PARALLELISM (REVISED DOWN) ---
 # The sys > user timing proved the OS was overwhelmed by ZMQ inter-process 
 # communication overhead. We are reducing the total process count drastically.
-PIPE_EVENTSEL=4
-PIPE_PROPAGATION=8
-PIPE_PIDTPC=10
-PIPE_MULTCENT=4
-PIPE_TOF=4
-PIPE_STRANGE=4
-PIPE_LAMBDA=8
+PIPE_EVENTSEL=5
+PIPE_PROPAGATION=18
+PIPE_PIDTPC=14
+PIPE_MULTCENT=6
+PIPE_TOF=6
+PIPE_STRANGE=10
+PIPE_LAMBDA=14
 
 USED_THREADS=$((PIPE_EVENTSEL + PIPE_PROPAGATION + PIPE_PIDTPC + PIPE_MULTCENT + PIPE_TOF + PIPE_STRANGE + PIPE_LAMBDA))
 
-# --- I/O TUNING (REVISED DOWN) ---
-# Readers scale with FILES_PER_BATCH. Cap safeguard below handles overflow.
-# IO_THREADS scales with readers: ~1.5x is a reasonable write-side ratio.
-REQUESTED_READERS=8
-IO_THREADS=8
-# SPAWNERS=6 # Not using spawners explicitly. It fails to configure the links in a heavily pipelined workflow, as it seems
-             # It would appear as " --spawners "$SPAWNERS" " in the pipeline, though
+# No longer using readers! Those only multiply MEM_RATE_LIMIT and do not increase workflow speed nearly as much. May even make the "Not enough resources" error worse!
+# # --- I/O TUNING (REVISED DOWN) ---
+# # Readers scale with FILES_PER_BATCH. Cap safeguard below handles overflow.
+# # IO_THREADS scales with readers: ~1.5x is a reasonable write-side ratio.
+# REQUESTED_READERS=8
+# IO_THREADS=8
+# # SPAWNERS=6 # Not using spawners explicitly. It fails to configure the links in a heavily pipelined workflow, as it seems
+#              # It would appear as " --spawners "$SPAWNERS" " in the pipeline, though
 
-# --- SAFEGUARD: CAP READERS TO MAX FILES PER BATCH ---
-# If we don't do this, program crashes!!!
-if [ "$REQUESTED_READERS" -gt "$FILES_PER_BATCH" ]; then
-    echo "  [I/O Tuning] WARNING: Requested readers ($REQUESTED_READERS) exceeds files per batch ($FILES_PER_BATCH). Capping READERS to $FILES_PER_BATCH."
-    READERS=$FILES_PER_BATCH
-else
-    READERS=$REQUESTED_READERS
-fi
+# # --- SAFEGUARD: CAP READERS TO MAX FILES PER BATCH ---
+# # If we don't do this, program crashes!!!
+# if [ "$REQUESTED_READERS" -gt "$FILES_PER_BATCH" ]; then
+#     echo "  [I/O Tuning] WARNING: Requested readers ($REQUESTED_READERS) exceeds files per batch ($FILES_PER_BATCH). Capping READERS to $FILES_PER_BATCH."
+#     READERS=$FILES_PER_BATCH
+# else
+#     READERS=$REQUESTED_READERS
+# fi
 
 echo "  Resource configuration:"
 echo "    Total cores        : $TOTAL_CORES"
@@ -177,8 +178,8 @@ echo "    Total threads      : $TOTAL_THREADS"
 echo "    Max usable cores   : $MAX_CORES_ALLOWED"
 echo "    Max usable threads : $MAX_THREADS_ALLOWED"
 echo "    Used threads       : $USED_THREADS"
-echo "    Readers            : $READERS"
-echo "    I/O Threads        : $IO_THREADS"
+# echo "    Readers            : $READERS"
+# echo "    I/O Threads        : $IO_THREADS"
 # echo "    Spawners           : $SPAWNERS"
 
 # ==============================================================================
@@ -246,7 +247,12 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
         ((CURRENT_FILE++))
 
         if [ -f "$CLEAN_PATH" ]; then
-            cp "$CLEAN_PATH" "$BATCH_WORK_DIR/$FILENAME"
+            # --- CACHE BYPASS: NOCACHE ---
+            # Forces the OS to drop the page cache immediately after copying.
+            # Prevents Node 1 from filling up with inactive file memory.
+            # (we were seeing some real bad memory "leaks", as far as I could grasp from numastat -m)
+            # (OS didn't see a problem, but maybe O2 did?)
+            nocache cp "$CLEAN_PATH" "$BATCH_WORK_DIR/$FILENAME"
             echo "file:$BATCH_WORK_DIR/$FILENAME" >> "$LOCAL_INPUT_LIST"
         else
             echo -e "\n    WARNING: Source file missing: $CLEAN_PATH"
@@ -298,8 +304,6 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
                 --pipeline strangenesstofpid:${PIPE_STRANGE} | \
             o2-analysis-lf-lambdajetpolarizationions ${OPTION} \
                 --pipeline lambdajetpolarizationions:${PIPE_LAMBDA} \
-                --readers "$READERS" \
-                --io-threads "$IO_THREADS" \
                 --aod-file "@${LOCAL_INPUT_LIST}" \
                 --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
                 --shm-segment-size "$SHM_SIZE" \
@@ -320,8 +324,6 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
                 --pipeline strangenesstofpid:${PIPE_STRANGE} | \
             o2-analysis-lf-lambdajetpolarizationions ${OPTION} \
                 --pipeline lambdajetpolarizationions:${PIPE_LAMBDA} \
-                --readers "$READERS" \
-                --io-threads "$IO_THREADS" \
                 --aod-file "@${LOCAL_INPUT_LIST}" \
                 --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
                 --shm-segment-size "$SHM_SIZE" \
@@ -342,8 +344,6 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
             o2-analysis-ft0-corrected-table ${OPTION} | \
             o2-analysis-lf-lambdajetpolarizationions ${OPTION} \
                 --pipeline lambdajetpolarizationions:${PIPE_LAMBDA} \
-                --readers "$READERS" \
-                --io-threads "$IO_THREADS" \
                 --aod-file "@${LOCAL_INPUT_LIST}" \
                 --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
                 --shm-segment-size "$SHM_SIZE" \
@@ -360,8 +360,6 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
             o2-analysis-ft0-corrected-table ${OPTION} | \
             o2-analysis-lf-lambdajetpolarizationions ${OPTION} \
                 --pipeline lambdajetpolarizationions:${PIPE_LAMBDA} \
-                --readers "$READERS" \
-                --io-threads "$IO_THREADS" \
                 --aod-file "@${LOCAL_INPUT_LIST}" \
                 --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
                 --shm-segment-size "$SHM_SIZE" \

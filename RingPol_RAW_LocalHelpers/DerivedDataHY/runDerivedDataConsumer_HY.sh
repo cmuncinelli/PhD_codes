@@ -42,9 +42,9 @@
 FILES_PER_BATCH=80          # Number of AO2D files per batch. Reduce if DPL
                             # still reports scheduling stalls on this machine.
 SHM_SIZE="64000000000"      # Shared memory: 64 GB
-MEM_RATE_LIMIT="4000000000" # AOD memory rate limit: 4 GB/s
+MEM_RATE_LIMIT="12000000000" # AOD memory rate limit: 8 GB/s
 THREADS=32                  # Pipeline threads for the consumer task
-READERS=5                   # Parallel AOD reader threads
+# READERS=5                   # Parallel AOD reader threads
 
 # ==============================================================================
 # 1. ARGUMENT PARSING AND VALIDATION
@@ -202,12 +202,21 @@ for BATCH_FILE in $(find "$CONSUMER_TEMP" -maxdepth 1 -name "batch_*" | sort); d
 
   echo "  [O2] Launching consumer for batch ${BATCH_ID}..."
 
+  # time \
+  # o2-analysis-lf-lambdajetpolarizationionsderived \
+  #     -b \
+  #     --configuration "json://${JSON_CONSUMER_CONFIG}" \
+  #     --pipeline "lambdajetpolarizationionsderived:${THREADS}" \
+  #     --readers "$READERS" \
+  #     --aod-file "@${BATCH_INPUT_LIST}" \
+  #     --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
+  #     --shm-segment-size "$SHM_SIZE" \
+  #     > "$BATCH_LOG" 2>&1
   time \
   o2-analysis-lf-lambdajetpolarizationionsderived \
       -b \
       --configuration "json://${JSON_CONSUMER_CONFIG}" \
       --pipeline "lambdajetpolarizationionsderived:${THREADS}" \
-      --readers "$READERS" \
       --aod-file "@${BATCH_INPUT_LIST}" \
       --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
       --shm-segment-size "$SHM_SIZE" \

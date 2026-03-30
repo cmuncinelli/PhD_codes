@@ -185,7 +185,12 @@ for LINE in "${WAGON_LINES[@]}"; do
     # ------------------------------------------------------------------
     echo -n "  [1/3] consumer        : ${CONS_SUFFIX}"
     # Consumer output goes to a per-config log file so failures are inspectable.
-    "$CONSUMER_SCRIPT" "$WORK_DIR" "$CONFIG_FILE" > "$WRAPPER_LOG" 2>&1
+    if [ -d /sys/devices/system/node/node1 ]; then
+      # Binding consumer to the NUMA node1 (just convenience: producers are running in node 0 on jarvis15 right now)
+        numactl --cpunodebind=1 --preferred=1  "$CONSUMER_SCRIPT" "$WORK_DIR" "$CONFIG_FILE" > "$WRAPPER_LOG" 2>&1
+    else # If does not have more than one node, just revert to usual behavior!
+        "$CONSUMER_SCRIPT" "$WORK_DIR" "$CONFIG_FILE" > "$WRAPPER_LOG" 2>&1
+    fi
     CONSUMER_EXIT=$?
 
     if [ $CONSUMER_EXIT -ne 0 ] || [ ! -f "$CONSUMER_RESULT" ]; then

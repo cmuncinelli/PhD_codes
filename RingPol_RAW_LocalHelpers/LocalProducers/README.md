@@ -374,8 +374,8 @@ The **core monolithic orchestrator**.
 **Pipeline:**
 
 1. Split input into batches (20 files each — see [Hardware tuning reference](#7-hardware-tuning-reference))
-2. Stage data to SSD (LAN → local), with an inline progress bar
-3. Run O2 TableProducer with tuned parallelism and large SHM
+2. Stage data to SSD (LAN → local) using `nocache` to safely bypass the OS page cache, with an inline progress bar
+3. Run O2 TableProducer with tuned parallelism and strictly managed shared memory
 4. Store resulting `AO2D_*.root`
 5. Delete staged data (batch workspace freed immediately after each batch)
 6. Merge QA outputs via `hadd -j 16`
@@ -432,8 +432,6 @@ Resource configuration:
   Max usable cores   : 84
   Max usable threads : 168
   Used threads       : 42
-  Readers            : 8
-  I/O Threads        : 8
 ```
 
 All tuning knobs live in the `TUNING KNOBS` block near the top of the script and are documented in [Section 7](#7-hardware-tuning-reference).
@@ -534,8 +532,8 @@ The current defaults are tuned for:
 
 Each batch consists of **20 input files**, corresponding to roughly 60 GB of raw data.
 
-**Rationale (NUMA-aware):**  
-Since `run_all_producers.sh` pins execution to NUMA node 0 (`numactl --cpunodebind=0 --preferred=0`), only ~257 GB of the 512 GB RAM is available to the process. 20 files at ~3 GB each keeps the entire LAN-to-SSD transfer resident in the Linux Page Cache within node 0's memory budget, without competing with the 128 GB SHM allocation or forcing cross-socket memory spills.
+**Rationale (Cache Bypassing & NUMA):**
+Since `run_all_producers.sh` pins execution to NUMA node 0 (`numactl --cpunodebind=0 --preferred=0`), memory management is critical. Data staging from the LAN to the SSD is performed using `nocache` to explicitly bypass the Linux Page Cache. This prevents the OS from filling up Node 0's RAM with inactive file data or spilling over into Node 1 across the Infinity Fabric. 20 files is the sweet spot that provides enough raw data to keep the pipeline saturated without incurring excessive DPL startup/teardown overhead between batches.
 
 > For quick debugging runs, 10 files per batch is also acceptable.
 
@@ -578,17 +576,10 @@ Profiling showed `sys > user` time, indicating the OS was overwhelmed by ZMQ int
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `READERS` | 8 | Number of AOD reader processes |
-| `IO_THREADS` | 8 | Writer-side I/O threads |
-| `SHM_SIZE` | 128 GB | Shared memory segment for DPL messaging |
-| `MEM_RATE_LIMIT` | 8 GB/s | AOD memory rate limit, scaled for 20-file batches |
+| `SHM_SIZE` | 64 GB | Shared memory segment for DPL messaging |
+| `MEM_RATE_LIMIT` | 6 GB/s | AOD memory rate limit |
 
-**Reader safeguard:**  
-If `REQUESTED_READERS > FILES_PER_BATCH`, readers are automatically capped to `FILES_PER_BATCH`. This prevents a crash caused by requesting more reader processes than there are input files in a batch. A warning is printed:
-
-```
-[I/O Tuning] WARNING: Requested readers (8) exceeds files per batch (5). Capping READERS to 5.
-```
+**Why no explicit readers?** The `--readers` argument is intentionally omitted from the DPL pipeline. Explicitly defining multiple parallel readers acts as a multiplier against the `MEM_RATE_LIMIT`. This causes the readers to ingest raw SSD data much faster than the downstream CPU-bound tasks (like `pid-tpc`) can process it, instantly flooding the shared memory queues and triggering fatal `[WARN] Not enough resources to schedule computation` pipeline crashes. Relying on the default reader behavior and manually managing the `MEM_RATE_LIMIT` ensures a stable, sustainable data flow.
 
 > **Spawners** (`--spawners`) were considered but disabled. They appear to fail when configuring DPL links in heavily pipelined workflows. The relevant commented-out line is kept in the script for future reference.
 
