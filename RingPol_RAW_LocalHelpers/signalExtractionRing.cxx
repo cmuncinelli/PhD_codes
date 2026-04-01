@@ -1686,6 +1686,341 @@ void drawSigAndDashedLines(TGraphErrors* gr, TDirectory* outDir, const std::stri
     c->Write();
 }
 
+// PURPOSE:
+//   For each analysis variation (Ring, RingKinematicCuts, etc.), perform signal extraction
+//   on the denominator only (the invariant mass spectrum), integrated over ALL angular bins.
+//   This is a broad QA that does NOT analyze any differential observable over angles.
+//
+//   Stored outputs:
+//     1) hDenomQA_MassDensity_* : Full density histogram with a gaus+pol2 combined fit attached
+//                                  (analogous to hMassDensity_BinX, but angle-integrated).
+//     2) grDenomQA_Sidebands_*  : TGraphErrors of sideband points with a pol2 background fit
+//                                  attached to it (visible in TBrowser as a curve through the
+//                                  sideband markers). Color: green.
+//     3) hDenomQA_PeakRegion_*  : Clone of the density histogram that is non-zero ONLY in
+//                                  [mu - 4sigma, mu + 4sigma] (the bin-counting window).
+//                                  Displayed as red hatched columns.
+//     4) cDenomQA_*             : Summary TCanvas with drawing order:
+//                                    a) Full density histogram (black, error bars, base layer)
+//                                    b) Peak-region histogram  (red hatched columns)
+//                                    c) Sideband graph markers (green open circles)
+//                                    d) Background pol2 fit    (green dashed, extrapolated)
+//                                    e) Combined gaus+pol2 fit (blue solid)
+//
+// ARGUMENTS:
+//   hMassSigExtract -- TH1D* with the raw Lambda candidate counts on the mass axis,
+//                      already integrated over all angular bins. This is exactly
+//                      hMassSigExtract from the input file.
+//   outDir          -- TDirectory where all QA output will be written.
+//   qaName          -- Label string used in all histogram/canvas names to avoid ROOT name
+//                      clashes. Typically the variation name ("Ring", "RingKinematicCuts"...).
+//   massMin         -- Lower fit/display limit on the mass axis (GeV/c^2).
+//   massMax         -- Upper fit/display limit on the mass axis (GeV/c^2).
+// =================================================================================================
+void PerformDenominatorQA(TH1D* hMassSigExtract, TDirectory* outDir,
+                           const TString& qaName,
+                           double massMin, double massMax)
+{
+    // -----------------------------------------------------------------------------------------
+    // Input guard
+    // -----------------------------------------------------------------------------------------
+    if (!hMassSigExtract || !outDir) {
+        std::cerr << "[PerformDenominatorQA] ERROR: null input pointer for " << qaName << ".\n";
+        return;
+    }
+    std::cout << "  [DenomQA] Running denominator QA for variation: " << qaName << std::endl;
+ 
+    // Basic statistics guard: do not attempt a fit on an empty or near-empty histogram.
+    if (hMassSigExtract->GetEntries() < 30 || hMassSigExtract->Integral() <= 30.0) {
+        std::cout << "  [DenomQA] Too few entries for " << qaName
+                  << " (" << hMassSigExtract->GetEntries() << " entries). Skipping.\n";
+        return;
+    }
+ 
+    // -----------------------------------------------------------------------------------------
+    // Step 1: Convert raw counts to density (counts / GeV) for fitting
+    // -----------------------------------------------------------------------------------------
+    // hMassSigExtract already carries the full angle-integrated Lambda candidate counts --
+    // it is exactly the denominator of the ring observable. We clone it and scale by bin
+    // width to get dN/dM, consistent with the density convention used throughout this code.
+    // The original histogram is NOT modified (it is input-file-owned).
+    TH1D* hMassDensity = (TH1D*)hMassSigExtract->Clone(
+        Form("hDenomQA_MassDensity_%s", qaName.Data())
+    );
+    hMassDensity->SetTitle(
+        Form("Inv. Mass Density - %s;M_{p#pi} (GeV/c^{2});dN/dM (GeV^{-1}c^{2})", qaName.Data())
+    );
+    double total_counts = hMassDensity->Integral(); // Saving for later rescaling
+    hMassDensity->Scale(1.0/total_counts); // Better normalization, just for fit
+    hMassDensity->Scale(1.0, "width"); // each bin content /= bin_width  (density convention)
+ 
+    // -----------------------------------------------------------------------------------------
+    // Step 2: Combined gaus + pol2 fit on the density histogram
+    // -----------------------------------------------------------------------------------------
+    // Seeds estimated from the histogram shape, same strategy as the integrated SimFit
+    // in Step 9 of ExtractObservable2D.
+    double maxDens   = hMassDensity->GetMaximum();
+    double estMu     = hMassDensity->GetBinCenter(hMassDensity->GetMaximumBin());
+    double firstBinC = hMassDensity->GetBinContent(1);
+    double lastBinC  = hMassDensity->GetBinContent(hMassDensity->GetNbinsX());
+    double estBkg    = (firstBinC + lastBinC) / 2.0;
+    if (estBkg < 0.0) estBkg = 0.0;
+    double estSigAmp = maxDens - estBkg;
+    if (estSigAmp < 0.0) estSigAmp = maxDens * 0.5; // fallback for oddly-shaped histograms
+ 
+    TF1* fitCombined = new TF1(
+        Form("fDenomQA_Combined_%s", qaName.Data()),
+        "gaus(0) + pol2(3)", massMin, massMax
+    );
+    // par[0] = Gaussian amplitude, par[1] = mean, par[2] = sigma,
+    // par[3] = c0, par[4] = c1, par[5] = c2 of background polynomial
+    fitCombined->SetParameter(0, estSigAmp);
+    fitCombined->SetParameter(1, estMu);
+    fitCombined->SetParameter(2, 0.002);   // typical Lambda resolution ~2 MeV
+    fitCombined->SetParameter(3, estBkg);
+    fitCombined->SetParameter(4, 0.0);
+    fitCombined->SetParameter(5, 0.0);
+    // Physically motivated limits (same convention as ExtractObservable2D Step 4):
+    fitCombined->SetParLimits(0, 0.0, 1e18);          // amplitude non-negative
+    fitCombined->SetParLimits(1, lambdaPDGMassApprox - 0.01, lambdaPDGMassApprox + 0.01);
+    fitCombined->SetParLimits(2, 0.0005, 0.008);       // sigma: 0.5 MeV to 8 MeV
+    fitCombined->SetLineColor(kBlue);
+    fitCombined->SetLineWidth(2);
+    fitCombined->SetLineStyle(1); // solid
+ 
+    // "Q" = quiet, "0" = do NOT draw yet (we manage Z-order manually on the canvas),
+    // "R" = respect TF1 range, "S" = return TFitResultPtr for validity check.
+    TFitResultPtr rCombined = hMassDensity->Fit(fitCombined, "Q 0 R S");
+ 
+    // Extract mu and sigma used to define sideband / signal regions below.
+    // Fall back to PDG-approximate values if the fit did not converge.
+    double fitMu    = lambdaPDGMassApprox;
+    double fitSigma = 0.002;
+    bool   fitOK    = rCombined->IsValid();
+    if (fitOK) {
+        fitMu    = fitCombined->GetParameter(1);
+        fitSigma = fitCombined->GetParameter(2);
+        std::cout << Form("  [DenomQA] %s: mu=%.5f GeV/c^2, sigma=%.5f GeV/c^2, status=%d\n",
+                          qaName.Data(), fitMu, fitSigma, (int)rCombined);
+    } else {
+        std::cout << "  [DenomQA] WARNING: Combined fit did not fully converge for "
+                  << qaName << " (status=" << (int)rCombined
+                  << "). Using PDG-approximate values for region definitions.\n";
+    }
+
+    // Now that we extracted the parameters, can go back to old scales (no longer any unstable combined fits):
+    hMassDensity->Scale(total_counts);
+    // Scaling the parameters of the fit as well (made a copy function to not have any covariance-related parameters):
+    TF1* fDraw = new TF1("fDraw", Form("%f * (gaus(0) + pol2(3))", total_counts), massMin, massMax);
+    for (int i = 0; i < 6; ++i) {fDraw->SetParameter(i, fitCombined->GetParameter(i));}
+    fDraw->SetParameter(0, fDraw->GetParameter(0) * total_counts);
+    fDraw->SetParameter(3, fDraw->GetParameter(3) * total_counts);
+    fDraw->SetParameter(4, fDraw->GetParameter(4) * total_counts);
+    fDraw->SetParameter(5, fDraw->GetParameter(5) * total_counts);
+ 
+    // -----------------------------------------------------------------------------------------
+    // Step 3: Sideband TGraphErrors + pol2 background fit
+    // -----------------------------------------------------------------------------------------
+    // Exclude [mu - 6sigma, mu + 6sigma] from the sideband fit, consistent with the
+    // 6-sigma exclusion zone in ExtractObservable2D Step 5.
+    TGraphErrors* grSidebands = new TGraphErrors();
+    grSidebands->SetName(Form("grDenomQA_Sidebands_%s", qaName.Data()));
+    grSidebands->SetTitle(
+        Form("Sideband Points (6#sigma excl.) - %s;M_{p#pi} (GeV/c^{2});dN/dM (GeV^{-1}c^{2})", qaName.Data())
+    );
+ 
+    int ptIdx = 0;
+    for (int jBin = 1; jBin <= hMassDensity->GetNbinsX(); ++jBin) {
+        double x = hMassDensity->GetBinCenter(jBin);
+ 
+        bool inLeftSideband  = (x >= massMin) && (x <= (fitMu - 6.0 * fitSigma));
+        bool inRightSideband = (x >= (fitMu + 6.0 * fitSigma)) && (x <= massMax);
+ 
+        if (inLeftSideband || inRightSideband) {
+            double val = hMassDensity->GetBinContent(jBin);
+            double err = hMassDensity->GetBinError(jBin);
+ 
+            // Same guard as Step 5 of ExtractObservable2D: skip empty or error-free bins
+            if (val > 0.0 && err > 0.0) {
+                grSidebands->SetPoint(ptIdx, x, val);
+                grSidebands->SetPointError(ptIdx, 0.0, err); // x-error = 0 for pol2 fit
+                ptIdx++;
+            }
+        }
+    }
+ 
+    // Style: green open circles
+    grSidebands->SetMarkerStyle(24);
+    grSidebands->SetMarkerSize(1.0);
+    grSidebands->SetMarkerColor(kGreen + 2);
+    grSidebands->SetLineColor(kGreen + 2);
+ 
+    // pol2 background fit (same degree as in ExtractObservable2D Step 5)
+    TF1* fitBkg = new TF1(
+        Form("fDenomQA_Bkg_%s", qaName.Data()),
+        "pol2", massMin, massMax
+    );
+    fitBkg->SetLineColor(kGreen + 2);
+    fitBkg->SetLineWidth(2);
+    fitBkg->SetLineStyle(2); // dashed: visually distinguishes background from combined fit
+ 
+    bool bkgFitOK = false;
+    if (grSidebands->GetN() >= 5) {
+        TFitResultPtr rBkg = grSidebands->Fit(fitBkg, "Q 0 S");
+        bkgFitOK = rBkg->IsValid();
+        if (!bkgFitOK)
+            std::cout << "  [DenomQA] WARNING: Sideband pol2 fit did not converge for "
+                      << qaName << ".\n";
+    } else {
+        std::cout << "  [DenomQA] WARNING: Only " << grSidebands->GetN()
+                  << " sideband points for " << qaName
+                  << " -- skipping background fit (need >= 5).\n";
+    }
+ 
+    // Attach the background fit to the graph so it is drawn automatically in TBrowser
+    grSidebands->GetListOfFunctions()->Add(fitBkg);
+ 
+    // -----------------------------------------------------------------------------------------
+    // Step 4: Peak-region histogram (non-zero only in [mu - 4sigma, mu + 4sigma])
+    // -----------------------------------------------------------------------------------------
+    // This gives a visual representation of the exact bin-counting integration window
+    // used in Step 6 of ExtractObservable2D. Bins outside the window are zeroed out.
+    TH1D* hPeakRegion = (TH1D*)hMassDensity->Clone(
+        Form("hDenomQA_PeakRegion_%s", qaName.Data())
+    );
+    hPeakRegion->SetTitle(
+        Form("Signal Region [#mu#pm4#sigma] - %s;M_{p#pi} (GeV/c^{2});dN/dM (GeV^{-1}c^{2})", qaName.Data())
+    );
+    hPeakRegion->Reset(); // zero all bins; axis structure preserved by Clone
+    if (hPeakRegion->GetSumw2N() == 0) hPeakRegion->Sumw2();
+ 
+    int peakBinLo = hMassDensity->FindBin(fitMu - 4.0 * fitSigma);
+    int peakBinHi = hMassDensity->FindBin(fitMu + 4.0 * fitSigma);
+    for (int jBin = peakBinLo; jBin <= peakBinHi; ++jBin) {
+        hPeakRegion->SetBinContent(jBin, hMassDensity->GetBinContent(jBin));
+        hPeakRegion->SetBinError(jBin,   hMassDensity->GetBinError(jBin));
+    }
+ 
+    // Style: red hatched columns
+    hPeakRegion->SetFillColor(kRed);
+    hPeakRegion->SetFillStyle(3354); // forward-diagonal hatching
+    hPeakRegion->SetLineColor(kRed);
+    hPeakRegion->SetLineWidth(1);
+ 
+    // -----------------------------------------------------------------------------------------
+    // Step 5: Write individual objects to the output directory BEFORE building the canvas
+    // -----------------------------------------------------------------------------------------
+    // Writing before canvas creation avoids ROOT ownership ambiguity: once written, the
+    // objects are safe to draw on the canvas and to delete at the end of this function.
+    outDir->cd();
+ 
+    // Attach the combined fit to the histogram so TBrowser draws it automatically on open.
+    hMassDensity->GetListOfFunctions()->Add(fDraw); // fDraw is now ROOT-owned by hMassDensity
+    hMassDensity->Write();  // Full density histogram + combined fit
+    hPeakRegion->Write();   // Peak-only histogram
+    grSidebands->Write();   // Sideband graph + pol2 background fit
+ 
+    // -----------------------------------------------------------------------------------------
+    // Step 6: Build summary canvas
+    // -----------------------------------------------------------------------------------------
+    // Drawing order chosen to avoid visual information loss when superposing with "same":
+    //   a) Full density histogram (base layer, sets axis range, black with error bars)
+    //   b) Peak region histogram  (red filled columns -- sits ON TOP of base in peak region)
+    //   c) Sideband graph markers (green open circles -- visible in sideband regions)
+    //   d) Background pol2 extrapolation (green dashed line -- runs through sidebands into peak)
+    //   e) Combined gaus+pol2 fit (blue solid line -- drawn last so it is always visible)
+ 
+    TCanvas* cQA = new TCanvas(
+        Form("cDenomQA_%s", qaName.Data()),
+        Form("Denominator QA - %s", qaName.Data()),
+        1000, 700
+    );
+    cQA->SetLeftMargin(0.13);
+    cQA->SetBottomMargin(0.13);
+    cQA->SetRightMargin(0.05);
+    cQA->SetTopMargin(0.07);
+ 
+    // -- a) Full density histogram --
+    // SetStats(0): suppress the statistics box (it clutters the QA canvas)
+    // The fit function was just attached above; drawing the histogram will also draw the fit.
+    // We suppress that here so we can control Z-order manually with explicit Draw calls below.
+    hMassDensity->SetStats(0);
+    hMassDensity->SetLineColor(kBlack);
+    hMassDensity->SetLineWidth(2);
+    hMassDensity->SetMarkerStyle(20);
+    hMassDensity->SetMarkerSize(0.7);
+    hMassDensity->SetMarkerColor(kBlack);
+    // Draw without the attached fit function to maintain our explicit Z-order.
+    // We use "HIST E" to show error bars but suppress the function list auto-draw by
+    // temporarily disabling the function painting; then redraw manually below.
+    // Simpler approach: draw with "E FUNC" at the end -- ROOT will draw data then functions.
+    // We want functions drawn AFTER the peak histogram and sideband graph, so we use "E" first.
+    hMassDensity->Draw("E"); // This sets axis range; fit function is drawn automatically AFTER
+ 
+    // Temporarily remove the fit from the function list so ROOT doesn't auto-draw it yet.
+    // We will draw it manually after the other objects, then re-add it.
+    hMassDensity->GetListOfFunctions()->Remove(fDraw);
+ 
+    // Re-draw the histogram without attached functions (clean base layer)
+    hMassDensity->Draw("E");
+ 
+    // -- b) Peak-region histogram (red filled columns) --
+    hPeakRegion->Draw("HIST same"); // "HIST" forces column drawing; "same" overlays on base
+ 
+    // -- c) Sideband graph (green open circle markers) --
+    if (grSidebands->GetN() > 0) {
+        // "P same" = draw markers only on the same pad; attached fit function draws automatically
+        // after the markers. To preserve Z-order, we remove the fit from the graph's list
+        // here too and draw it explicitly below.
+        grSidebands->GetListOfFunctions()->Remove(fitBkg);
+        grSidebands->Draw("P same");
+ 
+        // -- d) Background pol2 extrapolation (green dashed) --
+        if (bkgFitOK) fitBkg->Draw("same");
+ 
+        // Re-attach for TBrowser (doesn't affect the already-rendered canvas)
+        grSidebands->GetListOfFunctions()->Add(fitBkg);
+    }
+ 
+    // -- e) Combined gaus+pol2 fit (blue solid, topmost layer) --
+    if (fitOK) fitCombined->Draw("same");
+ 
+    // Re-attach the combined fit to the histogram (for TBrowser; Write() already captured it)
+    hMassDensity->GetListOfFunctions()->Add(fDraw);
+ 
+    // -----------------------------------------------------------------------------------------
+    // Legend
+    // -----------------------------------------------------------------------------------------
+    TLegend* leg = new TLegend(0.54, 0.57, 0.92, 0.91);
+    leg->SetBorderSize(0);
+    leg->SetFillStyle(0);
+    leg->SetTextSize(0.033);
+    leg->AddEntry(hMassDensity, "Invariant mass", "lep");
+    leg->AddEntry(hPeakRegion, Form("Signal region [#mu #pm 4#sigma]"), "f");
+    leg->AddEntry(grSidebands, "Sideband points (6#sigma excl.)", "p");
+    leg->AddEntry(fitBkg, "Background pol2 fit", "l");
+    leg->AddEntry(fDraw, "Signal + bkg fit (gaus+pol2)", "l");
+    leg->Draw();
+ 
+    // Write the canvas to the output directory
+    outDir->cd();
+    cQA->Write();
+ 
+    // -----------------------------------------------------------------------------------------
+    // Cleanup
+    // -----------------------------------------------------------------------------------------
+    // fDraw: owned by hMassDensity via GetListOfFunctions() -- deleted with hMassDensity.
+    // fitBkg:      owned by grSidebands via GetListOfFunctions() -- deleted with grSidebands.
+    // cQA: does not own the drawn objects (only holds pointers); safe to delete independently.
+    delete hMassDensity;  // also deletes fDraw
+    delete hPeakRegion;
+    delete grSidebands;   // also deletes fitBkg
+    delete cQA;
+ 
+    std::cout << "  [DenomQA] Done for " << qaName << ". Objects written to "
+              << outDir->GetPath() << std::endl;
+}
+
 // ------------------------------------------------------------------------------------------------
 // Main Macro
 // ------------------------------------------------------------------------------------------------
@@ -2038,6 +2373,22 @@ void signalExtractionRing(const std::string& inputFilePath, const std::string& o
         drawSigAndDashedLines(gSigIntegrated, outDirSig, "cSigIntegrated_" + var);
         drawSigAndDashedLines(gSigLambdaPt,   outDirSig, "cSigLambdaPt_" + var);
         drawSigAndDashedLines(gSigMass,       outDirSig, "cSigMass_" + var);
+
+        // =========================================================================================
+        // Step 10 (QA): Denominator-only signal extraction, integrated over all angles
+        // =========================================================================================
+        // Fit the invariant mass spectrum of ALL selected Lambda candidates with a gaus+pol2,
+        // define the signal and sideband regions, and save a summary canvas.
+        // hMassSigExtract is the dedicated denominator histogram from the input file -- it
+        // already contains the full angle-integrated counts, so no projection is needed.
+        std::cout << "\n[Step 10 DenomQA] Running denominator QA for " << var << "..." << std::endl;
+        // Create a dedicated subdirectory to keep the QA output self-contained
+        TDirectory* dirDenomQA = outDirVar->mkdir("DenominatorQA");
+
+        // Call function:
+        PerformDenominatorQA(hMassSigExtract, dirDenomQA,
+                                TString(var),  // unique label for ROOT name generation
+                                massMin, massMax);
     } // <--- This closes the variation loop ("Ring", "RingKinematicCuts", etc.)
 
     // Clean up files
