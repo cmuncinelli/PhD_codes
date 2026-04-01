@@ -1750,8 +1750,6 @@ void PerformDenominatorQA(TH1D* hMassSigExtract, TDirectory* outDir,
     hMassDensity->SetTitle(
         Form("Inv. Mass Density - %s;M_{p#pi} (GeV/c^{2});dN/dM (GeV^{-1}c^{2})", qaName.Data())
     );
-    double total_counts = hMassDensity->Integral(); // Saving for later rescaling
-    hMassDensity->Scale(1.0/total_counts); // Better normalization, just for fit
     hMassDensity->Scale(1.0, "width"); // each bin content /= bin_width  (density convention)
  
     // -----------------------------------------------------------------------------------------
@@ -1807,16 +1805,6 @@ void PerformDenominatorQA(TH1D* hMassSigExtract, TDirectory* outDir,
                   << qaName << " (status=" << (int)rCombined
                   << "). Using PDG-approximate values for region definitions.\n";
     }
-
-    // Now that we extracted the parameters, can go back to old scales (no longer any unstable combined fits):
-    hMassDensity->Scale(total_counts);
-    // Scaling the parameters of the fit as well (made a copy function to not have any covariance-related parameters):
-    TF1* fDraw = new TF1("fDraw", Form("%f * (gaus(0) + pol2(3))", total_counts), massMin, massMax);
-    for (int i = 0; i < 6; ++i) {fDraw->SetParameter(i, fitCombined->GetParameter(i));}
-    fDraw->SetParameter(0, fDraw->GetParameter(0) * total_counts);
-    fDraw->SetParameter(3, fDraw->GetParameter(3) * total_counts);
-    fDraw->SetParameter(4, fDraw->GetParameter(4) * total_counts);
-    fDraw->SetParameter(5, fDraw->GetParameter(5) * total_counts);
  
     // -----------------------------------------------------------------------------------------
     // Step 3: Sideband TGraphErrors + pol2 background fit
@@ -1915,7 +1903,7 @@ void PerformDenominatorQA(TH1D* hMassSigExtract, TDirectory* outDir,
     outDir->cd();
  
     // Attach the combined fit to the histogram so TBrowser draws it automatically on open.
-    hMassDensity->GetListOfFunctions()->Add(fDraw); // fDraw is now ROOT-owned by hMassDensity
+    hMassDensity->GetListOfFunctions()->Add(fitCombined); // fitCombined is now ROOT-owned by hMassDensity
     hMassDensity->Write();  // Full density histogram + combined fit
     hPeakRegion->Write();   // Peak-only histogram
     grSidebands->Write();   // Sideband graph + pol2 background fit
@@ -1959,7 +1947,7 @@ void PerformDenominatorQA(TH1D* hMassSigExtract, TDirectory* outDir,
  
     // Temporarily remove the fit from the function list so ROOT doesn't auto-draw it yet.
     // We will draw it manually after the other objects, then re-add it.
-    hMassDensity->GetListOfFunctions()->Remove(fDraw);
+    hMassDensity->GetListOfFunctions()->Remove(fitCombined);
  
     // Re-draw the histogram without attached functions (clean base layer)
     hMassDensity->Draw("E");
@@ -1986,7 +1974,7 @@ void PerformDenominatorQA(TH1D* hMassSigExtract, TDirectory* outDir,
     if (fitOK) fitCombined->Draw("same");
  
     // Re-attach the combined fit to the histogram (for TBrowser; Write() already captured it)
-    hMassDensity->GetListOfFunctions()->Add(fDraw);
+    hMassDensity->GetListOfFunctions()->Add(fitCombined);
  
     // -----------------------------------------------------------------------------------------
     // Legend
@@ -1999,7 +1987,7 @@ void PerformDenominatorQA(TH1D* hMassSigExtract, TDirectory* outDir,
     leg->AddEntry(hPeakRegion, Form("Signal region [#mu #pm 4#sigma]"), "f");
     leg->AddEntry(grSidebands, "Sideband points (6#sigma excl.)", "p");
     leg->AddEntry(fitBkg, "Background pol2 fit", "l");
-    leg->AddEntry(fDraw, "Signal + bkg fit (gaus+pol2)", "l");
+    leg->AddEntry(fitCombined, "Signal + bkg fit (gaus+pol2)", "l");
     leg->Draw();
  
     // Write the canvas to the output directory
@@ -2009,10 +1997,10 @@ void PerformDenominatorQA(TH1D* hMassSigExtract, TDirectory* outDir,
     // -----------------------------------------------------------------------------------------
     // Cleanup
     // -----------------------------------------------------------------------------------------
-    // fDraw: owned by hMassDensity via GetListOfFunctions() -- deleted with hMassDensity.
+    // fitCombined: owned by hMassDensity via GetListOfFunctions() -- deleted with hMassDensity.
     // fitBkg:      owned by grSidebands via GetListOfFunctions() -- deleted with grSidebands.
     // cQA: does not own the drawn objects (only holds pointers); safe to delete independently.
-    delete hMassDensity;  // also deletes fDraw
+    delete hMassDensity;  // also deletes fitCombined
     delete hPeakRegion;
     delete grSidebands;   // also deletes fitBkg
     delete cQA;
