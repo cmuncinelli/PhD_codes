@@ -1748,7 +1748,7 @@ void PerformDenominatorQA(TH1D* hMassSigExtract, TDirectory* outDir,
         Form("hDenomQA_MassDensity_%s", qaName.Data())
     );
     hMassDensity->SetTitle(
-        Form("Inv. Mass Density - %s;M_{p#pi} (GeV/c^{2});dN/dM (GeV^{-1}c^{2})", qaName.Data())
+        Form("Invariant Mass Density - %s;M_{p#pi} (GeV/c^{2});dN/dM (GeV^{-1}c^{2})", qaName.Data())
     );
     hMassDensity->Scale(1.0, "width"); // each bin content /= bin_width  (density convention)
  
