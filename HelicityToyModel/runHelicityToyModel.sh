@@ -17,6 +17,24 @@
 #       interplay between the magnetic field direction and the minimum-DCA
 #       requirement applied to daughter tracks.
 #
+# PARALLELISM DESIGN
+# ------------------
+# All jobs from ALL families are collected into a single queue first, then
+# dispatched simultaneously up to MAX_PARALLEL concurrent processes.
+# On a 192-core machine with 24 total runs, the default MAX_PARALLEL=24
+# launches every job at once and the total wall time equals the slowest
+# single run.
+#
+# Dispatch strategy (in order of preference):
+#   1. GNU parallel (parallel --jobs N): preferred; handles job tracking,
+#      per-job logging via --joblog, and clean failure reporting.
+#   2. Pure bash background pool: fallback if parallel is not installed;
+#      uses the same subshell structure with a lightweight semaphore.
+#
+# The family structure is kept purely for the --family filter convenience:
+# it controls which jobs enter the queue, not when they run.
+# run_family_header/footer are informational only and contain NO wait calls.
+#
 # PARAMETER FAMILIES
 # ------------------
 # The script runs the following scan families, each producing an independent
@@ -28,13 +46,8 @@
 #
 #   Family 1: MAGNETIC FIELD SIGN
 #       Bz = +0.5 T  vs  Bz = -0.5 T
-#       The DCA-asymmetry sign must flip with the field.  This is the most
-#       direct test of the mechanism: a positive field should give a positive
-#       <R_proxy> at eta>0 and negative at eta<0 (or vice versa), and the
-#       signs must swap when B is reversed.  Any other behavior indicates
-#       that the asymmetry has a different origin.
-#       Reference: The ALICE solenoidal magnet operated at both polarities
-#       during Run 2/3, making this comparison experimentally accessible.
+#       The DCA-asymmetry sign must flip with the field.  The cos(theta*)
+#       helicity asymmetry is field-independent and must NOT flip.
 #
 #   Family 2: DAUGHTER pT THRESHOLD
 #       pT_min = 0.10, 0.15, 0.20, 0.30 GeV/c (applied to both daughters)
@@ -56,7 +69,6 @@
 #       The 0.0/0.0 baseline must produce a flat phi* distribution.
 #       Reference: ALICE V0 topological cuts for Lambda selection typically
 #       require DCA(pion to PV) > 0.1 cm and DCA(proton to PV) > 0.05 cm
-#       (see ALICE-PUBLIC-2017-005 and the strangeness PWG recommendations).
 #
 #   Family 4: LAMBDA KINEMATIC WINDOW
 #       Window A: pT in [0.3, 10.0] GeV/c, |y| < 0.9  (full acceptance)
@@ -88,41 +100,43 @@
 # USAGE
 # -----
 #   chmod +x runHelicityToyModel.sh
-#   ./runHelicityToyModel.sh                   # Run all families
-#   ./runHelicityToyModel.sh --family 1        # Run only Family 1
-#   ./runHelicityToyModel.sh --family 2 3      # Run Families 2 and 3
-#   ./runHelicityToyModel.sh --dry-run         # Print commands without running
-#   ./runHelicityToyModel.sh --help            # Show this help
-#
-# PARALLELISM
-# -----------
-# Runs within the same family are launched in the background (parallel) by
-# default, limited to MAX_PARALLEL simultaneous ROOT processes to avoid
-# overloading the machine.  Runs from different families are sequential
-# (the script waits for a family to finish before starting the next).
-# Set MAX_PARALLEL=1 to force fully sequential execution.
+#   ./runHelicityToyModel.sh                    # Run all families (all at once)
+#   ./runHelicityToyModel.sh --family 1         # Register and run only Family 1
+#   ./runHelicityToyModel.sh --family 2 3       # Families 2 and 3 only
+#   ./runHelicityToyModel.sh --jobs 8           # Override parallelism limit
+#   ./runHelicityToyModel.sh --dry-run          # Print jobs without executing
+#   ./runHelicityToyModel.sh --list             # List all registered jobs and exit
+#   ./runHelicityToyModel.sh --help             # Show this help
 #
 # OUTPUT STRUCTURE
 # ----------------
 #   BASE_DIR/
-#     baseline/
-#       helicity_baseline.root
-#       plots/
-#     field_pos/     field_neg/
-#     ptcut_010/     ptcut_015/     ptcut_020/     ptcut_030/
-#     dcacut_none/   dcacut_loose/  dcacut_std/    dcacut_tight/
-#     window_full/   window_ring/   window_hard/
-#     temp_025/      temp_030/      temp_035/      temp_045/
-#     stats_100k/    stats_500k/    stats_2M/      stats_5M/
+#     baseline/        helicity_baseline.root   plots/
+#     field_pos/       field_neg/
+#     ptcut_000/ ... ptcut_030/
+#     dcacut_none/ ... dcacut_tight/
+#     window_full/     window_ring/     window_hard/
+#     temp_025/ ... temp_045/
+#     stats_100k/ ... stats_50M/
 #     logs/
-#       <run_name>.log
+#       <run_name>.log           (one per job: generator + plotter combined)
+#       parallel_joblog.tsv      (GNU parallel timing/status log, if used)
 #
 # REQUIREMENTS
 # ------------
-#   - ROOT 6.14+ with C++14 support
-#   - The two .cxx files must be in the same directory as this script
-#     (or in SCRIPT_DIR as set below)
-#   - Sufficient disk space: each ROOT file is ~5-20 MB depending on N
+#   - ROOT 6.14+ with C++14 support (root must be in PATH)
+#   - helicityEfficiencyToyModel.cxx and plotHelicityEfficiency.cxx in the
+#     same directory as this script
+#   - GNU parallel (optional but recommended; apt install parallel)
+#   - Bash 4.0+
+#
+# DISK ESTIMATE
+# -------------
+#   Each ROOT file (histograms only, no TTrees): ~2-4 MB after ROOT zlib
+#   compression (independent of N; all data is binned into fixed histograms).
+#   Each plots/ folder: ~5-15 MB of PDFs (13 files).
+#   Total for 24 runs: ~200-450 MB.
+#   Log files: ~50-200 KB per run; negligible.
 #
 # =============================================================================
 
@@ -132,20 +146,27 @@ set -euo pipefail   # Exit on error, undefined variable, or pipe failure
 # CONFIGURATION -- edit these paths as needed
 # =============================================================================
 
-# Directory where this script and the .cxx files live
+# Directory containing this script and the .cxx macros
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Base output directory for all ROOT files and plot folders
 BASE_DIR="/home/users/cicerodm/RingPol/HelicityToyModel"
 
-# Log directory
+# Log directory (on SSD: no buffering concerns; each log is written
+# sequentially within its own subshell, so concurrent writes go to
+# separate files and there is no interleaving risk)
 LOG_DIR="${BASE_DIR}/logs"
 
-# Maximum number of simultaneous ROOT processes within one family
-MAX_PARALLEL=8
+# Maximum concurrent ROOT processes.
+# Default: 30 (all jobs at once on a 192-core machine with 24 total runs).
+# Set to 0 to let GNU parallel use all available cores (parallel -j 0),
+# or to any positive integer to cap concurrency explicitly.
+MAX_PARALLEL=30
 
-# Default number of Lambdas per run (overridden by Family 6)
-DEFAULT_N=100000000 # Bumped from 1.000.000 to 100.000.000 (10.000.000 takes about 1m30s per run, and we have only 23 runs)
+# Default Lambda count per run.
+# At ~90 s per 10M Lambdas, 1B = ~900 s (~15 min) per run.
+# With 24 runs in parallel on 192 cores, total wall time ~ 15 min.
+DEFAULT_N=1000000000  # Bumped from 1.000.000 to 100.000.000 (10.000.000 takes about 1m30s per run, and we have only 23 runs)
 
 # ROOT executable (set to full path if not in PATH, e.g. /opt/root/bin/root)
 ROOT_EXE="root"
@@ -154,22 +175,42 @@ ROOT_EXE="root"
 GEN_MACRO="${SCRIPT_DIR}/helicityEfficiencyToyModel.cxx"
 PLT_MACRO="${SCRIPT_DIR}/plotHelicityEfficiency.cxx"
 
+
 # =============================================================================
 # ARGUMENT PARSING
 # =============================================================================
 
 DRY_RUN=0
-FAMILIES_TO_RUN=()   # Empty = run all
+LIST_ONLY=0
+FAMILIES_TO_RUN=()
 
 print_help() {
-    sed -n '/^# USAGE/,/^# OUTPUT/p' "$0" | head -n -2 | sed 's/^# //'
+    # Extract the USAGE block from this file's header comment
+    awk '/^# USAGE/,/^# OUTPUT/' "$0" | sed 's/^# *//' | head -n -1
     exit 0
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --help|-h)      print_help ;;
-        --dry-run|-n)   DRY_RUN=1; shift ;;
+        --help|-h)
+            print_help
+            ;;
+        --dry-run|-n)
+            DRY_RUN=1
+            shift
+            ;;
+        --list|-l)
+            LIST_ONLY=1
+            shift
+            ;;
+        --jobs|-j)
+            if [[ -z "${2:-}" || ! "${2}" =~ ^[0-9]+$ ]]; then
+                echo "ERROR: --jobs requires a non-negative integer argument." >&2
+                exit 1
+            fi
+            MAX_PARALLEL="$2"
+            shift 2
+            ;;
         --family|-f)
             shift
             while [[ $# -gt 0 && "$1" =~ ^[0-9]+$ ]]; do
@@ -177,14 +218,18 @@ while [[ $# -gt 0 ]]; do
                 shift
             done
             ;;
-        *) echo "Unknown argument: $1.  Use --help for usage." >&2; exit 1 ;;
+        *)
+            echo "Unknown argument: $1.  Use --help for usage." >&2
+            exit 1
+            ;;
     esac
 done
 
-# If no family specified, run all (0 through 6)
+# Default: run all families
 if [[ ${#FAMILIES_TO_RUN[@]} -eq 0 ]]; then
     FAMILIES_TO_RUN=(0 1 2 3 4 5 6)
 fi
+
 
 # =============================================================================
 # SETUP
@@ -194,62 +239,95 @@ fi
 mkdir -p "${BASE_DIR}"
 mkdir -p "${LOG_DIR}"
 
-# Verify the macros exist
-for MACRO in "${GEN_MACRO}" "${PLT_MACRO}"; do
-    if [[ ! -f "${MACRO}" ]]; then
-        echo "ERROR: Macro not found: ${MACRO}" >&2
-        echo "       Make sure helicityEfficiencyToyModel.cxx and"   >&2
-        echo "       plotHelicityEfficiency.cxx are in: ${SCRIPT_DIR}" >&2
-        exit 1
-    fi
-done
+# Verify macros exist (skip in list/dry-run mode so the user can check
+# the job table even before copying the .cxx files into place)
+if [[ ${DRY_RUN} -eq 0 && ${LIST_ONLY} -eq 0 ]]; then
+    for MACRO in "${GEN_MACRO}" "${PLT_MACRO}"; do
+        if [[ ! -f "${MACRO}" ]]; then
+            echo "ERROR: Macro not found: ${MACRO}" >&2
+            echo "       Place helicityEfficiencyToyModel.cxx and" >&2
+            echo "       plotHelicityEfficiency.cxx in: ${SCRIPT_DIR}" >&2
+            exit 1
+        fi
+    done
+fi
 
-# Timestamp for the start of this batch
-BATCH_START=$(date '+%Y-%m-%d %H:%M:%S')
-echo ""
-echo "============================================================"
-echo "  runHelicityToyModel.sh"
-echo "  Batch started : ${BATCH_START}"
-echo "  Script dir    : ${SCRIPT_DIR}"
-echo "  Output dir    : ${BASE_DIR}"
-echo "  Log dir       : ${LOG_DIR}"
-echo "  Max parallel  : ${MAX_PARALLEL}"
-echo "  Families      : ${FAMILIES_TO_RUN[*]}"
-echo "  Dry run       : ${DRY_RUN}"
-echo "============================================================"
-echo ""
+# Check for GNU parallel availability once upfront
+USE_GNU_PARALLEL=0
+if command -v parallel &>/dev/null; then
+    USE_GNU_PARALLEL=1
+fi
+
 
 # =============================================================================
-# CORE FUNCTIONS
+# JOB QUEUE
+# Each call to register_job() appends one record to JOB_QUEUE[].
+# Format: colon-delimited, 13 fields matching helicityEfficiencyToyModel args:
+#   NAME:SUBDIR:N:BZ:PTMIN_LAM:PTMAX_LAM:RAPMAX:T:PTMIN_P:PTMIN_PI:DCAMIN_P:DCAMIN_PI:SEED
+# No spaces in any field.
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# run_one  NAME  OUTDIR  N  BZ  PTMIN_LAM  PTMAX_LAM  RAPMAX  T  \
-#               PTMIN_P  PTMIN_PI  DCAMIN_P  DCAMIN_PI  SEED
-# -----------------------------------------------------------------------------
-# Launches ONE generator + plotter pair.
-# All numeric arguments correspond exactly to the helicityEfficiencyToyModel
-# function signature (in order).
-# The function is non-blocking (appends & to background).
-# It returns the PID of the root process via the global LAST_PID variable.
-# -----------------------------------------------------------------------------
-LAST_PID=0
+declare -a JOB_QUEUE=()
+declare -a JOB_FAMILIES=()   # Parallel array: family number for each job
 
-run_one() {
-    local NAME="$1"
-    local OUTDIR="${BASE_DIR}/$2"
-    local N="$3"
-    local BZ="$4"
-    local PTMIN_LAM="$5"
-    local PTMAX_LAM="$6"
-    local RAPMAX="$7"
-    local T="$8"
-    local PTMIN_P="$9"
-    local PTMIN_PI="${10}"
-    local DCAMIN_P="${11}"
-    local DCAMIN_PI="${12}"
-    local SEED="${13}"
+# family_in_scope: returns 0 (true) if family NUM is in the run list
+family_in_scope() {
+    local NUM="$1"
+    local FAM
+    for FAM in "${FAMILIES_TO_RUN[@]}"; do
+        [[ "${FAM}" == "${NUM}" ]] && return 0
+    done
+    return 1
+}
 
+# register_job: same 13-argument signature as the old run_one,
+# but only adds to the queue -- does NOT launch anything.
+#
+#   $1  NAME       short identifier, used for output subdir and log name
+#   $2  SUBDIR     subdirectory name under BASE_DIR  (usually same as NAME)
+#   $3  N          number of Lambdas
+#   $4  BZ         magnetic field [T]
+#   $5  PTMIN_LAM  Lambda min pT [GeV/c]
+#   $6  PTMAX_LAM  Lambda max pT [GeV/c]
+#   $7  RAPMAX     Lambda max |rapidity|
+#   $8  T          Boltzmann temperature [GeV]
+#   $9  PTMIN_P    proton min pT [GeV/c]
+#   $10 PTMIN_PI   pion min pT [GeV/c]
+#   $11 DCAMIN_P   proton min DCA_xy [cm]
+#   $12 DCAMIN_PI  pion min DCA_xy [cm]
+#   $13 SEED       TRandom3 seed
+register_job() {
+    local PACKED="$1:$2:$3:$4:$5:$6:$7:$8:$9:${10}:${11}:${12}:${13}"
+    JOB_QUEUE+=("${PACKED}")
+    JOB_FAMILIES+=("${CURRENT_FAMILY}")
+}
+
+# run_family_header: cosmetic only -- no wait, no throttle.
+# Records the current family number so register_job can tag each entry.
+CURRENT_FAMILY=0
+run_family_header() {
+    CURRENT_FAMILY="$1"
+    echo ""
+    echo "------------------------------------------------------------"
+    echo "  Registering Family ${1}: ${2}"
+    echo "------------------------------------------------------------"
+}
+
+
+# =============================================================================
+# JOB EXECUTOR (called once per job, in a subshell by the dispatcher)
+# =============================================================================
+# This function is exported so GNU parallel can call it in a child process.
+# It receives one colon-delimited packed argument string.
+
+execute_job() {
+    # Unpack the 13 fields
+    IFS=':' read -r \
+        NAME SUBDIR N BZ PTMIN_LAM PTMAX_LAM RAPMAX T \
+        PTMIN_P PTMIN_PI DCAMIN_P DCAMIN_PI SEED \
+        <<< "$1"
+
+    local OUTDIR="${BASE_DIR}/${SUBDIR}"
     local ROOT_FILE="${OUTDIR}/helicity_${NAME}.root"
     local PLOTS_DIR="${OUTDIR}/plots"
     local LOG_FILE="${LOG_DIR}/${NAME}.log"
@@ -257,123 +335,88 @@ run_one() {
     mkdir -p "${OUTDIR}"
     mkdir -p "${PLOTS_DIR}"
 
-    # Build the ROOT command for the generator
-    # ROOT macro arguments are passed as a comma-separated list in the
-    # function call string.  Strings must be double-quoted inside single quotes.
+    # Build ROOT call strings.
+    # Single quotes around the macro path protect spaces; the inner double
+    # quotes around the ROOT file path protect spaces in BASE_DIR.
     local GEN_CALL="${N},\"${ROOT_FILE}\",${BZ},${PTMIN_LAM},${PTMAX_LAM},${RAPMAX},${T},${PTMIN_P},${PTMIN_PI},${DCAMIN_P},${DCAMIN_PI},${SEED}"
     local PLT_CALL="\"${ROOT_FILE}\",\"${PLOTS_DIR}\""
 
-    local CMD_GEN="${ROOT_EXE} -l -b -q '${GEN_MACRO}(${GEN_CALL})'"
-    local CMD_PLT="${ROOT_EXE} -l -b -q '${PLT_MACRO}(${PLT_CALL})'"
+    # Write log header
+    {
+        echo "=== ${NAME} started at $(date '+%Y-%m-%d %H:%M:%S') ==="
+        echo "Host      : $(hostname)"
+        echo "PID       : $$"
+        echo "Generator : ${ROOT_EXE} -l -b -q '${GEN_MACRO}(${GEN_CALL})'"
+        echo "Plotter   : ${ROOT_EXE} -l -b -q '${PLT_MACRO}(${PLT_CALL})'"
+        echo ""
+    } > "${LOG_FILE}"
 
-    # Print a concise summary line regardless of dry-run mode
-    printf "  %-28s  N=%-7d  Bz=%+.1f  pTmin=[%.2f,%.2f]  dca=[%.3f,%.3f]  T=%.2f\n" \
-        "${NAME}" "${N}" "${BZ}" "${PTMIN_P}" "${PTMIN_PI}" \
-        "${DCAMIN_P}" "${DCAMIN_PI}" "${T}"
-
-    if [[ ${DRY_RUN} -eq 1 ]]; then
-        echo "    [DRY] ${CMD_GEN}"
-        echo "    [DRY] ${CMD_PLT}"
-        LAST_PID=0
-        return 0
+    # Run generator
+    local T0; T0=$(date +%s)
+    if eval "${ROOT_EXE} -l -b -q '${GEN_MACRO}(${GEN_CALL})'" \
+            >> "${LOG_FILE}" 2>&1; then
+        local T1; T1=$(date +%s)
+        echo "Generator OK  ($(( T1 - T0 )) s)" >> "${LOG_FILE}"
+    else
+        local STATUS=$?
+        echo "Generator FAILED (exit ${STATUS})" >> "${LOG_FILE}"
+        echo "ERROR [${NAME}]: generator failed (exit ${STATUS}). Log: ${LOG_FILE}" >&2
+        return ${STATUS}
     fi
 
-    # Run generator then plotter in a subshell, redirect both to the log file
-    (
-        echo "=== ${NAME} started at $(date '+%Y-%m-%d %H:%M:%S') ===" > "${LOG_FILE}"
-        echo "Generator call: ${CMD_GEN}"                              >> "${LOG_FILE}"
-        echo ""                                                         >> "${LOG_FILE}"
+    echo "" >> "${LOG_FILE}"
 
-        # Run generator
-        eval "${CMD_GEN}"  >> "${LOG_FILE}" 2>&1
-        local GEN_STATUS=$?
+    # Run plotter
+    local T2; T2=$(date +%s)
+    if eval "${ROOT_EXE} -l -b -q '${PLT_MACRO}(${PLT_CALL})'" \
+            >> "${LOG_FILE}" 2>&1; then
+        local T3; T3=$(date +%s)
+        echo "Plotter  OK  ($(( T3 - T2 )) s)" >> "${LOG_FILE}"
+    else
+        local STATUS=$?
+        echo "Plotter FAILED (exit ${STATUS})" >> "${LOG_FILE}"
+        echo "ERROR [${NAME}]: plotter failed (exit ${STATUS}). Log: ${LOG_FILE}" >&2
+        return ${STATUS}
+    fi
 
-        echo ""                                                         >> "${LOG_FILE}"
-        echo "Generator exit status: ${GEN_STATUS}"                   >> "${LOG_FILE}"
+    local TOTAL=$(( $(date +%s) - T0 ))
+    echo "" >> "${LOG_FILE}"
+    echo "=== ${NAME} finished at $(date '+%Y-%m-%d %H:%M:%S') (total: ${TOTAL} s) ===" \
+        >> "${LOG_FILE}"
 
-        if [[ ${GEN_STATUS} -ne 0 ]]; then
-            echo "ERROR: Generator failed for ${NAME}. See ${LOG_FILE}" >&2
-            exit 1
-        fi
-
-        echo "Plotter call: ${CMD_PLT}"                               >> "${LOG_FILE}"
-        echo ""                                                        >> "${LOG_FILE}"
-
-        # Run plotter
-        eval "${CMD_PLT}" >> "${LOG_FILE}" 2>&1
-        local PLT_STATUS=$?
-
-        echo ""                                                        >> "${LOG_FILE}"
-        echo "Plotter exit status: ${PLT_STATUS}"                     >> "${LOG_FILE}"
-        echo "=== ${NAME} finished at $(date '+%Y-%m-%d %H:%M:%S') ===" >> "${LOG_FILE}"
-
-        if [[ ${PLT_STATUS} -ne 0 ]]; then
-            echo "ERROR: Plotter failed for ${NAME}. See ${LOG_FILE}" >&2
-            exit 1
-        fi
-    ) &
-
-    LAST_PID=$!
+    # Brief status line to stdout (visible in the parent terminal)
+    printf "  [DONE] %-28s  %d s\n" "${NAME}" "${TOTAL}"
 }
 
-
-# -----------------------------------------------------------------------------
-# wait_for_slots  MAX
-# Waits until the number of background jobs is below MAX.
-# Used to implement the parallel throttle.
-# -----------------------------------------------------------------------------
-wait_for_slots() {
-    local MAX="$1"
-    while true; do
-        local RUNNING
-        RUNNING=$(jobs -r | wc -l)
-        if [[ "${RUNNING}" -lt "${MAX}" ]]; then
-            break
-        fi
-        sleep 2
-    done
-}
-
-
-# -----------------------------------------------------------------------------
-# run_family  FAMILY_NUM  "FAMILY_NAME"  (then calls to run_one follow)
-# Prints a section header and waits for all background jobs at the end.
-# -----------------------------------------------------------------------------
-run_family_header() {
-    local NUM="$1"
-    local NAME="$2"
-    echo ""
-    echo "------------------------------------------------------------"
-    echo "  Family ${NUM}: ${NAME}"
-    echo "------------------------------------------------------------"
-}
-
-run_family_footer() {
-    echo "  Waiting for Family ${1} to finish..."
-    wait   # Wait for ALL background jobs from this family
-    echo "  Family ${1} done."
-}
+# Export so GNU parallel can call it across forked subshells
+export -f execute_job
+# Also export the path variables that execute_job needs
+export BASE_DIR LOG_DIR ROOT_EXE GEN_MACRO PLT_MACRO
 
 
 # =============================================================================
+# FAMILY DEFINITIONS
+# Each block is guarded by family_in_scope(); it only calls register_job.
+# The order of register_job calls within a block is irrelevant because all
+# jobs are dispatched simultaneously by the pool at the end.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
 # FAMILY 0: BASELINE
 # Default ALICE O-O parameters.  All other families should be compared
 # against this reference run.
 # Parameters: N=1M, Bz=+0.5T, pT_lam=[0.3,10], |y|<0.9, T=0.30 GeV,
 #             pT_min_daughters=0.15 GeV/c, DCA_min=[0.05,0.10] cm
-# =============================================================================
-if [[ " ${FAMILIES_TO_RUN[*]} " == *" 0 "* ]]; then
+# -----------------------------------------------------------------------------
+if family_in_scope 0; then
     run_family_header 0 "BASELINE (ALICE O-O defaults)"
 
-    #         NAME           SUBDIR         N       Bz    pTmin  pTmax  rap    T     pTp   pTpi  dcaP  dcaPi  seed
-    run_one  "baseline"     "baseline"  ${DEFAULT_N}  0.5   0.3   10.0  0.9  0.30  0.150 0.150 0.050 0.100   42
-
-    run_family_footer 0
+    #              NAME         SUBDIR       N            Bz   pTmin pTmax rap    T     pTp   pTpi  dcaP  dcaPi seed
+    register_job  "baseline"  "baseline"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
 fi
 
-
-# =============================================================================
-# FAMILY 1: MAGNETIC FIELD SIGN
+# -----------------------------------------------------------------------------
+# Family 1: MAGNETIC FIELD SIGN
 # Swap Bz from +0.5 T to -0.5 T (same as baseline otherwise).
 # Expected result: the phi* left-right asymmetry and the eta-antisymmetric
 # ring proxy must flip sign exactly.  The cos(theta*) helicity asymmetry
@@ -382,21 +425,16 @@ fi
 # The ALICE solenoid operated at both polarities during Run 2; in Run 3 the
 # nominal polarity is +0.5 T.  The data-driven DCA-based correction must be
 # validated separately for each polarity.
-# =============================================================================
-if [[ " ${FAMILIES_TO_RUN[*]} " == *" 1 "* ]]; then
+# -----------------------------------------------------------------------------
+if family_in_scope 1; then
     run_family_header 1 "MAGNETIC FIELD SIGN"
 
-    #         NAME           SUBDIR        N       Bz     pTmin pTmax  rap    T     pTp   pTpi  dcaP  dcaPi  seed
-    run_one  "field_pos"    "field_pos"  ${DEFAULT_N}  +0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100   42
-    wait_for_slots ${MAX_PARALLEL}
-    run_one  "field_neg"    "field_neg"  ${DEFAULT_N}  -0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100   42
-
-    run_family_footer 1
+    register_job  "field_pos"  "field_pos"  ${DEFAULT_N}  +0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
+    register_job  "field_neg"  "field_neg"  ${DEFAULT_N}  -0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
 fi
 
-
-# =============================================================================
-# FAMILY 2: DAUGHTER pT THRESHOLD SCAN
+# -----------------------------------------------------------------------------
+# Family 2: DAUGHTER pT THRESHOLD SCAN
 # Vary pT_min applied to BOTH daughters simultaneously.
 # pT = 0.10 GeV/c: lower edge of TPC tracking efficiency in ALICE Run 3
 # pT = 0.15 GeV/c: ALICE standard V0 daughter cut (baseline)
@@ -408,32 +446,20 @@ fi
 #
 # Reference: ALICE-PUBLIC-2017-005 (V0 selection);
 #            ALICE strangeness PWG internal note on Lambda selection
-# =============================================================================
-if [[ " ${FAMILIES_TO_RUN[*]} " == *" 2 "* ]]; then
+# -----------------------------------------------------------------------------
+if family_in_scope 2; then
     run_family_header 2 "DAUGHTER pT THRESHOLD SCAN"
 
-    # Zero-cut anchor: no pT requirement on daughters
-    run_one  "ptcut_000"  "ptcut_000"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.001 0.001 0.050 0.100  42
-    wait_for_slots ${MAX_PARALLEL}
-
-    run_one  "ptcut_010"  "ptcut_010"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.100 0.100 0.050 0.100  42
-    wait_for_slots ${MAX_PARALLEL}
-
-    # 0.15 is the baseline -- run with the same seed for a direct comparison
-    run_one  "ptcut_015"  "ptcut_015"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
-    wait_for_slots ${MAX_PARALLEL}
-
-    run_one  "ptcut_020"  "ptcut_020"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.200 0.200 0.050 0.100  42
-    wait_for_slots ${MAX_PARALLEL}
-
-    run_one  "ptcut_030"  "ptcut_030"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.300 0.300 0.050 0.100  42
-
-    run_family_footer 2
+    # 0.001 GeV/c instead of 0.000 avoids a divide-by-zero guard in the helix
+    register_job  "ptcut_000"  "ptcut_000"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.001 0.001 0.050 0.100  42
+    register_job  "ptcut_010"  "ptcut_010"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.100 0.100 0.050 0.100  42
+    register_job  "ptcut_015"  "ptcut_015"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
+    register_job  "ptcut_020"  "ptcut_020"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.200 0.200 0.050 0.100  42
+    register_job  "ptcut_030"  "ptcut_030"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.300 0.300 0.050 0.100  42
 fi
 
-
-# =============================================================================
-# FAMILY 3: DCA THRESHOLD SCAN
+# -----------------------------------------------------------------------------
+# Family 3: DCA THRESHOLD SCAN
 # DCA cuts are specified as (proton DCA min, pion DCA min).
 # The pion cut is typically tighter than the proton cut because the pion
 # is lighter and therefore subject to larger multiple-scattering DCA smearing.
@@ -443,35 +469,19 @@ fi
 # dcacut_loose [0.02, 0.05]: very loose, near the smearing limit
 # dcacut_std   [0.05, 0.10]: ALICE standard for Lambda (baseline)
 # dcacut_tight [0.10, 0.20]: tighter, sometimes used in central Pb-Pb
-#
-# Reference: ALICE strangeness PWG recommendations;
-#            arXiv:1910.07678 (ALICE Lambda polarization, Run 2)
-# =============================================================================
-if [[ " ${FAMILIES_TO_RUN[*]} " == *" 3 "* ]]; then
+# -----------------------------------------------------------------------------
+if family_in_scope 3; then
     run_family_header 3 "DCA THRESHOLD SCAN"
 
-    # Zero anchor: phi* must be flat
-    run_one  "dcacut_none"   "dcacut_none"   ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.000 0.000  42
-    wait_for_slots ${MAX_PARALLEL}
-
-    run_one  "dcacut_loose"  "dcacut_loose"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.020 0.050  42
-    wait_for_slots ${MAX_PARALLEL}
-
-    run_one  "dcacut_loose_symmetric"  "dcacut_loose_symmetric"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.050 0.050  42
-    wait_for_slots ${MAX_PARALLEL}
-
-    # Standard baseline values (same as baseline run)
-    run_one  "dcacut_std"    "dcacut_std"    ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.050 0.100  42
-    wait_for_slots ${MAX_PARALLEL}
-
-    run_one  "dcacut_tight"  "dcacut_tight"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.100 0.200  42
-
-    run_family_footer 3
+    register_job  "dcacut_none"            "dcacut_none"            ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.000 0.000  42
+    register_job  "dcacut_loose"           "dcacut_loose"           ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.020 0.050  42
+    register_job  "dcacut_loose_symmetric" "dcacut_loose_symmetric" ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.050 0.050  42
+    register_job  "dcacut_std"             "dcacut_std"             ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.050 0.100  42
+    register_job  "dcacut_tight"           "dcacut_tight"           ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.100 0.200  42
 fi
 
-
-# =============================================================================
-# FAMILY 4: LAMBDA KINEMATIC WINDOW
+# -----------------------------------------------------------------------------
+# Family 4: LAMBDA KINEMATIC WINDOW
 # Three kinematic windows motivated by the ring analysis and by the Lambda
 # polarization measurement strategy in ALICE.
 #
@@ -484,27 +494,17 @@ fi
 # The ring-analysis window is the most physically important: the fake-signal
 # size in this specific kinematic range is what must be corrected in the data.
 # A smaller fake signal here would reduce the needed correction factor.
-#
-# Reference: PhysRevC.109.014905 (Serone et al., the 3rd ring paper)
-# =============================================================================
-if [[ " ${FAMILIES_TO_RUN[*]} " == *" 4 "* ]]; then
+# -----------------------------------------------------------------------------
+if family_in_scope 4; then
     run_family_header 4 "LAMBDA KINEMATIC WINDOW"
 
-    #         NAME             SUBDIR          N       Bz   pTmin pTmax  rap    T     pTp   pTpi  dcaP  dcaPi  seed
-    run_one  "window_full"   "window_full"   ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
-    wait_for_slots ${MAX_PARALLEL}
-
-    run_one  "window_ring"   "window_ring"   ${DEFAULT_N}  0.5  0.5   1.5  0.5  0.30  0.150 0.150 0.050 0.100  42
-    wait_for_slots ${MAX_PARALLEL}
-
-    run_one  "window_hard"   "window_hard"   ${DEFAULT_N}  0.5  1.5   4.0  0.5  0.30  0.150 0.150 0.050 0.100  42
-
-    run_family_footer 4
+    register_job  "window_full"  "window_full"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
+    register_job  "window_ring"  "window_ring"  ${DEFAULT_N}  0.5  0.5   1.5  0.5  0.30  0.150 0.150 0.050 0.100  42
+    register_job  "window_hard"  "window_hard"  ${DEFAULT_N}  0.5  1.5   4.0  0.5  0.30  0.150 0.150 0.050 0.100  42
 fi
 
-
-# =============================================================================
-# FAMILY 5: THERMAL TEMPERATURE (Lambda pT spectrum)
+# -----------------------------------------------------------------------------
+# Family 5: THERMAL TEMPERATURE SCAN
 # The Boltzmann mT exponential slope parameter T controls which Lambda pT
 # values are populated.  Softer spectra (lower T) produce more soft Lambdas
 # whose daughters are more likely to be affected by the pT threshold.
@@ -515,30 +515,19 @@ fi
 # T = 0.35 GeV: upper estimate for Pb-Pb at LHC energies
 # T = 0.45 GeV: represents harder production channels (e.g., high-pT jets)
 #               or a Tsallis tail approximation at moderate pT
-#
-# Reference: ALICE, Phys.Lett.B 728 (2014) 25; ALICE, JHEP 07 (2015) 116
-# =============================================================================
-if [[ " ${FAMILIES_TO_RUN[*]} " == *" 5 "* ]]; then
+# -----------------------------------------------------------------------------
+if family_in_scope 5; then
     run_family_header 5 "THERMAL TEMPERATURE SCAN"
 
-    #         NAME         SUBDIR       N       Bz   pTmin pTmax  rap    T     pTp   pTpi  dcaP  dcaPi  seed
-    run_one  "temp_025"  "temp_025"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.25  0.150 0.150 0.050 0.100  42
-    wait_for_slots ${MAX_PARALLEL}
-
-    run_one  "temp_030"  "temp_030"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
-    wait_for_slots ${MAX_PARALLEL}
-
-    run_one  "temp_035"  "temp_035"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.35  0.150 0.150 0.050 0.100  42
-    wait_for_slots ${MAX_PARALLEL}
-
-    run_one  "temp_045"  "temp_045"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.45  0.150 0.150 0.050 0.100  42
-
-    run_family_footer 5
+    register_job  "temp_025"  "temp_025"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.25  0.150 0.150 0.050 0.100  42
+    register_job  "temp_030"  "temp_030"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
+    register_job  "temp_035"  "temp_035"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.35  0.150 0.150 0.050 0.100  42
+    register_job  "temp_045"  "temp_045"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.45  0.150 0.150 0.050 0.100  42
 fi
 
-
-# =============================================================================
-# FAMILY 6: STATISTICS SCALING
+# -----------------------------------------------------------------------------
+# Family 6: STATISTICS SCALING
+# Different seeds so all N-values are statistically independent samples.
 # Verifies 1/sqrt(N) error scaling and statistical stability.
 # Uses the baseline cuts throughout.  Runs are seeded with different values
 # so that repeated runs with the same N are statistically independent.
@@ -555,49 +544,233 @@ fi
 # Estimate: N > (5 / 10^-3)^2 = 25 * 10^6 for 5-sigma, but since we are
 # studying the FAKE signal (which can be much larger than 10^-3), the
 # statistics needed here are much more modest.
-# =============================================================================
-if [[ " ${FAMILIES_TO_RUN[*]} " == *" 6 "* ]]; then
+# -----------------------------------------------------------------------------
+if family_in_scope 6; then
     run_family_header 6 "STATISTICS SCALING"
 
-    #         NAME          SUBDIR       N       Bz   pTmin pTmax  rap    T     pTp   pTpi  dcaP  dcaPi  seed
-    run_one  "stats_100k"  "stats_100k"  100000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  101
-    wait_for_slots ${MAX_PARALLEL}
+    register_job  "stats_100k"  "stats_100k"     100000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  101
+    register_job  "stats_500k"  "stats_500k"     500000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  201
+    register_job  "stats_2M"    "stats_2M"       2000000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  301
+    register_job  "stats_5M"    "stats_5M"       5000000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  401
+    register_job  "stats_50M"   "stats_50M"     50000000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  501
+fi
 
-    run_one  "stats_500k"  "stats_500k"  500000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  201
-    wait_for_slots ${MAX_PARALLEL}
 
-    run_one  "stats_2M"    "stats_2M"    2000000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  301
-    wait_for_slots ${MAX_PARALLEL}
+# =============================================================================
+# QUEUE SUMMARY
+# =============================================================================
 
-    run_one  "stats_5M"    "stats_5M"    5000000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  401
+N_JOBS=${#JOB_QUEUE[@]}
 
-    run_one  "stats_50M"   "stats_50M"   50000000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  401
+BATCH_START=$(date '+%Y-%m-%d %H:%M:%S')
 
-    run_family_footer 6
+echo ""
+echo "============================================================"
+echo "  runHelicityToyModel.sh"
+echo "  Batch started  : ${BATCH_START}"
+echo "  Script dir     : ${SCRIPT_DIR}"
+echo "  Output dir     : ${BASE_DIR}"
+echo "  Log dir        : ${LOG_DIR}"
+echo "  Jobs registered: ${N_JOBS}"
+echo "  Max parallel   : ${MAX_PARALLEL}  (0 = unlimited / all cores)"
+echo "  GNU parallel   : $([ ${USE_GNU_PARALLEL} -eq 1 ] && echo 'available' || echo 'NOT found -- using bash pool')"
+echo "  Dry run        : ${DRY_RUN}"
+echo "============================================================"
+
+# Print the full job table (useful for --list and --dry-run)
+echo ""
+echo "  Registered jobs:"
+printf "  %-4s  %-28s  %-10s  %-5s  %-14s  %-14s  %-5s\n" \
+    "#" "Name" "N" "Bz" "pTmin[p,pi]" "DCA[p,pi]" "T"
+printf "  %-4s  %-28s  %-10s  %-5s  %-14s  %-14s  %-5s\n" \
+    "---" "----------------------------" "----------" "-----" \
+    "--------------" "--------------" "-----"
+
+IDX=0
+for JOB in "${JOB_QUEUE[@]}"; do
+    IFS=':' read -r NAME SUBDIR N BZ PTMIN_LAM PTMAX_LAM RAPMAX T \
+                      PTMIN_P PTMIN_PI DCAMIN_P DCAMIN_PI SEED <<< "${JOB}"
+    printf "  %-4d  %-28s  %-10s  %+.2f  [%.3f, %.3f]   [%.3f, %.3f]   %.2f\n" \
+        $(( IDX + 1 )) "${NAME}" "${N}" "${BZ}" \
+        "${PTMIN_P}" "${PTMIN_PI}" "${DCAMIN_P}" "${DCAMIN_PI}" "${T}"
+    IDX=$(( IDX + 1 ))
+done
+echo ""
+
+# --list stops here
+if [[ ${LIST_ONLY} -eq 1 ]]; then
+    echo "  (--list mode: exiting without running)"
+    exit 0
+fi
+
+# --dry-run prints the execute_job call for each job then exits
+if [[ ${DRY_RUN} -eq 1 ]]; then
+    echo "  [DRY-RUN] Commands that would be executed:"
+    for JOB in "${JOB_QUEUE[@]}"; do
+        echo "    execute_job '${JOB}'"
+    done
+    echo ""
+    echo "  (--dry-run mode: exiting without running)"
+    exit 0
+fi
+
+if [[ ${N_JOBS} -eq 0 ]]; then
+    echo "  No jobs registered.  Nothing to do."
+    exit 0
+fi
+
+
+# =============================================================================
+# DISPATCH
+# =============================================================================
+
+echo "  Dispatching ${N_JOBS} jobs (max ${MAX_PARALLEL} concurrent)..."
+echo ""
+
+if [[ ${USE_GNU_PARALLEL} -eq 1 ]]; then
+    # ------------------------------------------------------------------
+    # GNU parallel dispatch
+    # ------------------------------------------------------------------
+    # --jobs N       : limit concurrency
+    # --line-buffer  : print output line-by-line (avoids interleaving)
+    # --joblog FILE  : write per-job timing and status to a TSV file
+    # --halt soon,fail=1 : stop launching new jobs if any job fails
+    #                      but let already-running jobs finish
+    # --env execute_job,BASE_DIR,LOG_DIR,...: re-export into parallel env
+    # --quote prevents parallel from mangling colons in the packed string;
+    #   instead we pass each job as a single argument via null-delimiter.
+    #
+    # Note: we use printf '%s\0' to produce NUL-delimited input so that
+    # colons and other special characters in packed strings are safe.
+
+    JOBLOG="${LOG_DIR}/parallel_joblog.tsv"
+
+    printf '%s\0' "${JOB_QUEUE[@]}" \
+    | parallel \
+        --null \
+        --jobs "${MAX_PARALLEL}" \
+        --line-buffer \
+        --joblog "${JOBLOG}" \
+        --halt soon,fail=1 \
+        --env execute_job \
+        --env BASE_DIR \
+        --env LOG_DIR \
+        --env ROOT_EXE \
+        --env GEN_MACRO \
+        --env PLT_MACRO \
+        execute_job {}
+
+    DISPATCH_STATUS=$?
+
+    echo ""
+    if [[ ${DISPATCH_STATUS} -eq 0 ]]; then
+        echo "  All jobs completed successfully."
+        echo "  GNU parallel job log: ${JOBLOG}"
+    else
+        echo "  WARNING: One or more jobs failed (parallel exit ${DISPATCH_STATUS})."
+        echo "  Check individual logs in: ${LOG_DIR}/"
+        echo "  GNU parallel job log   : ${JOBLOG}"
+    fi
+
+else
+    # ------------------------------------------------------------------
+    # Pure bash background pool (fallback when GNU parallel is absent)
+    # ------------------------------------------------------------------
+    # Strategy: launch all jobs as background subshells immediately.
+    # On a 192-core machine with 24 jobs this is unconditionally fine.
+    # If MAX_PARALLEL is set below N_JOBS (e.g. for testing), a simple
+    # slot-counter loop throttles the launch rate.
+    #
+    # We collect all PIDs so we can wait for them individually and
+    # detect failures without aborting surviving jobs.
+
+    declare -a PIDS=()
+    declare -a NAMES=()
+
+    IDX=0
+    for JOB in "${JOB_QUEUE[@]}"; do
+        # Throttle: wait until a slot is free
+        while true; do
+            # Count running background jobs
+            RUNNING=0
+            for PID in "${PIDS[@]+"${PIDS[@]}"}"; do
+                if kill -0 "${PID}" 2>/dev/null; then
+                    RUNNING=$(( RUNNING + 1 ))
+                fi
+            done
+            if [[ "${MAX_PARALLEL}" -eq 0 || "${RUNNING}" -lt "${MAX_PARALLEL}" ]]; then
+                break
+            fi
+            sleep 1
+        done
+
+        # Launch job in background subshell
+        execute_job "${JOB}" &
+        PIDS+=($!)
+
+        # Extract name for the status summary
+        IFS=':' read -r JOB_NAME REST <<< "${JOB}"
+        NAMES+=("${JOB_NAME}")
+
+        IDX=$(( IDX + 1 ))
+    done
+
+    echo "  All ${N_JOBS} jobs launched.  Waiting for completion..."
+    echo ""
+
+    # Wait for each job individually and collect exit statuses
+    DISPATCH_STATUS=0
+    for I in "${!PIDS[@]}"; do
+        PID="${PIDS[${I}]}"
+        NAME="${NAMES[${I}]}"
+        if wait "${PID}"; then
+            printf "  [OK]   %-28s  (PID %d)\n" "${NAME}" "${PID}"
+        else
+            STAT=$?
+            printf "  [FAIL] %-28s  (PID %d, exit %d)\n" "${NAME}" "${PID}" "${STAT}"
+            DISPATCH_STATUS=1
+        fi
+    done
+
+    echo ""
+    if [[ ${DISPATCH_STATUS} -eq 0 ]]; then
+        echo "  All jobs completed successfully."
+    else
+        echo "  WARNING: One or more jobs failed."
+        echo "  Check individual logs in: ${LOG_DIR}/"
+    fi
 fi
 
 
 # =============================================================================
 # FINAL SUMMARY
 # =============================================================================
+
 BATCH_END=$(date '+%Y-%m-%d %H:%M:%S')
 
 echo ""
 echo "============================================================"
-echo "  All requested families complete."
 echo "  Batch started : ${BATCH_START}"
 echo "  Batch finished: ${BATCH_END}"
 echo ""
 echo "  Output tree:"
-echo "    ROOT files  : ${BASE_DIR}/<run_name>/helicity_<run_name>.root"
-echo "    Plot PDFs   : ${BASE_DIR}/<run_name>/plots/*.pdf"
-echo "    Logs        : ${LOG_DIR}/<run_name>.log"
+echo "    ROOT files : ${BASE_DIR}/<name>/helicity_<name>.root"
+echo "    Plot PDFs  : ${BASE_DIR}/<name>/plots/*.pdf"
+echo "    Run logs   : ${LOG_DIR}/<name>.log"
 echo ""
-echo "  To inspect logs:"
-echo "    cat ${LOG_DIR}/<run_name>.log"
-echo "    grep 'R_proxy\|ERROR\|exit' ${LOG_DIR}/*.log"
+echo "  Quick diagnostics:"
+echo "    # Check all jobs succeeded:"
+echo "    grep -l 'FAILED\|ERROR' ${LOG_DIR}/*.log 2>/dev/null || echo 'All clean'"
 echo ""
-echo "  To open a result in ROOT:"
+echo "    # Print integrated R_proxy summary from every log:"
+echo "    grep 'R_proxy summary' -A6 ${LOG_DIR}/*.log"
+echo ""
+echo "    # Check timings:"
+echo "    grep 'total:' ${LOG_DIR}/*.log | sort -t: -k3 -n"
+echo ""
+echo "    # Open a result in ROOT:"
 echo "    root -l ${BASE_DIR}/baseline/helicity_baseline.root"
 echo "============================================================"
 echo ""
+
+exit ${DISPATCH_STATUS}
