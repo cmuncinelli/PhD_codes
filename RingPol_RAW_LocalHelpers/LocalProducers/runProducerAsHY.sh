@@ -369,6 +369,15 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
 
     EXIT_CODE=$?
 
+    # ============================================================================================
+    # --- LOG CLEANUP STEP --- Remove I/O and DPL reader logs in-place (if logging was enabled):
+    # (those pesky "[3893260:internal-dpl-aod-reader]: [01:15:44][INFO]" lines that consume the whole file!)
+    # ============================================================================================
+    if [ "$LOG_OUTPUT" = true ] && [ -f "$BATCH_LOG" ]; then
+        echo "  [Log Cleanup] Removing verbose I/O lines from batch ${BATCH_ID} log..."
+        sed -i -E '/lfn=.*total_df=|internal-dpl-aod-reader.*Opening file: lfn=/d' "$BATCH_LOG"
+    fi
+
     # ---------------------------------------------------------
     # C. STAGE-OUT (Results & Derived Data)
     # ---------------------------------------------------------

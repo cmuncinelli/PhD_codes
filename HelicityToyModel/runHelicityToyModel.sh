@@ -166,7 +166,7 @@ MAX_PARALLEL=30
 # Default Lambda count per run.
 # At ~90 s per 10M Lambdas, 1B = ~900 s (~15 min) per run.
 # With 24 runs in parallel on 192 cores, total wall time ~ 15 min.
-DEFAULT_N=1000000000  # Bumped from 1.000.000 to 100.000.000 (10.000.000 takes about 1m30s per run, and we have only 23 runs)
+DEFAULT_N=10000000000  # Bumped from 1.000.000 to 100.000.000 (10.000.000 takes about 1m30s per run, and we have only 23 runs)
 
 # ROOT executable (set to full path if not in PATH, e.g. /opt/root/bin/root)
 ROOT_EXE="root"

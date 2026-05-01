@@ -226,6 +226,13 @@ for BATCH_FILE in $(find "$CONSUMER_TEMP" -maxdepth 1 -name "batch_*" | sort); d
 
   cd "$WORK_DIR" || exit 1
 
+  # ==============================================================================
+  # --- LOG CLEANUP STEP --- Remove I/O and DPL reader logs in-place:
+  # (those pesky "[3893260:internal-dpl-aod-reader]: [01:15:44][INFO]" lines that consume the whole file!)
+  # ==============================================================================
+  echo "  [Log Cleanup] Removing verbose I/O lines from batch ${BATCH_ID} log..."
+  sed -i -E '/lfn=.*total_df=|internal-dpl-aod-reader.*Opening file: lfn=/d' "$BATCH_LOG"
+
   if [ $EXIT_CODE -eq 0 ]; then
     if [ -f "${BATCH_WORK_DIR}/AnalysisResults.root" ]; then
       mv "${BATCH_WORK_DIR}/AnalysisResults.root" "$BATCH_OUTPUT"
