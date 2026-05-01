@@ -45,8 +45,11 @@ cleanup() {
 handle_interrupt() {
     echo ""
     echo "!!! INTERRUPT DETECTED (Ctrl+C) !!!"
-    echo "    Stopping current jobs..."
-    pkill -P $$ 2>/dev/null # Attempt to kill child processes (the O2 pipeline) immediately
+    # echo "    Stopping current jobs..."
+    # pkill -P $$ 2>/dev/null # Attempt to kill child processes (the O2 pipeline) immediately
+    echo "    Waiting for ALICE O2 framework to gracefully shut down and free memory..."
+    wait # Wait for all background/child processes to finish their own cleanup.
+         # Otherwise, /dev/shm can get full really fast, as FairMQ will not have time to clean up!
     exit 130 # Force exit. This triggers the 'cleanup' function via the EXIT trap.
 }
 

@@ -122,8 +122,11 @@ cleanup() {
 handle_interrupt() {
   echo ""
   echo "!!! INTERRUPT DETECTED (Ctrl+C) !!!"
-  echo "    Stopping child processes..."
-  pkill -P $$ 2>/dev/null
+  # echo "    Stopping child processes..."
+  # pkill -P $$ 2>/dev/null
+  echo "    Waiting for ALICE O2 framework to gracefully shut down and free memory..."
+  wait # Wait for all background/child processes to finish their own cleanup.
+       # Otherwise, /dev/shm can get full really fast, as FairMQ will not have time to clean up!
   exit 130
 }
 
