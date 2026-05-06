@@ -1,4 +1,4 @@
-# HelicityToyModel
+# ToyModels
 
 > **Work in progress -- use with caution.**
 > This code is still being tested and reviewed.
