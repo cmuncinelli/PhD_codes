@@ -1,116 +1,73 @@
 # ToyModels
 
 > **Work in progress -- use with caution.**
-> This code is still being tested and reviewed.
-> Results should be treated as preliminary and cross-checked carefully
-> before drawing any physics conclusions.
+> This code is still being tested and reviewed. Particularly the helicityEfficiencyToyModel and the AEE numerical integration parts!
+> Results should be treated as preliminary and cross-checked carefully before drawing any physics conclusions.
 
 ---
 
 ## Purpose
 
-This folder contains a standalone Monte Carlo toy model designed to
-isolate and diagnose two distinct detector-induced fake-polarization
-effects that can appear in Lambda (and AntiLambda) hyperon measurements
-at ALICE, specifically in the context of the **ring observable** analysis
-described in PhysRevC.109.014905.
+This folder contains a collection of standalone toy models and numerical integration scripts designed to isolate and diagnose distinct detector-induced fake-polarization effects that can appear in Lambda (and AntiLambda) hyperon measurements at ALICE. These are specifically tailored to explore the context of the **ring observable** analysis described in PhysRevC.109.014905.
 
-This follows Joseph Richard Adams' dissertation from 2021, titled
-*"A Measurement of Lambda-Hyperon Spin Polarization in Au+Au Collisions
-at sqrt(sNN) = 3 GeV with STAR"*. We thank Prof. Mike Lisa for the
-suggestions and guidance that anticipated many of the problems of
-fake-polarization signals due to efficiency effects.
+The models herein are deliberately simple: they have no GEANT4 material budget, no detailed detector response, no momentum smearing, and no beam-induced backgrounds. Their value lies precisely in this simplicity: we aim to isolate each individual kinematic or geometric effect in a controlled way that a full GEANT4 simulation cannot, because in a full simulation all effects are active simultaneously and cannot be easily switched on or off independently.
 
-The toy model is deliberately simple: it has no GEANT4 material budget,
-no detector response, no smearing, and no beam-induced backgrounds.
-Its value is precisely that simplicity: we aim to isolate each individual
-effect in a controlled way that a full GEANT4 simulation cannot, because
-in a full simulation all effects are active simultaneously and cannot
-be switched on or off independently.
+The physical intuition is based on Joseph Richard Adams' dissertation from 2021, titled *"A Measurement of Lambda-Hyperon Spin Polarization in Au+Au Collisions at sqrt(sNN) = 3 GeV with STAR"*. For that, we thank the author and his advisor, Prof. Mike Lisa.
 
 ---
 
 ## Physics background
 
-Crucially, both effects described below arise from correlations between
-decay kinematics and detector- or analysis-induced efficiency variations.
-They do not reflect any physical polarization of the Lambda, but instead
-represent biases introduced by the measurement process.
+Crucially, the effects described below arise from correlations between decay kinematics and detector- or analysis-induced efficiency variations. They do not reflect any physical polarization of the Lambda, but instead represent biases introduced by the measurement process.
 
-### Effect 1: the helicity efficiency effect (forward-backward asymmetry)
+### Effect 1: The helicity efficiency effect (forward-backward asymmetry)
 
-When a minimum transverse-momentum threshold is applied to daughter
-tracks, the two decay configurations are not treated equally.
+When a minimum transverse-momentum threshold is applied to daughter tracks, the two decay configurations are not treated equally.
 
-- **Proton emitted forward** in the Lambda rest frame: the proton
-  carries most of the lab-frame momentum (large pT in the lab), and the
-  pion is soft. The soft pion is harder to reconstruct, so this
-  configuration is **partially suppressed**.
-- **Proton emitted backward** in the Lambda rest frame: the pion carries
-  most of the lab-frame momentum and is well-reconstructed; the proton is
-  softer. This configuration is **less affected** by the pT threshold.
+- **Proton emitted forward** in the Lambda rest frame: the proton carries most of the lab-frame momentum (large pT in the lab), and the pion is soft. The soft pion is harder to reconstruct, so this configuration is **partially suppressed**.
+- **Proton emitted backward** in the Lambda rest frame: the pion carries most of the lab-frame momentum and is well-reconstructed; the proton is softer. This configuration is **less affected** by the pT threshold.
 
-The net result is a fake asymmetry in `cos(theta*)`, where `theta*` is
-the angle between the proton emission direction in the Lambda rest frame
-and the Lambda lab-frame momentum direction. This is the
-**forward-backward asymmetry**, also known in the literature as the
-**helicity efficiency effect**.
+The net result is a fake asymmetry in `cos(theta*)`, where `theta*` is the angle between the proton emission direction in the Lambda rest frame and the Lambda lab-frame momentum direction. This is the **forward-backward asymmetry**, also known in the literature as the **helicity efficiency effect** (HEE).
 
-This effect primarily induces a distortion along the Lambda momentum
-direction (a "longitudinal" component of the reconstructed polarization).
-It does **not** create a fake ring observable by itself in a symmetric
-setup, because the ring observable measures a *different* projection
-(the left-right direction, see below). However, in the presence of
-detector or acceptance asymmetries, or when combined with additional
-cuts such as DCA selections, it can contribute indirectly to distortions
-of the full decay angular distribution.
+This effect primarily induces a distortion along the Lambda momentum direction. It does **not** create a fake ring observable by itself, as the observable kills all polarization components colinear to the Lambda momentum, but in the presence of detector or acceptance asymmetries, it is possible that HEE contributes indirectly to distortions of the full decay angular distribution. Still needs to be checked!
 
-### Effect 2: the DCA-cut left-right asymmetry (phi* modulation)
+### Effect 2: The DCA-cut left-right asymmetry
 
-When a minimum distance-of-closest-approach (DCA) cut is applied to
-daughter tracks, the two daughters -- which carry opposite charges --
-are bent in opposite directions by the solenoidal magnetic field.
-Depending on the azimuthal angle `phi*` of the proton emission direction
-around the Lambda axis, one of the daughters may be bent **toward** the
-primary vertex (failing the DCA cut) while the other is bent away.
+When a minimum distance-of-closest-approach (DCA) cut is applied to daughter tracks, the two daughters -- which carry opposite charges -- are bent in opposite directions by the solenoidal magnetic field. Depending on the azimuthal angle `phi*` of the proton emission direction around the Lambda axis, the DCA between daughters may be larger or smaller, creating a prioritized geometry during reconstruction and thus a fake polarization signal.
 
-This creates, to leading order, a `sin(phi*)` modulation in the azimuthal
-decay angle distribution -- a **left-right asymmetry** -- where
-`phi* = 0` is the direction defined by `p_Lambda x z_hat` (the beam
-direction). Crucially:
+This is not so much of an effect itself -- moreso a dependency of the AEE effect described below. It is studied as if a separate effect in the `helicityEfficiencyToyModel.cxx` though.
 
-- The sign of this asymmetry is determined by the magnetic field
-  direction **and** by the sign of the Lambda pseudorapidity.
-- Flipping the magnetic field flips the asymmetry sign.
-- Lambdas at `eta > 0` and Lambdas at `eta < 0` experience the asymmetry
-  with **opposite signs**.
+### Effect 3: The Azimuthal Emission Efficiency (AEE)
 
-This effect originates from a combination of track curvature, DCA-based
-selection, and reconstruction biases (e.g. vertex finding based on DCA
-minimization), all of which depend on the relative geometry of the decay
-and the detector.
+The Azimuthal Emission Efficiency (AEE) creates an artificial structure in the angular distributions due to the non-uniform acceptance of daughters in the laboratory frame, strongly correlating the Lambda kinematics with the jet axis. The DCA between daughters may be larger or smaller, creating a prioritized geometry during reconstruction and thus a fake polarization signal.
 
-Because the ring observable is constructed as a projection onto exactly
-the `p_Lambda x z_hat` direction (when `z_hat` is used as the jet proxy),
-this left-right asymmetry directly produces a **fake ring signal**.
-Moreover, since the sign flips with eta, the fake signal is
-**antisymmetric in eta** -- which is precisely the pattern observed in the
-O-O data.
+Because the ring observable is constructed as a projection onto the `p_Lambda x t_hat` direction (where t_hat is the jet direction), this left-right asymmetry directly produces a **fake ring signal**.
 
-The traditional correction for this effect in ALICE global polarization
-measurements is a Monte Carlo efficiency correction. However, if the
-required correction is 100x larger than the physical signal, the
-systematic uncertainty from that correction may dominate the measurement.
-This toy model is intended to help design a **data-driven correction
-strategy** that minimizes dependence on Monte Carlo efficiency modelling.
+When evaluating the Ring Observable, the AEE induces a spurious component that can be mathematically formulated as:
+`R^{AEE}_Lambda(theta, theta_Lambda, Delta_phi) = [ -sin(theta) cos(theta_Lambda) cos(Delta_phi) + cos(theta) sin(theta_Lambda) ] / sqrt( 1 - (sin(theta) sin(theta_Lambda) cos(Delta_phi) + cos(theta) cos(theta_Lambda))^2 )`
+
+Numerical integration reveals that kinematic biases (such as the distributions of the jet correlation `Delta_phi` and the Lambda pseudorapidity `eta_Lambda`) produce visible distortions matching experimental data. However, full integration over `dOmega_Jet` and `dOmega*_Lambda` theoretically cancels this AEE-induced effect out, leading to a pure vortex-polarization observable.
 
 ---
 
 ## Files in this folder
 
+### `numericalAEEIntegration.cxx`
+
+**Run this script to evaluate AEE effects.**
+
+This script performs the numerical integration of the Ring Observable component induced by the AEE effect. It compares an idealized flat phase space baseline against a realistic parameterization derived from experimental data weights (accounting for jet correlation `Delta_phi` and `eta_Lambda` distributions). 
+
+The script evaluates this observable as a function of the trigger (jet) pseudorapidity (`eta_t`) and calculates the marginal distribution as a function of `eta_Lambda` to assess detector-induced kinematic biases. It serves as a proof-of-concept that full phase space integration cancels the spurious AEE effect.
+
+**Run with ROOT:**
+```
+root -l numericalAEEIntegration.cxx
+```
+
 ### `helicityEfficiencyToyModel.cxx`
 
-**Run this file to generate data.**
+**Run this file to generate data for Effects 1 & 2**.
 
 The core Monte Carlo generator. Produces Lambdas from a Boltzmann mT
 spectrum, propagates them to their decay vertex using the proper lifetime,
@@ -215,26 +172,20 @@ Both can be changed at the top of the script.
 
 ---
 
-### `README.md`
+## What these toy models cannot do
 
-This file.
-
----
-
-## What this toy model cannot do
-
-This is a **kinematic and geometric toy**, not a full detector simulation.
-It deliberately excludes:
+This is a **kinematic and geometric tools**, full detector simulations.
+They deliberately exclude:
 
 - Material budget and multiple scattering (which smear DCA distributions)
-- TPC space-charge distortions (relevant in central Pb-Pb)
+- TPC space-charge distortions (relevant in central Pb-Pb or O-O)
 - ITS hit requirements and their eta/phi efficiency maps
-- Momentum resolution smearing
+- Momentum resolution smearing and secondary interactions
 - Secondary interactions and photon conversions
 - Pile-up and beam-induced backgrounds
-- Any polarization physics (the decay is always isotropic)
+- Any real polarization physics (decays are isotropic or flat baselines).
 - Continuous efficiency variations with pT, eta, and detector occupancy
-  (the model effectively applies hard selection thresholds)
+  (the `helicityEfficiencyToyModel.cxx` model only applies hard selection thresholds)
 
 The toy model gives **qualitative and mechanistic** insight: it tells
 you which effect is responsible for which asymmetry, with which sign,
@@ -243,9 +194,15 @@ quantitative correction factors for the data. Those require a full
 GEANT4-level simulation with the ALICE detector geometry and the
 same reconstruction algorithm used on data.
 
+They provide qualitative and mechanistic *insights* ONLY.
+They help understand which effect is responsible for which
+asymmetry, with which sign, and how it scales with the cut parameters (AT MOST!).
+They **do not** provide quantitative correction factors for data.
+Those require a full GEANT4-level simulation with the ALICE detector geometry.
+
 ---
 
-## Known limitations and open issues
+## Known limitations and open issues for `helicityEfficiencyToyModel.cxx`
 
 - [ ] The DCA calculation uses an ideal analytical helix with a perfectly
       uniform axial magnetic field. Real ALICE tracks are affected by
@@ -259,14 +216,3 @@ same reconstruction algorithm used on data.
 - [ ] The ring observable proxy uses the beam direction (+z) as the jet
       axis. A more realistic proxy would sample jet directions from a
       measured or simulated jet spectrum with realistic eta/phi coverage.
-- [ ] No feed-down Lambdas from Xi or Sigma0 decays are simulated.
-      Feed-down adds displaced secondary Lambdas whose decay geometry
-      is qualitatively different (larger decay radius, different DCA
-      distributions).
-- [ ] The plotting macro has not been tested on small-statistics runs
-      (N < 50k) where some histogram bins may be empty and the sin-fit
-      in Fig 3 may fail to converge.
-- [ ] The code has not been compiled and tested with ROOT 6.28+; only
-      static analysis (brace/parenthesis balance, ASCII cleanliness)
-      has been performed. **The code must be run and its output
-      carefully inspected before any physics conclusions are drawn.**
