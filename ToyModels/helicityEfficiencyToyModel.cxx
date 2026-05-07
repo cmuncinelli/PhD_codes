@@ -191,9 +191,15 @@ constexpr double TwoPi = TMath::TwoPI();
 constexpr double Pi = TMath::Pi();
 
 
-// HELPER: ComputeThermalPtMaximum
-// This simple helper calculates the pT that corresponds to the (analytic!) maximum
-// of the Thermal Boltzmann spectrum for SampleLambdaPt
+// ==========================================================================
+/**
+ * @brief Computes the pT at the analytic maximum of the thermal Boltzmann mT
+ *        spectrum dN/dpT ~ pT * exp(-mT/T), used as the rejection-sampling
+ *        envelope in SampleLambdaPt().
+ * @param T  Boltzmann temperature parameter [GeV].
+ * @return   pT value at the spectrum peak [GeV/c].
+ */
+// ==========================================================================
 double ComputeThermalPtMaximum(double T){
     double T2 = T * T;
     double m2 = kMassLambda * kMassLambda;
@@ -254,39 +260,39 @@ static double SampleLambdaPt(TRandom3* rng, double T, double pTmin, double pTmax
 
 
 // ==========================================================================
-// HELPER: ComputeDCAxy
-// --------------------------------------------------------------------------
-// Computes the analytical transverse distance of closest approach (DCA_xy)
-// of a charged daughter track to the primary vertex at (0, 0).
-//
-// A charged particle in a uniform field Bz [T] along +z, starting at
-// (xv, yv) [cm] with transverse momentum (px, py) [GeV/c], traces a circle
-// in the x-y plane.  The signed helix radius is:
-//   r_signed = pT / (q * kBConv * Bz)   [cm]
-// (q = +1 for proton, -1 for pion; Bz can be positive or negative)
-//
-// The center of the circle in the transverse plane is:
-//   Cx = xv + (py / pT) * r_signed
-//   Cy = yv - (px / pT) * r_signed
-//
-// The DCA_xy to the origin is:
-//   DCA_xy = | sqrt(Cx^2 + Cy^2) - |r_signed| |
-//
-// This expression follows from the fact that the particle moves on a circle
-// of radius |r_signed| centered at (Cx, Cy), and the closest point on that
-// circle to the origin is at distance |dist(center,origin) - |r_signed||.
-//
-// Note: only the transverse DCA is computed. The longitudinal DCA (z) is not
-// used by this toy.
-//
-// Arguments:
-//   xv, yv    -- decay vertex transverse position [cm]
-//   px, py    -- daughter transverse momentum components [GeV/c]
-//   pT        -- daughter transverse momentum magnitude [GeV/c]
-//   charge    -- daughter charge in units of e (+1 proton, -1 pion)
-//   Bz        -- magnetic field z-component [T]  (sign matters!)
-//
-// Returns DCA_xy [cm]. Returns a large sentinel value (1e9) if pT ~ 0.
+/**
+ * @brief Computes the analytical transverse distance of closest approach
+ *        (DCA_xy) of a charged daughter track to the primary vertex at (0,0).
+ *
+ * A charged particle in a uniform field Bz [T] along +z, starting at
+ * (xv, yv) [cm] with transverse momentum (px, py) [GeV/c], traces a circle
+ * in the x-y plane.  The signed helix radius is:
+ *   r_signed = pT / (q * kBConv * Bz)   [cm]
+ * (q = +1 for proton, -1 for pion; Bz can be positive or negative)
+ *
+ * The center of the circle in the transverse plane is:
+ *   Cx = xv + (py / pT) * r_signed
+ *   Cy = yv - (px / pT) * r_signed
+ *
+ * The DCA_xy to the origin is:
+ *   DCA_xy = | sqrt(Cx^2 + Cy^2) - |r_signed| |
+ *
+ * This expression follows from the fact that the particle moves on a circle
+ * of radius |r_signed| centered at (Cx, Cy), and the closest point on that
+ * circle to the origin is at distance |dist(center,origin) - |r_signed||.
+ *
+ * @note Only the transverse DCA is computed; the longitudinal DCA (z) is
+ *       not used by this toy.
+ *
+ * @param xv      Decay vertex transverse x position [cm].
+ * @param yv      Decay vertex transverse y position [cm].
+ * @param px      Daughter transverse momentum x component [GeV/c].
+ * @param py      Daughter transverse momentum y component [GeV/c].
+ * @param pT      Daughter transverse momentum magnitude [GeV/c].
+ * @param charge  Daughter charge in units of e (+1 proton, -1 pion).
+ * @param Bz      Magnetic field z-component [T] (sign matters).
+ * @return        DCA_xy [cm], or 1e9 if pT ~ 0.
+ */
 // ==========================================================================
 static double ComputeDCAxy(double xv,  double yv,
                             double px,  double py,  double pT,
@@ -313,10 +319,13 @@ static double ComputeDCAxy(double xv,  double yv,
 
 
 // ==========================================================================
-// HELPER: wrapToPiFast
-// --------------------------------------------------------------------------
-// Wraps an angle (in radians) into the interval [-pi, pi).
-// The input is guaranteed to be within 0 to 2pi, so this can be really optimized.
+/**
+ * @brief Wraps an angle (in radians) into the interval [-pi, pi).
+ * @note  Input is assumed to lie within [0, 2*pi); this allows a single
+ *        conditional subtraction instead of a full fmod call.
+ * @param phi  Input angle in radians, assumed in [0, 2*pi).
+ * @return     Equivalent angle in [-pi, pi).
+ */
 // ==========================================================================
 inline double wrapToPiFast(double phi){
     return (phi < Pi) ? phi : (phi - TwoPi);
@@ -324,14 +333,14 @@ inline double wrapToPiFast(double phi){
 
 
 // ==========================================================================
-// HISTOGRAM CONTAINER: ScenarioHistos
-// --------------------------------------------------------------------------
-// Holds all ROOT histogram and TProfile pointers for ONE combination of
-// (cut scenario, eta half).  The struct is filled by BookScenario() and
-// filled event-by-event by FillScenario().
-//
-// ROOT owns all objects once they are associated with a TDirectory (via cd()),
-// so no manual delete is needed.
+/**
+ * @brief Holds all ROOT histogram and TProfile pointers for one combination
+ *        of (cut scenario, eta half).
+ *
+ * Populated by BookScenario() and filled by FillScenario().
+ * ROOT owns all objects once they are associated with a TDirectory via cd(),
+ * so no manual deletion is required.
+ */
 // ==========================================================================
 struct ScenarioHistos {
 
@@ -364,13 +373,15 @@ struct ScenarioHistos {
 
 
 // ==========================================================================
-// HELPER: BookScenario
-// --------------------------------------------------------------------------
-// Allocates and initializes all histograms inside the given TDirectory.
-// The directory must already exist; this function calls dir->cd() before
-// creating objects so ROOT associates them with the correct directory.
-//
-// Returns a filled ScenarioHistos struct.
+/**
+ * @brief Allocates and initialises all histograms inside the given TDirectory.
+ *
+ * The directory must already exist.  Calls dir->cd() before creating objects
+ * so ROOT associates them with the correct directory.
+ *
+ * @param dir  Pointer to an existing TDirectory in which histograms are booked.
+ * @return     A filled ScenarioHistos struct with all histogram pointers set.
+ */
 // ==========================================================================
 static ScenarioHistos BookScenario(TDirectory* dir)
 {
@@ -411,22 +422,24 @@ static ScenarioHistos BookScenario(TDirectory* dir)
 
 
 // ==========================================================================
-// HELPER: FillScenario
-// --------------------------------------------------------------------------
-// Fills all histograms in a ScenarioHistos struct for one Lambda candidate.
-// This function is called once per Lambda per cut scenario (max 4 times).
-//
-// Arguments (computed by the main loop; see variable names there):
-//   cosTheta    -- cos(theta*) = p*_proton_unit . e1
-//   phi         -- phi* = atan2(p*_proton.e3, p*_proton.e2)  [rad]
-//   ringProxy   -- R_proxy = (3/alpha) * p*_D . (z x lambda_unit)/|...|
-//   decayR      -- transverse decay radius [cm]
-//   pT_proton   -- proton pT in lab [GeV/c]
-//   pT_pion     -- pion pT in lab [GeV/c]
-//   dca_proton  -- proton DCA_xy to PV [cm]
-//   dca_pion    -- pion DCA_xy to PV [cm]
-//   pT_lambda   -- Lambda pT [GeV/c]
-//   eta_lambda  -- Lambda pseudorapidity
+/**
+ * @brief Fills all histograms in a ScenarioHistos struct for one Lambda
+ *        candidate.  Called once per Lambda per cut scenario (up to 4 times).
+ *
+ * All arguments are computed in the main event loop; see variable names there.
+ *
+ * @param h           Reference to the ScenarioHistos struct to fill.
+ * @param cosTheta    cos(theta*) = p*_proton_unit . e1.
+ * @param phi         phi* = atan2(p*_proton.e3, p*_proton.e2) [rad].
+ * @param ringProxy   R_proxy = (3/alpha) * p*_D . (z x lambda_unit)/||z x lambda_unit|| .
+ * @param decayR      Transverse decay vertex radius [cm].
+ * @param pT_proton   Proton pT in the lab frame [GeV/c].
+ * @param pT_pion     Pion pT in the lab frame [GeV/c].
+ * @param dca_proton  Proton DCA_xy to PV [cm].
+ * @param dca_pion    Pion DCA_xy to PV [cm].
+ * @param pT_lambda   Lambda pT [GeV/c].
+ * @param eta_lambda  Lambda pseudorapidity.
+ */
 // ==========================================================================
 static void FillScenario(ScenarioHistos& h,
                           double cosTheta,
@@ -463,14 +476,23 @@ static void FillScenario(ScenarioHistos& h,
 
 
 // ==========================================================================
-// HELPER: CreateSubdirs
-// --------------------------------------------------------------------------
-// Creates a three-level directory structure:
-//   parentDir/scenarioName/EtaPos/
-//   parentDir/scenarioName/EtaNeg/
-//   parentDir/scenarioName/All/
-// Books ScenarioHistos in each leaf directory and returns them via the
-// output pointers hPos, hNeg, hAll.
+/**
+ * @brief Creates a three-level directory structure inside the output file and
+ *        books ScenarioHistos in each leaf directory.
+ *
+ * Directory layout created under the file root:
+ *   scenarioName/EtaPos/
+ *   scenarioName/EtaNeg/
+ *   scenarioName/All/
+ *
+ * Results are returned via the output references hPos, hNeg, and hAll.
+ *
+ * @param outFile       Pointer to the open output TFile.
+ * @param scenarioName  Name of the top-level scenario directory to create.
+ * @param hPos          Output: ScenarioHistos booked for eta_Lambda >= 0.
+ * @param hNeg          Output: ScenarioHistos booked for eta_Lambda < 0.
+ * @param hAll          Output: ScenarioHistos booked for both eta halves combined.
+ */
 // ==========================================================================
 static void CreateSubdirs(TFile*             outFile,
                            const char*        scenarioName,
@@ -497,30 +519,33 @@ static void CreateSubdirs(TFile*             outFile,
 
 
 // ==========================================================================
-// MAIN FUNCTION: helicityEfficiencyToyModel
-// --------------------------------------------------------------------------
-// Generates nLambdas unpolarized Lambda decays and studies acceptance-induced
-// fake-polarization effects by varying kinematic and topological cuts.
-//
-// Parameters (all defaults are related to having no cuts at all):
-//   nLambdas       -- number of Lambdas to simulate (default: 10,000,000)
-//   outputPath     -- output ROOT file path (default: helicityEffOutput.root)
-//   Bz_Tesla       -- magnetic field along z [T], positive = ALICE default
-//                     (default: +0.5 T)
-//   pTmin_Lambda   -- minimum Lambda pT [GeV/c] for generation (default: 0.0)
-//   pTmax_Lambda   -- maximum Lambda pT [GeV/c] for generation (default: 10.0)
-//   rapMax_Lambda  -- maximum |rapidity| for GENERATING Lambdas (default: 5.0)
-//   etaMaxDetector -- maximum |eta| for detecting Lambda daughters (default: 0.9,
-//                     same as ALICE's inner barrel)
-//                     This cut is NOT applied to the Lambda itself! The detector
-//                     would only see charged particles, so cutting in Lambda's
-//                     eta will bias the distribution.
-//   T_thermal      -- Boltzmann temperature for mT spectrum [GeV] (default: 0.3)
-//   pTmin_proton   -- minimum proton pT cut [GeV/c] (default: 0.0)
-//   pTmin_pion     -- minimum pion pT cut [GeV/c] (default: 0.0)
-//   dcaMin_proton  -- minimum proton DCA_xy to PV [cm] (default: 0.05 cm)
-//   dcaMin_pion    -- minimum pion DCA_xy to PV [cm] (default: 0.10 cm)
-//   seed           -- TRandom3 seed (default: 0; 0 = time-based random seed)
+/**
+ * @brief Generates unpolarized Lambda decays and studies acceptance-induced
+ *        fake-polarization effects by varying kinematic and topological cuts.
+ *
+ * @details
+ * Four cut scenarios are filled per run: NoCuts, pTCutOnly, DCACutOnly, and
+ * BothCuts.  Within each scenario, histograms are split into EtaPos, EtaNeg,
+ * and All sub-directories (see file header for the full output structure).
+ *
+ * @param nLambdas       Number of Lambdas to simulate (default: 10,000,000).
+ * @param outputPath     Output ROOT file path (default: helicityEffOutput.root).
+ * @param Bz_Tesla       Magnetic field along z [T], positive = ALICE default
+ *                       (default: +0.5 T).
+ * @param pTmin_Lambda   Minimum Lambda pT for generation [GeV/c] (default: 0.0).
+ * @param pTmax_Lambda   Maximum Lambda pT for generation [GeV/c] (default: 10.0).
+ * @param rapMax_Lambda  Maximum |rapidity| for GENERATING Lambdas (default: 5.0).
+ * @param etaMaxDetector Maximum |eta| for detecting Lambda daughters (default: 0.9,
+ *                       matching the ALICE inner barrel). Not applied to the Lambda
+ *                       itself; cutting on Lambda eta would bias the distribution.
+ *                       Detectors only see charged particles after all.
+ * @param T_thermal      Boltzmann temperature for the mT spectrum [GeV] (default: 0.3).
+ * @param pTmin_proton   Minimum proton pT cut [GeV/c] (default: 0.0).
+ * @param pTmin_pion     Minimum pion pT cut [GeV/c] (default: 0.0).
+ * @param dcaMin_proton  Minimum proton DCA_xy to the primary vertex [cm] (default: 0.0).
+ * @param dcaMin_pion    Minimum pion DCA_xy to the primary vertex [cm] (default: 0.0).
+ * @param seed           TRandom3 seed; 0 = time-based random seed (default: 0).
+ */
 // ==========================================================================
 void helicityEfficiencyToyModel(
     long        nLambdas       = 10000000,
