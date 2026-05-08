@@ -1,7 +1,6 @@
 # ToyModels
 
 > **Work in progress -- use with caution.**
-> This code is still being tested and reviewed. Particularly the helicityEfficiencyToyModel and the AEE numerical integration parts!
 > Results should be treated as preliminary and cross-checked carefully before drawing any physics conclusions.
 
 ---

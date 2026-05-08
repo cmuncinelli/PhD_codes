@@ -785,8 +785,22 @@ void helicityEfficiencyToyModel(
     if (nProgress < 1) nProgress = 1;
 
     // Calculating useful variables for the SampleLambdaPt function:
-    // We only sample a Boltzmann function, which has an analytic maximum that can be calculated for the rejection sampling below
+    // We sample a Boltzmann function, which has an analytic maximum that can be
+    // calculated exactly for the rejection-sampling envelope below.
+    //
+    // For best rejection-sampling efficiency, we must evaluate the maximum
+    // INSIDE the sampled interval [pTmin_Lambda, pTmax_Lambda] to avoid 
+    // unnecessary rejection inefficiency, keeping all checks outside the hot event loop.
     double ptPeak = ComputeThermalPtMaximum(T_thermal);
+
+    if (ptPeak < pTmin_Lambda) {
+        ptPeak = pTmin_Lambda;
+        printf("SampleLambdaPt: thermal spectrum peak lies below sampled pT range; using pTmin_Lambda for envelope maximum.\n");
+    } else if (ptPeak > pTmax_Lambda) {
+        ptPeak = pTmax_Lambda;
+        printf("SampleLambdaPt: thermal spectrum peak lies above sampled pT range; using pTmax_Lambda for envelope maximum.\n");
+    }
+
     double mTpeak = std::sqrt(ptPeak * ptPeak + kMassLambda * kMassLambda);
     double fmax = 1.10 * ptPeak * std::exp(-mTpeak / T_thermal);
 
