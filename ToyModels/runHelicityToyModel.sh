@@ -89,14 +89,6 @@
 #       Because softer Lambdas produce softer daughters, the effective pT and
 #       DCA fake-signal magnitudes are spectrum-dependent.
 #
-#   Family 6: STATISTICS SCALING
-#       N = 100k, 500k, 2M, 5M Lambdas
-#       Verifies that the measured <R_proxy> values are statistically stable
-#       (do not drift with statistics) and confirms the expected 1/sqrt(N)
-#       scaling of the error bars.  Also establishes the minimum N needed
-#       for a statistically significant measurement of the fake signal size,
-#       which informs how many events are needed in the data analysis.
-#
 # USAGE
 # -----
 #   chmod +x runHelicityToyModel.sh
@@ -117,7 +109,6 @@
 #     3_DCACut/           dcacut_none/ ... dcacut_tight/
 #     4_KinematicWindow/  window_full/     window_ring/     window_hard/
 #     5_Temperature/      temp_025/ ... temp_045/
-#     6_Stats/            stats_100k/ ... stats_50M/
 #     logs/
 #       <run_name>.log           (one per job: generator + plotter combined)
 #       parallel_joblog.tsv      (GNU parallel timing/status log, if used)
@@ -167,6 +158,7 @@ MAX_PARALLEL=30
 # At ~90 s per 10M Lambdas, 1B = ~900 s (~15 min) per run.
 # With 24 runs in parallel on 192 cores, total wall time ~ 15 min.
 DEFAULT_N=10000000000  # Bumped from 1.000.000 to 100.000.000 (10.000.000 takes about 1m30s per run, and we have only 23 runs)
+# DEFAULT_N=10000000 # For testing only
 
 # ROOT executable (set to full path if not in PATH, e.g. /opt/root/bin/root)
 ROOT_EXE="root"
@@ -262,8 +254,8 @@ fi
 # =============================================================================
 # JOB QUEUE
 # Each call to register_job() appends one record to JOB_QUEUE[].
-# Format: colon-delimited, 13 fields matching helicityEfficiencyToyModel args:
-#   NAME:SUBDIR:N:BZ:PTMIN_LAM:PTMAX_LAM:RAPMAX:T:PTMIN_P:PTMIN_PI:DCAMIN_P:DCAMIN_PI:SEED
+# Format: colon-delimited, 14 fields matching helicityEfficiencyToyModel args:
+#   NAME:SUBDIR:N:BZ:PTMIN_LAM:PTMAX_LAM:RAPMAX:ETAMAX:T:PTMIN_P:PTMIN_PI:DCAMIN_P:DCAMIN_PI:SEED
 # No spaces in any field.
 # =============================================================================
 
@@ -280,7 +272,7 @@ family_in_scope() {
     return 1
 }
 
-# register_job: same 13-argument signature as the old run_one,
+# register_job: same 14-argument signature as the old run_one,
 # but only adds to the queue -- does NOT launch anything.
 #
 #   $1  NAME       short identifier, used for output subdir and log name
@@ -290,14 +282,15 @@ family_in_scope() {
 #   $5  PTMIN_LAM  Lambda min pT [GeV/c]
 #   $6  PTMAX_LAM  Lambda max pT [GeV/c]
 #   $7  RAPMAX     Lambda max |rapidity|
-#   $8  T          Boltzmann temperature [GeV]
-#   $9  PTMIN_P    proton min pT [GeV/c]
-#   $10 PTMIN_PI   pion min pT [GeV/c]
-#   $11 DCAMIN_P   proton min DCA_xy [cm]
-#   $12 DCAMIN_PI  pion min DCA_xy [cm]
-#   $13 SEED       TRandom3 seed
+#   $8  ETAMAX     Daughter maximum detectable rapidity |eta|
+#   $9  T          Boltzmann temperature [GeV]
+#   $10 PTMIN_P    proton min pT [GeV/c]
+#   $11 PTMIN_PI   pion min pT [GeV/c]
+#   $12 DCAMIN_P   proton min DCA_xy [cm]
+#   $13 DCAMIN_PI  pion min DCA_xy [cm]
+#   $14 SEED       TRandom3 seed
 register_job() {
-    local PACKED="$1:$2:$3:$4:$5:$6:$7:$8:$9:${10}:${11}:${12}:${13}"
+    local PACKED="$1:$2:$3:$4:$5:$6:$7:$8:$9:${10}:${11}:${12}:${13}:${14}"
     JOB_QUEUE+=("${PACKED}")
     JOB_FAMILIES+=("${CURRENT_FAMILY}")
 }
@@ -321,9 +314,9 @@ run_family_header() {
 # It receives one colon-delimited packed argument string.
 
 execute_job() {
-    # Unpack the 13 fields
+    # Unpack the 14 fields
     IFS=':' read -r \
-        NAME SUBDIR N BZ PTMIN_LAM PTMAX_LAM RAPMAX T \
+        NAME SUBDIR N BZ PTMIN_LAM PTMAX_LAM RAPMAX ETAMAX T \
         PTMIN_P PTMIN_PI DCAMIN_P DCAMIN_PI SEED \
         <<< "$1"
 
@@ -338,7 +331,7 @@ execute_job() {
     # Build ROOT call strings.
     # Single quotes around the macro path protect spaces; the inner double
     # quotes around the ROOT file path protect spaces in BASE_DIR.
-    local GEN_CALL="${N},\"${ROOT_FILE}\",${BZ},${PTMIN_LAM},${PTMAX_LAM},${RAPMAX},${T},${PTMIN_P},${PTMIN_PI},${DCAMIN_P},${DCAMIN_PI},${SEED}"
+    local GEN_CALL="${N},\"${ROOT_FILE}\",${BZ},${PTMIN_LAM},${PTMAX_LAM},${RAPMAX},${ETAMAX},${T},${PTMIN_P},${PTMIN_PI},${DCAMIN_P},${DCAMIN_PI},${SEED}"
     local PLT_CALL="\"${ROOT_FILE}\",\"${PLOTS_DIR}\""
 
     # Write log header
@@ -411,8 +404,8 @@ export BASE_DIR LOG_DIR ROOT_EXE GEN_MACRO PLT_MACRO
 if family_in_scope 0; then
     run_family_header 0 "BASELINE (ALICE O-O defaults)"
 
-    #              NAME         SUBDIR       N            Bz   pTmin pTmax rap    T     pTp   pTpi  dcaP  dcaPi seed
-    register_job  "baseline"  "0_Baseline/baseline"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
+    #              NAME         SUBDIR       N            Bz   pTmin pTmax rap    etaMax T     pTp   pTpi  dcaP  dcaPi seed
+    register_job  "baseline"  "0_Baseline/baseline"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.0  0.0  0.0  0.0  0
 fi
 
 # -----------------------------------------------------------------------------
@@ -429,8 +422,8 @@ fi
 if family_in_scope 1; then
     run_family_header 1 "MAGNETIC FIELD SIGN"
 
-    register_job  "field_pos"  "1_BFieldSign/field_pos"  ${DEFAULT_N}  +0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
-    register_job  "field_neg"  "1_BFieldSign/field_neg"  ${DEFAULT_N}  -0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
+    register_job  "field_pos"  "1_BFieldSign/field_pos"  ${DEFAULT_N}  +0.5  0.0  10.0  5.0  0.9  0.30  0.0  0.0  0.0  0.0  0
+    register_job  "field_neg"  "1_BFieldSign/field_neg"  ${DEFAULT_N}  -0.5  0.0  10.0  5.0  0.9  0.30  0.0  0.0  0.0  0.0  0
 fi
 
 # -----------------------------------------------------------------------------
@@ -451,11 +444,11 @@ if family_in_scope 2; then
     run_family_header 2 "DAUGHTER pT THRESHOLD SCAN"
 
     # 0.001 GeV/c instead of 0.000 avoids a divide-by-zero guard in the helix
-    register_job  "ptcut_000"  "2_PtCut/ptcut_000"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.001 0.001 0.050 0.100  42
-    register_job  "ptcut_010"  "2_PtCut/ptcut_010"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.100 0.100 0.050 0.100  42
-    register_job  "ptcut_015"  "2_PtCut/ptcut_015"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
-    register_job  "ptcut_020"  "2_PtCut/ptcut_020"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.200 0.200 0.050 0.100  42
-    register_job  "ptcut_030"  "2_PtCut/ptcut_030"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.300 0.300 0.050 0.100  42
+    register_job  "ptcut_000"  "2_PtCut/ptcut_000"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.001  0.001  0.050  0.100  0
+    register_job  "ptcut_010"  "2_PtCut/ptcut_010"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.100  0.100  0.050  0.100  0
+    register_job  "ptcut_015"  "2_PtCut/ptcut_015"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.0  0.0  0.0  0.0  0
+    register_job  "ptcut_020"  "2_PtCut/ptcut_020"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.200 0.200 0.050 0.100  0
+    register_job  "ptcut_030"  "2_PtCut/ptcut_030"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.300 0.300 0.050 0.100  0
 fi
 
 # -----------------------------------------------------------------------------
@@ -473,11 +466,11 @@ fi
 if family_in_scope 3; then
     run_family_header 3 "DCA THRESHOLD SCAN"
 
-    register_job  "dcacut_none"            "3_DCACut/dcacut_none"            ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.000 0.000  42
-    register_job  "dcacut_loose"           "3_DCACut/dcacut_loose"           ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.020 0.050  42
-    register_job  "dcacut_loose_symmetric" "3_DCACut/dcacut_loose_symmetric" ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.050 0.050  42
-    register_job  "dcacut_std"             "3_DCACut/dcacut_std"             ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.050 0.100  42
-    register_job  "dcacut_tight"           "3_DCACut/dcacut_tight"           ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.100 0.200  42
+    register_job  "dcacut_none"            "3_DCACut/dcacut_none"            ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.150  0.150  0.000 0.000  0
+    register_job  "dcacut_loose"           "3_DCACut/dcacut_loose"           ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.150  0.150  0.020 0.050  0
+    register_job  "dcacut_loose_symmetric" "3_DCACut/dcacut_loose_symmetric" ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.150  0.150  0.050 0.050  0
+    register_job  "dcacut_std"             "3_DCACut/dcacut_std"             ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.150  0.150  0.050 0.100  0
+    register_job  "dcacut_tight"           "3_DCACut/dcacut_tight"           ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.150  0.150  0.100 0.200  0
 fi
 
 # -----------------------------------------------------------------------------
@@ -498,9 +491,9 @@ fi
 if family_in_scope 4; then
     run_family_header 4 "LAMBDA KINEMATIC WINDOW"
 
-    register_job  "window_full"  "4_KinematicWindow/window_full"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
-    register_job  "window_ring"  "4_KinematicWindow/window_ring"  ${DEFAULT_N}  0.5  0.5   1.5  0.5  0.30  0.150 0.150 0.050 0.100  42
-    register_job  "window_hard"  "4_KinematicWindow/window_hard"  ${DEFAULT_N}  0.5  1.5   4.0  0.5  0.30  0.150 0.150 0.050 0.100  42
+    register_job  "window_full"  "4_KinematicWindow/window_full"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.0  0.0  0.0  0.0  0
+    register_job  "window_ring"  "4_KinematicWindow/window_ring"  ${DEFAULT_N}  0.5  0.5   1.5  5.0  0.9  0.30  0.0  0.0  0.0  0.0  0
+    register_job  "window_hard"  "4_KinematicWindow/window_hard"  ${DEFAULT_N}  0.5  1.5   4.0  5.0  0.9  0.30  0.0  0.0  0.0  0.0  0
 fi
 
 # -----------------------------------------------------------------------------
@@ -510,7 +503,6 @@ fi
 # whose daughters are more likely to be affected by the pT threshold.
 #
 # T = 0.25 GeV: lower bound of Lambda inverse slope at LHC energies
-#               (ALICE, arXiv:1910.07678, Pb-Pb 0-10% at 2.76 TeV)
 # T = 0.30 GeV: baseline / mid-range estimate for O-O and Pb-Pb
 # T = 0.35 GeV: upper estimate for Pb-Pb at LHC energies
 # T = 0.45 GeV: represents harder production channels (e.g., high-pT jets)
@@ -519,42 +511,11 @@ fi
 if family_in_scope 5; then
     run_family_header 5 "THERMAL TEMPERATURE SCAN"
 
-    register_job  "temp_025"  "5_Temperature/temp_025"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.25  0.150 0.150 0.050 0.100  42
-    register_job  "temp_030"  "5_Temperature/temp_030"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
-    register_job  "temp_035"  "5_Temperature/temp_035"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.35  0.150 0.150 0.050 0.100  42
-    register_job  "temp_045"  "5_Temperature/temp_045"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.45  0.150 0.150 0.050 0.100  42
+    register_job  "temp_025"  "5_Temperature/temp_025"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9   0.25  0.0  0.0  0.0  0.0  0
+    register_job  "temp_030"  "5_Temperature/temp_030"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9   0.30  0.0  0.0  0.0  0.0  0
+    register_job  "temp_035"  "5_Temperature/temp_035"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9   0.35  0.0  0.0  0.0  0.0  0
+    register_job  "temp_045"  "5_Temperature/temp_045"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9   0.45  0.0  0.0  0.0  0.0  0
 fi
-
-# -----------------------------------------------------------------------------
-# Family 6: STATISTICS SCALING
-# Different seeds so all N-values are statistically independent samples.
-# Verifies 1/sqrt(N) error scaling and statistical stability.
-# Uses the baseline cuts throughout.  Runs are seeded with different values
-# so that repeated runs with the same N are statistically independent.
-#
-# N = 100k: ~10 seconds per run; useful for rapid iteration during debugging
-# N = 500k: ~1 minute; enough to see the asymmetries clearly
-# N =   2M: ~5 minutes; statistical precision comparable to a short GRID job
-# N =   5M: ~10 minutes; sufficient to resolve the phi* modulation at <1% level
-#
-# For reference, the ring analysis signal is O(10^-3) in the observable.
-# To resolve a fake signal of that size at 5 sigma with statistical error
-# alone, one needs N > (5 * sigma_R / signal)^2 * N_1, where sigma_R is the
-# RMS of the ring proxy distribution (~1 for unpolarized Lambdas).
-# Estimate: N > (5 / 10^-3)^2 = 25 * 10^6 for 5-sigma, but since we are
-# studying the FAKE signal (which can be much larger than 10^-3), the
-# statistics needed here are much more modest.
-# -----------------------------------------------------------------------------
-if family_in_scope 6; then
-    run_family_header 6 "STATISTICS SCALING"
-
-    register_job  "stats_100k"  "6_Stats/stats_100k"     100000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  101
-    register_job  "stats_500k"  "6_Stats/stats_500k"     500000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  201
-    register_job  "stats_2M"    "6_Stats/stats_2M"       2000000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  301
-    register_job  "stats_5M"    "6_Stats/stats_5M"       5000000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  401
-    register_job  "stats_50M"   "6_Stats/stats_50M"     50000000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  501
-fi
-
 
 # =============================================================================
 # QUEUE SUMMARY
@@ -588,7 +549,7 @@ printf "  %-4s  %-28s  %-10s  %-5s  %-14s  %-14s  %-5s\n" \
 
 IDX=0
 for JOB in "${JOB_QUEUE[@]}"; do
-    IFS=':' read -r NAME SUBDIR N BZ PTMIN_LAM PTMAX_LAM RAPMAX T \
+    IFS=':' read -r NAME SUBDIR N BZ PTMIN_LAM PTMAX_LAM RAPMAX ETAMAX T \
                       PTMIN_P PTMIN_PI DCAMIN_P DCAMIN_PI SEED <<< "${JOB}"
     printf "  %-4d  %-28s  %-10s  %+.2f  [%.3f, %.3f]   [%.3f, %.3f]   %.2f\n" \
         $(( IDX + 1 )) "${NAME}" "${N}" "${BZ}" \

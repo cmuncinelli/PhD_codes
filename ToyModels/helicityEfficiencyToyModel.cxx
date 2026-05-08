@@ -101,20 +101,31 @@
 //
 // OUTPUT STRUCTURE (in the ROOT file)
 // ------------------------------------
-//   NoCuts/
-//     EtaPos/   -- all histograms for eta_Lambda > 0
-//     EtaNeg/   -- all histograms for eta_Lambda < 0
-//     All/      -- both eta halves combined
-//   pTCutOnly/
-//     EtaPos/ EtaNeg/ All/
-//   DCACutOnly/
-//     EtaPos/ EtaNeg/ All/
-//   BothCuts/
-//     EtaPos/ EtaNeg/ All/
+// Two parallel families of cut scenarios are stored:
+//
+//   WithoutEtaGate/
+//     NoCuts/      EtaPos/  EtaNeg/  All/
+//     pTCutOnly/   EtaPos/  EtaNeg/  All/
+//     DCACutOnly/  EtaPos/  EtaNeg/  All/
+//     BothCuts/    EtaPos/  EtaNeg/  All/
+//
+//   WithEtaGate/   (additionally requires |eta_daughter| < etaMaxDetector)
+//     NoCuts/      EtaPos/  EtaNeg/  All/
+//     pTCutOnly/   EtaPos/  EtaNeg/  All/
+//     DCACutOnly/  EtaPos/  EtaNeg/  All/
+//     BothCuts/    EtaPos/  EtaNeg/  All/
+//
 //   Kinematics/
 //     (Lambda pT spectrum, rapidity, decay radius, daughter pT before any cut)
 //
-// Each leaf directory contains:
+// WithoutEtaGate is kept to demonstrate why omitting the daughter eta
+// acceptance gate makes the physics cuts inconsistent.  WithEtaGate is
+// the physically correct set and should be used for all conclusions.
+//
+// EtaPos / EtaNeg correspond to eta_Lambda >= 0 / < 0.
+// All combines both halves.
+//
+// Each leaf directory (EtaPos, EtaNeg, All) contains:
 //   h2d_cosTheta_phi  -- 2D: cos(theta*) vs phi*  [main diagnostic]
 //   h1d_cosTheta      -- 1D projection of cos(theta*)
 //   h1d_phi           -- 1D projection of phi*
@@ -187,8 +198,8 @@ static const int kChargePion   = -1;
 // pT/|p| is smaller than this (Lambda nearly collinear with beam axis)
 static const double kMinSinTheta = 1.e-4;
 
-constexpr double TwoPi = TMath::TwoPI();
 constexpr double Pi = TMath::Pi();
+constexpr double TwoPi = 2.0*Pi;
 
 
 // ==========================================================================
@@ -374,6 +385,25 @@ struct ScenarioHistos {
 
 // ==========================================================================
 /**
+ * @brief Holds all four cut-scenario groups (NoCuts, pTCutOnly, DCACutOnly,
+ *        BothCuts) for one histogram family, each split into EtaPos, EtaNeg,
+ *        and All sub-directories.
+ *
+ * Two instances of this struct are used in the main function: one for the
+ * WithoutEtaGate family and one for the WithEtaGate family.
+ * Populated by CreateFamily() and filled by FillFamily().
+ */
+// ==========================================================================
+struct FamilyHistos {
+    ScenarioHistos NC_Pos, NC_Neg, NC_All;  // NoCuts
+    ScenarioHistos PT_Pos, PT_Neg, PT_All;  // pTCutOnly
+    ScenarioHistos DC_Pos, DC_Neg, DC_All;  // DCACutOnly
+    ScenarioHistos BC_Pos, BC_Neg, BC_All;  // BothCuts
+};
+
+
+// ==========================================================================
+/**
  * @brief Allocates and initialises all histograms inside the given TDirectory.
  *
  * The directory must already exist.  Calls dir->cd() before creating objects
@@ -477,31 +507,35 @@ static void FillScenario(ScenarioHistos& h,
 
 // ==========================================================================
 /**
- * @brief Creates a three-level directory structure inside the output file and
- *        books ScenarioHistos in each leaf directory.
+ * @brief Creates a three-level directory structure inside a parent TDirectory
+ *        and books ScenarioHistos in each leaf directory.
  *
- * Directory layout created under the file root:
+ * Directory layout created under @p parent:
  *   scenarioName/EtaPos/
  *   scenarioName/EtaNeg/
  *   scenarioName/All/
  *
  * Results are returned via the output references hPos, hNeg, and hAll.
  *
- * @param outFile       Pointer to the open output TFile.
- * @param scenarioName  Name of the top-level scenario directory to create.
+ * @note TFile inherits from TDirectory, so outFile can be passed directly
+ *       as @p parent when booking at the file root level.
+ *
+ * @param parent        Pointer to the parent TDirectory under which the
+ *                      scenario directory is created.
+ * @param scenarioName  Name of the scenario sub-directory to create.
  * @param hPos          Output: ScenarioHistos booked for eta_Lambda >= 0.
  * @param hNeg          Output: ScenarioHistos booked for eta_Lambda < 0.
  * @param hAll          Output: ScenarioHistos booked for both eta halves combined.
  */
 // ==========================================================================
-static void CreateSubdirs(TFile*             outFile,
+static void CreateSubdirs(TDirectory*        parent,
                            const char*        scenarioName,
                            ScenarioHistos&    hPos,
                            ScenarioHistos&    hNeg,
                            ScenarioHistos&    hAll)
 {
     // Create the top-level scenario directory
-    TDirectory* dirScen = outFile->mkdir(scenarioName);
+    TDirectory* dirScen = parent->mkdir(scenarioName);
 
     // Create sub-directories for each eta half and the combined sample
     TDirectory* dirPos = dirScen->mkdir("EtaPos");
@@ -513,8 +547,96 @@ static void CreateSubdirs(TFile*             outFile,
     hNeg = BookScenario(dirNeg);
     hAll = BookScenario(dirAll);
 
-    // Return to root directory of file so subsequent mkdir calls start there
-    outFile->cd();
+    // Return to parent directory so subsequent mkdir calls start from there
+    parent->cd();
+}
+
+
+// ==========================================================================
+/**
+ * @brief Creates all four cut-scenario sub-directories (NoCuts, pTCutOnly,
+ *        DCACutOnly, BothCuts) under @p parent and books all histograms into
+ *        the provided FamilyHistos struct.
+ *
+ * @param parent  Pointer to the parent TDirectory (e.g. the WithEtaGate or
+ *                WithoutEtaGate top-level directory).
+ * @param f       Output: FamilyHistos struct whose 12 ScenarioHistos members
+ *                will be populated.
+ */
+// ==========================================================================
+static void CreateFamily(TDirectory* parent, FamilyHistos& f)
+{
+    CreateSubdirs(parent, "NoCuts",     f.NC_Pos, f.NC_Neg, f.NC_All);
+    CreateSubdirs(parent, "pTCutOnly",  f.PT_Pos, f.PT_Neg, f.PT_All);
+    CreateSubdirs(parent, "DCACutOnly", f.DC_Pos, f.DC_Neg, f.DC_All);
+    CreateSubdirs(parent, "BothCuts",   f.BC_Pos, f.BC_Neg, f.BC_All);
+}
+
+
+// ==========================================================================
+/**
+ * @brief Fills all cut scenarios in a FamilyHistos struct for one Lambda
+ *        candidate, applying the four cut combinations consistently.
+ *
+ * NoCuts is always filled.  The remaining three scenarios are gated on the
+ * corresponding cut booleans.  Within each scenario the correct eta half
+ * (EtaPos or EtaNeg) and the combined All directory are both filled.
+ *
+ * @param f           Reference to the FamilyHistos struct to fill.
+ * @param passPt      True if both daughters pass the minimum-pT cut.
+ * @param passDca     True if both daughters pass the minimum-DCA cut.
+ * @param etaPos      True if eta_Lambda >= 0 (routes fill to EtaPos vs EtaNeg).
+ * @param cosTheta    cos(theta*) = p*_proton_unit . e1.
+ * @param phi_star    phi* = atan2(p*_proton.e3, p*_proton.e2) [rad].
+ * @param ringProxy   R_proxy = (3/alpha) * p*_D . (z x lambda_unit)/|...| .
+ * @param decayR      Transverse decay vertex radius [cm].
+ * @param pT_p        Proton pT in the lab frame [GeV/c].
+ * @param pT_pi       Pion pT in the lab frame [GeV/c].
+ * @param dca_proton  Proton DCA_xy to the primary vertex [cm].
+ * @param dca_pion    Pion DCA_xy to the primary vertex [cm].
+ * @param pT_lam      Lambda pT [GeV/c].
+ * @param eta_lam     Lambda pseudorapidity.
+ */
+// ==========================================================================
+static void FillFamily(FamilyHistos& f,
+                        bool   passPt,
+                        bool   passDca,
+                        bool   etaPos,
+                        double cosTheta,
+                        double phi_star,
+                        double ringProxy,
+                        double decayR,
+                        double pT_p,
+                        double pT_pi,
+                        double dca_proton,
+                        double dca_pion,
+                        double pT_lam,
+                        double eta_lam)
+{
+    // Local lambda that fills one scenario's eta-half and All subdirectory.
+    // Captures all per-event quantities by reference so we only pass the
+    // three ScenarioHistos pointers that change between scenarios.
+    auto fill = [&](ScenarioHistos& hPos, ScenarioHistos& hNeg, ScenarioHistos& hAll) {
+        ScenarioHistos& hEta = etaPos ? hPos : hNeg;
+        FillScenario(hEta,  cosTheta, phi_star, ringProxy, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam);
+        FillScenario(hAll,  cosTheta, phi_star, ringProxy, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam);
+    };
+
+    // Scenario 1: No cuts (always filled -- serves as a flat-distribution
+    //             bug-check; any asymmetry here is a code error)
+    fill(f.NC_Pos, f.NC_Neg, f.NC_All);
+
+    // Scenario 2: pT cut only
+    if (passPt)
+        fill(f.PT_Pos, f.PT_Neg, f.PT_All);
+
+    // Scenario 3: DCA cut only
+    if (passDca)
+        fill(f.DC_Pos, f.DC_Neg, f.DC_All);
+
+    // Scenario 4: Both cuts
+    if (passPt && passDca)
+        fill(f.BC_Pos, f.BC_Neg, f.BC_All);
 }
 
 
@@ -524,9 +646,22 @@ static void CreateSubdirs(TFile*             outFile,
  *        fake-polarization effects by varying kinematic and topological cuts.
  *
  * @details
- * Four cut scenarios are filled per run: NoCuts, pTCutOnly, DCACutOnly, and
- * BothCuts.  Within each scenario, histograms are split into EtaPos, EtaNeg,
- * and All sub-directories (see file header for the full output structure).
+ * Histograms are stored in two parallel families:
+ *   - WithoutEtaGate: no requirement on daughter pseudorapidity.  Kept as a
+ *     reference to study the inconsistency that arises when Lambdas
+ *     whose daughters fall outside the detector acceptance are included when
+ *     the Lambdas themselves were only generated within acceptance (approximately!
+ *     The Lambdas are generated in a rapidity cut, not pseudorapidity, but
+ *     still, not applying a pseudorap cut would be inconsistent if they are
+       generated in a small region but may be detected in a large eta region).
+ *   - WithEtaGate: additionally requires |eta_daughter| < etaMaxDetector for
+ *     BOTH daughters before any other cut is applied.  This is the physically
+ *     consistent set and should be used for all physics conclusions.
+ *
+ * Within each family, four cut scenarios are filled: NoCuts, pTCutOnly,
+ * DCACutOnly, and BothCuts.  Within each scenario, histograms are split into
+ * EtaPos (eta_Lambda >= 0), EtaNeg (eta_Lambda < 0), and All sub-directories
+ * (see file header for the full output structure).
  *
  * @param nLambdas       Number of Lambdas to simulate (default: 10,000,000).
  * @param outputPath     Output ROOT file path (default: helicityEffOutput.root).
@@ -535,10 +670,13 @@ static void CreateSubdirs(TFile*             outFile,
  * @param pTmin_Lambda   Minimum Lambda pT for generation [GeV/c] (default: 0.0).
  * @param pTmax_Lambda   Maximum Lambda pT for generation [GeV/c] (default: 10.0).
  * @param rapMax_Lambda  Maximum |rapidity| for GENERATING Lambdas (default: 5.0).
- * @param etaMaxDetector Maximum |eta| for detecting Lambda daughters (default: 0.9,
- *                       matching the ALICE inner barrel). Not applied to the Lambda
- *                       itself; cutting on Lambda eta would bias the distribution.
- *                       Detectors only see charged particles after all.
+ *                       Set wide enough to capture all Lambdas whose daughters
+ *                       can fall inside |eta| < etaMaxDetector.
+ * @param etaMaxDetector Maximum |eta| for daughter tracks (default: 0.9,
+ *                       matching the ALICE inner barrel). Applied as a gate
+ *                       to select the WithEtaGate family; not applied to the
+ *                       Lambda itself. Detectors only see charged particles,
+ *                       and only within a select acceptance in |eta|.
  * @param T_thermal      Boltzmann temperature for the mT spectrum [GeV] (default: 0.3).
  * @param pTmin_proton   Minimum proton pT cut [GeV/c] (default: 0.0).
  * @param pTmin_pion     Minimum pion pT cut [GeV/c] (default: 0.0).
@@ -572,10 +710,9 @@ void helicityEfficiencyToyModel(
     printf("  N Lambdas to simulate : %ld\n",  nLambdas);
     printf("  Output ROOT file      : %s\n",   outputPath);
     printf("  Magnetic field Bz     : %.3f T\n",  Bz_Tesla);
-    printf("  Lambda pT range       : [%.2f, %.2f] GeV/c\n",
-           pTmin_Lambda, pTmax_Lambda);
+    printf("  Lambda pT range       : [%.2f, %.2f] GeV/c\n", pTmin_Lambda, pTmax_Lambda);
     printf("  Lambda |rapidity| max : %.2f\n", rapMax_Lambda);
-    printf("  Detector |eta| max : %.2f\n", etaMaxDetector);
+    printf("  Detector |eta| max    : %.2f (daughter eta gate)\n", etaMaxDetector);
     printf("  Thermal temperature T : %.3f GeV\n", T_thermal);
     printf("  Min proton pT cut     : %.3f GeV/c\n", pTmin_proton);
     printf("  Min pion pT cut       : %.3f GeV/c\n", pTmin_pion);
@@ -594,18 +731,19 @@ void helicityEfficiencyToyModel(
         return;
     }
 
-    // Create histogram containers for each (scenario, eta) combination.
-    // Naming convention: hXxx_Pos = eta > 0, hXxx_Neg = eta < 0, hXxx_All = both.
-    ScenarioHistos hNC_Pos, hNC_Neg, hNC_All;         // No cuts
-    ScenarioHistos hPT_Pos, hPT_Neg, hPT_All;         // pT cut only
-    ScenarioHistos hDC_Pos, hDC_Neg, hDC_All;         // DCA cut only
-    ScenarioHistos hBC_Pos, hBC_Neg, hBC_All;         // Both cuts
+    // Two top-level directories, one per histogram family.
+    // WithoutEtaGate: no daughter eta requirement (kept for comparison only;
+    //                 see file header for the physics motivation).
+    // WithEtaGate:    requires |eta_daughter| < etaMaxDetector (consistent set).
+    TDirectory* dirNG = outFile->mkdir("WithoutEtaGate");
+    TDirectory* dirEG = outFile->mkdir("WithEtaGate");
 
-    // CreateSubdirs makes the TDirectory hierarchy and books all histograms:
-    CreateSubdirs(outFile, "NoCuts",    hNC_Pos, hNC_Neg, hNC_All);
-    CreateSubdirs(outFile, "pTCutOnly", hPT_Pos, hPT_Neg, hPT_All);
-    CreateSubdirs(outFile, "DCACutOnly",hDC_Pos, hDC_Neg, hDC_All);
-    CreateSubdirs(outFile, "BothCuts",  hBC_Pos, hBC_Neg, hBC_All);
+    // Create the four cut-scenario sub-directories in each family and book
+    // all histograms.  CreateFamily calls CreateSubdirs four times internally.
+    FamilyHistos famNG; // Without eta gate
+    FamilyHistos famEG; // With eta gate
+    CreateFamily(dirNG, famNG);
+    CreateFamily(dirEG, famEG);
 
     // Extra kinematics directory: Lambda distribution BEFORE any decay cuts,
     // only subject to the generation acceptance (pT and rapidity windows).
@@ -767,18 +905,15 @@ void helicityEfficiencyToyModel(
         hKin_pT_proton->Fill(pT_p);
         hKin_pT_pion->Fill(pT_pi);
 
-        // Cutting in daughter eta:
-        // (TODO: actually apply this cut with etaMaxDetector!
-        //  All other results that previously existed in this code make no sense if you don't implement this!
-        //  Could maybe create a whole other family of cuts such as the noCuts, pTCuts, both cuts and so on TDirectory families, but now for the Eta cut?)
-        //  Or even better: we should create a folder that contains all the other families without this eta cut, and then clone all existing families
-        //  to properly include this eta cut.
-        //  All of the previous histograms are somewhat inconsistent: we generate Lambdas in a small rapidity range (was 0.9 by default. Now 5.0 to 
-        //  guarantee we include forward Lambdas that could still be detected in the Inner Barrel acceptance of |eta|<0.9), yet we
-        //  allow for their daughters to be created with all possible rapidities and don't consider that the original generated
-        //  rapidity distribution (|y_Lambda|<0.9) was smaller than it should be. We were cutting in rapidity but forgot to cut
-        //  in eta to make everything consistent!
-        double eta_p = lv_proton.Eta();
+        // -- Daughter pseudorapidities (used for the eta gate below) --
+        // Lambdas are generated over a wide rapidity window (rapMax_Lambda = 5.0
+        // by default) so that ALL Lambdas whose daughters fall inside the inner
+        // barrel acceptance (|eta| < etaMaxDetector = 0.9) should have been included.
+        // The WithEtaGate family requires BOTH daughters to satisfy this cut,
+        // making the acceptance consistent with that of a real detector.
+        // The WithoutEtaGate family does NOT apply this requirement and is
+        // kept only to demonstrate the inconsistency of omitting it.
+        double eta_p  = lv_proton.Eta();
         double eta_pi = lv_pion.Eta();
 
         // ==================================================================
@@ -836,6 +971,10 @@ void helicityEfficiencyToyModel(
         // ==================================================================
         // 3.9  Apply selection cuts
         // ==================================================================
+        // -- Eta gate: both daughters must lie inside the detector acceptance --
+        // This is the acceptance pre-condition for the WithEtaGate family.
+        bool passEtaGate = (std::fabs(eta_p)  < etaMaxDetector) && (std::fabs(eta_pi) < etaMaxDetector);
+
         // -- pT cut: both daughters must exceed minimum pT --
         bool passPtCut = (pT_p  >= pTmin_proton) && (pT_pi >= pTmin_pion);
 
@@ -844,39 +983,24 @@ void helicityEfficiencyToyModel(
         //  We lack actual primary-secondary distinction here, so it just emulates it)
         bool passDcaCut = (dca_proton >= dcaMin_proton) && (dca_pion >= dcaMin_pion);
 
-        // -- Eta > 0 flag --
+        // -- Eta > 0 flag (routes fill into EtaPos vs EtaNeg subdirectory) --
         bool etaPos = (eta_lam >= 0.);
 
         // ==================================================================
-        // 3.10  Fill histogram scenarios
+        // 3.10  Fill histogram families
         // ==================================================================
-        // We pack the computed quantities into one call per scenario per event.
-        // Helper macro to avoid repeating the 12-argument call four times:
-        #define FILL_BOTH_ETA(HPOS, HNEG, HALL) \
-            do { \
-                ScenarioHistos& heta = etaPos ? (HPOS) : (HNEG); \
-                FillScenario(heta,  cosTheta, phi_star, ringProxy, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam); \
-                FillScenario((HALL), cosTheta, phi_star, ringProxy, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam); \
-            } while (0)
+        // WithoutEtaGate: fill for all events regardless of daughter eta.
+        // Kept as a comparison to show the inconsistency of omitting the gate.
+        FillFamily(famNG, passPtCut, passDcaCut, etaPos,
+                   cosTheta, phi_star, ringProxy, decayR,
+                   pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam);
 
-        // Scenario 1: No cuts (always filled -- serves as a flat-distribution
-        //             bug-check; any asymmetry here is a code error)
-        FILL_BOTH_ETA(hNC_Pos, hNC_Neg, hNC_All);
-
-        // Scenario 2: pT cut only
-        if (passPtCut)
-            FILL_BOTH_ETA(hPT_Pos, hPT_Neg, hPT_All);
-
-        // Scenario 3: DCA cut only
-        if (passDcaCut)
-            FILL_BOTH_ETA(hDC_Pos, hDC_Neg, hDC_All);
-
-        // Scenario 4: Both cuts
-        if (passPtCut && passDcaCut)
-            FILL_BOTH_ETA(hBC_Pos, hBC_Neg, hBC_All);
-
-        // Remove local macro to avoid leakage outside the loop
-        #undef FILL_BOTH_ETA
+        // WithEtaGate: only fill when both daughters are inside the acceptance.
+        // This is the physically consistent set.
+        if (passEtaGate)
+            FillFamily(famEG, passPtCut, passDcaCut, etaPos,
+                       cosTheta, phi_star, ringProxy, decayR,
+                       pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam);
 
         ++nGenerated;
 
@@ -893,34 +1017,48 @@ void helicityEfficiencyToyModel(
     printf("  Skipped (collinear)     : %ld\n",   nCollinear);
     printf("========================================================\n\n");
 
-    printf("  Cut statistics (fraction of NoCuts sample):\n");
-    double nNC = (double)hNC_All.h1d_pT_lambda->GetEntries();
-    double nPT = (double)hPT_All.h1d_pT_lambda->GetEntries();
-    double nDC = (double)hDC_All.h1d_pT_lambda->GetEntries();
-    double nBC = (double)hBC_All.h1d_pT_lambda->GetEntries();
-    printf("  NoCuts    : %.0f  (100%%)\n",       nNC);
-    printf("  pTCutOnly : %.0f  (%.1f%%)\n",     nPT, 100.*nPT/nNC);
-    printf("  DCACutOnly: %.0f  (%.1f%%)\n",     nDC, 100.*nDC/nNC);
-    printf("  BothCuts  : %.0f  (%.1f%%)\n",     nBC, 100.*nBC/nNC);
-    printf("\n");
-
-    // Print integrated ring proxy values for quick sanity check:
-    printf("  Integrated <R_proxy> summary  (expected: 0 for NoCuts):\n");
-    auto PrintRing = [](const char* label, ScenarioHistos& hA,
-                        ScenarioHistos& hP, ScenarioHistos& hN) {
-        double rAll  = hA.pRingProxy->GetBinContent(1);
-        double eAll  = hA.pRingProxy->GetBinError(1);
-        double rPos  = hP.pRingProxy->GetBinContent(1);
-        double ePos  = hP.pRingProxy->GetBinError(1);
-        double rNeg  = hN.pRingProxy->GetBinContent(1);
-        double eNeg  = hN.pRingProxy->GetBinError(1);
-        printf("  %-12s  All: %+.4e +/- %.4e  EtaPos: %+.4e +/- %.4e  EtaNeg: %+.4e +/- %.4e\n", label, rAll, eAll, rPos, ePos, rNeg, eNeg);
+    // Helper lambda to print cut statistics for one family
+    auto PrintCutStats = [](const char* familyLabel, const FamilyHistos& f) {
+        double nNC = (double)f.NC_All.h1d_pT_lambda->GetEntries();
+        double nPT = (double)f.PT_All.h1d_pT_lambda->GetEntries();
+        double nDC = (double)f.DC_All.h1d_pT_lambda->GetEntries();
+        double nBC = (double)f.BC_All.h1d_pT_lambda->GetEntries();
+        printf("  [%s] cut statistics (fraction of NoCuts in this family):\n", familyLabel);
+        printf("    NoCuts    : %.0f  (100%%)\n",       nNC);
+        printf("    pTCutOnly : %.0f  (%.1f%%)\n",     nPT, 100.*nPT/nNC);
+        printf("    DCACutOnly: %.0f  (%.1f%%)\n",     nDC, 100.*nDC/nNC);
+        printf("    BothCuts  : %.0f  (%.1f%%)\n",     nBC, 100.*nBC/nNC);
+        printf("\n");
     };
-    PrintRing("NoCuts",     hNC_All, hNC_Pos, hNC_Neg);
-    PrintRing("pTCutOnly",  hPT_All, hPT_Pos, hPT_Neg);
-    PrintRing("DCACutOnly", hDC_All, hDC_Pos, hDC_Neg);
-    PrintRing("BothCuts",   hBC_All, hBC_Pos, hBC_Neg);
-    printf("\n");
+
+    PrintCutStats("WithoutEtaGate", famNG);
+    PrintCutStats("WithEtaGate",    famEG);
+
+    // Helper lambda to print integrated ring proxy values for one family
+    auto PrintRingFamily = [](const char* familyLabel, const FamilyHistos& f) {
+        auto PrintRing = [](const char* label,
+                            const ScenarioHistos& hA,
+                            const ScenarioHistos& hP,
+                            const ScenarioHistos& hN) {
+            double rAll = hA.pRingProxy->GetBinContent(1);
+            double eAll = hA.pRingProxy->GetBinError(1);
+            double rPos = hP.pRingProxy->GetBinContent(1);
+            double ePos = hP.pRingProxy->GetBinError(1);
+            double rNeg = hN.pRingProxy->GetBinContent(1);
+            double eNeg = hN.pRingProxy->GetBinError(1);
+            printf("    %-12s  All: %+.4e +/- %.4e  EtaPos: %+.4e +/- %.4e  EtaNeg: %+.4e +/- %.4e\n",
+                   label, rAll, eAll, rPos, ePos, rNeg, eNeg);
+        };
+        printf("  [%s] <R_proxy> summary  (expected: 0 for NoCuts):\n", familyLabel);
+        PrintRing("NoCuts",     f.NC_All, f.NC_Pos, f.NC_Neg);
+        PrintRing("pTCutOnly",  f.PT_All, f.PT_Pos, f.PT_Neg);
+        PrintRing("DCACutOnly", f.DC_All, f.DC_Pos, f.DC_Neg);
+        PrintRing("BothCuts",   f.BC_All, f.BC_Pos, f.BC_Neg);
+        printf("\n");
+    };
+
+    PrintRingFamily("WithoutEtaGate", famNG);
+    PrintRingFamily("WithEtaGate",    famEG);
 
     // -----------------------------------------------------------------------
     // 5) Write all histograms to disk and close
