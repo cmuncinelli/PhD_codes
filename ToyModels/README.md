@@ -29,17 +29,19 @@ When a minimum transverse-momentum threshold is applied to daughter tracks, the 
 
 The net result is a fake asymmetry in `cos(theta*)`, where `theta*` is the angle between the proton emission direction in the Lambda rest frame and the Lambda lab-frame momentum direction. This is the **forward-backward asymmetry**, also known in the literature as the **helicity efficiency effect** (HEE).
 
-This effect primarily induces a distortion along the Lambda momentum direction. It does **not** create a fake ring observable by itself, as the observable kills all polarization components colinear to the Lambda momentum, but in the presence of detector or acceptance asymmetries, it is possible that HEE contributes indirectly to distortions of the full decay angular distribution. Still needs to be checked!
+This effect primarily induces a distortion along the Lambda momentum direction. It should **not** create a fake ring observable by itself, as the observable kills all polarization components colinear to the Lambda momentum, but in the presence of detector or acceptance asymmetries, it is possible that HEE contributes indirectly to distortions of the full decay angular distribution. Still needs to be checked!
 
 ### Effect 2: The DCA-cut left-right asymmetry
 
 When a minimum distance-of-closest-approach (DCA) cut is applied to daughter tracks, the two daughters -- which carry opposite charges -- are bent in opposite directions by the solenoidal magnetic field. Depending on the azimuthal angle `phi*` of the proton emission direction around the Lambda axis, the DCA between daughters may be larger or smaller, creating a prioritized geometry during reconstruction and thus a fake polarization signal.
 
-This is not so much of an effect itself -- moreso a dependency of the AEE effect described below. It is studied as if a separate effect in the `helicityEfficiencyToyModel.cxx` though.
+*Note on the Toy Model framework:* This Toy Model explicitly lacks a simulated DCA between the daughters themselves (i.e., the daughters originate exactly from the same spatial point). Therefore, any left-right asymmetry observed here confirms that the effect is driven predominantly by the **DCA to the Primary Vertex (PV)**, rather than the DCA between the daughters!
 
 ### Effect 3: The Azimuthal Emission Efficiency (AEE)
 
-The Azimuthal Emission Efficiency (AEE) creates an artificial structure in the angular distributions due to the non-uniform acceptance of daughters in the laboratory frame, strongly correlating the Lambda kinematics with the jet axis. The DCA between daughters may be larger or smaller, creating a prioritized geometry during reconstruction and thus a fake polarization signal.
+The Azimuthal Emission Efficiency (AEE) creates an artificial structure in the angular distributions due to the non-uniform acceptance of daughters in the laboratory frame, strongly correlating the Lambda kinematics with the jet axis. The DCA between daughters may be larger or smaller, creating a prioritized geometry during reconstruction and thus a fake polarization signal. If not driven by DCA between the daughters, it can be driven by DCA
+of the daughters to the PV. This is one of the main things that the Toy Model
+is testing for!
 
 Because the ring observable is constructed as a projection onto the `p_Lambda x t_hat` direction (where t_hat is the jet direction), this left-right asymmetry directly produces a **fake ring signal**.
 
@@ -81,12 +83,11 @@ evaluates four cut scenarios:
 | `DCACutOnly` | Minimum DCA_xy to PV on each daughter |
 | `BothCuts`   | Both pT and DCA cuts simultaneously   |
 
-Each scenario produces histograms separately for `eta > 0`, `eta < 0`,
-and the combined sample. The key outputs are the `(cos theta*, phi*)` 2D
-maps, the ring observable proxy distributions and profiles, and the
-daughter kinematic distributions.
+Each run produces a ROOT file containing two parallel histogram directories to isolate geometric acceptance boundaries:
+- `WithoutEtaGate/` -- legacy, no daughter eta requirement (kept for reference)
+- `WithEtaGate/` -- physically consistent set (BOTH daughters in acceptance)
 
-Output: one `.root` file per run, containing a structured directory tree.
+Each family contains the four scenarios mentioned above, further split into `EtaPos`, `EtaNeg`, and `All` sub-directories. The key outputs are the `(cos theta*, phi*)` 2D maps, the ring observable proxy distributions and profiles, and the daughter kinematic distributions.
 
 **Run with ROOT:**
 
@@ -130,11 +131,11 @@ root -l -b -q 'plotHelicityEfficiency.cxx("output.root","plots_dir")'
 
 **The coordinator script -- start here for a full parameter scan.**
 
-Runs the generator and plotter across seven families of parameter
-variations (see below) and organises all output into a structured
-directory tree under a configurable base directory. Supports parallel
-execution (configurable via `MAX_PARALLEL`) and produces one log file
-per run.
+Runs the generator and plotter across ten families of parameter
+variations specifically designed to isolate one effect by silencing the other.
+It organizes all output into a structured directory tree under a configurable
+base directory. Supports parallel execution (default `MAX_PARALLEL=60`) and
+produces one log file per run.
 
 **Quick start:**
 
@@ -154,28 +155,30 @@ chmod +x runHelicityToyModel.sh
 The scan families and their physics motivation are documented in detail
 inside the script header. A brief summary:
 
-| Family | Varied parameter        | Key question                                       |
-|--------|-------------------------|----------------------------------------------------|
-| 0      | Baseline                | Establish reference point                          |
-| 1      | Magnetic field sign     | Does DCA asymmetry flip with B?                    |
-| 2      | Daughter pT threshold   | How does helicity effect grow with cut?            |
-| 3      | DCA threshold           | How does left-right asymmetry grow with cut?       |
-| 4      | Lambda kinematic window | How large is the effect in the ring-analysis window? |
-| 5      | Thermal temperature     | How does the spectrum shape affect the fake signal? |
-| 6      | Statistics scaling      | Is 1/sqrt(N) scaling confirmed?                    |
+| Family | Varied parameter        | Key question                                                                 |
+|--------|-------------------------|------------------------------------------------------------------------------|
+| 0      | Baseline                | Establish flat reference point with no cuts.                                 |
+| 1      | Asymmetric DCA cuts     | [AEE] Does the sign depend on which daughter's DCA dominates?                |
+| 2      | Symmetric DCA cuts      | [AEE] How does magnitude grow as a clean function of cut strength?           |
+| 3      | Magnetic field          | [AEE] Does asymmetry flip with B field polarity and scale with strength?     |
+| 4      | Lambda pT minimum       | How does the combined fake signal depend on the Lambda pT regime?            |
+| 5      | Daughter pT cuts        | [HEE] How does HEE isolate and grow with symmetric/asymmetric pT cuts?       |
+| 6      | Eta acceptance window   | How does fake signal magnitude change with detector acceptance?              |
+| 7      | Temperature scan        | How does the Lambda pT spectrum shape (Boltzmann T) affect the fake signal?  |
+| 8      | Ring kinematic windows  | Where is the fake signal largest across successive pT windows?               |
+| 9      | Realistic ALICE cuts    | What is the combined HEE+AEE estimate under experimental conditions?         |
 
 **Default output directory:** `/home/users/cicerodm/RingPol/HelicityToyModel/`
-
 **Default log directory:** `/home/users/cicerodm/RingPol/HelicityToyModel/logs/`
 
-Both can be changed at the top of the script.
+Both can be changed at the top of the script. The entire run generates approximately 600 MB - 1.4 GB of data between compressed ROOT files and PDFs.
 
 ---
 
 ## What these toy models cannot do
 
-This is a **kinematic and geometric tools**, full detector simulations.
-They deliberately exclude:
+This is a **kinematic and geometric tool**, not a full detector simulation.
+It deliberately excludes:
 
 - Material budget and multiple scattering (which smear DCA distributions)
 - TPC space-charge distortions (relevant in central Pb-Pb or O-O)
@@ -187,18 +190,12 @@ They deliberately exclude:
 - Continuous efficiency variations with pT, eta, and detector occupancy
   (the `helicityEfficiencyToyModel.cxx` model only applies hard selection thresholds)
 
-The toy model gives **qualitative and mechanistic** insight: it tells
+The toy models give **qualitative and mechanistic** insights ONLY: they tell
 you which effect is responsible for which asymmetry, with which sign,
-and how it scales with the cut parameters. It does **not** give
+and how it scales with the cut parameters. They **do not** give
 quantitative correction factors for the data. Those require a full
 GEANT4-level simulation with the ALICE detector geometry and the
 same reconstruction algorithm used on data.
-
-They provide qualitative and mechanistic *insights* ONLY.
-They help understand which effect is responsible for which
-asymmetry, with which sign, and how it scales with the cut parameters (AT MOST!).
-They **do not** provide quantitative correction factors for data.
-Those require a full GEANT4-level simulation with the ALICE detector geometry.
 
 ---
 
