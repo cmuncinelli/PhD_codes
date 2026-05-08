@@ -7,21 +7,54 @@
 # -------
 # Coordinator script for the Lambda helicity efficiency toy model study.
 # Runs helicityEfficiencyToyModel.cxx and plotHelicityEfficiency.cxx over
-# several families of parameter variations designed to isolate the two
-# detector-induced fake-polarization effects:
+# ten families of parameter variations designed to isolate and quantify the
+# two largest detector-induced fake-polarization effects we could think of:
 #
-#   (1) The helicity efficiency effect (forward-backward / cos theta* asymmetry)
-#       driven by the minimum-pT threshold applied to daughter tracks.
+#   (1) The Helicity Efficiency Effect (HEE): forward-backward asymmetry in
+#       cos(theta*) driven by the minimum-pT threshold on daughter tracks.
+#       The soft pion from a backward decay (in the Lambda rest frame) is
+#       preferentially removed, biasing the distribution toward negative
+#       cos(theta*). This effect should be field-independent and grows with the
+#       pT threshold relative to the daughter pT spectrum.
 #
-#   (2) The DCA-cut left-right asymmetry (phi* modulation) driven by the
-#       interplay between the magnetic field direction and the minimum-DCA
-#       requirement applied to daughter tracks.
+#   (2) The Azimuthal Efficiency Effect (AEE): left-right asymmetry in phi*
+#       driven by the interplay between the magnetic field and the minimum-DCA
+#       cut applied to daughter tracks. The proton and pion, being opposite-
+#       charge, curve in opposite directions; the DCA cut selects decay
+#       geometries where one daughter curves away from the PV. The resulting
+#       phi* modulation flips sign with the field polarity.
+#       Notice that we don't have a DCA between daughters in this Toy Model,
+#       so if we do manage to see the AEE effect, then it is indeed caused
+#       mostly be the DCA to PV, not the DCA between daughters!
+#
+# To be more precise: we aim to understand what exactly causes these two effects
+# in a simple Toy Model. Are their mechanisms truly the ones we believe to be?
+#
+# DESIGN PRINCIPLE
+# ----------------
+# Each family isolates ONE effect by silencing the other:
+#   - AEE families (1, 2, 3):   DCA cuts active, pT cuts = 0.
+#   - HEE families (5, 6):      pT cuts active, DCA cuts = 0.
+#   - Context families (4, 7):  standard-ish ALICE pT+DCA cuts to see combined
+#                               signal across varying kinematic conditions.
+#   - Families 8, 9:            vary spectrum/window with standard-ish ALICE cuts
+#                               so the fake signal is visible and comparable.
+#   - Family 10 (Realistic):    full ALICE-like cuts; the combined estimate needed
+#                               for the actual data comparison.
+#
+# OUTPUT STRUCTURE
+# ----------------
+# Each run produces a ROOT file with two parallel histogram families:
+#   WithoutEtaGate/  -- legacy, no daughter eta requirement (kept for reference)
+#   WithEtaGate/     -- physically consistent set (BOTH daughters in acceptance)
+# Each family contains NoCuts / pTCutOnly / DCACutOnly / BothCuts scenarios,
+# each split into EtaPos / EtaNeg / All sub-directories.
 #
 # PARALLELISM DESIGN
 # ------------------
 # All jobs from ALL families are collected into a single queue first, then
 # dispatched simultaneously up to MAX_PARALLEL concurrent processes.
-# On a 192-core machine with 24 total runs, the default MAX_PARALLEL=24
+# On a 192-core machine with ~59 total runs, the default MAX_PARALLEL=60
 # launches every job at once and the total wall time equals the slowest
 # single run.
 #
@@ -31,63 +64,66 @@
 #   2. Pure bash background pool: fallback if parallel is not installed;
 #      uses the same subshell structure with a lightweight semaphore.
 #
-# The family structure is kept purely for the --family filter convenience:
-# it controls which jobs enter the queue, not when they run.
-# run_family_header/footer are informational only and contain NO wait calls.
-#
 # PARAMETER FAMILIES
 # ------------------
-# The script runs the following scan families, each producing an independent
-# ROOT file and a dedicated plots subfolder:
-#
 #   Family 0: BASELINE
-#       One reference run with ALICE O-O default parameters.
-#       Every other family uses this as the comparison point.
+#       One reference run with NO cuts at all (pT_min = DCA_min = 0).
+#       All other families should be compared against this flat reference.
+#       In this family, we should not see any difference between the "pTcut"
+#       or "DCAcut" TDirectories: the "cut" values are zeroed when calling the
+#       Toy Model, after all!
 #
-#   Family 1: MAGNETIC FIELD SIGN
-#       Bz = +0.5 T  vs  Bz = -0.5 T
-#       The DCA-asymmetry sign must flip with the field.  The cos(theta*)
-#       helicity asymmetry is field-independent and must NOT flip.
+#   Family 1: ASYMMETRIC DCA CUTS  [AEE probe]
+#       Vary DCA cuts asymmetrically between proton and pion.
+#       pT cuts = 0. Tests whether the AEE sign depends on which daughter's
+#       DCA dominates, and whether a proton-only vs pion-only cut gives
+#       opposite phi* asymmetry directions.
 #
-#   Family 2: DAUGHTER pT THRESHOLD
-#       pT_min = 0.10, 0.15, 0.20, 0.30 GeV/c (applied to both daughters)
-#       The helicity efficiency effect grows with the pT threshold because
-#       a higher threshold removes a larger fraction of the soft-pion
-#       configurations.  For a threshold of 0 (no cut), the cos(theta*)
-#       distribution must be flat.  This scan verifies the monotonic
-#       dependence and identifies the threshold at which the effect becomes
-#       significant relative to the expected physics signal (~10^-3).
-#       Reference: ALICE track quality cuts typically require pT > 0.15 GeV/c
-#       for TPC tracks; the ITS-only regime extends down to ~0.08 GeV/c.
+#   Family 2: SYMMETRIC DCA CUTS  [AEE strength scan]
+#       Equal DCA cuts on both daughters, ranging from 0.05 to 0.30 cm.
+#       pT cuts = 0. Measures AEE magnitude as a clean function of cut strength.
 #
-#   Family 3: DCA THRESHOLD
-#       DCA_min = 0.0/0.0 (no cut), 0.02/0.05, 0.05/0.10, 0.10/0.20 cm
-#       (proton / pion)
-#       The left-right phi* asymmetry grows with the DCA threshold because
-#       a tighter cut selects more displaced decay geometries where the
-#       magnetic bending has a larger differential effect on the two daughters.
-#       The 0.0/0.0 baseline must produce a flat phi* distribution.
-#       Reference: ALICE V0 topological cuts for Lambda selection typically
-#       require DCA(pion to PV) > 0.1 cm and DCA(proton to PV) > 0.05 cm
+#   Family 3: MAGNETIC FIELD  [AEE field dependence]
+#       Fixed standard DCA cuts (0.05 / 0.05 cm). pT cuts = 0.
+#       Sign flip test (+0.5 vs -0.5 T) plus strength scan from near-zero
+#       (Bz = 0.0001 T, where AEE must vanish) to 1.0 T.
+#       Note: Bz = 0.0001 T uses the straight-track geometric DCA (no bending),
+#       which is charge-independent, so the phi* asymmetry correctly goes to zero.
+#       That small field is a trick to not use Bz = 0, which would cause a division
+#       by zero in the code!
 #
-#   Family 4: LAMBDA KINEMATIC WINDOW
-#       Window A: pT in [0.3, 10.0] GeV/c, |y| < 0.9  (full acceptance)
-#       Window B: pT in [0.5,  1.5] GeV/c, |y| < 0.5  (ring analysis cuts)
-#       Window C: pT in [1.5,  4.0] GeV/c, |y| < 0.5  (harder Lambda regime)
-#       The ring observable analysis uses the kinematic window [0.5, 1.5] GeV/c
-#       and |y| < 0.5 to select the Lambda population most sensitive to
-#       vorticity-induced polarization (as established in PhysRevC.109.014905).
-#       Restricting to this window also changes which part of the daughter pT
-#       spectrum is populated, potentially affecting both fake-signal magnitudes.
+#   Family 4: LAMBDA GENERATOR PT MINIMUM  [kinematic context for HEE+AEE]
+#       Standard-ish ALICE cuts (pT = 0.15 GeV/c, DCA = 0.05/0.05 cm).
+#       Varies the minimum Lambda pT used in generation to probe how the
+#       combined fake signal depends on the Lambda pT regime.
 #
-#   Family 5: THERMAL TEMPERATURE (Lambda pT spectrum shape)
-#       T = 0.25, 0.30, 0.35, 0.45 GeV
-#       The Boltzmann mT temperature controls the Lambda pT spectrum.
-#       Values of T ~ 0.25-0.35 GeV are typical for Lambda production in
-#       Pb-Pb at LHC energies (measured by ALICE: JHEP 07 (2015) 116).
-#       T ~ 0.45 GeV is an upper estimate including harder production channels.
-#       Because softer Lambdas produce softer daughters, the effective pT and
-#       DCA fake-signal magnitudes are spectrum-dependent.
+#   Family 5: DAUGHTER PT CUTS  [HEE primary probe]
+#       DCA cuts = 0. Varies pT thresholds symmetrically and asymmetrically.
+#       Pion-only cuts give the cleanest HEE isolation (the pion is always the
+#       softer daughter). Proton-only cuts serve as a control: because the
+#       proton is harder, the threshold is less likely to bite, so the HEE
+#       should be much weaker. Have to thoroughly test and check this anyways.
+#
+#   Family 6: ETA ACCEPTANCE WINDOW  [both effects vs acceptance]
+#       Standard-ish ALICE cuts (pT = 0.15 GeV/c, DCA = 0.05/0.05 cm).
+#       Varies etaMaxDetector from 0.5 to 3.0. Shows how the fake signal
+#       magnitude changes with the detector acceptance window.
+#
+#   Family 7: TEMPERATURE SCAN  [HEE+AEE vs Lambda pT spectrum shape]
+#       Standard-ish ALICE cuts (pT = 0.15 GeV/c, DCA = 0.05/0.05 cm).
+#       Varies the Boltzmann mT temperature from 0.20 to 0.50 GeV.
+#       Lower T -> softer Lambdas -> softer daughters -> stronger HEE.
+#
+#   Family 8: RING KINEMATIC WINDOWS  [fake signal per pT window]
+#       Standard-ish ALICE cuts (pT = 0.15 GeV/c, DCA = 0.05/0.05 cm).
+#       Splits the Lambda pT spectrum into successive windows to identify
+#       where the fake signal is largest (relevant for the ring observable).
+#       The kinematic cuts are those of Vitor's PRC paper (PRC 109, 014905 (2024)).
+#
+#   Family 9: REALISTIC ALICE CUTS  [combined HEE+AEE estimate]
+#       Mimics what I did in experimental V0 selection conditions, to some degree.
+#       Combines pT and DCA cuts at loose / standard / tight working points, with
+#       both field polarities and in the ring analysis kinematic window.
 #
 # USAGE
 # -----
@@ -103,12 +139,21 @@
 # OUTPUT STRUCTURE
 # ----------------
 #   BASE_DIR/
-#     0_Baseline/         baseline/        helicity_baseline.root   plots/
-#     1_BFieldSign/       field_pos/       field_neg/
-#     2_PtCut/            ptcut_000/ ... ptcut_030/
-#     3_DCACut/           dcacut_none/ ... dcacut_tight/
-#     4_KinematicWindow/  window_full/     window_ring/     window_hard/
-#     5_Temperature/      temp_025/ ... temp_045/
+#     0_Baseline/          baseline/
+#     1_AsymDCA/           dca_p_only_005/ dca_pi_only_005/ dca_pi_only_010/
+#                          dca_asym_std/ dca_asym_wide/ dca_asym_rev/
+#     2_SymDCA/            dca_sym_005/ ... dca_sym_030/
+#     3_BField/            field_vlow/ field_b010/ ... field_b100/ field_bneg050/
+#     4_LamPtMin/          lam_ptmin_000/ ... lam_ptmin_200/
+#     5_DaughterPt/        pt_sym_005/ ... pt_sym_300/
+#                          pt_pi_010/ pt_pi_150/ pt_pi_200/ pt_p_150/
+#     6_EtaMax/            eta_050/ eta_070/ eta_090/ eta_120/ eta_150/
+#                          eta_200/ eta_300/
+#     7_Temperature/       temp_020/ ... temp_050/
+#     8_KinWindow/         win_inclusive/ win_vsoft/ win_soft/ win_ring/
+#                          win_mid/ win_hard/ win_vhard/
+#     9_RealisticAlice/    alice_loose/ alice_std/ alice_std_neg/
+#                          alice_tight/ alice_ring/
 #     logs/
 #       <run_name>.log           (one per job: generator + plotter combined)
 #       parallel_joblog.tsv      (GNU parallel timing/status log, if used)
@@ -123,10 +168,10 @@
 #
 # DISK ESTIMATE
 # -------------
-#   Each ROOT file (histograms only, no TTrees): ~2-4 MB after ROOT zlib
-#   compression (independent of N; all data is binned into fixed histograms).
-#   Each plots/ folder: ~5-15 MB of PDFs (13 files).
-#   Total for 24 runs: ~200-450 MB.
+#   Each ROOT file (histograms only, no TTrees): ~4-8 MB after ROOT zlib
+#   compression (two histogram families: WithEtaGate + WithoutEtaGate).
+#   Each plots/ folder: ~5-15 MB of PDFs.
+#   Total for ~59 runs: ~600 MB - 1.4 GB. (EYEBALLED! Didn't measure these.)
 #   Log files: ~50-200 KB per run; negligible.
 #
 # =============================================================================
@@ -149,16 +194,16 @@ BASE_DIR="/home/users/cicerodm/RingPol/HelicityToyModel"
 LOG_DIR="${BASE_DIR}/logs"
 
 # Maximum concurrent ROOT processes.
-# Default: 30 (all jobs at once on a 192-core machine with 24 total runs).
+# Default: 60 (all jobs at once on a 192-core machine with ~59 total runs).
 # Set to 0 to let GNU parallel use all available cores (parallel -j 0),
 # or to any positive integer to cap concurrency explicitly.
-MAX_PARALLEL=30
+MAX_PARALLEL=60
 
 # Default Lambda count per run.
 # At ~90 s per 10M Lambdas, 1B = ~900 s (~15 min) per run.
-# With 24 runs in parallel on 192 cores, total wall time ~ 15 min.
-DEFAULT_N=10000000000  # Bumped from 1.000.000 to 100.000.000 (10.000.000 takes about 1m30s per run, and we have only 23 runs)
-# DEFAULT_N=10000000 # For testing only
+# With ~59 runs in parallel on 192 cores, total wall time ~ 15 min.
+DEFAULT_N=10000000000
+# DEFAULT_N=10000000 # For testing only (~30 s per run)
 
 # ROOT executable (set to full path if not in PATH, e.g. /opt/root/bin/root)
 ROOT_EXE="root"
@@ -211,7 +256,7 @@ while [[ $# -gt 0 ]]; do
             done
             ;;
         *)
-            echo "Unknown argument: $1.  Use --help for usage." >&2
+            echo "Unknown argument: $1. Use --help for usage." >&2
             exit 1
             ;;
     esac
@@ -219,7 +264,7 @@ done
 
 # Default: run all families
 if [[ ${#FAMILIES_TO_RUN[@]} -eq 0 ]]; then
-    FAMILIES_TO_RUN=(0 1 2 3 4 5 6)
+    FAMILIES_TO_RUN=(0 1 2 3 4 5 6 7 8 9)
 fi
 
 
@@ -282,7 +327,7 @@ family_in_scope() {
 #   $5  PTMIN_LAM  Lambda min pT [GeV/c]
 #   $6  PTMAX_LAM  Lambda max pT [GeV/c]
 #   $7  RAPMAX     Lambda max |rapidity|
-#   $8  ETAMAX     Daughter maximum detectable rapidity |eta|
+#   $8  ETAMAX     Daughter maximum detectable |eta|
 #   $9  T          Boltzmann temperature [GeV]
 #   $10 PTMIN_P    proton min pT [GeV/c]
 #   $11 PTMIN_PI   pion min pT [GeV/c]
@@ -392,130 +437,337 @@ export BASE_DIR LOG_DIR ROOT_EXE GEN_MACRO PLT_MACRO
 # Each block is guarded by family_in_scope(); it only calls register_job.
 # The order of register_job calls within a block is irrelevant because all
 # jobs are dispatched simultaneously by the pool at the end.
+#
+# Column guide (all register_job calls):
+#   NAME  SUBDIR  N  Bz  pTminLam  pTmaxLam  rapMax  etaMax  T  pTp  pTpi  dcaP  dcaPi  seed
+#
+# Shared baseline parameter values (always used unless the family varies them):
+#   Bz         = +0.5 T
+#   pTminLam   = 0.0 GeV/c
+#   pTmaxLam   = 10.0 GeV/c
+#   rapMax     = 5.0          (wide enough to include all daughters inside etaMax=3.0)
+#   etaMax     = 0.9          (ALICE inner barrel)
+#   T          = 0.30 GeV
+#   pTp/pTpi   = 0.0 GeV/c    (no pT cut)
+#   dcaP/dcaPi = 0.0 cm       (no DCA cut)
+#   seed       = 0
+#
+# Standard-ish ALICE working point (used by context families 4, 6, 7, 8, 9):
+# (the actual minimum for Lambdas would actually be around 0.3. Less than that has really bad efficiency!)
+#   pTp = pTpi = 0.15 GeV/c
+#   dcaP = 0.05 cm,  dcaPi = 0.05 cm
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # FAMILY 0: BASELINE
-# Default ALICE O-O parameters.  All other families should be compared
-# against this reference run.
-# Parameters: N=1M, Bz=+0.5T, pT_lam=[0.3,10], |y|<0.9, T=0.30 GeV,
-#             pT_min_daughters=0.15 GeV/c, DCA_min=[0.05,0.10] cm
+# All cuts disabled. Every other family is compared against this run.
+# The WithEtaGate/NoCuts histograms must be flat in both cos(theta*) and phi*.
+# Any asymmetry in any other family beyond what appears here is artefactual.
 # -----------------------------------------------------------------------------
 if family_in_scope 0; then
-    run_family_header 0 "BASELINE (ALICE O-O defaults)"
+    run_family_header 0 "BASELINE (no cuts, all defaults)"
 
-    #              NAME         SUBDIR       N            Bz   pTmin pTmax rap    etaMax T     pTp   pTpi  dcaP  dcaPi seed
-    register_job  "baseline"  "0_Baseline/baseline"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.0  0.0  0.0  0.0  0
+    #              NAME        SUBDIR                    N             Bz    pTminL pTmaxL  rap   eta    T    pTp   pTpi  dcaP  dcaPi seed
+    register_job  "baseline"  "0_Baseline/baseline"  ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.0   0.0   0
 fi
 
 # -----------------------------------------------------------------------------
-# Family 1: MAGNETIC FIELD SIGN
-# Swap Bz from +0.5 T to -0.5 T (same as baseline otherwise).
-# Expected result: the phi* left-right asymmetry and the eta-antisymmetric
-# ring proxy must flip sign exactly.  The cos(theta*) helicity asymmetry
-# is field-independent (it only depends on pT thresholds) and must NOT flip.
+# FAMILY 1: ASYMMETRIC DCA CUTS  [AEE isolation -- daughter-level asymmetry]
+# DCA cuts applied to ONE or both daughters with unequal thresholds.
+# pT cuts = 0 throughout to isolate the AEE from the HEE.
 #
-# The ALICE solenoid operated at both polarities during Run 2; in Run 3 the
-# nominal polarity is +0.5 T.  The data-driven DCA-based correction must be
-# validated separately for each polarity.
+# Rationale:
+#   The AEE arises because the proton (+) and pion (-) bend in opposite
+#   directions and the DCA cut selects different phi* configurations for each.
+#   Applying the DCA cut to ONLY the proton or ONLY the pion reveals which
+#   daughter drives the phi* asymmetry and whether the effect is additive.
+#   The "reversed" run (proton cut tighter than pion) tests whether swapping
+#   the cut ratio flips the phi* asymmetry direction.
+#
+# Expected results:
+#   dca_p_only_005:  non-zero phi* asymmetry from proton DCA alone
+#   dca_pi_only_005: non-zero phi* asymmetry from pion DCA alone; sign opposite
+#                    to proton-only because pion has opposite charge and thus
+#                    curves the opposite way in the same field
+#   dca_pi_only_010: same sign as dca_pi_only_005, larger magnitude
+#   dca_asym_std:    ALICE standard (0.05 / 0.05 cm) -- reference for Family 3
+#   dca_asym_wide:   larger pion cut; stronger AEE
+#   dca_asym_rev:    proton cut > pion cut; should partially cancel or invert
+#                    the standard asymmetry
 # -----------------------------------------------------------------------------
 if family_in_scope 1; then
-    run_family_header 1 "MAGNETIC FIELD SIGN"
+    run_family_header 1 "ASYMMETRIC DCA CUTS  [AEE: daughter-level asymmetry]"
 
-    register_job  "field_pos"  "1_BFieldSign/field_pos"  ${DEFAULT_N}  +0.5  0.0  10.0  5.0  0.9  0.30  0.0  0.0  0.0  0.0  0
-    register_job  "field_neg"  "1_BFieldSign/field_neg"  ${DEFAULT_N}  -0.5  0.0  10.0  5.0  0.9  0.30  0.0  0.0  0.0  0.0  0
+    #               NAME                   SUBDIR                                  N             Bz    pTminL pTmaxL  rap   eta    T    pTp   pTpi  dcaP   dcaPi  seed
+    register_job   "dca_p_only_005"       "1_AsymDCA/dca_p_only_005"           ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.050  0.000  0
+    register_job   "dca_pi_only_005"      "1_AsymDCA/dca_pi_only_005"          ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.000  0.050  0
+    register_job   "dca_pi_only_010"      "1_AsymDCA/dca_pi_only_010"          ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.000  0.100  0
+    register_job   "dca_asym_std"         "1_AsymDCA/dca_asym_std"             ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.050  0.100  0
+    register_job   "dca_asym_wide"        "1_AsymDCA/dca_asym_wide"            ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.050  0.200  0
+    register_job   "dca_asym_rev"         "1_AsymDCA/dca_asym_rev"             ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.100  0.050  0
 fi
 
 # -----------------------------------------------------------------------------
-# Family 2: DAUGHTER pT THRESHOLD SCAN
-# Vary pT_min applied to BOTH daughters simultaneously.
-# pT = 0.10 GeV/c: lower edge of TPC tracking efficiency in ALICE Run 3
-# pT = 0.15 GeV/c: ALICE standard V0 daughter cut (baseline)
-# pT = 0.20 GeV/c: tighter cut sometimes used in high-multiplicity Pb-Pb
-# pT = 0.30 GeV/c: upper limit explored in systematic studies
+# FAMILY 2: SYMMETRIC DCA CUTS  [AEE strength scan]
+# Equal DCA cuts on both daughters. pT cuts = 0.
 #
-# A run with pT = 0.00 (no cut) is included as the zero-asymmetry anchor.
-# It must produce a flat cos(theta*) distribution.
+# Rationale:
+#   Removing the asymmetry between daughters lets us study the AEE magnitude
+#   as a clean function of cut strength without confounding from different
+#   effective geometries. Starting at 0.05 cm (the minimum ALICE cut) and
+#   progressing to 0.30 cm.
 #
-# Reference: ALICE-PUBLIC-2017-005 (V0 selection);
-#            ALICE strangeness PWG internal note on Lambda selection
+# Expected result:
+#   A monotonically increasing phi* asymmetry magnitude with tighter cuts,
+#   since tighter DCA cuts select more displaced decays where magnetic bending
+#   has a larger differential effect on the two opposite-charge daughters.
 # -----------------------------------------------------------------------------
 if family_in_scope 2; then
-    run_family_header 2 "DAUGHTER pT THRESHOLD SCAN"
+    run_family_header 2 "SYMMETRIC DCA CUTS  [AEE: cut strength scan]"
 
-    # 0.001 GeV/c instead of 0.000 avoids a divide-by-zero guard in the helix
-    register_job  "ptcut_000"  "2_PtCut/ptcut_000"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.001  0.001  0.050  0.100  0
-    register_job  "ptcut_010"  "2_PtCut/ptcut_010"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.100  0.100  0.050  0.100  0
-    register_job  "ptcut_015"  "2_PtCut/ptcut_015"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.0  0.0  0.0  0.0  0
-    register_job  "ptcut_020"  "2_PtCut/ptcut_020"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.200 0.200 0.050 0.100  0
-    register_job  "ptcut_030"  "2_PtCut/ptcut_030"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.300 0.300 0.050 0.100  0
+    #               NAME              SUBDIR                          N             Bz    pTminL pTmaxL  rap   eta    T    pTp   pTpi  dcaP   dcaPi  seed
+    register_job   "dca_sym_005"     "2_SymDCA/dca_sym_005"       ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.050  0.050  0
+    register_job   "dca_sym_010"     "2_SymDCA/dca_sym_010"       ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.100  0.100  0
+    register_job   "dca_sym_015"     "2_SymDCA/dca_sym_015"       ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.150  0.150  0
+    register_job   "dca_sym_020"     "2_SymDCA/dca_sym_020"       ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.200  0.200  0
+    register_job   "dca_sym_030"     "2_SymDCA/dca_sym_030"       ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.300  0.300  0
 fi
 
 # -----------------------------------------------------------------------------
-# Family 3: DCA THRESHOLD SCAN
-# DCA cuts are specified as (proton DCA min, pion DCA min).
-# The pion cut is typically tighter than the proton cut because the pion
-# is lighter and therefore subject to larger multiple-scattering DCA smearing.
+# FAMILY 3: MAGNETIC FIELD  [AEE field dependence]
+# Fixed standard DCA cuts (0.05 / 0.05 cm). pT cuts = 0.
 #
-# dcacut_none  [0.00, 0.00]: no DCA requirement -- phi* must be flat
-# dcacut_loose [0.05, 0.05]: symmetric DCA cut
-# dcacut_loose [0.02, 0.05]: very loose, near the smearing limit
-# dcacut_std   [0.05, 0.10]: ALICE standard for Lambda (baseline)
-# dcacut_tight [0.10, 0.20]: tighter, sometimes used in central Pb-Pb
+# Rationale:
+#   (a) Sign flip: comparing field_b050 and field_bneg050 tests the fundamental
+#       prediction that the phi* asymmetry sign flips with the field polarity.
+#       The cos(theta*) HEE (which is field-independent) must NOT flip.
+#       ALICE has operated at both +0.5 T and -0.5 T in Run 2, but not for OO
+#       in Run 3 (AFAIK), so this is just a test of the AEE phenomenon.
+#
+#   (b) Strength scan: the DCA-based AEE depends on the helix curvature
+#       radius R = pT / (q * kBConv * Bz). A stronger field means tighter
+#       helices and larger differential DCA between the two daughters for the
+#       same decay geometry. Larger |Bz| -> stronger AEE.
+#
+#   (c) Near-zero field (Bz = 0.0001 T): the helix radius is ~km-scale,
+#       so both daughters travel in straight lines. The DCA reduces to the
+#       charge-independent geometric impact parameter (perpendicular distance
+#       from origin to the straight-line track). Since this is identical for
+#       both daughters (same vertex, symmetric to charge), there is no phi*
+#       asymmetry. The AEE must go to zero.
+#       Numerically: DCA_xy -> |xv*(py/pT) - yv*(px/pT)|, which is well-
+#       defined and non-zero in general (decay geometry is not symmetric with
+#       respect to the origin), just charge-independent.
 # -----------------------------------------------------------------------------
 if family_in_scope 3; then
-    run_family_header 3 "DCA THRESHOLD SCAN"
+    run_family_header 3 "MAGNETIC FIELD  [AEE: field sign and strength]"
 
-    register_job  "dcacut_none"            "3_DCACut/dcacut_none"            ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.150  0.150  0.000 0.000  0
-    register_job  "dcacut_loose"           "3_DCACut/dcacut_loose"           ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.150  0.150  0.020 0.050  0
-    register_job  "dcacut_loose_symmetric" "3_DCACut/dcacut_loose_symmetric" ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.150  0.150  0.050 0.050  0
-    register_job  "dcacut_std"             "3_DCACut/dcacut_std"             ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.150  0.150  0.050 0.100  0
-    register_job  "dcacut_tight"           "3_DCACut/dcacut_tight"           ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.150  0.150  0.100 0.200  0
+    #               NAME               SUBDIR                          N             Bz       pTminL pTmaxL  rap   eta    T    pTp   pTpi  dcaP   dcaPi  seed
+    register_job   "field_vlow"       "3_BField/field_vlow"        ${DEFAULT_N}   0.0001   0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.050  0.050  0
+    register_job   "field_b010"       "3_BField/field_b010"        ${DEFAULT_N}   0.10     0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.050  0.050  0
+    register_job   "field_b020"       "3_BField/field_b020"        ${DEFAULT_N}   0.20     0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.050  0.050  0
+    register_job   "field_b030"       "3_BField/field_b030"        ${DEFAULT_N}   0.30     0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.050  0.050  0
+    register_job   "field_b050"       "3_BField/field_b050"        ${DEFAULT_N}   0.50     0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.050  0.050  0
+    register_job   "field_b075"       "3_BField/field_b075"        ${DEFAULT_N}   0.75     0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.050  0.050  0
+    register_job   "field_b100"       "3_BField/field_b100"        ${DEFAULT_N}   1.00     0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.050  0.050  0
+    register_job   "field_bneg050"    "3_BField/field_bneg050"     ${DEFAULT_N}   -0.50    0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.050  0.050  0
 fi
 
 # -----------------------------------------------------------------------------
-# Family 4: LAMBDA KINEMATIC WINDOW
-# Three kinematic windows motivated by the ring analysis and by the Lambda
-# polarization measurement strategy in ALICE.
+# FAMILY 4: LAMBDA GENERATOR PT MINIMUM  [kinematic context for HEE+AEE]
+# Standard-ish ALICE cuts (pTp=pTpi=0.15, dcaP=0.05, dcaPi=0.05).
 #
-# window_full:  pT in [0.3, 10.0] GeV/c, |y| < 0.9  (full TPC acceptance)
-# window_ring:  pT in [0.5,  1.5] GeV/c, |y| < 0.5  (ring analysis window
-#               from PhysRevC.109.014905 -- vorticity-sensitive population)
-# window_hard:  pT in [1.5,  4.0] GeV/c, |y| < 0.5  (harder fragmentation
-#               regime, expected larger fragmentation polarization baseline)
-#
-# The ring-analysis window is the most physically important: the fake-signal
-# size in this specific kinematic range is what must be corrected in the data.
-# A smaller fake signal here would reduce the needed correction factor.
+# Rationale:
+#   Both the HEE and AEE depend on how soft the Lambda daughters are in the
+#   lab frame. The daughter pT scales roughly with the Lambda pT (through the
+#   Lorentz boost). Raising the minimum generated Lambda pT shifts the
+#   population to harder Lambdas with harder daughters, where:
+#     - The pT threshold is less likely to bite: HEE weaker.
+#     - The decay vertices are more displaced (longer c*tau * beta*gamma): AEE
+#       might be stronger because the daughters have more time to separate in
+#       DCA space before hitting the acceptance boundary.
+###         This is actually one of the nicest things we aim to check in this Toy
+###         Model!!! Is AEE an effect that comes from reconstruction algorithms
+###         prioritizing smaller DCA between the daughters (which is not something
+###         covered at all by this Toy Model: DCAdau = 0 by definition. The daughters
+###         come exactly from the same point and we have the equivalent to infinite
+###         momentum and spatial resolution in the Toy Model), or is AEE an effect
+###         that comes from the DCA to PV of the two daughters? If we see AEE here,
+###         then it comes (or at least part of it does) from the DCA to the PV, not
+###         from the DCA between the daughters of the Lambda!
+#       
+#   With standard-ish ALICE cuts active, this family shows the combined HEE+AEE
+#   as a function of the Lambda pT regime.
 # -----------------------------------------------------------------------------
 if family_in_scope 4; then
-    run_family_header 4 "LAMBDA KINEMATIC WINDOW"
+    run_family_header 4 "LAMBDA GENERATOR PT MINIMUM  [kinematic context, standard ALICE cuts]"
 
-    register_job  "window_full"  "4_KinematicWindow/window_full"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9  0.30  0.0  0.0  0.0  0.0  0
-    register_job  "window_ring"  "4_KinematicWindow/window_ring"  ${DEFAULT_N}  0.5  0.5   1.5  5.0  0.9  0.30  0.0  0.0  0.0  0.0  0
-    register_job  "window_hard"  "4_KinematicWindow/window_hard"  ${DEFAULT_N}  0.5  1.5   4.0  5.0  0.9  0.30  0.0  0.0  0.0  0.0  0
+    #               NAME                SUBDIR                            N             Bz    pTminL  pTmaxL  rap   eta    T    pTp    pTpi   dcaP   dcaPi  seed
+    register_job   "lam_ptmin_000"     "4_LamPtMin/lam_ptmin_000"     ${DEFAULT_N}   0.5   0.000   10.0   5.0   0.9   0.30  0.150  0.150  0.050  0.050  0
+    register_job   "lam_ptmin_030"     "4_LamPtMin/lam_ptmin_030"     ${DEFAULT_N}   0.5   0.300   10.0   5.0   0.9   0.30  0.150  0.150  0.050  0.050  0
+    register_job   "lam_ptmin_050"     "4_LamPtMin/lam_ptmin_050"     ${DEFAULT_N}   0.5   0.500   10.0   5.0   0.9   0.30  0.150  0.150  0.050  0.050  0
+    register_job   "lam_ptmin_100"     "4_LamPtMin/lam_ptmin_100"     ${DEFAULT_N}   0.5   1.000   10.0   5.0   0.9   0.30  0.150  0.150  0.050  0.050  0
+    register_job   "lam_ptmin_150"     "4_LamPtMin/lam_ptmin_150"     ${DEFAULT_N}   0.5   1.500   10.0   5.0   0.9   0.30  0.150  0.150  0.050  0.050  0
+    register_job   "lam_ptmin_200"     "4_LamPtMin/lam_ptmin_200"     ${DEFAULT_N}   0.5   2.000   10.0   5.0   0.9   0.30  0.150  0.150  0.050  0.050  0
 fi
 
 # -----------------------------------------------------------------------------
-# Family 5: THERMAL TEMPERATURE SCAN
-# The Boltzmann mT exponential slope parameter T controls which Lambda pT
-# values are populated.  Softer spectra (lower T) produce more soft Lambdas
-# whose daughters are more likely to be affected by the pT threshold.
+# FAMILY 5: DAUGHTER PT CUTS  [HEE primary probe]
+# DCA cuts = 0 throughout to isolate the HEE from the AEE.
 #
-# T = 0.25 GeV: lower bound of Lambda inverse slope at LHC energies
-# T = 0.30 GeV: baseline / mid-range estimate for O-O and Pb-Pb
-# T = 0.35 GeV: upper estimate for Pb-Pb at LHC energies
-# T = 0.45 GeV: represents harder production channels (e.g., high-pT jets)
-#               or a Tsallis tail approximation at moderate pT
+# Rationale:
+#   The HEE grows when the pT threshold removes a significant fraction of
+#   backward-decay pions (soft in lab) while leaving forward-decay protons
+#   intact. The key observables are:
+#     - Symmetric cuts (both daughters): combined threshold effect.
+#     - Pion-only cuts: cleanest HEE isolation. The pion is ALWAYS softer
+#       than the proton in the Lambda rest frame (mass hierarchy), so cutting
+#       on pion pT alone is the purest driver of the cos(theta*) asymmetry.
+#     - Proton-only cuts: control case. The proton carries most of the
+#       Lambda momentum, so it is harder; the threshold bites less and the
+#       HEE should be significantly weaker than for pion-only cuts at the
+#       same threshold value.
+#
+# Expected results:
+#   Symmetric: monotonically increasing |<cos(theta*)>| effects with tighter cuts.
+#   Pion-only: similar sign and magnitude to symmetric, but slightly larger
+#              because only the pion asymmetry contributes without dilution.
+#   Proton-only: same sign (or zero) but much weaker HEE.
 # -----------------------------------------------------------------------------
 if family_in_scope 5; then
-    run_family_header 5 "THERMAL TEMPERATURE SCAN"
+    run_family_header 5 "DAUGHTER PT CUTS  [HEE: primary probe]"
 
-    register_job  "temp_025"  "5_Temperature/temp_025"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9   0.25  0.0  0.0  0.0  0.0  0
-    register_job  "temp_030"  "5_Temperature/temp_030"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9   0.30  0.0  0.0  0.0  0.0  0
-    register_job  "temp_035"  "5_Temperature/temp_035"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9   0.35  0.0  0.0  0.0  0.0  0
-    register_job  "temp_045"  "5_Temperature/temp_045"  ${DEFAULT_N}  0.5  0.0  10.0  5.0  0.9   0.45  0.0  0.0  0.0  0.0  0
+    # -- Symmetric cuts --
+    #               NAME              SUBDIR                          N             Bz    pTminL pTmaxL  rap   eta    T    pTp    pTpi   dcaP  dcaPi  seed
+    register_job   "pt_sym_005"      "5_DaughterPt/pt_sym_005"    ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.050  0.050  0.0   0.0   0
+    register_job   "pt_sym_010"      "5_DaughterPt/pt_sym_010"    ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.100  0.100  0.0   0.0   0
+    register_job   "pt_sym_150"      "5_DaughterPt/pt_sym_150"    ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.150  0.150  0.0   0.0   0
+    register_job   "pt_sym_200"      "5_DaughterPt/pt_sym_200"    ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.200  0.200  0.0   0.0   0
+    register_job   "pt_sym_300"      "5_DaughterPt/pt_sym_300"    ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.300  0.300  0.0   0.0   0
+    # -- Pion-only cuts (purest HEE isolation) --
+    register_job   "pt_pi_010"       "5_DaughterPt/pt_pi_010"     ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.000  0.100  0.0   0.0   0
+    register_job   "pt_pi_150"       "5_DaughterPt/pt_pi_150"     ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.000  0.150  0.0   0.0   0
+    register_job   "pt_pi_200"       "5_DaughterPt/pt_pi_200"     ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.000  0.200  0.0   0.0   0
+    # -- Proton-only cut (control: expect weaker HEE than pion-only) --
+    register_job   "pt_p_150"        "5_DaughterPt/pt_p_150"      ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.150  0.000  0.0   0.0   0
 fi
+
+# -----------------------------------------------------------------------------
+# FAMILY 6: ETA ACCEPTANCE WINDOW  [HEE+AEE vs detector acceptance]
+# Standard-ish ALICE cuts (pTp=pTpi=0.15, dcaP=0.05, dcaPi=0.05).
+#
+# Rationale:
+#   etaMaxDetector controls both the eta gate applied inside WithEtaGate and
+#   the kinematic range of Lambda daughters that are accepted. A narrower
+#   window (small etaMax) accepts mostly central (|eta|~0) daughters, which
+#   tend to come from higher-pT Lambdas with harder daughters -- both effects
+#   should be weaker. A wider window (large etaMax) includes softer forward
+#   daughters and more extreme decay geometries -- both effects should grow.
+#
+#   The comparison between eta_090 (ALICE inner barrel) and wider values is
+#   important for understanding the systematics of forward-tracking.
+#   eta_090 duplicates the baseline kinematics but with cuts active; it serves
+#   as the reference point within this family.
+# -----------------------------------------------------------------------------
+if family_in_scope 6; then
+    run_family_header 6 "ETA ACCEPTANCE WINDOW  [HEE+AEE vs detector acceptance, standard ALICE cuts]"
+
+    #               NAME           SUBDIR                        N             Bz    pTminL pTmaxL  rap   etaMax  T    pTp    pTpi   dcaP   dcaPi  seed
+    register_job   "eta_050"      "6_EtaMax/eta_050"          ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.50    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "eta_070"      "6_EtaMax/eta_070"          ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.70    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "eta_090"      "6_EtaMax/eta_090"          ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.90    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "eta_120"      "6_EtaMax/eta_120"          ${DEFAULT_N}   0.5   0.0   10.0   5.0   1.20    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "eta_150"      "6_EtaMax/eta_150"          ${DEFAULT_N}   0.5   0.0   10.0   5.0   1.50    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "eta_200"      "6_EtaMax/eta_200"          ${DEFAULT_N}   0.5   0.0   10.0   5.0   2.00    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "eta_300"      "6_EtaMax/eta_300"          ${DEFAULT_N}   0.5   0.0   10.0   5.0   3.00    0.30  0.150  0.150  0.050  0.050  0
+fi
+
+# -----------------------------------------------------------------------------
+# FAMILY 7: TEMPERATURE SCAN  [HEE+AEE vs Lambda pT spectrum shape]
+# Standard ALICE cuts (pTp=pTpi=0.15, dcaP=0.05, dcaPi=0.05).
+#
+# Rationale:
+#   The Boltzmann mT temperature T controls the shape of the Lambda pT spectrum.
+#   Lower T -> softer Lambdas -> softer daughters in the lab frame.
+#   Softer daughters are more likely to fail the pT cut -> stronger HEE.
+#   They also produce smaller decay radii (shorter c*tau*betagamma) but with
+#   smaller DCA from weaker bending -> the net effect on AEE is non-trivial.
+#   Values of T ~ 0.25-0.35 GeV bracket the measured Lambda inverse slope at
+#   LHC energies. T ~ 0.50 GeV represents a harder production scenario
+#   (e.g. fragmentation-dominated high-pT region).
+#   This is mostly out of curiosity. I expect no real insight out of this haha
+# -----------------------------------------------------------------------------
+if family_in_scope 7; then
+    run_family_header 7 "TEMPERATURE SCAN  [HEE+AEE vs Lambda pT spectrum, standard ALICE cuts]"
+
+    #               NAME           SUBDIR                          N             Bz    pTminL pTmaxL  rap   eta    T     pTp    pTpi   dcaP   dcaPi  seed
+    register_job   "temp_020"     "7_Temperature/temp_020"     ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.20  0.150  0.150  0.050  0.050  0
+    register_job   "temp_025"     "7_Temperature/temp_025"     ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.25  0.150  0.150  0.050  0.050  0
+    register_job   "temp_030"     "7_Temperature/temp_030"     ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.30  0.150  0.150  0.050  0.050  0
+    register_job   "temp_035"     "7_Temperature/temp_035"     ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.35  0.150  0.150  0.050  0.050  0
+    register_job   "temp_040"     "7_Temperature/temp_040"     ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.40  0.150  0.150  0.050  0.050  0
+    register_job   "temp_050"     "7_Temperature/temp_050"     ${DEFAULT_N}   0.5   0.0   10.0   5.0   0.9   0.50  0.150  0.150  0.050  0.050  0
+fi
+
+# -----------------------------------------------------------------------------
+# FAMILY 8: RING KINEMATIC WINDOWS  [fake signal magnitude per Lambda pT window]
+# Standard-ish ALICE cuts (pTp=pTpi=0.15, dcaP=0.05, dcaPi=0.05).
+#
+# Rationale:
+#   The Hydro ring observable analysis suggests a specific kinematic window. By
+#   restricting the generated Lambdas to successive pT bands we can identify
+#   in which band the fake signal (AEE + HEE) is largest, and whether the
+#   ring-analysis window [0.5, 1.5] GeV/c is particularly contaminated.
+#
+#   win_inclusive: full spectrum, same kinematic parameters as baseline;
+#                  serves as the reference point within this family.
+#   win_vsoft:     [0.0, 0.5] GeV/c -- very soft Lambdas, daughters near pT cut
+#   win_soft:      [0.0, 1.0] GeV/c -- includes the soft regime
+#   win_ring:      [0.5, 1.5] GeV/c -- ring analysis window (PhysRevC.109.014905)
+#   win_mid:       [1.0, 3.0] GeV/c -- moderate pT
+#   win_hard:      [1.5, 4.0] GeV/c -- hard regime
+#   win_vhard:     [3.0,10.0] GeV/c -- very hard; daughters well above any cut
+# -----------------------------------------------------------------------------
+if family_in_scope 8; then
+    run_family_header 8 "RING KINEMATIC WINDOWS  [fake signal per Lambda pT band, standard ALICE cuts]"
+
+    #               NAME                SUBDIR                              N             Bz    pTminL  pTmaxL   rap   eta    T    pTp    pTpi   dcaP   dcaPi  seed
+    register_job   "win_inclusive"     "8_KinWindow/win_inclusive"      ${DEFAULT_N}   0.5   0.000   10.000   5.0   0.9   0.30  0.150  0.150  0.050  0.050  0
+    register_job   "win_vsoft"         "8_KinWindow/win_vsoft"          ${DEFAULT_N}   0.5   0.000    0.500   5.0   0.9   0.30  0.150  0.150  0.050  0.050  0
+    register_job   "win_soft"          "8_KinWindow/win_soft"           ${DEFAULT_N}   0.5   0.000    1.000   5.0   0.9   0.30  0.150  0.150  0.050  0.050  0
+    register_job   "win_ring"          "8_KinWindow/win_ring"           ${DEFAULT_N}   0.5   0.500    1.500   5.0   0.9   0.30  0.150  0.150  0.050  0.050  0
+    register_job   "win_mid"           "8_KinWindow/win_mid"            ${DEFAULT_N}   0.5   1.000    3.000   5.0   0.9   0.30  0.150  0.150  0.050  0.050  0
+    register_job   "win_hard"          "8_KinWindow/win_hard"           ${DEFAULT_N}   0.5   1.500    4.000   5.0   0.9   0.30  0.150  0.150  0.050  0.050  0
+    register_job   "win_vhard"         "8_KinWindow/win_vhard"          ${DEFAULT_N}   0.5   3.000   10.000   5.0   0.9   0.30  0.150  0.150  0.050  0.050  0
+fi
+
+# -----------------------------------------------------------------------------
+# FAMILY 9: REALISTIC ALICE CUTS  [combined HEE+AEE estimate for data correction]
+# Mimics actual ALICE V0 selection conditions across working points and field
+# polarities. This is the family whose <R_proxy> numbers matter for understanding
+# the fake polarization effects in the real ring observable analysis.
+#
+# alice_loose:    Similar to ITS-track regime; loose DCA, lower pT threshold
+# alice_std:      ALICE standard-ish V0 selection
+# alice_std_neg:  Same as alice_std but Bz = -0.5 T; the AEE must flip, the
+#                 HEE must not. Maybe interesting for a Run 2 combined-polarity dataset.
+# alice_tight:    Tighter selection for a central Pb-Pb; larger
+#                 pT and DCA thresholds produce larger combined fake signal.
+# alice_ring:     Standard-ish selection restricted to the ring analysis kinematic
+#                 window [0.5, 1.5] GeV/c; the most directly relevant number
+#                 for the ring polarization fake signal study.
+# -----------------------------------------------------------------------------
+if family_in_scope 9; then
+    run_family_header 9 "REALISTIC ALICE CUTS  [combined HEE+AEE estimate for data correction]"
+
+    #               NAME                  SUBDIR                                N             Bz     pTminL  pTmaxL   rap   eta    T    pTp    pTpi   dcaP   dcaPi  seed
+    register_job   "alice_loose"         "9_RealisticAlice/alice_loose"      ${DEFAULT_N}   0.50   0.000   10.000   5.0   0.9   0.30  0.100  0.100  0.020  0.020  0
+    register_job   "alice_std"           "9_RealisticAlice/alice_std"        ${DEFAULT_N}   0.50   0.000   10.000   5.0   0.9   0.30  0.150  0.150  0.050  0.050  0
+    register_job   "alice_std_neg"       "9_RealisticAlice/alice_std_neg"    ${DEFAULT_N}   -0.50  0.000   10.000   5.0   0.9   0.30  0.150  0.150  0.050  0.050  0
+    register_job   "alice_tight"         "9_RealisticAlice/alice_tight"      ${DEFAULT_N}   0.50   0.000   10.000   5.0   0.9   0.30  0.200  0.200  0.100  0.100  0
+    register_job   "alice_ring"          "9_RealisticAlice/alice_ring"       ${DEFAULT_N}   0.50   0.500    1.500   5.0   0.9   0.30  0.150  0.150  0.050  0.050  0
+fi
+
 
 # =============================================================================
 # QUEUE SUMMARY
@@ -541,17 +793,17 @@ echo "============================================================"
 # Print the full job table (useful for --list and --dry-run)
 echo ""
 echo "  Registered jobs:"
-printf "  %-4s  %-28s  %-10s  %-5s  %-14s  %-14s  %-5s\n" \
+printf "  %-4s  %-28s  %-10s  %-6s  %-14s  %-14s  %-5s\n" \
     "#" "Name" "N" "Bz" "pTmin[p,pi]" "DCA[p,pi]" "T"
-printf "  %-4s  %-28s  %-10s  %-5s  %-14s  %-14s  %-5s\n" \
-    "---" "----------------------------" "----------" "-----" \
+printf "  %-4s  %-28s  %-10s  %-6s  %-14s  %-14s  %-5s\n" \
+    "---" "----------------------------" "----------" "------" \
     "--------------" "--------------" "-----"
 
 IDX=0
 for JOB in "${JOB_QUEUE[@]}"; do
     IFS=':' read -r NAME SUBDIR N BZ PTMIN_LAM PTMAX_LAM RAPMAX ETAMAX T \
                       PTMIN_P PTMIN_PI DCAMIN_P DCAMIN_PI SEED <<< "${JOB}"
-    printf "  %-4d  %-28s  %-10s  %+.2f  [%.3f, %.3f]   [%.3f, %.3f]   %.2f\n" \
+    printf "  %-4d  %-28s  %-10s  %+.4f  [%.3f, %.3f]   [%.3f, %.3f]   %.2f\n" \
         $(( IDX + 1 )) "${NAME}" "${N}" "${BZ}" \
         "${PTMIN_P}" "${PTMIN_PI}" "${DCAMIN_P}" "${DCAMIN_PI}" "${T}"
     IDX=$(( IDX + 1 ))
@@ -576,7 +828,7 @@ if [[ ${DRY_RUN} -eq 1 ]]; then
 fi
 
 if [[ ${N_JOBS} -eq 0 ]]; then
-    echo "  No jobs registered.  Nothing to do."
+    echo "  No jobs registered. Nothing to do."
     exit 0
 fi
 
@@ -638,7 +890,7 @@ else
     # Pure bash background pool (fallback when GNU parallel is absent)
     # ------------------------------------------------------------------
     # Strategy: launch all jobs as background subshells immediately.
-    # On a 192-core machine with 24 jobs this is unconditionally fine.
+    # On a 192-core machine with ~59 jobs this is unconditionally fine.
     # If MAX_PARALLEL is set below N_JOBS (e.g. for testing), a simple
     # slot-counter loop throttles the launch rate.
     #
@@ -676,7 +928,7 @@ else
         IDX=$(( IDX + 1 ))
     done
 
-    echo "  All ${N_JOBS} jobs launched.  Waiting for completion..."
+    echo "  All ${N_JOBS} jobs launched. Waiting for completion..."
     echo ""
 
     # Wait for each job individually and collect exit statuses
@@ -715,8 +967,8 @@ echo "  Batch started : ${BATCH_START}"
 echo "  Batch finished: ${BATCH_END}"
 echo ""
 echo "  Output tree:"
-echo "    ROOT files : ${BASE_DIR}/<name>/helicity_<name>.root"
-echo "    Plot PDFs  : ${BASE_DIR}/<name>/plots/*.pdf"
+echo "    ROOT files : ${BASE_DIR}/<family>/<name>/helicity_<name>.root"
+echo "    Plot PDFs  : ${BASE_DIR}/<family>/<name>/plots/*.pdf"
 echo "    Run logs   : ${LOG_DIR}/<name>.log"
 echo ""
 echo "  Quick diagnostics:"
@@ -729,8 +981,15 @@ echo ""
 echo "    # Check timings:"
 echo "    grep 'total:' ${LOG_DIR}/*.log | sort -t: -k3 -n"
 echo ""
+echo "    # Compare AEE sign flip between positive and negative field:"
+echo "    grep -A4 'WithEtaGate.*DCACutOnly' ${LOG_DIR}/field_b050.log"
+echo "    grep -A4 'WithEtaGate.*DCACutOnly' ${LOG_DIR}/field_bneg050.log"
+echo ""
+echo "    # Compare HEE for pion-only vs proton-only pT cuts:"
+echo "    grep 'pTCutOnly' ${LOG_DIR}/pt_pi_150.log ${LOG_DIR}/pt_p_150.log"
+echo ""
 echo "    # Open a result in ROOT:"
-echo "    root -l ${BASE_DIR}/baseline/helicity_baseline.root"
+echo "    root -l ${BASE_DIR}/0_Baseline/baseline/helicity_baseline.root"
 echo "============================================================"
 echo ""
 
