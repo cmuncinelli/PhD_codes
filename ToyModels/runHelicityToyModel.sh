@@ -111,13 +111,13 @@
 # OUTPUT STRUCTURE
 # ----------------
 #   BASE_DIR/
-#     baseline/        helicity_baseline.root   plots/
-#     field_pos/       field_neg/
-#     ptcut_000/ ... ptcut_030/
-#     dcacut_none/ ... dcacut_tight/
-#     window_full/     window_ring/     window_hard/
-#     temp_025/ ... temp_045/
-#     stats_100k/ ... stats_50M/
+#     0_Baseline/         baseline/        helicity_baseline.root   plots/
+#     1_BFieldSign/       field_pos/       field_neg/
+#     2_PtCut/            ptcut_000/ ... ptcut_030/
+#     3_DCACut/           dcacut_none/ ... dcacut_tight/
+#     4_KinematicWindow/  window_full/     window_ring/     window_hard/
+#     5_Temperature/      temp_025/ ... temp_045/
+#     6_Stats/            stats_100k/ ... stats_50M/
 #     logs/
 #       <run_name>.log           (one per job: generator + plotter combined)
 #       parallel_joblog.tsv      (GNU parallel timing/status log, if used)
@@ -412,7 +412,7 @@ if family_in_scope 0; then
     run_family_header 0 "BASELINE (ALICE O-O defaults)"
 
     #              NAME         SUBDIR       N            Bz   pTmin pTmax rap    T     pTp   pTpi  dcaP  dcaPi seed
-    register_job  "baseline"  "baseline"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
+    register_job  "baseline"  "0_Baseline/baseline"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
 fi
 
 # -----------------------------------------------------------------------------
@@ -429,8 +429,8 @@ fi
 if family_in_scope 1; then
     run_family_header 1 "MAGNETIC FIELD SIGN"
 
-    register_job  "field_pos"  "field_pos"  ${DEFAULT_N}  +0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
-    register_job  "field_neg"  "field_neg"  ${DEFAULT_N}  -0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
+    register_job  "field_pos"  "1_BFieldSign/field_pos"  ${DEFAULT_N}  +0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
+    register_job  "field_neg"  "1_BFieldSign/field_neg"  ${DEFAULT_N}  -0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
 fi
 
 # -----------------------------------------------------------------------------
@@ -451,11 +451,11 @@ if family_in_scope 2; then
     run_family_header 2 "DAUGHTER pT THRESHOLD SCAN"
 
     # 0.001 GeV/c instead of 0.000 avoids a divide-by-zero guard in the helix
-    register_job  "ptcut_000"  "ptcut_000"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.001 0.001 0.050 0.100  42
-    register_job  "ptcut_010"  "ptcut_010"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.100 0.100 0.050 0.100  42
-    register_job  "ptcut_015"  "ptcut_015"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
-    register_job  "ptcut_020"  "ptcut_020"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.200 0.200 0.050 0.100  42
-    register_job  "ptcut_030"  "ptcut_030"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.300 0.300 0.050 0.100  42
+    register_job  "ptcut_000"  "2_PtCut/ptcut_000"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.001 0.001 0.050 0.100  42
+    register_job  "ptcut_010"  "2_PtCut/ptcut_010"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.100 0.100 0.050 0.100  42
+    register_job  "ptcut_015"  "2_PtCut/ptcut_015"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
+    register_job  "ptcut_020"  "2_PtCut/ptcut_020"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.200 0.200 0.050 0.100  42
+    register_job  "ptcut_030"  "2_PtCut/ptcut_030"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.300 0.300 0.050 0.100  42
 fi
 
 # -----------------------------------------------------------------------------
@@ -473,11 +473,11 @@ fi
 if family_in_scope 3; then
     run_family_header 3 "DCA THRESHOLD SCAN"
 
-    register_job  "dcacut_none"            "dcacut_none"            ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.000 0.000  42
-    register_job  "dcacut_loose"           "dcacut_loose"           ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.020 0.050  42
-    register_job  "dcacut_loose_symmetric" "dcacut_loose_symmetric" ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.050 0.050  42
-    register_job  "dcacut_std"             "dcacut_std"             ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.050 0.100  42
-    register_job  "dcacut_tight"           "dcacut_tight"           ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.100 0.200  42
+    register_job  "dcacut_none"            "3_DCACut/dcacut_none"            ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.000 0.000  42
+    register_job  "dcacut_loose"           "3_DCACut/dcacut_loose"           ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.020 0.050  42
+    register_job  "dcacut_loose_symmetric" "3_DCACut/dcacut_loose_symmetric" ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.050 0.050  42
+    register_job  "dcacut_std"             "3_DCACut/dcacut_std"             ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.050 0.100  42
+    register_job  "dcacut_tight"           "3_DCACut/dcacut_tight"           ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150  0.100 0.200  42
 fi
 
 # -----------------------------------------------------------------------------
@@ -498,9 +498,9 @@ fi
 if family_in_scope 4; then
     run_family_header 4 "LAMBDA KINEMATIC WINDOW"
 
-    register_job  "window_full"  "window_full"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
-    register_job  "window_ring"  "window_ring"  ${DEFAULT_N}  0.5  0.5   1.5  0.5  0.30  0.150 0.150 0.050 0.100  42
-    register_job  "window_hard"  "window_hard"  ${DEFAULT_N}  0.5  1.5   4.0  0.5  0.30  0.150 0.150 0.050 0.100  42
+    register_job  "window_full"  "4_KinematicWindow/window_full"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
+    register_job  "window_ring"  "4_KinematicWindow/window_ring"  ${DEFAULT_N}  0.5  0.5   1.5  0.5  0.30  0.150 0.150 0.050 0.100  42
+    register_job  "window_hard"  "4_KinematicWindow/window_hard"  ${DEFAULT_N}  0.5  1.5   4.0  0.5  0.30  0.150 0.150 0.050 0.100  42
 fi
 
 # -----------------------------------------------------------------------------
@@ -519,10 +519,10 @@ fi
 if family_in_scope 5; then
     run_family_header 5 "THERMAL TEMPERATURE SCAN"
 
-    register_job  "temp_025"  "temp_025"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.25  0.150 0.150 0.050 0.100  42
-    register_job  "temp_030"  "temp_030"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
-    register_job  "temp_035"  "temp_035"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.35  0.150 0.150 0.050 0.100  42
-    register_job  "temp_045"  "temp_045"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.45  0.150 0.150 0.050 0.100  42
+    register_job  "temp_025"  "5_Temperature/temp_025"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.25  0.150 0.150 0.050 0.100  42
+    register_job  "temp_030"  "5_Temperature/temp_030"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  42
+    register_job  "temp_035"  "5_Temperature/temp_035"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.35  0.150 0.150 0.050 0.100  42
+    register_job  "temp_045"  "5_Temperature/temp_045"  ${DEFAULT_N}  0.5  0.3  10.0  0.9  0.45  0.150 0.150 0.050 0.100  42
 fi
 
 # -----------------------------------------------------------------------------
@@ -548,11 +548,11 @@ fi
 if family_in_scope 6; then
     run_family_header 6 "STATISTICS SCALING"
 
-    register_job  "stats_100k"  "stats_100k"     100000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  101
-    register_job  "stats_500k"  "stats_500k"     500000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  201
-    register_job  "stats_2M"    "stats_2M"       2000000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  301
-    register_job  "stats_5M"    "stats_5M"       5000000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  401
-    register_job  "stats_50M"   "stats_50M"     50000000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  501
+    register_job  "stats_100k"  "6_Stats/stats_100k"     100000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  101
+    register_job  "stats_500k"  "6_Stats/stats_500k"     500000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  201
+    register_job  "stats_2M"    "6_Stats/stats_2M"       2000000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  301
+    register_job  "stats_5M"    "6_Stats/stats_5M"       5000000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  401
+    register_job  "stats_50M"   "6_Stats/stats_50M"     50000000  0.5  0.3  10.0  0.9  0.30  0.150 0.150 0.050 0.100  501
 fi
 
 
