@@ -143,7 +143,7 @@
 #     1_AsymDCA/           dca_p_only_005/ dca_pi_only_005/ dca_pi_only_010/
 #                          dca_asym_std/ dca_asym_wide/ dca_asym_rev/
 #     2_SymDCA/            dca_sym_005/ ... dca_sym_030/
-#     3_BField/            field_vlow/ field_b010/ ... field_b100/ field_bneg050/
+#     3_BField/            field_vlow/ field_b010/ ... field_b100/ field_b050neg/
 #     4_LamPtMin/          lam_ptmin_000/ ... lam_ptmin_200/
 #     5_DaughterPt/        pt_sym_005/ ... pt_sym_300/
 #                          pt_pi_010/ pt_pi_150/ pt_pi_200/ pt_p_150/
@@ -170,8 +170,7 @@
 # -------------
 #   Each ROOT file (histograms only, no TTrees): ~4-8 MB after ROOT zlib
 #   compression (two histogram families: WithEtaGate + WithoutEtaGate).
-#   Each plots/ folder: ~5-15 MB of PDFs.
-#   Total for ~59 runs: ~600 MB - 1.4 GB. (EYEBALLED! Didn't measure these.)
+#   Total for ~59 runs: ~600 MB. (EYEBALLED! Didn't measure these.)
 #   Log files: ~50-200 KB per run; negligible.
 #
 # =============================================================================
@@ -194,10 +193,10 @@ BASE_DIR="/home/users/cicerodm/RingPol/HelicityToyModel"
 LOG_DIR="${BASE_DIR}/logs"
 
 # Maximum concurrent ROOT processes.
-# Default: 60 (all jobs at once on a 192-core machine with ~59 total runs).
+# Default: 64 (all jobs at once on a 192-core machine with ~63 total runs).
 # Set to 0 to let GNU parallel use all available cores (parallel -j 0),
 # or to any positive integer to cap concurrency explicitly.
-MAX_PARALLEL=60
+MAX_PARALLEL=64
 
 # Default Lambda count per run.
 # At ~90 s per 10M Lambdas, 1B = ~900 s (~15 min) per run.
@@ -264,7 +263,7 @@ done
 
 # Default: run all families
 if [[ ${#FAMILIES_TO_RUN[@]} -eq 0 ]]; then
-    FAMILIES_TO_RUN=(0 1 2 3 4 5 6 7 8 9)
+    FAMILIES_TO_RUN=(0 1 2 3 4 5 6 7 8 9 10)
 fi
 
 
@@ -536,7 +535,7 @@ fi
 # Fixed standard DCA cuts (0.05 / 0.05 cm). pT cuts = 0.
 #
 # Rationale:
-#   (a) Sign flip: comparing field_b050 and field_bneg050 tests the fundamental
+#   (a) Sign flip: comparing field_b050 and field_b050neg tests the fundamental
 #       prediction that the phi* asymmetry sign flips with the field polarity.
 #       The cos(theta*) HEE (which is field-independent) must NOT flip.
 #       ALICE has operated at both +0.5 T and -0.5 T in Run 2, but not for OO
@@ -568,7 +567,7 @@ if family_in_scope 3; then
     register_job   "field_b050"       "3_BField/field_b050"        ${DEFAULT_N}   0.50     0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.050  0.050  0
     register_job   "field_b075"       "3_BField/field_b075"        ${DEFAULT_N}   0.75     0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.050  0.050  0
     register_job   "field_b100"       "3_BField/field_b100"        ${DEFAULT_N}   1.00     0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.050  0.050  0
-    register_job   "field_bneg050"    "3_BField/field_bneg050"     ${DEFAULT_N}   -0.50    0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.050  0.050  0
+    register_job   "field_b050neg"    "3_BField/field_b050neg"     ${DEFAULT_N}   -0.50    0.0   10.0   5.0   0.9   0.30  0.0   0.0   0.050  0.050  0
 fi
 
 # -----------------------------------------------------------------------------
@@ -764,6 +763,20 @@ if family_in_scope 9; then
     register_job   "alice_std_neg"       "9_RealisticAlice/alice_std_neg"    ${DEFAULT_N}   -0.50  0.000   10.000   5.0   0.9   0.30  0.150  0.150  0.050  0.050  0
     register_job   "alice_tight"         "9_RealisticAlice/alice_tight"      ${DEFAULT_N}   0.50   0.000   10.000   5.0   0.9   0.30  0.200  0.200  0.100  0.100  0
     register_job   "alice_ring"          "9_RealisticAlice/alice_ring"       ${DEFAULT_N}   0.50   0.500    1.500   5.0   0.9   0.30  0.150  0.150  0.050  0.050  0
+fi
+
+# -----------------------------------------------------------------------------
+# FAMILY 10: MAGNETIC FIELD  [AEE field dependence + HEE with field dependence]
+# Fixed standard DCA cuts (0.05 / 0.05 cm). pT cuts = 0.2 GeV/c
+# -----------------------------------------------------------------------------
+if family_in_scope 10; then
+    run_family_header 10 "MAGNETIC FIELD  [AEE: field sign and strength, with HEE tests using min pT cuts]"
+
+    #               NAME               SUBDIR                          N             Bz       pTminL pTmaxL  rap   eta    T    pTp   pTpi  dcaP   dcaPi  seed
+    register_job   "field_vlow"       "10_BField/field_vlow"        ${DEFAULT_N}   0.0001   0.0   10.0   5.0   0.9   0.30  0.200   0.200   0.050  0.050  0
+    register_job   "field_b050"       "10_BField/field_b050"        ${DEFAULT_N}   0.50     0.0   10.0   5.0   0.9   0.30  0.200   0.200   0.050  0.050  0
+    register_job   "field_b100"       "10_BField/field_b100"        ${DEFAULT_N}   1.00     0.0   10.0   5.0   0.9   0.30  0.200   0.200   0.050  0.050  0
+    register_job   "field_b050neg"    "10_BField/field_b050neg"     ${DEFAULT_N}   -0.50    0.0   10.0   5.0   0.9   0.30  0.200   0.200   0.050  0.050  0
 fi
 
 
@@ -966,7 +979,6 @@ echo "  Batch finished: ${BATCH_END}"
 echo ""
 echo "  Output tree:"
 echo "    ROOT files : ${BASE_DIR}/<family>/<name>/helicity_<name>.root"
-echo "    Plot PDFs  : ${BASE_DIR}/<family>/<name>/plots/*.pdf"
 echo "    Run logs   : ${LOG_DIR}/<name>.log"
 echo ""
 echo "  Quick diagnostics:"
@@ -981,7 +993,7 @@ echo "    grep 'total:' ${LOG_DIR}/*.log | sort -t: -k3 -n"
 echo ""
 echo "    # Compare AEE sign flip between positive and negative field:"
 echo "    grep -A4 'WithEtaGate.*DCACutOnly' ${LOG_DIR}/field_b050.log"
-echo "    grep -A4 'WithEtaGate.*DCACutOnly' ${LOG_DIR}/field_bneg050.log"
+echo "    grep -A4 'WithEtaGate.*DCACutOnly' ${LOG_DIR}/field_b050neg.log"
 echo ""
 echo "    # Compare HEE for pion-only vs proton-only pT cuts:"
 echo "    grep 'pTCutOnly' ${LOG_DIR}/pt_pi_150.log ${LOG_DIR}/pt_p_150.log"

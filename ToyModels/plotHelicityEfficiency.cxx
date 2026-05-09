@@ -243,27 +243,16 @@ static ScenDirs GetScenDirs(TDirectory* famDir, const char* etaSel)
     return sd;
 }
 
-
-// ==========================================================================
-/**
- * @brief Clones a TH1D, detaches it from any directory, and normalises its
- *        integral to 1.  Uses an automatically unique name to avoid ROOT
- *        name-collision warnings across multiple calls.
- * @param h    Source histogram; nullptr is tolerated and returns nullptr.
- * @return     Normalised clone, or nullptr.
- */
-// ==========================================================================
-static TH1D* NormClone(TH1D* h)
-{
+static int gCloneIdx = 0; // Global counter to ensure unique clone names
+static TH1D* SafeClone(TH1D* h) {
     if (!h) return nullptr;
-    static int sIdx = 0;
-    TH1D* hc = static_cast<TH1D*>(h->Clone(Form("hNormClone_%d", sIdx++)));
-    hc->SetDirectory(nullptr);
-    double ig = hc->Integral();
-    if (ig > 0.) hc->Scale(1./ig);
+    TH1D* hc = static_cast<TH1D*>(h->Clone(Form("%s_clone_%d", h->GetName(), gCloneIdx++)));
+    
+    // CRITICAL FIX: Detaches the clone from the output ROOT file, preventing 
+    // histogram pollution and ensuring the TCanvas renders the overlays correctly!
+    hc->SetDirectory(nullptr); 
     return hc;
 }
-
 
 // ==========================================================================
 /**
@@ -281,12 +270,7 @@ static TH1D* NormClone(TH1D* h)
 static void MakeFig1_2DMaps(TDirectory* famDir, TDirectory* famOut,
                               const char* famLabel, const char* etaSel)
 {
-    gStyle->SetPalette(kRainBow);
-    gStyle->SetNumberContours(64);
-
-    TCanvas* c = new TCanvas(Form("c_%s_2Dmap_%s", famLabel, etaSel),
-                              Form("cos#theta* vs #phi* -- %s -- %s", famLabel, etaSel),
-                              1400, 350);
+    TCanvas* c = new TCanvas(Form("c_%s_2Dmap_%s", famLabel, etaSel), Form("cos#theta* vs #phi* -- %s -- %s", famLabel, etaSel), 1400, 350);
     c->Divide(4, 1, 0.002, 0.002);
 
     for (int i = 0; i < 4; ++i) {
@@ -300,6 +284,7 @@ static void MakeFig1_2DMaps(TDirectory* famDir, TDirectory* famOut,
         h->SetStats(0);
         h->GetXaxis()->SetTitleSize(0.055);
         h->GetYaxis()->SetTitleSize(0.055);
+        // Removed "SAME" so the COLZ palette renders properly for all frames
         h->Draw("COLZ");
         AddLabel(0.5, 0.94, kScenLabels[i], 0.042, 22);
     }
@@ -335,8 +320,10 @@ static void MakeFig2_CosTheta(TDirectory* famDir, TDirectory* famOut,
     TH1D* hBC = sd.bc ? static_cast<TH1D*>(SafeGet(sd.bc, "h1d_cosTheta")) : nullptr;
     if (!hNC) return;
 
-    TH1D* hNCn = NormClone(hNC);  TH1D* hPTn = NormClone(hPT);
-    TH1D* hDCn = NormClone(hDC);  TH1D* hBCn = NormClone(hBC);
+    TH1D* hNCn = SafeClone(hNC);
+    TH1D* hPTn = SafeClone(hPT);
+    TH1D* hDCn = SafeClone(hDC);
+    TH1D* hBCn = SafeClone(hBC);
 
     SetHistStyle(hNCn, kColNoCuts, kMarkerNC);  SetHistStyle(hPTn, kColPtCut,  kMarkerPT);
     SetHistStyle(hDCn, kColDcaCut, kMarkerDC);  SetHistStyle(hBCn, kColBoth,   kMarkerBC);
@@ -348,26 +335,22 @@ static void MakeFig2_CosTheta(TDirectory* famDir, TDirectory* famOut,
     TCanvas* c = new TCanvas(Form("c_%s_cosTheta_%s", famLabel, etaSel), "", 700, 600);
     c->SetLeftMargin(0.14);  c->SetBottomMargin(0.13);
 
-    hNCn->SetTitle(Form("cos(#theta*) -- %s -- %s;cos(#theta*);Normalised counts", famLabel, etaSel));
+    hNCn->SetTitle(Form("cos(#theta*) -- %s -- %s;cos(#theta*);Counts", famLabel, etaSel));
     hNCn->GetYaxis()->SetRangeUser(0., ymax);
     hNCn->Draw("HIST");
     if (hPTn) hPTn->Draw("HIST SAME");
     if (hDCn) hDCn->Draw("HIST SAME");
     if (hBCn) hBCn->Draw("HIST SAME");
 
-    double flatVal = (hNCn->GetNbinsX() > 0) ? 1./hNCn->GetNbinsX() : 0.;
-    TLine* fl = new TLine(-1., flatVal, 1., flatVal);
-    fl->SetLineColor(kGray + 2);  fl->SetLineStyle(2);  fl->SetLineWidth(1);  fl->Draw();
-
     TLegend* leg = MakeLegend(0.60, 0.68, 0.88, 0.88);
     leg->AddEntry(hNCn, kScenLabels[0], "l");
     if (hPTn) leg->AddEntry(hPTn, kScenLabels[1], "l");
     if (hDCn) leg->AddEntry(hDCn, kScenLabels[2], "l");
     if (hBCn) leg->AddEntry(hBCn, kScenLabels[3], "l");
-    leg->Draw();
+    leg->Draw("SAME");
 
     WriteCanvas(c, famOut);
-    delete hNCn; delete hPTn; delete hDCn; delete hBCn;
+    // Removed deletes so the canvas keeps the objects!
     delete c;
 }
 
@@ -394,8 +377,10 @@ static void MakeFig3_PhiStar(TDirectory* famDir, TDirectory* famOut,
     TH1D* hBC = sd.bc ? static_cast<TH1D*>(SafeGet(sd.bc, "h1d_phi")) : nullptr;
     if (!hNC) return;
 
-    TH1D* hNCn = NormClone(hNC);  TH1D* hPTn = NormClone(hPT);
-    TH1D* hDCn = NormClone(hDC);  TH1D* hBCn = NormClone(hBC);
+    TH1D* hNCn = SafeClone(hNC);
+    TH1D* hPTn = SafeClone(hPT);
+    TH1D* hDCn = SafeClone(hDC);
+    TH1D* hBCn = SafeClone(hBC);
 
     SetHistStyle(hNCn, kColNoCuts, kMarkerNC);  SetHistStyle(hPTn, kColPtCut,  kMarkerPT);
     SetHistStyle(hDCn, kColDcaCut, kMarkerDC);  SetHistStyle(hBCn, kColBoth,   kMarkerBC);
@@ -407,7 +392,7 @@ static void MakeFig3_PhiStar(TDirectory* famDir, TDirectory* famOut,
     TCanvas* c = new TCanvas(Form("c_%s_phiStar_%s", famLabel, etaSel), "", 700, 600);
     c->SetLeftMargin(0.14);  c->SetBottomMargin(0.13);
 
-    hNCn->SetTitle(Form("#phi* -- %s -- %s;#phi* [rad];Normalised counts", famLabel, etaSel));
+    hNCn->SetTitle(Form("#phi* -- %s -- %s;#phi* [rad];Counts", famLabel, etaSel));
     hNCn->GetYaxis()->SetRangeUser(0., ymax);
     hNCn->Draw("HIST");
     if (hPTn) hPTn->Draw("HIST SAME");
@@ -419,10 +404,9 @@ static void MakeFig3_PhiStar(TDirectory* famDir, TDirectory* famOut,
     if (hPTn) leg->AddEntry(hPTn, kScenLabels[1], "l");
     if (hDCn) leg->AddEntry(hDCn, kScenLabels[2], "l");
     if (hBCn) leg->AddEntry(hBCn, kScenLabels[3], "l");
-    leg->Draw();
+    leg->Draw("SAME");
 
     WriteCanvas(c, famOut);
-    delete hNCn; delete hPTn; delete hDCn; delete hBCn;
     delete c;
 }
 
@@ -464,9 +448,11 @@ static void MakeFig4_RingProxy(TDirectory* famDir, TDirectory* famOut, const cha
     TProfile* pBC = sd.bc ? static_cast<TProfile*>(SafeGet(sd.bc, "pRingProxyVsEta")) : nullptr;
     if (!pNC && !hDistNC) return;
 
-    // Clone and normalise distributions
-    TH1D* hDnc = NormClone(hDistNC);  TH1D* hDpt = NormClone(hDistPT);
-    TH1D* hDdc = NormClone(hDistDC);  TH1D* hDbc = NormClone(hDistBC);
+    TH1D* hDnc = SafeClone(hDistNC);
+    TH1D* hDpt = SafeClone(hDistPT);
+    TH1D* hDdc = SafeClone(hDistDC);
+    TH1D* hDbc = SafeClone(hDistBC);
+    
     SetHistStyle(hDnc, kColNoCuts, kMarkerNC);  SetHistStyle(hDpt, kColPtCut,  kMarkerPT);
     SetHistStyle(hDdc, kColDcaCut, kMarkerDC);  SetHistStyle(hDbc, kColBoth,   kMarkerBC);
 
@@ -484,7 +470,7 @@ static void MakeFig4_RingProxy(TDirectory* famDir, TDirectory* famOut, const cha
         for (TH1D* h : {hDnc, hDpt, hDdc, hDbc}) { if (h && h->GetMaximum() > ymax) ymax = h->GetMaximum(); }
         ymax *= 1.3;
         if (hDnc) {
-            hDnc->SetTitle(Form("R_{proxy} distribution -- %s;R_{proxy};Normalised counts", famLabel));
+            hDnc->SetTitle(Form("R_{proxy} distribution -- %s;R_{proxy};Counts", famLabel));
             hDnc->GetYaxis()->SetRangeUser(0., ymax);
             hDnc->Draw("HIST");
         }
@@ -492,13 +478,13 @@ static void MakeFig4_RingProxy(TDirectory* famDir, TDirectory* famOut, const cha
         if (hDdc) hDdc->Draw("HIST SAME");
         if (hDbc) hDbc->Draw("HIST SAME");
         TLine* zl = new TLine(0., 0., 0., ymax);
-        zl->SetLineColor(kGray + 2);  zl->SetLineStyle(3);  zl->Draw();
+        zl->SetLineColor(kGray + 2);  zl->SetLineStyle(3);  zl->Draw("SAME");
         TLegend* leg = MakeLegend(0.15, 0.70, 0.60, 0.88);
         if (hDnc) leg->AddEntry(hDnc, kScenLabels[0], "l");
         if (hDpt) leg->AddEntry(hDpt, kScenLabels[1], "l");
         if (hDdc) leg->AddEntry(hDdc, kScenLabels[2], "l");
         if (hDbc) leg->AddEntry(hDbc, kScenLabels[3], "l");
-        leg->Draw();
+        leg->Draw("SAME");
     }
 
     // ---- Right panel: <R_proxy> vs eta ----
@@ -524,21 +510,20 @@ static void MakeFig4_RingProxy(TDirectory* famDir, TDirectory* famOut, const cha
         if (pBC) pBC->Draw("EP SAME");
         double etaMax = pNC ? pNC->GetXaxis()->GetXmax() : 0.9;
         TLine* zl  = new TLine(-etaMax, 0., etaMax, 0.);
-        zl->SetLineColor(kGray + 2);   zl->SetLineStyle(2);  zl->Draw();
+        zl->SetLineColor(kGray + 2);   zl->SetLineStyle(2);  zl->Draw("SAME");
         TLine* eta0 = new TLine(0., -ymax, 0., ymax);
-        eta0->SetLineColor(kGray + 1); eta0->SetLineStyle(3); eta0->Draw();
+        eta0->SetLineColor(kGray + 1); eta0->SetLineStyle(3); eta0->Draw("SAME");
         TLegend* leg = MakeLegend(0.15, 0.72, 0.50, 0.89);
         if (pNC) leg->AddEntry(pNC, kScenLabels[0], "ep");
         if (pPT) leg->AddEntry(pPT, kScenLabels[1], "ep");
         if (pDC) leg->AddEntry(pDC, kScenLabels[2], "ep");
         if (pBC) leg->AddEntry(pBC, kScenLabels[3], "ep");
-        leg->Draw();
+        leg->Draw("SAME");
     }
 
     c->cd(0);
     AddLabel(0.5, 0.995, Form("Ring observable proxy -- %s", famLabel), 0.036, 22);
     WriteCanvas(c, famOut);
-    delete hDnc; delete hDpt; delete hDdc; delete hDbc;
     delete c;
 }
 
@@ -588,14 +573,14 @@ static void MakeFig5_RingVsPt(TDirectory* famDir, TDirectory* famOut, const char
 
     double ptMax = pNC->GetXaxis()->GetXmax();
     TLine* zl = new TLine(0., 0., ptMax, 0.);
-    zl->SetLineColor(kGray + 2);  zl->SetLineStyle(2);  zl->Draw();
+    zl->SetLineColor(kGray + 2);  zl->SetLineStyle(2);  zl->Draw("SAME");
 
     TLegend* leg = MakeLegend(0.55, 0.72, 0.88, 0.89);
     leg->AddEntry(pNC, kScenLabels[0], "ep");
     if (pPT) leg->AddEntry(pPT, kScenLabels[1], "ep");
     if (pDC) leg->AddEntry(pDC, kScenLabels[2], "ep");
     if (pBC) leg->AddEntry(pBC, kScenLabels[3], "ep");
-    leg->Draw();
+    leg->Draw("SAME");
 
     WriteCanvas(c, famOut);
     delete c;
@@ -632,7 +617,10 @@ static void MakeFig6_IntegratedRing(TDirectory* famDir, TDirectory* famOut, cons
             if (v > globalMax) globalMax = v;
         }
     }
-    globalMax = (globalMax < 1.e-6) ? 0.05 : globalMax * 1.5;
+    
+    // Enforce a hard minimum scale of 0.02 so we don't zoom in on microscopic 
+    // statistical noise, and increase the margin multiplier to zoom out.
+    globalMax = std::max(0.02, globalMax * 2.5);
 
     TCanvas* c = new TCanvas(Form("c_%s_intRing", famLabel), "", 1050, 500);
     c->Divide(3, 1, 0.004, 0.002);
@@ -644,36 +632,33 @@ static void MakeFig6_IntegratedRing(TDirectory* famDir, TDirectory* famOut, cons
         TH1D* hBar = new TH1D(Form("hBar_%s_%s", famLabel, etaSels[ie]),
                                Form("<R_{proxy}> -- %s;Scenario;<R_{proxy}>", etaLabels[ie]),
                                4, 0., 4.);
+        hBar->SetDirectory(nullptr); // Critical to make the bars not be owned by the current TDirectory!
+                                     // Otherwise, they would dump into the output folder, even if they are
+                                     // just temporary histograms!
         hBar->GetYaxis()->SetRangeUser(-globalMax, globalMax);
         hBar->SetStats(0);
-        hBar->Draw();
+        for (int is = 0; is < 4; ++is) hBar->GetXaxis()->SetBinLabel(is + 1, kScenLabels[is]);
+        hBar->GetXaxis()->SetLabelSize(0.055);
+        hBar->Draw("AXIS"); // Draw frame
 
         TLine* zl = new TLine(0., 0., 4., 0.);
-        zl->SetLineColor(kGray + 2);  zl->SetLineStyle(2);  zl->SetLineWidth(2);  zl->Draw();
+        zl->SetLineColor(kGray + 2);  zl->SetLineStyle(2);  zl->SetLineWidth(2);  zl->Draw("SAME");
 
         for (int is = 0; is < 4; ++is) {
             TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
             if (!dir) continue;
             TProfile* p = static_cast<TProfile*>(SafeGet(dir, "pRingProxy"));
             if (!p) continue;
-            double val = p->GetBinContent(1);
-            double err = p->GetBinError(1);
-            double xc  = is + 0.5;
-            double cW  = 0.12;
-            // Central value bar
-            TLine* cent = new TLine(xc - cW, val, xc + cW, val);
-            cent->SetLineColor(kScenColors[is]);  cent->SetLineWidth(4);  cent->Draw();
-            // Vertical error bar
-            TLine* barV = new TLine(xc, val - err, xc, val + err);
-            barV->SetLineColor(kScenColors[is]);  barV->SetLineWidth(2);  barV->Draw();
-            // Error caps
-            TLine* capU = new TLine(xc - cW, val + err, xc + cW, val + err);
-            TLine* capL = new TLine(xc - cW, val - err, xc + cW, val - err);
-            capU->SetLineColor(kScenColors[is]);  capU->SetLineWidth(2);  capU->Draw();
-            capL->SetLineColor(kScenColors[is]);  capL->SetLineWidth(2);  capL->Draw();
-            hBar->GetXaxis()->SetBinLabel(is + 1, kScenLabels[is]);
+            
+            // Replaces manual lines: fill a single bin and use standard ROOT E1
+            TH1D* hPt = new TH1D(Form("hPt6_%s_%d_%d", famLabel, ie, is), "", 4, 0., 4.);
+            hPt->SetDirectory(nullptr); // Same fix as above
+            hPt->SetBinContent(is + 1, p->GetBinContent(1));
+            hPt->SetBinError(is + 1, p->GetBinError(1));
+            SetHistStyle(hPt, kScenColors[is], kScenMarkers[is]);
+            hPt->SetLineWidth(3);
+            hPt->Draw("E1 SAME");
         }
-        hBar->GetXaxis()->SetLabelSize(0.055);
         AddLabel(0.5, 0.96, etaLabels[ie], 0.045, 22);
     }
 
@@ -722,32 +707,23 @@ static void MakeFig7_DaughterPt(TFile* f, TDirectory* famDir,
         TH1D* hPre  = (id == 0) ? hKin_p  : hKin_pi;
         TH1D* hPost = (id == 0) ? hCut_p  : hCut_pi;
 
-        static int sId = 0;
-        TH1D* hPreN  = static_cast<TH1D*>(hPre->Clone(Form("hDptPre_%d",  sId)));
-        TH1D* hPostN = hPost ? static_cast<TH1D*>(hPost->Clone(Form("hDptPost_%d", sId))) : nullptr;
-        sId++;
-        hPreN->SetDirectory(nullptr);
-        if (hPostN) hPostN->SetDirectory(nullptr);
-
-        double norm = hPreN->Integral();
-        if (norm > 0.) { hPreN->Scale(1./norm);  if (hPostN) hPostN->Scale(1./norm); }
+        TH1D* hPreN = SafeClone(hPre);
+        TH1D* hPostN = SafeClone(hPost);
 
         SetHistStyle(hPreN, kBlack, kMarkerNC);
         if (hPostN) SetHistStyle(hPostN, kColPtCut, kMarkerPT);
 
         const char* pname = (id == 0) ? "Proton" : "Pion";
-        hPreN->SetTitle(Form("%s p_{T} -- %s;p_{T} [GeV/c];Normalised counts", pname, famLabel));
-        hPreN->GetYaxis()->SetRangeUser(1.e-5, 1.0);
+        hPreN->SetTitle(Form("%s p_{T} -- %s;p_{T} [GeV/c];Counts", pname, famLabel));
         hPreN->Draw("HIST");
         if (hPostN) hPostN->Draw("HIST SAME");
 
         TLegend* leg = MakeLegend(0.45, 0.72, 0.88, 0.88);
         leg->AddEntry(hPreN, "Pre-cut", "l");
         if (hPostN) leg->AddEntry(hPostN, "After p_{T} cut", "l");
-        leg->Draw();
+        leg->Draw("SAME");
 
         AddLabel(0.5, 0.93, Form("%s p_{T}", pname), 0.04, 22);
-        delete hPreN;  if (hPostN) delete hPostN;
     }
 
     WriteCanvas(c, famOut);
@@ -791,31 +767,23 @@ static void MakeFig8_DaughterDCA(TFile* f, TDirectory* famDir,
         TH1D* hPre  = (id == 0) ? hKin_p  : hKin_pi;
         TH1D* hPost = (id == 0) ? hCut_p  : hCut_pi;
 
-        static int sId = 0;
-        TH1D* hPreN  = static_cast<TH1D*>(hPre->Clone(Form("hDcaPre_%d",  sId)));
-        TH1D* hPostN = hPost ? static_cast<TH1D*>(hPost->Clone(Form("hDcaPost_%d", sId))) : nullptr;
-        sId++;
-        hPreN->SetDirectory(nullptr);
-        if (hPostN) hPostN->SetDirectory(nullptr);
-
-        double norm = hPreN->Integral();
-        if (norm > 0.) { hPreN->Scale(1./norm);  if (hPostN) hPostN->Scale(1./norm); }
+        TH1D* hPreN = SafeClone(hPre);
+        TH1D* hPostN = SafeClone(hPost);
 
         SetHistStyle(hPreN, kBlack, kMarkerNC);
         if (hPostN) SetHistStyle(hPostN, kColDcaCut, kMarkerDC);
 
         const char* pname = (id == 0) ? "Proton" : "Pion";
-        hPreN->SetTitle(Form("%s DCA_{xy} -- %s;DCA_{xy} [cm];Normalised counts", pname, famLabel));
+        hPreN->SetTitle(Form("%s DCA_{xy} -- %s;DCA_{xy} [cm];Counts", pname, famLabel));
         hPreN->Draw("HIST");
         if (hPostN) hPostN->Draw("HIST SAME");
 
         TLegend* leg = MakeLegend(0.45, 0.72, 0.88, 0.88);
         leg->AddEntry(hPreN, "Pre-cut", "l");
         if (hPostN) leg->AddEntry(hPostN, "After DCA cut", "l");
-        leg->Draw();
+        leg->Draw("SAME");
 
         AddLabel(0.5, 0.93, Form("%s DCA_{xy}", pname), 0.04, 22);
-        delete hPreN;  if (hPostN) delete hPostN;
     }
 
     WriteCanvas(c, famOut);
@@ -845,7 +813,6 @@ static void MakeFig9_EtaDiff(TDirectory* famDir, TDirectory* famOut, const char*
     TCanvas* c = new TCanvas(Form("c_%s_etaDiff", famLabel), "", 1200, 500);
     c->Divide(3, 1, 0.003, 0.002);
 
-    // Helper: build (EtaPos - EtaNeg) normalised difference for a given histogram name
     auto MakeDiff = [&](const char* scenName, const char* histName) -> TH1D* {
         TDirectory* dP = GetScenarioDir(famDir, scenName, "EtaPos");
         TDirectory* dN = GetScenarioDir(famDir, scenName, "EtaNeg");
@@ -853,10 +820,10 @@ static void MakeFig9_EtaDiff(TDirectory* famDir, TDirectory* famOut, const char*
         TH1D* hP = static_cast<TH1D*>(SafeGet(dP, histName));
         TH1D* hN = static_cast<TH1D*>(SafeGet(dN, histName));
         if (!hP || !hN) return nullptr;
-        TH1D* hPn = NormClone(hP);
-        TH1D* hNn = NormClone(hN);
-        hPn->Add(hNn, -1.);
-        delete hNn;
+        
+        TH1D* hPn = static_cast<TH1D*>(hP->Clone(Form("%s_diff_%d", histName, gCloneIdx++)));
+        hPn->SetDirectory(nullptr); // Same fix as above
+        hPn->Add(hN, -1.);
         return hPn;
     };
 
@@ -868,7 +835,7 @@ static void MakeFig9_EtaDiff(TDirectory* famDir, TDirectory* famOut, const char*
             if (h) { SetHistStyle(h, kScenColors[is], kScenMarkers[is]); }
             diffs.push_back(h);
         }
-        // Compute ymax before any Draw call (fixes the placeholder y-range bug)
+        
         double ymax = 0.;
         for (auto* h : diffs) {
             if (!h) continue;
@@ -881,7 +848,7 @@ static void MakeFig9_EtaDiff(TDirectory* famDir, TDirectory* famOut, const char*
         for (int is = 0; is < 4; ++is) {
             if (!diffs[is]) continue;
             if (first) {
-                diffs[is]->SetTitle(Form("%s -- %s;%s;#Delta(normalised counts)", title, famLabel, xTitle));
+                diffs[is]->SetTitle(Form("%s -- %s;%s;#Delta(Counts)", title, famLabel, xTitle));
                 diffs[is]->GetYaxis()->SetRangeUser(-ymax, ymax);
                 diffs[is]->Draw("HIST");
                 first = false;
@@ -891,14 +858,14 @@ static void MakeFig9_EtaDiff(TDirectory* famDir, TDirectory* famOut, const char*
         }
         TLine* zl = new TLine(diffs[0] ? diffs[0]->GetXaxis()->GetXmin() : -1., 0.,
                                diffs[0] ? diffs[0]->GetXaxis()->GetXmax() :  1., 0.);
-        zl->SetLineColor(kGray + 2);  zl->SetLineStyle(2);  zl->Draw();
+        zl->SetLineColor(kGray + 2);  zl->SetLineStyle(2);  zl->Draw("SAME");
 
         TLegend* leg = MakeLegend(0.15, 0.70, 0.60, 0.90);
         for (int is = 0; is < 4; ++is) {
             if (diffs[is]) leg->AddEntry(diffs[is], kScenLabels[is], "l");
         }
-        leg->Draw();
-        for (auto* h : diffs) delete h;
+        leg->Draw("SAME");
+        // Removed histogram deletion here so the canvas successfully writes!
     };
 
     // ---- Panel 1: phi* difference ----
@@ -937,25 +904,25 @@ static void MakeFig9_EtaDiff(TDirectory* famDir, TDirectory* famOut, const char*
                             Form("<R_{proxy}>_{#eta>0} - <R_{proxy}>_{#eta<0} -- %s;"
                                  "Scenario;#Delta<R_{proxy}>", famLabel),
                             4, 0., 4.);
+    hBar->SetDirectory(nullptr); // Same fix as above
     hBar->SetStats(0);
     hBar->GetYaxis()->SetRangeUser(-ymax3, ymax3);
     for (int is = 0; is < 4; ++is) hBar->GetXaxis()->SetBinLabel(is + 1, kScenLabels[is]);
     hBar->GetXaxis()->SetLabelSize(0.055);
-    hBar->Draw();
+    hBar->Draw("AXIS"); // Draw frame
 
     TLine* zl3 = new TLine(0., 0., 4., 0.);
-    zl3->SetLineColor(kGray + 2);  zl3->SetLineStyle(2);  zl3->SetLineWidth(2);  zl3->Draw();
+    zl3->SetLineColor(kGray + 2);  zl3->SetLineStyle(2);  zl3->SetLineWidth(2);  zl3->Draw("SAME");
 
     for (int is = 0; is < 4; ++is) {
-        double xc = is + 0.5;  double cW = 0.12;
-        TLine* cent = new TLine(xc - cW, vals[is], xc + cW, vals[is]);
-        cent->SetLineColor(kScenColors[is]);  cent->SetLineWidth(4);  cent->Draw();
-        TLine* barV = new TLine(xc, vals[is] - errs[is], xc, vals[is] + errs[is]);
-        barV->SetLineColor(kScenColors[is]);  barV->SetLineWidth(2);  barV->Draw();
-        TLine* capU = new TLine(xc - cW, vals[is] + errs[is], xc + cW, vals[is] + errs[is]);
-        TLine* capL = new TLine(xc - cW, vals[is] - errs[is], xc + cW, vals[is] - errs[is]);
-        capU->SetLineColor(kScenColors[is]);  capU->SetLineWidth(2);  capU->Draw();
-        capL->SetLineColor(kScenColors[is]);  capL->SetLineWidth(2);  capL->Draw();
+        // Replaces manual lines: fill a single bin and use standard ROOT E1
+        TH1D* hPt = new TH1D(Form("hPt9_%s_%d", famLabel, is), "", 4, 0., 4.);
+        hPt->SetDirectory(nullptr); // Same fix as above
+        hPt->SetBinContent(is + 1, vals[is]);
+        hPt->SetBinError(is + 1, errs[is]);
+        SetHistStyle(hPt, kScenColors[is], kScenMarkers[is]);
+        hPt->SetLineWidth(3);
+        hPt->Draw("E1 SAME");
     }
 
     TLegend* leg3 = MakeLegend(0.15, 0.70, 0.60, 0.90);
@@ -963,10 +930,223 @@ static void MakeFig9_EtaDiff(TDirectory* famDir, TDirectory* famOut, const char*
         TLine* dummy = new TLine(); dummy->SetLineColor(kScenColors[is]); dummy->SetLineWidth(3);
         leg3->AddEntry(dummy, kScenLabels[is], "l");
     }
-    leg3->Draw();
+    leg3->Draw("SAME");
 
     c->cd(0);
     AddLabel(0.5, 0.995, Form("#eta>0 minus #eta<0 antisymmetric component -- %s", famLabel), 0.034, 22);
+    WriteCanvas(c, famOut);
+    delete c;
+}
+
+// ==========================================================================
+/**
+ * @brief Fig 10 -- <R_proxy_jet> vs Lambda eta and Jet eta.
+ *
+ * 2 panels: 
+ * Left:  <R_proxy_jet> vs \eta_\Lambda
+ * Right: <R_proxy_jet> vs \eta_{jet}
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory.
+ * @param famLabel  Short label used in object names.
+ */
+// ==========================================================================
+static void MakeFig10_RingProxyJetVsEta(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
+{
+    ScenDirs sd = GetScenDirs(famDir, "All");
+    
+    // --- Retrieve <R_proxy_jet> vs Lambda eta ---
+    TProfile* pNCL = sd.nc ? static_cast<TProfile*>(SafeGet(sd.nc, "pRingProxyJetVsEta")) : nullptr;
+    TProfile* pPTL = sd.pt ? static_cast<TProfile*>(SafeGet(sd.pt, "pRingProxyJetVsEta")) : nullptr;
+    TProfile* pDCL = sd.dc ? static_cast<TProfile*>(SafeGet(sd.dc, "pRingProxyJetVsEta")) : nullptr;
+    TProfile* pBCL = sd.bc ? static_cast<TProfile*>(SafeGet(sd.bc, "pRingProxyJetVsEta")) : nullptr;
+
+    // --- Retrieve <R_proxy_jet> vs Jet eta ---
+    TProfile* pNCJ = sd.nc ? static_cast<TProfile*>(SafeGet(sd.nc, "pRingProxyJetVsEtaJet")) : nullptr;
+    TProfile* pPTJ = sd.pt ? static_cast<TProfile*>(SafeGet(sd.pt, "pRingProxyJetVsEtaJet")) : nullptr;
+    TProfile* pDCJ = sd.dc ? static_cast<TProfile*>(SafeGet(sd.dc, "pRingProxyJetVsEtaJet")) : nullptr;
+    TProfile* pBCJ = sd.bc ? static_cast<TProfile*>(SafeGet(sd.bc, "pRingProxyJetVsEtaJet")) : nullptr;
+
+    if (!pNCL && !pNCJ) return;
+
+    SetHistStyle(pNCL, kColNoCuts, kMarkerNC);  SetHistStyle(pPTL, kColPtCut,  kMarkerPT);
+    SetHistStyle(pDCL, kColDcaCut, kMarkerDC);  SetHistStyle(pBCL, kColBoth,   kMarkerBC);
+
+    SetHistStyle(pNCJ, kColNoCuts, kMarkerNC);  SetHistStyle(pPTJ, kColPtCut,  kMarkerPT);
+    SetHistStyle(pDCJ, kColDcaCut, kMarkerDC);  SetHistStyle(pBCJ, kColBoth,   kMarkerBC);
+
+    TCanvas* c = new TCanvas(Form("c_%s_ringProxyJetVsEta", famLabel), "", 1200, 550);
+    c->Divide(2, 1, 0.004, 0.002);
+
+    auto drawPanel = [](TProfile* pNC, TProfile* pPT, TProfile* pDC, TProfile* pBC, const char* xTitle) {
+        double ymax = 0.;
+        for (TProfile* p : {pNC, pPT, pDC, pBC}) {
+            if (!p) continue;
+            for (int ib = 1; ib <= p->GetNbinsX(); ++ib) {
+                double v = std::fabs(p->GetBinContent(ib)) + p->GetBinError(ib);
+                if (v > ymax) ymax = v;
+            }
+        }
+        ymax = (ymax < 1.e-6) ? 0.05 : ymax * 1.35;
+
+        if (pNC) {
+            pNC->SetTitle(Form(";<R_{proxy}^{jet}>"));
+            pNC->GetXaxis()->SetTitle(xTitle);
+            pNC->GetYaxis()->SetRangeUser(-ymax, ymax);
+            pNC->Draw("EP");
+        }
+        if (pPT) pPT->Draw("EP SAME");
+        if (pDC) pDC->Draw("EP SAME");
+        if (pBC) pBC->Draw("EP SAME");
+
+        double xMax = pNC ? pNC->GetXaxis()->GetXmax() : 1.0;
+        TLine* zl  = new TLine(-xMax, 0., xMax, 0.);
+        zl->SetLineColor(kGray + 2);   zl->SetLineStyle(2);  zl->Draw("SAME");
+        TLine* eta0 = new TLine(0., -ymax, 0., ymax);
+        eta0->SetLineColor(kGray + 1); eta0->SetLineStyle(3); eta0->Draw("SAME");
+
+        TLegend* leg = MakeLegend(0.15, 0.72, 0.50, 0.89);
+        if (pNC) leg->AddEntry(pNC, kScenLabels[0], "ep");
+        if (pPT) leg->AddEntry(pPT, kScenLabels[1], "ep");
+        if (pDC) leg->AddEntry(pDC, kScenLabels[2], "ep");
+        if (pBC) leg->AddEntry(pBC, kScenLabels[3], "ep");
+        leg->Draw("SAME");
+    };
+
+    c->cd(1); gPad->SetLeftMargin(0.14); gPad->SetBottomMargin(0.13);
+    drawPanel(pNCL, pPTL, pDCL, pBCL, "#eta_{#Lambda}");
+    AddLabel(0.5, 0.94, "Dependence on #Lambda pseudorapidity", 0.045, 22);
+
+    c->cd(2); gPad->SetLeftMargin(0.14); gPad->SetBottomMargin(0.13);
+    drawPanel(pNCJ, pPTJ, pDCJ, pBCJ, "#eta_{jet}");
+    AddLabel(0.5, 0.94, "Dependence on Jet pseudorapidity", 0.045, 22);
+
+    c->cd(0);
+    AddLabel(0.5, 0.995, Form("Jet Ring observable proxy vs Eta -- %s", famLabel), 0.036, 22);
+    WriteCanvas(c, famOut);
+    delete c;
+}
+
+
+// ==========================================================================
+/**
+ * @brief Fig 11 -- <R_proxy_jet> vs Lambda pT for all four scenarios.
+ */
+// ==========================================================================
+static void MakeFig11_RingVsPtJet(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
+{
+    ScenDirs sd = GetScenDirs(famDir, "All");
+    TProfile* pNC = sd.nc ? static_cast<TProfile*>(SafeGet(sd.nc, "pRingProxyJetVsPt")) : nullptr;
+    TProfile* pPT = sd.pt ? static_cast<TProfile*>(SafeGet(sd.pt, "pRingProxyJetVsPt")) : nullptr;
+    TProfile* pDC = sd.dc ? static_cast<TProfile*>(SafeGet(sd.dc, "pRingProxyJetVsPt")) : nullptr;
+    TProfile* pBC = sd.bc ? static_cast<TProfile*>(SafeGet(sd.bc, "pRingProxyJetVsPt")) : nullptr;
+    if (!pNC) return;
+
+    SetHistStyle(pNC, kColNoCuts, kMarkerNC);  SetHistStyle(pPT, kColPtCut,  kMarkerPT);
+    SetHistStyle(pDC, kColDcaCut, kMarkerDC);  SetHistStyle(pBC, kColBoth,   kMarkerBC);
+
+    double ymax = 0.;
+    for (TProfile* p : {pNC, pPT, pDC, pBC}) {
+        if (!p) continue;
+        for (int ib = 1; ib <= p->GetNbinsX(); ++ib) {
+            double v = std::fabs(p->GetBinContent(ib)) + p->GetBinError(ib);
+            if (v > ymax) ymax = v;
+        }
+    }
+    ymax = (ymax < 1.e-6) ? 0.05 : ymax * 1.35;
+
+    TCanvas* c = new TCanvas(Form("c_%s_ringVsPtJet", famLabel), "", 750, 600);
+    c->SetLeftMargin(0.14);  c->SetBottomMargin(0.13);
+
+    pNC->SetTitle(Form("<R_{proxy}^{jet}> vs #Lambda p_{T} -- %s;p_{T}^{#Lambda} [GeV/c];<R_{proxy}^{jet}>", famLabel));
+    pNC->GetYaxis()->SetRangeUser(-ymax, ymax);
+    pNC->Draw("EP");
+    if (pPT) pPT->Draw("EP SAME");
+    if (pDC) pDC->Draw("EP SAME");
+    if (pBC) pBC->Draw("EP SAME");
+
+    double ptMax = pNC->GetXaxis()->GetXmax();
+    TLine* zl = new TLine(0., 0., ptMax, 0.);
+    zl->SetLineColor(kGray + 2);  zl->SetLineStyle(2);  zl->Draw("SAME");
+
+    TLegend* leg = MakeLegend(0.55, 0.72, 0.88, 0.89);
+    leg->AddEntry(pNC, kScenLabels[0], "ep");
+    if (pPT) leg->AddEntry(pPT, kScenLabels[1], "ep");
+    if (pDC) leg->AddEntry(pDC, kScenLabels[2], "ep");
+    if (pBC) leg->AddEntry(pBC, kScenLabels[3], "ep");
+    leg->Draw("SAME");
+
+    WriteCanvas(c, famOut);
+    delete c;
+}
+
+
+// ==========================================================================
+/**
+ * @brief Fig 12 -- integrated <R_proxy_jet> bar chart, one panel per eta selection.
+ */
+// ==========================================================================
+static void MakeFig12_IntegratedRingJet(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
+{
+    const char* etaSels[3]   = {"EtaPos", "EtaNeg", "All"};
+    const char* etaLabels[3] = {"#eta_{#Lambda} > 0", "#eta_{#Lambda} < 0", "All #eta"};
+
+    // Find the global y range across all panels for consistent axes
+    double globalMax = 0.;
+    for (int ie = 0; ie < 3; ++ie) {
+        for (int is = 0; is < 4; ++is) {
+            TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
+            if (!dir) continue;
+            TProfile* p = static_cast<TProfile*>(SafeGet(dir, "pRingProxyJet"));
+            if (!p) continue;
+            double v = std::fabs(p->GetBinContent(1)) + p->GetBinError(1);
+            if (v > globalMax) globalMax = v;
+        }
+    }
+    
+    // Enforce a hard minimum scale of 0.02 so we don't zoom in on microscopic 
+    // statistical noise, and increase the margin multiplier to zoom out.
+    globalMax = std::max(0.02, globalMax * 2.5);
+
+    TCanvas* c = new TCanvas(Form("c_%s_intRingJet", famLabel), "", 1050, 500);
+    c->Divide(3, 1, 0.004, 0.002);
+
+    for (int ie = 0; ie < 3; ++ie) {
+        c->cd(ie + 1);
+        gPad->SetLeftMargin(0.18);  gPad->SetBottomMargin(0.16);
+
+        TH1D* hBar = new TH1D(Form("hBarJet_%s_%s", famLabel, etaSels[ie]),
+                               Form("<R_{proxy}^{jet}> -- %s;Scenario;<R_{proxy}^{jet}>", etaLabels[ie]),
+                               4, 0., 4.);
+        hBar->SetDirectory(nullptr);
+        hBar->GetYaxis()->SetRangeUser(-globalMax, globalMax);
+        hBar->SetStats(0);
+        for (int is = 0; is < 4; ++is) hBar->GetXaxis()->SetBinLabel(is + 1, kScenLabels[is]);
+        hBar->GetXaxis()->SetLabelSize(0.055);
+        hBar->Draw("AXIS"); // Draw frame
+
+        TLine* zl = new TLine(0., 0., 4., 0.);
+        zl->SetLineColor(kGray + 2);  zl->SetLineStyle(2);  zl->SetLineWidth(2);  zl->Draw("SAME");
+
+        for (int is = 0; is < 4; ++is) {
+            TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
+            if (!dir) continue;
+            TProfile* p = static_cast<TProfile*>(SafeGet(dir, "pRingProxyJet"));
+            if (!p) continue;
+            
+            TH1D* hPt = new TH1D(Form("hPtJet12_%s_%d_%d", famLabel, ie, is), "", 4, 0., 4.);
+            hPt->SetDirectory(nullptr); 
+            hPt->SetBinContent(is + 1, p->GetBinContent(1));
+            hPt->SetBinError(is + 1, p->GetBinError(1));
+            SetHistStyle(hPt, kScenColors[is], kScenMarkers[is]);
+            hPt->SetLineWidth(3);
+            hPt->Draw("E1 SAME");
+        }
+        AddLabel(0.5, 0.96, etaLabels[ie], 0.045, 22);
+    }
+
+    c->cd(0);
+    AddLabel(0.5, 0.995, Form("Integrated <R_{proxy}^{jet}> per scenario -- %s", famLabel), 0.036, 22);
     WriteCanvas(c, famOut);
     delete c;
 }
@@ -1071,10 +1251,6 @@ void plotHelicityEfficiency(const char* inputFile = "helicityEffOutput.root")
     gStyle->SetLabelSize(0.045, "XYZ");
     gStyle->SetTitleOffset(1.1, "Y");
 
-    // Lambda kinematics -- shared, written at the fout top level
-    printf("Producing kinematics figure...\n");
-    MakeFigKin(f, fout);
-
     // Per-family figures
     const char* famNames[2] = {"WithEtaGate", "WithoutEtaGate"};
     for (const char* famName : famNames) {
@@ -1100,7 +1276,16 @@ void plotHelicityEfficiency(const char* inputFile = "helicityEffOutput.root")
         MakeFig7_DaughterPt   (f, famDir, famOut, famName);
         MakeFig8_DaughterDCA  (f, famDir, famOut, famName);
         MakeFig9_EtaDiff      (famDir, famOut, famName);
+
+        // Random jet direction proxy figures:
+        MakeFig10_RingProxyJetVsEta (famDir, famOut, famName);
+        MakeFig11_RingVsPtJet       (famDir, famOut, famName);
+        MakeFig12_IntegratedRingJet (famDir, famOut, famName);
     }
+
+    // Lambda kinematics -- shared, written at the fout top level
+    printf("Producing kinematics figure...\n");
+    MakeFigKin(f, fout);
 
     f->Close();
     fout->Write("", TObject::kOverwrite);

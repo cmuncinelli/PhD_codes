@@ -133,7 +133,7 @@ root -l -b -q 'plotHelicityEfficiency.cxx("output.root","plots_dir")'
 Runs the generator and plotter across ten families of parameter
 variations specifically designed to isolate one effect by silencing the other.
 It organizes all output into a structured directory tree under a configurable
-base directory. Supports parallel execution (default `MAX_PARALLEL=60`) and
+base directory. Supports parallel execution (default `MAX_PARALLEL=64`) and
 produces one log file per run.
 
 **Quick start:**
@@ -170,7 +170,7 @@ inside the script header. A brief summary:
 **Default output directory:** `/home/users/cicerodm/RingPol/HelicityToyModel/`
 **Default log directory:** `/home/users/cicerodm/RingPol/HelicityToyModel/logs/`
 
-Both can be changed at the top of the script. The entire run generates approximately 600 MB - 1.4 GB of data between compressed ROOT files and PDFs.
+Both can be changed at the top of the script. The entire run generates approximately 500 MB of data in ROOT files (eyeballed!).
 
 ---
 
