@@ -5,76 +5,42 @@
 // PURPOSE
 // -------
 // Companion plotting macro for helicityEfficiencyToyModel.cxx.
-// Reads the output ROOT file produced by that macro and generates a
-// comprehensive set of diagnostic figures as PDF files (one PDF per
-// figure, saved to a user-specified output directory).
+// Reads the ROOT file produced by that macro and writes a comprehensive set
+// of diagnostic TCanvas objects to a single plots.root file placed next to
+// the input file.  No PDFs are produced.
 //
-// WHAT THIS MACRO SHOWS
-// ----------------------
-// For each of the four cut scenarios (NoCuts, pTCutOnly, DCACutOnly,
-// BothCuts) and each eta half (EtaPos, EtaNeg, All), this macro produces:
+// The macro processes both histogram families produced by the generator:
+//   WithEtaGate     -- daughter |eta| < etaMaxDetector required (consistent set)
+//   WithoutEtaGate  -- no daughter eta requirement (kept for comparison)
 //
-//   Figure 1: 2D (cos theta*, phi*) maps -- the PRIMARY diagnostic.
-//             Four-panel layout: NoCuts / pTCut / DCACut / BothCuts
-//             for a chosen eta selection.
-//             Expected textures:
-//               NoCuts    -> uniform (flat) -- bug check
-//               pTCutOnly -> rows in cos(theta*) suppressed near +1
-//                            (helicity / forward-backward effect)
-//               DCACutOnly-> columns modulated as ~sin(phi*)
-//                            (left-right / magnetic-field effect)
-//               BothCuts  -> combination of both
+// For each family the following figures are produced:
 //
-//   Figure 2: cos(theta*) projections, all four scenarios overlaid,
-//             separately for EtaPos, EtaNeg, All.
-//             Normalised to area 1 for shape comparison.
+//   fig1_2Dmap_<eta>     -- 4-panel COLZ: cos(theta*) vs phi* for each scenario
+//   fig2_cosTheta_<eta>  -- cos(theta*) projections, all 4 scenarios overlaid
+//   fig3_phiStar_<eta>   -- phi* projections, all 4 scenarios overlaid
+//   fig4_ringProxy       -- 2-panel: R_proxy distributions + <R_proxy> vs Lambda eta
+//   fig5_ringVsPt        -- <R_proxy> vs Lambda pT
+//   fig6_intRing         -- integrated <R_proxy> bar chart (EtaPos | EtaNeg | All)
+//   fig7_daughterPt      -- proton/pion pT before and after the pT cut
+//   fig8_daughterDCA     -- proton/pion DCA_xy before and after the DCA cut
+//   fig9_etaDiff         -- eta>0 minus eta<0 antisymmetric component
 //
-//   Figure 3: phi* projections, all four scenarios overlaid,
-//             separately for EtaPos, EtaNeg, All.
-//             A fit to A * (1 + B * sin(phi*)) is drawn on DCACutOnly.
+// Additionally, one shared figure is produced at the top level:
+//   figKin               -- Lambda kinematics and decay radius (generation-level)
 //
-//   Figure 4: Ring proxy <R_proxy> as a function of Lambda eta,
-//             all four scenarios on one panel.
-//             Key feature: sign flip between eta > 0 and eta < 0
-//             for DCA-sensitive cuts -- this is the observed antisymmetry.
-//
-//   Figure 5: Ring proxy <R_proxy> as a function of Lambda pT,
-//             all four scenarios on one panel.
-//
-//   Figure 6: Integrated <R_proxy> bar chart (one value per scenario),
-//             separately for EtaPos, EtaNeg, All.
-//             Includes a dashed line at zero for reference.
-//
-//   Figure 7: Daughter pT distributions (proton and pion), pre-cut and
-//             post-pT-cut, to visualise which daughter population is
-//             being removed by the threshold.
-//
-//   Figure 8: Daughter DCA_xy distributions (proton and pion), pre-cut
-//             and post-DCA-cut, showing the displaced-vertex selection.
-//
-//   Figure 9: Transverse decay radius distribution (all cuts combined)
-//             and Lambda pT / eta spectra from generation.
-//
-//   Figure 10: eta>0 minus eta<0 difference plots for cos(theta*) and
-//              phi*, showing the antisymmetric component explicitly.
-//              This directly mimics what is visible in the O-O data.
+// OUTPUT
+// ------
+// The output file is plots.root, placed in the same directory as inputFile.
+// Canvas objects are written under subdirectories WithEtaGate/ and
+// WithoutEtaGate/ inside plots.root.  The kinematics canvas is at the top level.
 //
 // USAGE
 // -----
-// From the ROOT command line:
-//
 //   root -l -b -q 'plotHelicityEfficiency.cxx'
-//       (reads helicityEffOutput.root, saves plots to ./plots/)
+//       (reads helicityEffOutput.root; writes plots.root next to it)
 //
-//   root -l -b -q 'plotHelicityEfficiency.cxx("myout.root","myplots")'
-//       (custom input file and output directory)
-//
-// The output directory is created if it does not exist.
-//
-// DEPENDENCIES
-// ------------
-// Only standard ROOT headers are needed.  No external libraries required.
-// Tested with ROOT 6.28+; should work with ROOT 6.14+.
+//   root -l -b -q 'plotHelicityEfficiency.cxx("myout.root","unused_dir")'
+//       (second argument kept for run-script compatibility; only input path matters)
 //
 //   Reference analysis code: lambdaJetPolarizationIonsDerived.cxx (ALICE O2)
 // ==========================================================================
@@ -89,7 +55,6 @@
 #include <TLegend.h>
 #include <TLine.h>
 #include <TLatex.h>
-#include <TF1.h>
 #include <TStyle.h>
 #include <TMath.h>
 #include <TSystem.h>
@@ -97,117 +62,97 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cmath>
+#include <vector>
+#include <algorithm>
 
 
 // ==========================================================================
 // STYLE CONSTANTS
-// Colors and line widths used consistently across all figures.
 // ==========================================================================
 
-// One color per scenario (ROOT color indices)
-static const int kColNoCuts  = kBlack;           // no cuts: black
-static const int kColPtCut   = kRed + 1;         // pT cut:  red
-static const int kColDcaCut  = kBlue + 1;        // DCA cut: blue
-static const int kColBoth    = kGreen + 2;       // both:    dark green
+static const int    kColNoCuts  = kBlack;
+static const int    kColPtCut   = kRed + 1;
+static const int    kColDcaCut  = kBlue + 1;
+static const int    kColBoth    = kGreen + 2;
+static const int    kLineWidth  = 2;
+static const int    kMarkerNC   = 20;   // full circle
+static const int    kMarkerPT   = 21;   // full square
+static const int    kMarkerDC   = 22;   // full triangle up
+static const int    kMarkerBC   = 23;   // full triangle down
+static const double kMarkerSz   = 0.8;
 
-static const int kLineWidth  = 2;
-
-// Marker styles and sizes for TProfile overlays
-static const int kMarkerNC = 20;  // full circle
-static const int kMarkerPT = 21;  // full square
-static const int kMarkerDC = 22;  // full triangle up
-static const int kMarkerBC = 23;  // full triangle down
-static const double kMarkerSz = 0.8;
+// Scenario names, labels, colors and markers in a fixed order
+// (NoCuts, pTCutOnly, DCACutOnly, BothCuts)
+static const char* kScenNames[4]  = {"NoCuts", "pTCutOnly", "DCACutOnly", "BothCuts"};
+static const char* kScenLabels[4] = {"No cuts", "p_{T} cut only", "DCA cut only", "Both cuts"};
+static const int   kScenColors[4] = {kColNoCuts, kColPtCut, kColDcaCut, kColBoth};
+static const int   kScenMarkers[4]= {kMarkerNC, kMarkerPT, kMarkerDC, kMarkerBC};
 
 
 // ==========================================================================
-// HELPER: SafeGet
-// --------------------------------------------------------------------------
-// Retrieves a named object from a TDirectory with error checking.
-// Returns nullptr and prints a warning if the object is not found.
-// Cast to the desired type with static_cast<T*>() at the call site.
+/**
+ * @brief Retrieves a named object from a TDirectory with a null-safety check.
+ * @param dir   Source directory; a null pointer is silently tolerated.
+ * @param name  Name of the object to retrieve.
+ * @return      Pointer to the object, or nullptr if not found.
+ */
 // ==========================================================================
 static TObject* SafeGet(TDirectory* dir, const char* name)
 {
-    if (!dir) {
-        printf("WARNING: SafeGet called with null directory for '%s'\n", name);
-        return nullptr;
-    }
+    if (!dir) { printf("WARNING: SafeGet called with null directory for '%s'\n", name); return nullptr; }
     TObject* obj = dir->Get(name);
-    if (!obj) {
-        printf("WARNING: Object '%s' not found in directory '%s'\n",
-               name, dir->GetName());
-    }
+    if (!obj) printf("WARNING: '%s' not found in directory '%s'\n", name, dir->GetName());
     return obj;
 }
 
 
 // ==========================================================================
-// HELPER: GetDir
-// --------------------------------------------------------------------------
-// Gets a subdirectory from a TDirectory with error checking.
-// Prints a warning and returns nullptr if not found.
+/**
+ * @brief Gets a named sub-directory from a TDirectory with a null-safety check.
+ * @param parent  Parent directory; null is tolerated.
+ * @param name    Sub-directory name.
+ * @return        Pointer to the sub-directory, or nullptr if not found.
+ */
 // ==========================================================================
 static TDirectory* GetDir(TDirectory* parent, const char* name)
 {
-    if (!parent) {
-        printf("WARNING: GetDir called with null parent for '%s'\n", name);
-        return nullptr;
-    }
-    TDirectory* dir = (TDirectory*)parent->Get(name);
-    if (!dir) {
-        printf("WARNING: Directory '%s' not found in '%s'\n",
-               name, parent->GetName());
-    }
+    if (!parent) { printf("WARNING: GetDir called with null parent for '%s'\n", name); return nullptr; }
+    TDirectory* dir = static_cast<TDirectory*>(parent->Get(name));
+    if (!dir) printf("WARNING: directory '%s' not found in '%s'\n", name, parent->GetName());
     return dir;
 }
 
 
 // ==========================================================================
-// HELPER: SetHistStyle
-// --------------------------------------------------------------------------
-// Applies a consistent visual style to a TH1 or TProfile.
+/**
+ * @brief Applies a consistent line/marker/color style to a TH1 or TProfile.
+ * @param h          Histogram to style; a null pointer is silently tolerated.
+ * @param color      ROOT color index.
+ * @param marker     ROOT marker style.
+ * @param lineStyle  ROOT line style (default: solid).
+ */
 // ==========================================================================
 static void SetHistStyle(TH1* h, int color, int marker, int lineStyle = 1)
 {
     if (!h) return;
-    h->SetLineColor(color);
-    h->SetLineWidth(kLineWidth);
-    h->SetLineStyle(lineStyle);
-    h->SetMarkerColor(color);
-    h->SetMarkerStyle(marker);
-    h->SetMarkerSize(kMarkerSz);
-    h->SetStats(0);  // Turn off the stat box; we add our own annotations
+    h->SetLineColor(color);  h->SetLineWidth(kLineWidth);  h->SetLineStyle(lineStyle);
+    h->SetMarkerColor(color); h->SetMarkerStyle(marker);   h->SetMarkerSize(kMarkerSz);
+    h->SetStats(0);
 }
 
 
 // ==========================================================================
-// HELPER: SaveCanvas
-// --------------------------------------------------------------------------
-// Saves a TCanvas as a PDF to the given output directory.
-// Creates the directory if it does not exist (using gSystem->Exec).
+/**
+ * @brief Draws a TLatex string on the current pad at normalized coordinates.
+ * @param x      NDC x position.
+ * @param y      NDC y position.
+ * @param text   LaTeX string.
+ * @param size   Text size (default 0.04).
+ * @param align  Text alignment code (default 12 = left-middle).
+ */
 // ==========================================================================
-static void SaveCanvas(TCanvas* c, const char* outDir, const char* filename, TFile *fout)
-{
-    // Ensure output directory exists
-    gSystem->Exec(Form("mkdir -p %s", outDir));
-
-    // Build full path and save
-    TString path = Form("%s/%s.pdf", outDir, filename);
-    c->SaveAs(path.Data());
-    fout->cd();
-    c->Write();
-    printf("  Saved: %s\n", path.Data());
-}
-
-
-// ==========================================================================
-// HELPER: AddLabel
-// --------------------------------------------------------------------------
-// Draws a TLatex label on the current pad at normalized (x, y) coordinates.
-// ==========================================================================
-static void AddLabel(double x, double y, const char* text,
-                     double size = 0.04, int align = 12)
+static void AddLabel(double x, double y, const char* text, double size = 0.04, int align = 12)
 {
     TLatex* lat = new TLatex(x, y, text);
     lat->SetNDC();
@@ -218,51 +163,31 @@ static void AddLabel(double x, double y, const char* text,
 
 
 // ==========================================================================
-// HELPER: GetScenarioDir
-// --------------------------------------------------------------------------
-// Convenience wrapper: returns the directory for a given scenario name and
-// eta selection string (one of "EtaPos", "EtaNeg", "All").
+/**
+ * @brief Writes a TCanvas to a TDirectory and returns to the file root.
+ *
+ * Replaces the old SaveCanvas/PDF approach.  The canvas is written directly
+ * to @p outDir inside the output ROOT file; no disk directory or PDF is
+ * created.
+ *
+ * @param c       Canvas to write.
+ * @param outDir  Target TDirectory in the output ROOT file.
+ */
 // ==========================================================================
-static TDirectory* GetScenarioDir(TFile* f,
-                                   const char* scenario,
-                                   const char* etaSel)
+static void WriteCanvas(TCanvas* c, TDirectory* outDir)
 {
-    TDirectory* dirScen = GetDir(f, scenario);
-    if (!dirScen) return nullptr;
-    return GetDir(dirScen, etaSel);
+    if (!c || !outDir) return;
+    outDir->cd();
+    c->Write();
 }
 
 
 // ==========================================================================
-// STRUCT: ScenDirs
-// --------------------------------------------------------------------------
-// Bundles the four scenario directories for a given eta selection so that
-// they can be passed together to plotting functions.
-// ==========================================================================
-struct ScenDirs {
-    TDirectory* nc;   // NoCuts
-    TDirectory* pt;   // pTCutOnly
-    TDirectory* dc;   // DCACutOnly
-    TDirectory* bc;   // BothCuts
-};
-
-static ScenDirs GetScenDirs(TFile* f, const char* etaSel)
-{
-    ScenDirs sd;
-    sd.nc = GetScenarioDir(f, "NoCuts",     etaSel);
-    sd.pt = GetScenarioDir(f, "pTCutOnly",  etaSel);
-    sd.dc = GetScenarioDir(f, "DCACutOnly", etaSel);
-    sd.bc = GetScenarioDir(f, "BothCuts",   etaSel);
-    return sd;
-}
-
-
-// ==========================================================================
-// HELPER: MakeLegend
-// --------------------------------------------------------------------------
-// Creates a 4-entry TLegend for the four scenarios.
-// The caller is responsible for placing (x1,y1,x2,y2) appropriately.
-// Returns a pointer owned by the current pad (no manual delete needed).
+/**
+ * @brief Creates a TLegend with the house style (no border, transparent fill).
+ * @param x1,y1,x2,y2  NDC corner coordinates.
+ * @return              Pointer to the new TLegend (owned by the current pad).
+ */
 // ==========================================================================
 static TLegend* MakeLegend(double x1, double y1, double x2, double y2)
 {
@@ -275,451 +200,431 @@ static TLegend* MakeLegend(double x1, double y1, double x2, double y2)
 
 
 // ==========================================================================
-// FIGURE 1: 2D (cos theta*, phi*) maps
-// --------------------------------------------------------------------------
-// Four-panel canvas: NoCuts | pTCut | DCACut | BothCuts for one eta half.
-// Drawn with COLZ (color palette map).
+/**
+ * @brief Returns the leaf TDirectory for a given scenario and eta selection
+ *        inside a family directory.
+ *
+ * Path: familyDir / scenarioName / etaSel
+ *
+ * @param familyDir    Top-level family directory (WithEtaGate or WithoutEtaGate).
+ * @param scenarioName One of "NoCuts", "pTCutOnly", "DCACutOnly", "BothCuts".
+ * @param etaSel       One of "EtaPos", "EtaNeg", "All".
+ * @return             Leaf TDirectory, or nullptr if any step fails.
+ */
 // ==========================================================================
-static void MakeFig1_2DMaps(TFile* f, TFile* fout,
-                              const char* etaSel,
-                              const char* outDir)
+static TDirectory* GetScenarioDir(TDirectory* familyDir, const char* scenarioName, const char* etaSel)
 {
-    // Names and titles for panel labels
-    const char* scenNames[4]  = {"NoCuts", "pTCutOnly", "DCACutOnly", "BothCuts"};
-    const char* panelLabels[4]= {"No cuts (bug-check)",
-                                  "p_{T} cut only (helicity effect)",
-                                  "DCA cut only (left-right effect)",
-                                  "Both cuts (combined)"};
+    TDirectory* dirScen = GetDir(familyDir, scenarioName);
+    if (!dirScen) return nullptr;
+    return GetDir(dirScen, etaSel);
+}
 
-    TCanvas* c = new TCanvas(Form("c_2Dmap_%s", etaSel),
-                              Form("2D (cos#theta*, #phi*) -- %s", etaSel),
-                              1400, 350);
-    c->Divide(4, 1, 0.002, 0.002);
 
-    // Global style: use palette "kRainBow" (ROOT 6) for readability
+// ==========================================================================
+/**
+ * @brief Bundles the four scenario leaf directories for one (family, etaSel)
+ *        combination into a single struct for convenience.
+ */
+// ==========================================================================
+struct ScenDirs {
+    TDirectory* nc = nullptr;   ///< NoCuts
+    TDirectory* pt = nullptr;   ///< pTCutOnly
+    TDirectory* dc = nullptr;   ///< DCACutOnly
+    TDirectory* bc = nullptr;   ///< BothCuts
+};
+
+static ScenDirs GetScenDirs(TDirectory* famDir, const char* etaSel)
+{
+    ScenDirs sd;
+    sd.nc = GetScenarioDir(famDir, "NoCuts",     etaSel);
+    sd.pt = GetScenarioDir(famDir, "pTCutOnly",  etaSel);
+    sd.dc = GetScenarioDir(famDir, "DCACutOnly", etaSel);
+    sd.bc = GetScenarioDir(famDir, "BothCuts",   etaSel);
+    return sd;
+}
+
+
+// ==========================================================================
+/**
+ * @brief Clones a TH1D, detaches it from any directory, and normalises its
+ *        integral to 1.  Uses an automatically unique name to avoid ROOT
+ *        name-collision warnings across multiple calls.
+ * @param h    Source histogram; nullptr is tolerated and returns nullptr.
+ * @return     Normalised clone, or nullptr.
+ */
+// ==========================================================================
+static TH1D* NormClone(TH1D* h)
+{
+    if (!h) return nullptr;
+    static int sIdx = 0;
+    TH1D* hc = static_cast<TH1D*>(h->Clone(Form("hNormClone_%d", sIdx++)));
+    hc->SetDirectory(nullptr);
+    double ig = hc->Integral();
+    if (ig > 0.) hc->Scale(1./ig);
+    return hc;
+}
+
+
+// ==========================================================================
+/**
+ * @brief Fig 1 -- 4-panel COLZ map of cos(theta*) vs phi* for each scenario.
+ *
+ * One canvas per (family, etaSel) combination.  The four panels show NoCuts,
+ * pTCutOnly, DCACutOnly, and BothCuts side by side.
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Corresponding sub-directory in the output ROOT file.
+ * @param famLabel  Short label used in canvas and object names.
+ * @param etaSel    One of "EtaPos", "EtaNeg", "All".
+ */
+// ==========================================================================
+static void MakeFig1_2DMaps(TDirectory* famDir, TDirectory* famOut,
+                              const char* famLabel, const char* etaSel)
+{
     gStyle->SetPalette(kRainBow);
     gStyle->SetNumberContours(64);
 
+    TCanvas* c = new TCanvas(Form("c_%s_2Dmap_%s", famLabel, etaSel),
+                              Form("cos#theta* vs #phi* -- %s -- %s", famLabel, etaSel),
+                              1400, 350);
+    c->Divide(4, 1, 0.002, 0.002);
+
     for (int i = 0; i < 4; ++i) {
         c->cd(i + 1);
-        gPad->SetRightMargin(0.15);  // Room for the Z-axis (COLZ)
+        gPad->SetRightMargin(0.15);
         gPad->SetLeftMargin(0.12);
-
-        TDirectory* dir = GetScenarioDir(f, scenNames[i], etaSel);
+        TDirectory* dir = GetScenarioDir(famDir, kScenNames[i], etaSel);
         if (!dir) continue;
-
         TH2D* h = static_cast<TH2D*>(SafeGet(dir, "h2d_cosTheta_phi"));
         if (!h) continue;
-
-        // Draw with color palette
         h->SetStats(0);
         h->GetXaxis()->SetTitleSize(0.055);
         h->GetYaxis()->SetTitleSize(0.055);
         h->Draw("COLZ");
-
-        // Panel label at top
-        AddLabel(0.5, 0.94, panelLabels[i], 0.042, 22);  // centered, top
+        AddLabel(0.5, 0.94, kScenLabels[i], 0.042, 22);
     }
 
-    c->cd(0);  // Return to the canvas (not a pad) for the super-title
-    AddLabel(0.5, 0.995,
-             Form("Proton emission angles in #Lambda rest frame -- %s", etaSel),
-             0.038, 22);
-
-    SaveCanvas(c, outDir, Form("fig1_2Dmap_%s", etaSel), fout);
+    c->cd(0);
+    AddLabel(0.5, 0.995, Form("Proton emission angles in #Lambda rest frame -- %s -- %s", famLabel, etaSel), 0.036, 22);
+    WriteCanvas(c, famOut);
     delete c;
 }
 
 
 // ==========================================================================
-// FIGURE 2: cos(theta*) projections, all scenarios overlaid
-// --------------------------------------------------------------------------
-// Normalised to area 1 so shape differences are visible.
-// One canvas per eta selection (EtaPos, EtaNeg, All).
+/**
+ * @brief Fig 2 -- cos(theta*) projections, all four scenarios normalised to
+ *        unit area and overlaid on one canvas.
+ *
+ * A dashed reference line marks the flat (1/N_bins) level.
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory.
+ * @param famLabel  Short label used in object names.
+ * @param etaSel    One of "EtaPos", "EtaNeg", "All".
+ */
 // ==========================================================================
-static void MakeFig2_CosTheta(TFile* f, TFile* fout,
-                                const char* etaSel,
-                                const char* outDir)
+static void MakeFig2_CosTheta(TDirectory* famDir, TDirectory* famOut,
+                                const char* famLabel, const char* etaSel)
 {
-    ScenDirs sd = GetScenDirs(f, etaSel);
+    ScenDirs sd = GetScenDirs(famDir, etaSel);
 
-    // Retrieve histograms; clone so we can normalise without modifying originals
-    TH1D* hNC = sd.nc ? static_cast<TH1D*>(
-        SafeGet(sd.nc, "h1d_cosTheta")) : nullptr;
-    TH1D* hPT = sd.pt ? static_cast<TH1D*>(
-        SafeGet(sd.pt, "h1d_cosTheta")) : nullptr;
-    TH1D* hDC = sd.dc ? static_cast<TH1D*>(
-        SafeGet(sd.dc, "h1d_cosTheta")) : nullptr;
-    TH1D* hBC = sd.bc ? static_cast<TH1D*>(
-        SafeGet(sd.bc, "h1d_cosTheta")) : nullptr;
+    TH1D* hNC = sd.nc ? static_cast<TH1D*>(SafeGet(sd.nc, "h1d_cosTheta")) : nullptr;
+    TH1D* hPT = sd.pt ? static_cast<TH1D*>(SafeGet(sd.pt, "h1d_cosTheta")) : nullptr;
+    TH1D* hDC = sd.dc ? static_cast<TH1D*>(SafeGet(sd.dc, "h1d_cosTheta")) : nullptr;
+    TH1D* hBC = sd.bc ? static_cast<TH1D*>(SafeGet(sd.bc, "h1d_cosTheta")) : nullptr;
+    if (!hNC) return;
 
-    if (!hNC) return;  // Need at least the no-cuts histogram to set axis range
+    TH1D* hNCn = NormClone(hNC);  TH1D* hPTn = NormClone(hPT);
+    TH1D* hDCn = NormClone(hDC);  TH1D* hBCn = NormClone(hBC);
 
-    // Clone and normalise each to unit area for shape comparison
-    auto NormClone = [](TH1D* h, const char* suffix) -> TH1D* {
-        if (!h) return nullptr;
-        TH1D* hc = static_cast<TH1D*>(h->Clone(Form("%s_%s", h->GetName(), suffix)));
-        hc->SetDirectory(nullptr);  // Detach from any TDirectory
-        double integral = hc->Integral();
-        if (integral > 0.) hc->Scale(1. / integral);
-        return hc;
-    };
+    SetHistStyle(hNCn, kColNoCuts, kMarkerNC);  SetHistStyle(hPTn, kColPtCut,  kMarkerPT);
+    SetHistStyle(hDCn, kColDcaCut, kMarkerDC);  SetHistStyle(hBCn, kColBoth,   kMarkerBC);
 
-    TH1D* hNCn = NormClone(hNC, "normNC");
-    TH1D* hPTn = NormClone(hPT, "normPT");
-    TH1D* hDCn = NormClone(hDC, "normDC");
-    TH1D* hBCn = NormClone(hBC, "normBC");
-
-    // Apply styles
-    SetHistStyle(hNCn, kColNoCuts, kMarkerNC);
-    SetHistStyle(hPTn, kColPtCut,  kMarkerPT);
-    SetHistStyle(hDCn, kColDcaCut, kMarkerDC);
-    SetHistStyle(hBCn, kColBoth,   kMarkerBC);
-
-    TCanvas* c = new TCanvas(Form("c_cosTheta_%s", etaSel),
-                              Form("cos(theta*) -- %s", etaSel), 700, 600);
-    c->SetLeftMargin(0.14);
-    c->SetBottomMargin(0.13);
-
-    // Determine y-axis range (10% above maximum across all histograms)
     double ymax = 0.;
-    for (TH1D* h : {hNCn, hPTn, hDCn, hBCn}) {
-        if (h && h->GetMaximum() > ymax) ymax = h->GetMaximum();
-    }
+    for (TH1D* h : {hNCn, hPTn, hDCn, hBCn}) { if (h && h->GetMaximum() > ymax) ymax = h->GetMaximum(); }
     ymax *= 1.25;
 
-    hNCn->SetTitle(Form("cos(#theta*) -- %s;cos(#theta*);Normalised counts", etaSel));
+    TCanvas* c = new TCanvas(Form("c_%s_cosTheta_%s", famLabel, etaSel), "", 700, 600);
+    c->SetLeftMargin(0.14);  c->SetBottomMargin(0.13);
+
+    hNCn->SetTitle(Form("cos(#theta*) -- %s -- %s;cos(#theta*);Normalised counts", famLabel, etaSel));
     hNCn->GetYaxis()->SetRangeUser(0., ymax);
     hNCn->Draw("HIST");
     if (hPTn) hPTn->Draw("HIST SAME");
     if (hDCn) hDCn->Draw("HIST SAME");
     if (hBCn) hBCn->Draw("HIST SAME");
 
-    // Reference line at the flat (no-cut) value = 1 / N_bins
-    // (visual guide for where suppression appears)
-    double flatVal = (hNCn->GetNbinsX() > 0) ? 1. / hNCn->GetNbinsX() : 0.;
-    TLine* flatLine = new TLine(-1., flatVal, 1., flatVal);
-    flatLine->SetLineColor(kGray + 2);
-    flatLine->SetLineStyle(2);
-    flatLine->SetLineWidth(1);
-    flatLine->Draw();
+    double flatVal = (hNCn->GetNbinsX() > 0) ? 1./hNCn->GetNbinsX() : 0.;
+    TLine* fl = new TLine(-1., flatVal, 1., flatVal);
+    fl->SetLineColor(kGray + 2);  fl->SetLineStyle(2);  fl->SetLineWidth(1);  fl->Draw();
 
-    // Legend
     TLegend* leg = MakeLegend(0.60, 0.68, 0.88, 0.88);
-    leg->AddEntry(hNCn, "No cuts (bug-check)", "l");
-    if (hPTn) leg->AddEntry(hPTn, "p_{T} cut only", "l");
-    if (hDCn) leg->AddEntry(hDCn, "DCA cut only",   "l");
-    if (hBCn) leg->AddEntry(hBCn, "Both cuts",      "l");
+    leg->AddEntry(hNCn, kScenLabels[0], "l");
+    if (hPTn) leg->AddEntry(hPTn, kScenLabels[1], "l");
+    if (hDCn) leg->AddEntry(hDCn, kScenLabels[2], "l");
+    if (hBCn) leg->AddEntry(hBCn, kScenLabels[3], "l");
     leg->Draw();
 
-    // Annotation about the expected asymmetry direction
-    AddLabel(0.16, 0.87,
-             "Expect: suppression near cos#theta* ~ +1 after p_{T} cut",
-             0.033, 12);
-    AddLabel(0.16, 0.82,
-             "(proton emitted backward in #Lambda frame is easier to reconstruct)",
-             0.028, 12);
-
-    SaveCanvas(c, outDir, Form("fig2_cosTheta_%s", etaSel), fout);
-    // Clean up clones
+    WriteCanvas(c, famOut);
     delete hNCn; delete hPTn; delete hDCn; delete hBCn;
     delete c;
 }
 
 
 // ==========================================================================
-// FIGURE 3: phi* projections, all scenarios overlaid
-// --------------------------------------------------------------------------
-// A fit to A*(1 + B*sin(phi*)) is drawn on the DCACutOnly histogram
-// to measure the left-right modulation amplitude.
+/**
+ * @brief Fig 3 -- phi* projections, all four scenarios normalised to unit
+ *        area and overlaid on one canvas.
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory.
+ * @param famLabel  Short label used in object names.
+ * @param etaSel    One of "EtaPos", "EtaNeg", "All".
+ */
 // ==========================================================================
-static void MakeFig3_PhiStar(TFile* f, TFile* fout,
-                               const char* etaSel,
-                               const char* outDir)
+static void MakeFig3_PhiStar(TDirectory* famDir, TDirectory* famOut,
+                               const char* famLabel, const char* etaSel)
 {
-    ScenDirs sd = GetScenDirs(f, etaSel);
+    ScenDirs sd = GetScenDirs(famDir, etaSel);
 
     TH1D* hNC = sd.nc ? static_cast<TH1D*>(SafeGet(sd.nc, "h1d_phi")) : nullptr;
     TH1D* hPT = sd.pt ? static_cast<TH1D*>(SafeGet(sd.pt, "h1d_phi")) : nullptr;
     TH1D* hDC = sd.dc ? static_cast<TH1D*>(SafeGet(sd.dc, "h1d_phi")) : nullptr;
     TH1D* hBC = sd.bc ? static_cast<TH1D*>(SafeGet(sd.bc, "h1d_phi")) : nullptr;
-
     if (!hNC) return;
 
-    // Clone and normalise
-    auto NormClone = [](TH1D* h, const char* suf) -> TH1D* {
-        if (!h) return nullptr;
-        TH1D* hc = static_cast<TH1D*>(h->Clone(Form("%s_%s", h->GetName(), suf)));
-        hc->SetDirectory(nullptr);
-        double ig = hc->Integral();
-        if (ig > 0.) hc->Scale(1. / ig);
-        return hc;
-    };
+    TH1D* hNCn = NormClone(hNC);  TH1D* hPTn = NormClone(hPT);
+    TH1D* hDCn = NormClone(hDC);  TH1D* hBCn = NormClone(hBC);
 
-    TH1D* hNCn = NormClone(hNC, "normNC");
-    TH1D* hPTn = NormClone(hPT, "normPT");
-    TH1D* hDCn = NormClone(hDC, "normDC");
-    TH1D* hBCn = NormClone(hBC, "normBC");
-
-    SetHistStyle(hNCn, kColNoCuts, kMarkerNC);
-    SetHistStyle(hPTn, kColPtCut,  kMarkerPT);
-    SetHistStyle(hDCn, kColDcaCut, kMarkerDC);
-    SetHistStyle(hBCn, kColBoth,   kMarkerBC);
-
-    TCanvas* c = new TCanvas(Form("c_phiStar_%s", etaSel),
-                              Form("phi* -- %s", etaSel), 700, 600);
-    c->SetLeftMargin(0.14);
-    c->SetBottomMargin(0.13);
+    SetHistStyle(hNCn, kColNoCuts, kMarkerNC);  SetHistStyle(hPTn, kColPtCut,  kMarkerPT);
+    SetHistStyle(hDCn, kColDcaCut, kMarkerDC);  SetHistStyle(hBCn, kColBoth,   kMarkerBC);
 
     double ymax = 0.;
-    for (TH1D* h : {hNCn, hPTn, hDCn, hBCn}) {
-        if (h && h->GetMaximum() > ymax) ymax = h->GetMaximum();
-    }
+    for (TH1D* h : {hNCn, hPTn, hDCn, hBCn}) { if (h && h->GetMaximum() > ymax) ymax = h->GetMaximum(); }
     ymax *= 1.35;
 
-    hNCn->SetTitle(Form("#phi* -- %s;#phi* [rad];Normalised counts", etaSel));
+    TCanvas* c = new TCanvas(Form("c_%s_phiStar_%s", famLabel, etaSel), "", 700, 600);
+    c->SetLeftMargin(0.14);  c->SetBottomMargin(0.13);
+
+    hNCn->SetTitle(Form("#phi* -- %s -- %s;#phi* [rad];Normalised counts", famLabel, etaSel));
     hNCn->GetYaxis()->SetRangeUser(0., ymax);
     hNCn->Draw("HIST");
     if (hPTn) hPTn->Draw("HIST SAME");
     if (hDCn) hDCn->Draw("HIST SAME");
     if (hBCn) hBCn->Draw("HIST SAME");
 
-    // --- Fit sin modulation to the DCA-cut histogram ---
-    // Model: f(phi) = A * (1 + B * sin(phi))
-    // where A = 1/N_bins (flat component) and B is the asymmetry amplitude.
-    // This is the left-right asymmetry expected from the DCA-magnetic-field effect.
-    if (hDCn && hDCn->Integral() > 0.) {
-        // The normalised histogram has bin width = 2pi/N_bins, so the
-        // flat value per bin is 1/N_bins.  We fit amplitude * (1 + B*sin(phi)).
-        double nbins  = hDCn->GetNbinsX();
-        double flatV  = 1. / nbins;
-
-        // Fit function: p0 * (1 + p1 * sin(x + p2))
-        // p0 ~ flatV, p1 ~ asymmetry magnitude, p2 ~ phase offset
-        TF1* fSin = new TF1("fSinDCA",
-                             "[0] * (1. + [1]*TMath::Sin(x + [2]))",
-                             -TMath::Pi(), TMath::Pi());
-        fSin->SetParameters(flatV, 0.1, 0.);    // Initial guesses
-        fSin->SetParLimits(0, 0.5*flatV, 2.*flatV);   // A must be positive
-        fSin->SetParLimits(1, -1., 1.);          // |B| <= 1
-        fSin->SetLineColor(kBlue - 3);
-        fSin->SetLineWidth(2);
-        fSin->SetLineStyle(2);
-        hDCn->Fit(fSin, "RQ");  // "Q" = quiet (no printout per fit step)
-        fSin->Draw("SAME");
-
-        // Report fit result
-        printf("  Fig 3 [%s] DCA-cut sin-fit: A=%.4f, B=%.4f +/- %.4f, phase=%.4f\n",
-               etaSel,
-               fSin->GetParameter(0),
-               fSin->GetParameter(1), fSin->GetParError(1),
-               fSin->GetParameter(2));
-    }
-
-    // Legend
     TLegend* leg = MakeLegend(0.13, 0.73, 0.55, 0.90);
-    leg->AddEntry(hNCn, "No cuts (expected: flat)",    "l");
-    if (hPTn) leg->AddEntry(hPTn, "p_{T} cut (expected: flat)",   "l");
-    if (hDCn) leg->AddEntry(hDCn, "DCA cut (expected: sin modulation)", "l");
-    if (hBCn) leg->AddEntry(hBCn, "Both cuts",                          "l");
+    leg->AddEntry(hNCn, kScenLabels[0], "l");
+    if (hPTn) leg->AddEntry(hPTn, kScenLabels[1], "l");
+    if (hDCn) leg->AddEntry(hDCn, kScenLabels[2], "l");
+    if (hBCn) leg->AddEntry(hBCn, kScenLabels[3], "l");
     leg->Draw();
 
-    AddLabel(0.16, 0.67,
-             "DCA cut -> sin(#phi*) modulation = left-right asymmetry",
-             0.033, 12);
-    AddLabel(0.16, 0.62,
-             "Dashed blue line: A(1 + B sin(#phi* + #delta)) fit to DCA-cut",
-             0.028, 12);
-
-    SaveCanvas(c, outDir, Form("fig3_phiStar_%s", etaSel), fout);
+    WriteCanvas(c, famOut);
     delete hNCn; delete hPTn; delete hDCn; delete hBCn;
     delete c;
 }
 
 
 // ==========================================================================
-// FIGURE 4: <R_proxy> vs Lambda eta -- the eta antisymmetry plot
-// --------------------------------------------------------------------------
-// This is the single most important plot for understanding the O-O data.
-// The DCA-cut curve should be approximately antisymmetric: positive at
-// eta > 0, negative at eta < 0 (or vice versa, depending on B-field sign).
-// The pT-cut curve should be approximately zero everywhere.
+/**
+ * @brief Fig 4 -- 2-panel ring observable proxy figure.
+ *
+ * Left panel: distributions of R_proxy for all four scenarios ("All" eta),
+ * normalised to unit area.  Right panel: profile <R_proxy> vs Lambda eta for
+ * all four scenarios.
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory.
+ * @param famLabel  Short label used in object names.
+ */
 // ==========================================================================
-static void MakeFig4_RingVsEta(TFile* f, TFile* fout, const char* outDir)
+static void MakeFig4_RingProxy(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
 {
-    // For this figure we use the "All" (combined eta) directory, since
-    // pRingProxyVsEta spans both halves on one profile.
-    ScenDirs sd = GetScenDirs(f, "All");
-
-    TProfile* pNC = sd.nc ? static_cast<TProfile*>(
-        SafeGet(sd.nc, "pRingProxyVsEta")) : nullptr;
-    TProfile* pPT = sd.pt ? static_cast<TProfile*>(
-        SafeGet(sd.pt, "pRingProxyVsEta")) : nullptr;
-    TProfile* pDC = sd.dc ? static_cast<TProfile*>(
-        SafeGet(sd.dc, "pRingProxyVsEta")) : nullptr;
-    TProfile* pBC = sd.bc ? static_cast<TProfile*>(
-        SafeGet(sd.bc, "pRingProxyVsEta")) : nullptr;
-
-    if (!pNC) return;
-
-    SetHistStyle(pNC, kColNoCuts, kMarkerNC);
-    SetHistStyle(pPT, kColPtCut,  kMarkerPT);
-    SetHistStyle(pDC, kColDcaCut, kMarkerDC);
-    SetHistStyle(pBC, kColBoth,   kMarkerBC);
-
-    TCanvas* c = new TCanvas("c_RingVsEta",
-                              "<R_{proxy}> vs #Lambda #eta", 750, 600);
-    c->SetLeftMargin(0.14);
-    c->SetBottomMargin(0.13);
-
-    // Find symmetric y-axis range
-    double ymax = 0.;
-    for (TProfile* p : {pNC, pPT, pDC, pBC}) {
-        if (!p) continue;
-        for (int ib = 1; ib <= p->GetNbinsX(); ++ib) {
-            double val = std::fabs(p->GetBinContent(ib) +
-                                    p->GetBinError(ib));
-            if (val > ymax) ymax = val;
-        }
+    // --- Retrieve distributions (h1d_ringProxy) from "All" directories ---
+    TH1D* hDistNC = nullptr;  TH1D* hDistPT = nullptr;
+    TH1D* hDistDC = nullptr;  TH1D* hDistBC = nullptr;
+    {
+        TDirectory* dNC = GetScenarioDir(famDir, "NoCuts",     "All");
+        TDirectory* dPT = GetScenarioDir(famDir, "pTCutOnly",  "All");
+        TDirectory* dDC = GetScenarioDir(famDir, "DCACutOnly", "All");
+        TDirectory* dBC = GetScenarioDir(famDir, "BothCuts",   "All");
+        if (dNC) hDistNC = static_cast<TH1D*>(SafeGet(dNC, "h1d_ringProxy"));
+        if (dPT) hDistPT = static_cast<TH1D*>(SafeGet(dPT, "h1d_ringProxy"));
+        if (dDC) hDistDC = static_cast<TH1D*>(SafeGet(dDC, "h1d_ringProxy"));
+        if (dBC) hDistBC = static_cast<TH1D*>(SafeGet(dBC, "h1d_ringProxy"));
     }
-    ymax = (ymax < 1.e-6) ? 0.05 : ymax * 1.35;
 
-    pNC->SetTitle("<R_{proxy}> vs #Lambda pseudorapidity;"
-                  "#eta_{#Lambda};<R_{proxy}>");
-    pNC->GetYaxis()->SetRangeUser(-ymax, ymax);
-    pNC->Draw("EP");
-    if (pPT) pPT->Draw("EP SAME");
-    if (pDC) pDC->Draw("EP SAME");
-    if (pBC) pBC->Draw("EP SAME");
+    // --- Retrieve <R_proxy> vs eta profiles from "All" ---
+    ScenDirs sd = GetScenDirs(famDir, "All");
+    TProfile* pNC = sd.nc ? static_cast<TProfile*>(SafeGet(sd.nc, "pRingProxyVsEta")) : nullptr;
+    TProfile* pPT = sd.pt ? static_cast<TProfile*>(SafeGet(sd.pt, "pRingProxyVsEta")) : nullptr;
+    TProfile* pDC = sd.dc ? static_cast<TProfile*>(SafeGet(sd.dc, "pRingProxyVsEta")) : nullptr;
+    TProfile* pBC = sd.bc ? static_cast<TProfile*>(SafeGet(sd.bc, "pRingProxyVsEta")) : nullptr;
+    if (!pNC && !hDistNC) return;
 
-    // Zero reference line
-    TLine* zeroline = new TLine(-0.9, 0., 0.9, 0.);
-    zeroline->SetLineColor(kGray + 2);
-    zeroline->SetLineStyle(2);
-    zeroline->SetLineWidth(1);
-    zeroline->Draw();
+    // Clone and normalise distributions
+    TH1D* hDnc = NormClone(hDistNC);  TH1D* hDpt = NormClone(hDistPT);
+    TH1D* hDdc = NormClone(hDistDC);  TH1D* hDbc = NormClone(hDistBC);
+    SetHistStyle(hDnc, kColNoCuts, kMarkerNC);  SetHistStyle(hDpt, kColPtCut,  kMarkerPT);
+    SetHistStyle(hDdc, kColDcaCut, kMarkerDC);  SetHistStyle(hDbc, kColBoth,   kMarkerBC);
 
-    // Vertical line at eta = 0 to highlight the antisymmetry axis
-    TLine* etazeroline = new TLine(0., -ymax, 0., ymax);
-    etazeroline->SetLineColor(kGray + 1);
-    etazeroline->SetLineStyle(3);
-    etazeroline->SetLineWidth(1);
-    etazeroline->Draw();
+    SetHistStyle(pNC, kColNoCuts, kMarkerNC);   SetHistStyle(pPT, kColPtCut,  kMarkerPT);
+    SetHistStyle(pDC, kColDcaCut, kMarkerDC);   SetHistStyle(pBC, kColBoth,   kMarkerBC);
 
-    TLegend* leg = MakeLegend(0.15, 0.72, 0.50, 0.89);
-    leg->AddEntry(pNC, "No cuts",      "ep");
-    if (pPT) leg->AddEntry(pPT, "p_{T} cut only", "ep");
-    if (pDC) leg->AddEntry(pDC, "DCA cut only",   "ep");
-    if (pBC) leg->AddEntry(pBC, "Both cuts",       "ep");
-    leg->Draw();
+    TCanvas* c = new TCanvas(Form("c_%s_ringProxy", famLabel), "", 1200, 550);
+    c->Divide(2, 1, 0.004, 0.002);
 
-    AddLabel(0.16, 0.67,
-             "Key: DCA-cut curve should be ANTISYMMETRIC in #eta",
-             0.033, 12);
-    AddLabel(0.16, 0.62,
-             "(sign flip at #eta = 0 mirrors the fake signal in O-O data)",
-             0.028, 12);
+    // ---- Left panel: R_proxy distribution ----
+    c->cd(1);
+    gPad->SetLeftMargin(0.14);  gPad->SetBottomMargin(0.13);
+    {
+        double ymax = 0.;
+        for (TH1D* h : {hDnc, hDpt, hDdc, hDbc}) { if (h && h->GetMaximum() > ymax) ymax = h->GetMaximum(); }
+        ymax *= 1.3;
+        if (hDnc) {
+            hDnc->SetTitle(Form("R_{proxy} distribution -- %s;R_{proxy};Normalised counts", famLabel));
+            hDnc->GetYaxis()->SetRangeUser(0., ymax);
+            hDnc->Draw("HIST");
+        }
+        if (hDpt) hDpt->Draw("HIST SAME");
+        if (hDdc) hDdc->Draw("HIST SAME");
+        if (hDbc) hDbc->Draw("HIST SAME");
+        TLine* zl = new TLine(0., 0., 0., ymax);
+        zl->SetLineColor(kGray + 2);  zl->SetLineStyle(3);  zl->Draw();
+        TLegend* leg = MakeLegend(0.15, 0.70, 0.60, 0.88);
+        if (hDnc) leg->AddEntry(hDnc, kScenLabels[0], "l");
+        if (hDpt) leg->AddEntry(hDpt, kScenLabels[1], "l");
+        if (hDdc) leg->AddEntry(hDdc, kScenLabels[2], "l");
+        if (hDbc) leg->AddEntry(hDbc, kScenLabels[3], "l");
+        leg->Draw();
+    }
 
-    SaveCanvas(c, outDir, "fig4_ringProxyVsEta", fout);
+    // ---- Right panel: <R_proxy> vs eta ----
+    c->cd(2);
+    gPad->SetLeftMargin(0.14);  gPad->SetBottomMargin(0.13);
+    {
+        double ymax = 0.;
+        for (TProfile* p : {pNC, pPT, pDC, pBC}) {
+            if (!p) continue;
+            for (int ib = 1; ib <= p->GetNbinsX(); ++ib) {
+                double v = std::fabs(p->GetBinContent(ib)) + p->GetBinError(ib);
+                if (v > ymax) ymax = v;
+            }
+        }
+        ymax = (ymax < 1.e-6) ? 0.05 : ymax * 1.35;
+        if (pNC) {
+            pNC->SetTitle(Form("<R_{proxy}> vs #eta_{#Lambda} -- %s;#eta_{#Lambda};<R_{proxy}>", famLabel));
+            pNC->GetYaxis()->SetRangeUser(-ymax, ymax);
+            pNC->Draw("EP");
+        }
+        if (pPT) pPT->Draw("EP SAME");
+        if (pDC) pDC->Draw("EP SAME");
+        if (pBC) pBC->Draw("EP SAME");
+        double etaMax = pNC ? pNC->GetXaxis()->GetXmax() : 0.9;
+        TLine* zl  = new TLine(-etaMax, 0., etaMax, 0.);
+        zl->SetLineColor(kGray + 2);   zl->SetLineStyle(2);  zl->Draw();
+        TLine* eta0 = new TLine(0., -ymax, 0., ymax);
+        eta0->SetLineColor(kGray + 1); eta0->SetLineStyle(3); eta0->Draw();
+        TLegend* leg = MakeLegend(0.15, 0.72, 0.50, 0.89);
+        if (pNC) leg->AddEntry(pNC, kScenLabels[0], "ep");
+        if (pPT) leg->AddEntry(pPT, kScenLabels[1], "ep");
+        if (pDC) leg->AddEntry(pDC, kScenLabels[2], "ep");
+        if (pBC) leg->AddEntry(pBC, kScenLabels[3], "ep");
+        leg->Draw();
+    }
+
+    c->cd(0);
+    AddLabel(0.5, 0.995, Form("Ring observable proxy -- %s", famLabel), 0.036, 22);
+    WriteCanvas(c, famOut);
+    delete hDnc; delete hDpt; delete hDdc; delete hDbc;
     delete c;
 }
 
 
 // ==========================================================================
-// FIGURE 5: <R_proxy> vs Lambda pT
+/**
+ * @brief Fig 5 -- <R_proxy> vs Lambda pT for all four scenarios.
+ *
+ * Uses the "All" eta combined TProfile from each scenario.
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory.
+ * @param famLabel  Short label used in object names.
+ */
 // ==========================================================================
-static void MakeFig5_RingVsPt(TFile* f, TFile* fout, const char* outDir)
+static void MakeFig5_RingVsPt(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
 {
-    ScenDirs sd = GetScenDirs(f, "All");
-
-    TProfile* pNC = sd.nc ? static_cast<TProfile*>(
-        SafeGet(sd.nc, "pRingProxyVsPt")) : nullptr;
-    TProfile* pPT = sd.pt ? static_cast<TProfile*>(
-        SafeGet(sd.pt, "pRingProxyVsPt")) : nullptr;
-    TProfile* pDC = sd.dc ? static_cast<TProfile*>(
-        SafeGet(sd.dc, "pRingProxyVsPt")) : nullptr;
-    TProfile* pBC = sd.bc ? static_cast<TProfile*>(
-        SafeGet(sd.bc, "pRingProxyVsPt")) : nullptr;
-
+    ScenDirs sd = GetScenDirs(famDir, "All");
+    TProfile* pNC = sd.nc ? static_cast<TProfile*>(SafeGet(sd.nc, "pRingProxyVsPt")) : nullptr;
+    TProfile* pPT = sd.pt ? static_cast<TProfile*>(SafeGet(sd.pt, "pRingProxyVsPt")) : nullptr;
+    TProfile* pDC = sd.dc ? static_cast<TProfile*>(SafeGet(sd.dc, "pRingProxyVsPt")) : nullptr;
+    TProfile* pBC = sd.bc ? static_cast<TProfile*>(SafeGet(sd.bc, "pRingProxyVsPt")) : nullptr;
     if (!pNC) return;
 
-    SetHistStyle(pNC, kColNoCuts, kMarkerNC);
-    SetHistStyle(pPT, kColPtCut,  kMarkerPT);
-    SetHistStyle(pDC, kColDcaCut, kMarkerDC);
-    SetHistStyle(pBC, kColBoth,   kMarkerBC);
+    SetHistStyle(pNC, kColNoCuts, kMarkerNC);  SetHistStyle(pPT, kColPtCut,  kMarkerPT);
+    SetHistStyle(pDC, kColDcaCut, kMarkerDC);  SetHistStyle(pBC, kColBoth,   kMarkerBC);
 
     double ymax = 0.;
     for (TProfile* p : {pNC, pPT, pDC, pBC}) {
         if (!p) continue;
         for (int ib = 1; ib <= p->GetNbinsX(); ++ib) {
-            double v = std::fabs(p->GetBinContent(ib) + p->GetBinError(ib));
+            double v = std::fabs(p->GetBinContent(ib)) + p->GetBinError(ib);
             if (v > ymax) ymax = v;
         }
     }
     ymax = (ymax < 1.e-6) ? 0.05 : ymax * 1.35;
 
-    TCanvas* c = new TCanvas("c_RingVsPt",
-                              "<R_{proxy}> vs #Lambda p_{T}", 750, 600);
-    c->SetLeftMargin(0.14);
-    c->SetBottomMargin(0.13);
+    TCanvas* c = new TCanvas(Form("c_%s_ringVsPt", famLabel), "", 750, 600);
+    c->SetLeftMargin(0.14);  c->SetBottomMargin(0.13);
 
-    pNC->SetTitle("<R_{proxy}> vs #Lambda p_{T};"
-                  "p_{T}^{#Lambda} [GeV/c];<R_{proxy}>");
+    pNC->SetTitle(Form("<R_{proxy}> vs #Lambda p_{T} -- %s;p_{T}^{#Lambda} [GeV/c];<R_{proxy}>", famLabel));
     pNC->GetYaxis()->SetRangeUser(-ymax, ymax);
     pNC->Draw("EP");
     if (pPT) pPT->Draw("EP SAME");
     if (pDC) pDC->Draw("EP SAME");
     if (pBC) pBC->Draw("EP SAME");
 
-    TLine* zeroline = new TLine(0., 0., 5., 0.);
-    zeroline->SetLineColor(kGray + 2);
-    zeroline->SetLineStyle(2);
-    zeroline->Draw();
+    double ptMax = pNC->GetXaxis()->GetXmax();
+    TLine* zl = new TLine(0., 0., ptMax, 0.);
+    zl->SetLineColor(kGray + 2);  zl->SetLineStyle(2);  zl->Draw();
 
     TLegend* leg = MakeLegend(0.55, 0.72, 0.88, 0.89);
-    leg->AddEntry(pNC, "No cuts",      "ep");
-    if (pPT) leg->AddEntry(pPT, "p_{T} cut only", "ep");
-    if (pDC) leg->AddEntry(pDC, "DCA cut only",   "ep");
-    if (pBC) leg->AddEntry(pBC, "Both cuts",       "ep");
+    leg->AddEntry(pNC, kScenLabels[0], "ep");
+    if (pPT) leg->AddEntry(pPT, kScenLabels[1], "ep");
+    if (pDC) leg->AddEntry(pDC, kScenLabels[2], "ep");
+    if (pBC) leg->AddEntry(pBC, kScenLabels[3], "ep");
     leg->Draw();
 
-    AddLabel(0.16, 0.22,
-             "Expect: DCA-cut signal may have p_{T} dependence from helix geometry",
-             0.030, 12);
-
-    SaveCanvas(c, outDir, "fig5_ringProxyVsPt", fout);
+    WriteCanvas(c, famOut);
     delete c;
 }
 
 
 // ==========================================================================
-// FIGURE 6: Integrated <R_proxy> bar-chart per scenario
-// --------------------------------------------------------------------------
-// Uses the single-bin TProfile pRingProxy from each scenario+eta directory.
-// Three panels side by side: EtaPos | EtaNeg | All.
+/**
+ * @brief Fig 6 -- integrated <R_proxy> bar chart, one panel per eta selection.
+ *
+ * Three panels side by side: EtaPos | EtaNeg | All.  Each panel shows the
+ * single-bin mean <R_proxy> from the pRingProxy TProfile for all four
+ * scenarios, drawn as a central-value bar with error caps.
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory.
+ * @param famLabel  Short label used in object names.
+ */
 // ==========================================================================
-static void MakeFig6_IntegratedRing(TFile* f, TFile* fout, const char* outDir)
+static void MakeFig6_IntegratedRing(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
 {
-    // We will manually build a TH1D with one bin per scenario
-    // to represent the bar chart, since ROOT's bar chart requires TH1.
-    // Scenarios: NoCuts, pTCutOnly, DCACutOnly, BothCuts (4 entries)
-    // Three versions: EtaPos, EtaNeg, All
+    const char* etaSels[3]   = {"EtaPos", "EtaNeg", "All"};
+    const char* etaLabels[3] = {"#eta_{#Lambda} > 0", "#eta_{#Lambda} < 0", "All #eta"};
 
-    const char* scenNames[4]  = {"NoCuts", "pTCutOnly", "DCACutOnly", "BothCuts"};
-    const char* etaSels[3]    = {"EtaPos", "EtaNeg", "All"};
-    const char* etaLabels[3]  = {"#eta > 0", "#eta < 0", "All #eta"};
-    const int   scenColors[4] = {kColNoCuts, kColPtCut, kColDcaCut, kColBoth};
-    const char* scenLabels[4] = {"No cuts", "p_{T} cut", "DCA cut", "Both"};
-
-    TCanvas* c = new TCanvas("c_intRing",
-                              "Integrated <R_{proxy}>", 1050, 500);
-    c->Divide(3, 1, 0.004, 0.002);
-
-    // Find global y-range across all panels for consistent axes
+    // Find the global y range across all panels for consistent axes
     double globalMax = 0.;
     for (int ie = 0; ie < 3; ++ie) {
         for (int is = 0; is < 4; ++is) {
-            TDirectory* dir = GetScenarioDir(f, scenNames[is], etaSels[ie]);
+            TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
             if (!dir) continue;
             TProfile* p = static_cast<TProfile*>(SafeGet(dir, "pRingProxy"));
             if (!p) continue;
@@ -729,243 +634,359 @@ static void MakeFig6_IntegratedRing(TFile* f, TFile* fout, const char* outDir)
     }
     globalMax = (globalMax < 1.e-6) ? 0.05 : globalMax * 1.5;
 
+    TCanvas* c = new TCanvas(Form("c_%s_intRing", famLabel), "", 1050, 500);
+    c->Divide(3, 1, 0.004, 0.002);
+
     for (int ie = 0; ie < 3; ++ie) {
         c->cd(ie + 1);
-        gPad->SetLeftMargin(0.18);
-        gPad->SetBottomMargin(0.16);
+        gPad->SetLeftMargin(0.18);  gPad->SetBottomMargin(0.16);
 
-        // Build a TH1D of width 1 per scenario (bin label on x-axis)
-        TH1D* hBar = new TH1D(Form("hBar_%s", etaSels[ie]),
-                               Form("<R_{proxy}> -- %s;"
-                                    "Scenario;<R_{proxy}>", etaLabels[ie]),
+        TH1D* hBar = new TH1D(Form("hBar_%s_%s", famLabel, etaSels[ie]),
+                               Form("<R_{proxy}> -- %s;Scenario;<R_{proxy}>", etaLabels[ie]),
                                4, 0., 4.);
         hBar->GetYaxis()->SetRangeUser(-globalMax, globalMax);
         hBar->SetStats(0);
+        hBar->Draw();
 
-        // Draw individual points with error bars using a temporary holder
-        // per scenario, overlaid on the same pad
-        hBar->Draw();  // Draws axes; bars added below via individual draws
-
-        // Zero reference line
         TLine* zl = new TLine(0., 0., 4., 0.);
-        zl->SetLineColor(kGray + 2);
-        zl->SetLineStyle(2);
-        zl->SetLineWidth(2);
-        zl->Draw();
+        zl->SetLineColor(kGray + 2);  zl->SetLineStyle(2);  zl->SetLineWidth(2);  zl->Draw();
 
-        // For each scenario, place a marker at the bin center
         for (int is = 0; is < 4; ++is) {
-            TDirectory* dir = GetScenarioDir(f, scenNames[is], etaSels[ie]);
+            TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
             if (!dir) continue;
             TProfile* p = static_cast<TProfile*>(SafeGet(dir, "pRingProxy"));
             if (!p) continue;
-
             double val = p->GetBinContent(1);
             double err = p->GetBinError(1);
-
-            // Draw as a vertical error bar + horizontal tick at the center
-            // x position = is + 0.5 (center of bin is+1 in the hBar axis)
-            double xc = is + 0.5;
+            double xc  = is + 0.5;
+            double cW  = 0.12;
+            // Central value bar
+            TLine* cent = new TLine(xc - cW, val, xc + cW, val);
+            cent->SetLineColor(kScenColors[is]);  cent->SetLineWidth(4);  cent->Draw();
+            // Vertical error bar
             TLine* barV = new TLine(xc, val - err, xc, val + err);
-            barV->SetLineColor(scenColors[is]);
-            barV->SetLineWidth(3);
-            barV->Draw();
-
-            // Horizontal caps on the error bar
-            double capW = 0.12;
-            TLine* capU = new TLine(xc - capW, val + err,
-                                     xc + capW, val + err);
-            TLine* capL = new TLine(xc - capW, val - err,
-                                     xc + capW, val - err);
-            capU->SetLineColor(scenColors[is]);
-            capU->SetLineWidth(2);
-            capL->SetLineColor(scenColors[is]);
-            capL->SetLineWidth(2);
-            capU->Draw(); capL->Draw();
-
-            // Central value marker (filled circle)
-            TLine* cent = new TLine(xc - capW, val, xc + capW, val);
-            cent->SetLineColor(scenColors[is]);
-            cent->SetLineWidth(4);
-            cent->Draw();
-
-            // x-axis label below the tick
-            hBar->GetXaxis()->SetBinLabel(is + 1, scenLabels[is]);
+            barV->SetLineColor(kScenColors[is]);  barV->SetLineWidth(2);  barV->Draw();
+            // Error caps
+            TLine* capU = new TLine(xc - cW, val + err, xc + cW, val + err);
+            TLine* capL = new TLine(xc - cW, val - err, xc + cW, val - err);
+            capU->SetLineColor(kScenColors[is]);  capU->SetLineWidth(2);  capU->Draw();
+            capL->SetLineColor(kScenColors[is]);  capL->SetLineWidth(2);  capL->Draw();
+            hBar->GetXaxis()->SetBinLabel(is + 1, kScenLabels[is]);
         }
-        hBar->GetXaxis()->SetLabelSize(0.06);
-
+        hBar->GetXaxis()->SetLabelSize(0.055);
         AddLabel(0.5, 0.96, etaLabels[ie], 0.045, 22);
     }
 
     c->cd(0);
-    AddLabel(0.5, 0.995,
-             "Integrated <R_{proxy}> per cut scenario and #eta selection",
-             0.038, 22);
-
-    SaveCanvas(c, outDir, "fig6_integratedRingProxy", fout);
+    AddLabel(0.5, 0.995, Form("Integrated <R_{proxy}> per scenario -- %s", famLabel), 0.036, 22);
+    WriteCanvas(c, famOut);
     delete c;
 }
 
 
 // ==========================================================================
-// FIGURE 7: Daughter pT distributions
-// --------------------------------------------------------------------------
-// Shows proton and pion pT before any cut and after the pT cut.
-// Two-panel canvas: proton (left), pion (right).
-// The threshold line shows where the minimum pT cut falls.
+/**
+ * @brief Fig 7 -- daughter pT distributions before and after the pT cut.
+ *
+ * Two panels: proton (left) and pion (right).  Pre-cut spectra come from the
+ * top-level Kinematics directory; post-cut spectra from pTCutOnly/All inside
+ * the family directory.  Both are normalised to the pre-cut integral.
+ *
+ * @param f         Input ROOT file (for Kinematics).
+ * @param famDir    Family directory (for post-cut scenario).
+ * @param famOut    Output sub-directory.
+ * @param famLabel  Short label used in object names.
+ */
 // ==========================================================================
-static void MakeFig7_DaughterPt(TFile* f, TFile* fout, const char* outDir)
+static void MakeFig7_DaughterPt(TFile* f, TDirectory* famDir,
+                                  TDirectory* famOut, const char* famLabel)
 {
-    // Pre-cut histograms are in the Kinematics directory
-    TDirectory* dirKin = GetDir(f, "Kinematics");
+    TDirectory* dirKin   = GetDir(f, "Kinematics");
+    TDirectory* dirPtAll = GetScenarioDir(famDir, "pTCutOnly", "All");
     if (!dirKin) return;
 
-    // Post-pT-cut histograms from the NoCuts/All and pTCutOnly/All dirs
-    // For DCA-only-cut scenario, pT is NOT cut, so we read from pTCutOnly
-    // which already has pT cut applied.
-    TDirectory* dirPT_All = GetScenarioDir(f, "pTCutOnly", "All");
-
-    TH1D* hKin_p  = static_cast<TH1D*>(SafeGet(dirKin, "hKin_pT_proton"));
-    TH1D* hKin_pi = static_cast<TH1D*>(SafeGet(dirKin, "hKin_pT_pion"));
-    TH1D* hCut_p  = dirPT_All ?
-        static_cast<TH1D*>(SafeGet(dirPT_All, "h1d_pT_proton")) : nullptr;
-    TH1D* hCut_pi = dirPT_All ?
-        static_cast<TH1D*>(SafeGet(dirPT_All, "h1d_pT_pion")) : nullptr;
-
+    TH1D* hKin_p  = static_cast<TH1D*>(SafeGet(dirKin,   "hKin_pT_proton"));
+    TH1D* hKin_pi = static_cast<TH1D*>(SafeGet(dirKin,   "hKin_pT_pion"));
+    TH1D* hCut_p  = dirPtAll ? static_cast<TH1D*>(SafeGet(dirPtAll, "h1d_pT_proton")) : nullptr;
+    TH1D* hCut_pi = dirPtAll ? static_cast<TH1D*>(SafeGet(dirPtAll, "h1d_pT_pion"))   : nullptr;
     if (!hKin_p || !hKin_pi) return;
 
-    TCanvas* c = new TCanvas("c_daughterPt",
-                              "Daughter p_{T} distributions", 1000, 500);
+    TCanvas* c = new TCanvas(Form("c_%s_daughterPt", famLabel), "", 1000, 500);
     c->Divide(2, 1, 0.004, 0.002);
 
     for (int id = 0; id < 2; ++id) {
         c->cd(id + 1);
         gPad->SetLogy();
-        gPad->SetLeftMargin(0.14);
-        gPad->SetBottomMargin(0.13);
-
-        TH1D* hPre = (id == 0) ? hKin_p  : hKin_pi;
-        TH1D* hPost = (id == 0) ? hCut_p : hCut_pi;
-
-        // Clone, normalise pre-cut to 1, scale post-cut by same factor
-        TH1D* hPreN  = static_cast<TH1D*>(hPre->Clone(Form("hPreN_%d",  id)));
-        TH1D* hPostN = hPost ?
-            static_cast<TH1D*>(hPost->Clone(Form("hPostN_%d", id))) : nullptr;
-        hPreN->SetDirectory(nullptr);
-        if (hPostN) hPostN->SetDirectory(nullptr);
-
-        double norm = hPreN->Integral();
-        if (norm > 0.) {
-            hPreN->Scale(1. / norm);
-            if (hPostN) hPostN->Scale(1. / norm);
-        }
-
-        SetHistStyle(hPreN, kBlack, kMarkerNC);
-        if (hPostN) SetHistStyle(hPostN, kRed + 1, kMarkerPT);
-
-        const char* pname = (id == 0) ? "Proton" : "Pion";
-        hPreN->SetTitle(Form("%s p_{T};"
-                             "p_{T}^{%s} [GeV/c];Normalised counts",
-                             pname, pname));
-        hPreN->GetYaxis()->SetRangeUser(1.e-5, 1.0);
-        hPreN->Draw("HIST");
-        if (hPostN) hPostN->Draw("HIST SAME");
-
-        // Draw vertical line at the cut threshold
-        // We cannot read it from the ROOT file, so we label it generically
-        // (the user knows their cut value from the run parameters printout).
-        AddLabel(0.50, 0.88, Form("%s p_{T} dist.", pname), 0.04, 22);
-        AddLabel(0.50, 0.82, "Black: pre-cut   Red: after p_{T} cut", 0.032, 22);
-        AddLabel(0.50, 0.76,
-                 "(log scale -- look for low-pT depletion after cut)",
-                 0.028, 22);
-
-        delete hPreN;
-        if (hPostN) delete hPostN;
-    }
-
-    SaveCanvas(c, outDir, "fig7_daughterPt", fout);
-    delete c;
-}
-
-
-// ==========================================================================
-// FIGURE 8: Daughter DCA_xy distributions
-// ==========================================================================
-static void MakeFig8_DaughterDCA(TFile* f, TFile* fout, const char* outDir)
-{
-    TDirectory* dirKin = GetDir(f, "Kinematics");
-    if (!dirKin) return;
-    TDirectory* dirDCA_All = GetScenarioDir(f, "DCACutOnly", "All");
-
-    TH1D* hKin_p  = static_cast<TH1D*>(SafeGet(dirKin, "hKin_DCA_proton"));
-    TH1D* hKin_pi = static_cast<TH1D*>(SafeGet(dirKin, "hKin_DCA_pion"));
-    TH1D* hCut_p  = dirDCA_All ?
-        static_cast<TH1D*>(SafeGet(dirDCA_All, "h1d_DCA_proton")) : nullptr;
-    TH1D* hCut_pi = dirDCA_All ?
-        static_cast<TH1D*>(SafeGet(dirDCA_All, "h1d_DCA_pion")) : nullptr;
-
-    if (!hKin_p || !hKin_pi) return;
-
-    TCanvas* c = new TCanvas("c_daughterDCA",
-                              "Daughter DCA_{xy} distributions", 1000, 500);
-    c->Divide(2, 1, 0.004, 0.002);
-
-    for (int id = 0; id < 2; ++id) {
-        c->cd(id + 1);
-        gPad->SetLogy();
-        gPad->SetLeftMargin(0.14);
-        gPad->SetBottomMargin(0.13);
+        gPad->SetLeftMargin(0.14);  gPad->SetBottomMargin(0.13);
 
         TH1D* hPre  = (id == 0) ? hKin_p  : hKin_pi;
         TH1D* hPost = (id == 0) ? hCut_p  : hCut_pi;
 
-        TH1D* hPreN  = static_cast<TH1D*>(
-            hPre->Clone(Form("hDCApreN_%d", id)));
-        TH1D* hPostN = hPost ?
-            static_cast<TH1D*>(hPost->Clone(Form("hDCApostN_%d", id))) : nullptr;
+        static int sId = 0;
+        TH1D* hPreN  = static_cast<TH1D*>(hPre->Clone(Form("hDptPre_%d",  sId)));
+        TH1D* hPostN = hPost ? static_cast<TH1D*>(hPost->Clone(Form("hDptPost_%d", sId))) : nullptr;
+        sId++;
         hPreN->SetDirectory(nullptr);
         if (hPostN) hPostN->SetDirectory(nullptr);
 
         double norm = hPreN->Integral();
-        if (norm > 0.) {
-            hPreN->Scale(1. / norm);
-            if (hPostN) hPostN->Scale(1. / norm);
-        }
+        if (norm > 0.) { hPreN->Scale(1./norm);  if (hPostN) hPostN->Scale(1./norm); }
 
         SetHistStyle(hPreN, kBlack, kMarkerNC);
-        if (hPostN) SetHistStyle(hPostN, kBlue + 1, kMarkerDC);
+        if (hPostN) SetHistStyle(hPostN, kColPtCut, kMarkerPT);
 
         const char* pname = (id == 0) ? "Proton" : "Pion";
-        hPreN->SetTitle(Form("%s DCA_{xy};"
-                             "DCA_{xy}^{%s} [cm];Normalised counts",
-                             pname, pname));
+        hPreN->SetTitle(Form("%s p_{T} -- %s;p_{T} [GeV/c];Normalised counts", pname, famLabel));
+        hPreN->GetYaxis()->SetRangeUser(1.e-5, 1.0);
         hPreN->Draw("HIST");
         if (hPostN) hPostN->Draw("HIST SAME");
 
-        AddLabel(0.50, 0.88, Form("%s DCA_{xy}", pname), 0.04, 22);
-        AddLabel(0.50, 0.82, "Black: pre-cut   Blue: after DCA cut", 0.032, 22);
-        AddLabel(0.50, 0.76,
-                 "(note depletion at small DCA after cut)",
-                 0.028, 22);
+        TLegend* leg = MakeLegend(0.45, 0.72, 0.88, 0.88);
+        leg->AddEntry(hPreN, "Pre-cut", "l");
+        if (hPostN) leg->AddEntry(hPostN, "After p_{T} cut", "l");
+        leg->Draw();
 
-        delete hPreN;
-        if (hPostN) delete hPostN;
+        AddLabel(0.5, 0.93, Form("%s p_{T}", pname), 0.04, 22);
+        delete hPreN;  if (hPostN) delete hPostN;
     }
 
-    SaveCanvas(c, outDir, "fig8_daughterDCA", fout);
+    WriteCanvas(c, famOut);
     delete c;
 }
 
 
 // ==========================================================================
-// FIGURE 9: Lambda kinematic spectra and decay radius
-// --------------------------------------------------------------------------
-// Two-row, three-column layout:
-//   Row 1: Lambda pT | Lambda eta | Lambda phi
-//   Row 2: Decay radius (all) | Proton pT pre-cut | Pion pT pre-cut
+/**
+ * @brief Fig 8 -- daughter DCA_xy distributions before and after the DCA cut.
+ *
+ * Two panels: proton (left) and pion (right).  Structure mirrors Fig 7.
+ *
+ * @param f         Input ROOT file (for Kinematics).
+ * @param famDir    Family directory (for post-cut scenario).
+ * @param famOut    Output sub-directory.
+ * @param famLabel  Short label used in object names.
+ */
 // ==========================================================================
-static void MakeFig9_LambdaKin(TFile* f, TFile* fout, const char* outDir)
+static void MakeFig8_DaughterDCA(TFile* f, TDirectory* famDir,
+                                   TDirectory* famOut, const char* famLabel)
+{
+    TDirectory* dirKin    = GetDir(f, "Kinematics");
+    TDirectory* dirDcaAll = GetScenarioDir(famDir, "DCACutOnly", "All");
+    if (!dirKin) return;
+
+    TH1D* hKin_p  = static_cast<TH1D*>(SafeGet(dirKin,    "hKin_DCA_proton"));
+    TH1D* hKin_pi = static_cast<TH1D*>(SafeGet(dirKin,    "hKin_DCA_pion"));
+    TH1D* hCut_p  = dirDcaAll ? static_cast<TH1D*>(SafeGet(dirDcaAll, "h1d_DCA_proton")) : nullptr;
+    TH1D* hCut_pi = dirDcaAll ? static_cast<TH1D*>(SafeGet(dirDcaAll, "h1d_DCA_pion"))   : nullptr;
+    if (!hKin_p || !hKin_pi) return;
+
+    TCanvas* c = new TCanvas(Form("c_%s_daughterDCA", famLabel), "", 1000, 500);
+    c->Divide(2, 1, 0.004, 0.002);
+
+    for (int id = 0; id < 2; ++id) {
+        c->cd(id + 1);
+        gPad->SetLogy();
+        gPad->SetLeftMargin(0.14);  gPad->SetBottomMargin(0.13);
+
+        TH1D* hPre  = (id == 0) ? hKin_p  : hKin_pi;
+        TH1D* hPost = (id == 0) ? hCut_p  : hCut_pi;
+
+        static int sId = 0;
+        TH1D* hPreN  = static_cast<TH1D*>(hPre->Clone(Form("hDcaPre_%d",  sId)));
+        TH1D* hPostN = hPost ? static_cast<TH1D*>(hPost->Clone(Form("hDcaPost_%d", sId))) : nullptr;
+        sId++;
+        hPreN->SetDirectory(nullptr);
+        if (hPostN) hPostN->SetDirectory(nullptr);
+
+        double norm = hPreN->Integral();
+        if (norm > 0.) { hPreN->Scale(1./norm);  if (hPostN) hPostN->Scale(1./norm); }
+
+        SetHistStyle(hPreN, kBlack, kMarkerNC);
+        if (hPostN) SetHistStyle(hPostN, kColDcaCut, kMarkerDC);
+
+        const char* pname = (id == 0) ? "Proton" : "Pion";
+        hPreN->SetTitle(Form("%s DCA_{xy} -- %s;DCA_{xy} [cm];Normalised counts", pname, famLabel));
+        hPreN->Draw("HIST");
+        if (hPostN) hPostN->Draw("HIST SAME");
+
+        TLegend* leg = MakeLegend(0.45, 0.72, 0.88, 0.88);
+        leg->AddEntry(hPreN, "Pre-cut", "l");
+        if (hPostN) leg->AddEntry(hPostN, "After DCA cut", "l");
+        leg->Draw();
+
+        AddLabel(0.5, 0.93, Form("%s DCA_{xy}", pname), 0.04, 22);
+        delete hPreN;  if (hPostN) delete hPostN;
+    }
+
+    WriteCanvas(c, famOut);
+    delete c;
+}
+
+
+// ==========================================================================
+/**
+ * @brief Fig 9 -- eta>0 minus eta<0 antisymmetric component plots.
+ *
+ * Three panels:
+ *   Panel 1: phi* difference (EtaPos - EtaNeg, normalised) for all 4 scenarios.
+ *   Panel 2: cos(theta*) difference for all 4 scenarios.
+ *   Panel 3: <R_proxy>(EtaPos) - <R_proxy>(EtaNeg) bar chart for all 4 scenarios.
+ *
+ * Bug fix relative to the old macro: y-axis ranges are computed from the data
+ * before the first Draw call, so no placeholder range is needed.
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory.
+ * @param famLabel  Short label used in object names.
+ */
+// ==========================================================================
+static void MakeFig9_EtaDiff(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
+{
+    TCanvas* c = new TCanvas(Form("c_%s_etaDiff", famLabel), "", 1200, 500);
+    c->Divide(3, 1, 0.003, 0.002);
+
+    // Helper: build (EtaPos - EtaNeg) normalised difference for a given histogram name
+    auto MakeDiff = [&](const char* scenName, const char* histName) -> TH1D* {
+        TDirectory* dP = GetScenarioDir(famDir, scenName, "EtaPos");
+        TDirectory* dN = GetScenarioDir(famDir, scenName, "EtaNeg");
+        if (!dP || !dN) return nullptr;
+        TH1D* hP = static_cast<TH1D*>(SafeGet(dP, histName));
+        TH1D* hN = static_cast<TH1D*>(SafeGet(dN, histName));
+        if (!hP || !hN) return nullptr;
+        TH1D* hPn = NormClone(hP);
+        TH1D* hNn = NormClone(hN);
+        hPn->Add(hNn, -1.);
+        delete hNn;
+        return hPn;
+    };
+
+    // Helper: draw a set of difference histograms with a shared y range
+    auto DrawDiffPanel = [&](const char* histName, const char* title, const char* xTitle) {
+        std::vector<TH1D*> diffs;
+        for (int is = 0; is < 4; ++is) {
+            TH1D* h = MakeDiff(kScenNames[is], histName);
+            if (h) { SetHistStyle(h, kScenColors[is], kScenMarkers[is]); }
+            diffs.push_back(h);
+        }
+        // Compute ymax before any Draw call (fixes the placeholder y-range bug)
+        double ymax = 0.;
+        for (auto* h : diffs) {
+            if (!h) continue;
+            double lm = std::max(std::fabs(h->GetMinimum()), h->GetMaximum());
+            if (lm > ymax) ymax = lm;
+        }
+        ymax = (ymax < 1.e-8) ? 0.005 : ymax * 1.4;
+
+        bool first = true;
+        for (int is = 0; is < 4; ++is) {
+            if (!diffs[is]) continue;
+            if (first) {
+                diffs[is]->SetTitle(Form("%s -- %s;%s;#Delta(normalised counts)", title, famLabel, xTitle));
+                diffs[is]->GetYaxis()->SetRangeUser(-ymax, ymax);
+                diffs[is]->Draw("HIST");
+                first = false;
+            } else {
+                diffs[is]->Draw("HIST SAME");
+            }
+        }
+        TLine* zl = new TLine(diffs[0] ? diffs[0]->GetXaxis()->GetXmin() : -1., 0.,
+                               diffs[0] ? diffs[0]->GetXaxis()->GetXmax() :  1., 0.);
+        zl->SetLineColor(kGray + 2);  zl->SetLineStyle(2);  zl->Draw();
+
+        TLegend* leg = MakeLegend(0.15, 0.70, 0.60, 0.90);
+        for (int is = 0; is < 4; ++is) {
+            if (diffs[is]) leg->AddEntry(diffs[is], kScenLabels[is], "l");
+        }
+        leg->Draw();
+        for (auto* h : diffs) delete h;
+    };
+
+    // ---- Panel 1: phi* difference ----
+    c->cd(1);  gPad->SetLeftMargin(0.14);
+    DrawDiffPanel("h1d_phi", "#phi* (#eta>0) - (#eta<0)", "#phi* [rad]");
+
+    // ---- Panel 2: cos(theta*) difference ----
+    c->cd(2);  gPad->SetLeftMargin(0.14);
+    DrawDiffPanel("h1d_cosTheta", "cos(#theta*) (#eta>0) - (#eta<0)", "cos(#theta*)");
+
+    // ---- Panel 3: <R_proxy> EtaPos minus EtaNeg bar chart ----
+    c->cd(3);
+    gPad->SetLeftMargin(0.14);  gPad->SetBottomMargin(0.16);
+
+    double vals[4] = {0.}, errs[4] = {0.};
+    for (int is = 0; is < 4; ++is) {
+        TDirectory* dP = GetScenarioDir(famDir, kScenNames[is], "EtaPos");
+        TDirectory* dN = GetScenarioDir(famDir, kScenNames[is], "EtaNeg");
+        if (!dP || !dN) continue;
+        TProfile* pP = static_cast<TProfile*>(SafeGet(dP, "pRingProxy"));
+        TProfile* pN = static_cast<TProfile*>(SafeGet(dN, "pRingProxy"));
+        if (!pP || !pN) continue;
+        vals[is] = pP->GetBinContent(1) - pN->GetBinContent(1);
+        errs[is] = std::sqrt(pP->GetBinError(1)*pP->GetBinError(1) +
+                              pN->GetBinError(1)*pN->GetBinError(1));
+    }
+
+    double ymax3 = 0.;
+    for (int is = 0; is < 4; ++is) {
+        double v = std::fabs(vals[is]) + errs[is];
+        if (v > ymax3) ymax3 = v;
+    }
+    ymax3 = (ymax3 < 1.e-8) ? 0.01 : ymax3 * 1.5;
+
+    TH1D* hBar = new TH1D(Form("hBar3_%s", famLabel),
+                            Form("<R_{proxy}>_{#eta>0} - <R_{proxy}>_{#eta<0} -- %s;"
+                                 "Scenario;#Delta<R_{proxy}>", famLabel),
+                            4, 0., 4.);
+    hBar->SetStats(0);
+    hBar->GetYaxis()->SetRangeUser(-ymax3, ymax3);
+    for (int is = 0; is < 4; ++is) hBar->GetXaxis()->SetBinLabel(is + 1, kScenLabels[is]);
+    hBar->GetXaxis()->SetLabelSize(0.055);
+    hBar->Draw();
+
+    TLine* zl3 = new TLine(0., 0., 4., 0.);
+    zl3->SetLineColor(kGray + 2);  zl3->SetLineStyle(2);  zl3->SetLineWidth(2);  zl3->Draw();
+
+    for (int is = 0; is < 4; ++is) {
+        double xc = is + 0.5;  double cW = 0.12;
+        TLine* cent = new TLine(xc - cW, vals[is], xc + cW, vals[is]);
+        cent->SetLineColor(kScenColors[is]);  cent->SetLineWidth(4);  cent->Draw();
+        TLine* barV = new TLine(xc, vals[is] - errs[is], xc, vals[is] + errs[is]);
+        barV->SetLineColor(kScenColors[is]);  barV->SetLineWidth(2);  barV->Draw();
+        TLine* capU = new TLine(xc - cW, vals[is] + errs[is], xc + cW, vals[is] + errs[is]);
+        TLine* capL = new TLine(xc - cW, vals[is] - errs[is], xc + cW, vals[is] - errs[is]);
+        capU->SetLineColor(kScenColors[is]);  capU->SetLineWidth(2);  capU->Draw();
+        capL->SetLineColor(kScenColors[is]);  capL->SetLineWidth(2);  capL->Draw();
+    }
+
+    TLegend* leg3 = MakeLegend(0.15, 0.70, 0.60, 0.90);
+    for (int is = 0; is < 4; ++is) {
+        TLine* dummy = new TLine(); dummy->SetLineColor(kScenColors[is]); dummy->SetLineWidth(3);
+        leg3->AddEntry(dummy, kScenLabels[is], "l");
+    }
+    leg3->Draw();
+
+    c->cd(0);
+    AddLabel(0.5, 0.995, Form("#eta>0 minus #eta<0 antisymmetric component -- %s", famLabel), 0.034, 22);
+    WriteCanvas(c, famOut);
+    delete c;
+}
+
+
+// ==========================================================================
+/**
+ * @brief Lambda kinematics figure -- drawn once, shared across families.
+ *
+ * Six panels (2 rows x 3 columns):
+ *   Row 1: Lambda pT | Lambda eta | Lambda phi
+ *   Row 2: Transverse decay radius | Proton pT (pre-cut) | Pion pT (pre-cut)
+ *
+ * All histograms come from the top-level Kinematics directory.
+ *
+ * @param f     Input ROOT file.
+ * @param fout  Output ROOT file (canvas written at top level).
+ */
+// ==========================================================================
+static void MakeFigKin(TFile* f, TFile* fout)
 {
     TDirectory* dirKin = GetDir(f, "Kinematics");
     if (!dirKin) return;
@@ -977,332 +998,116 @@ static void MakeFig9_LambdaKin(TFile* f, TFile* fout, const char* outDir)
     TH1D* hpP  = static_cast<TH1D*>(SafeGet(dirKin, "hKin_pT_proton"));
     TH1D* hpPi = static_cast<TH1D*>(SafeGet(dirKin, "hKin_pT_pion"));
 
-    TCanvas* c = new TCanvas("c_lamKin",
-                              "#Lambda kinematics", 1200, 700);
+    TCanvas* c = new TCanvas("c_lamKin", "#Lambda kinematics (generation level)", 1200, 700);
     c->Divide(3, 2, 0.003, 0.003);
 
-    struct PadInfo { TH1D* h; bool logy; const char* note; };
-    PadInfo pads[6] = {
-        {hpT,  true,
-         "Input #Lambda p_{T} spectrum (Boltzmann mT)"},
-        {heta, false,
-         "Generated #Lambda #eta (flat in rapidity -> slight dip at |#eta|~0.9)"},
-        {hphi, false,
-         "Generated #Lambda #phi (should be uniform)"},
-        {hR,   true,
-         "Transverse decay radius (exponential in proper length)"},
-        {hpP,  true,
-         "Proton p_{T} before any cut"},
-        {hpPi, true,
-         "Pion p_{T} before any cut"}
-    };
+    struct PadInfo { TH1D* h; bool logy; };
+    PadInfo pads[6] = {{hpT, true}, {heta, false}, {hphi, false},
+                       {hR,  true}, {hpP,  true},  {hpPi, true}};
 
     for (int i = 0; i < 6; ++i) {
         c->cd(i + 1);
         if (pads[i].logy) gPad->SetLogy();
-        gPad->SetLeftMargin(0.15);
-        gPad->SetBottomMargin(0.15);
+        gPad->SetLeftMargin(0.15);  gPad->SetBottomMargin(0.15);
         if (!pads[i].h) continue;
         pads[i].h->SetStats(0);
-        pads[i].h->SetLineColor(kBlack);
-        pads[i].h->SetLineWidth(2);
+        pads[i].h->SetLineColor(kBlack);  pads[i].h->SetLineWidth(2);
         pads[i].h->Draw("HIST");
-        AddLabel(0.5, 0.90, pads[i].note, 0.032, 22);
     }
 
-    SaveCanvas(c, outDir, "fig9_lambdaKinematics", fout);
+    fout->cd();
+    c->Write();
     delete c;
 }
 
 
 // ==========================================================================
-// FIGURE 10: eta>0 minus eta<0 difference plots
-// --------------------------------------------------------------------------
-// This directly shows the antisymmetric component of each distribution,
-// which is what appears in the data as a non-zero ring observable when
-// averaging over positive and negative eta separately.
-//
-// For the phi* histogram:  difference = EtaPos - EtaNeg (normalised)
-// For the cos(theta*) histogram: same.
-// For <R_proxy> vs eta: the profile already shows this when plotted as Fig 4.
-//
-// Here we produce the histogram-level antisymmetric component.
+/**
+ * @brief Orchestrates all figure production for helicityEfficiencyToyModel output.
+ *
+ * @details
+ * Opens @p inputFile (a ROOT file produced by helicityEfficiencyToyModel.cxx),
+ * creates a companion plots.root in the same directory, and writes all
+ * diagnostic TCanvas objects into it under per-family sub-directories.
+ *
+ * @param inputFile  Path to the generator output ROOT file. Output will be
+                     written to the folder where this lies in.
+ */
 // ==========================================================================
-static void MakeFig10_EtaDifference(TFile* f, TFile* fout, const char* outDir)
+void plotHelicityEfficiency(const char* inputFile = "helicityEffOutput.root")
 {
-    const char* scenNames[4]  = {"NoCuts", "pTCutOnly", "DCACutOnly", "BothCuts"};
-    const int   scenColors[4] = {kColNoCuts, kColPtCut, kColDcaCut, kColBoth};
-    const char* scenLabels[4] = {"No cuts", "p_{T} cut", "DCA cut", "Both"};
-
-    TCanvas* c = new TCanvas("c_etaDiff",
-                              "#eta>0 minus #eta<0 difference", 1200, 500);
-    c->Divide(3, 1, 0.003, 0.002);  // phi*, cos(theta*), ring proxy vs eta diff
-
-    // ---- Panel 1: phi* difference ----
-    c->cd(1);
-    gPad->SetLeftMargin(0.14);
-    bool firstDrawn1 = false;
-    double ymax1 = 0.;
-    TLegend* leg1 = MakeLegend(0.15, 0.70, 0.60, 0.90);
-
-    for (int is = 0; is < 4; ++is) {
-        TDirectory* dirP = GetScenarioDir(f, scenNames[is], "EtaPos");
-        TDirectory* dirN = GetScenarioDir(f, scenNames[is], "EtaNeg");
-        if (!dirP || !dirN) continue;
-
-        TH1D* hP = static_cast<TH1D*>(SafeGet(dirP, "h1d_phi"));
-        TH1D* hN = static_cast<TH1D*>(SafeGet(dirN, "h1d_phi"));
-        if (!hP || !hN) continue;
-
-        // Normalise each to its integral so counts differences don't dominate
-        TH1D* hPn = static_cast<TH1D*>(hP->Clone(Form("hPhi_Pn_%d", is)));
-        TH1D* hNn = static_cast<TH1D*>(hN->Clone(Form("hPhi_Nn_%d", is)));
-        hPn->SetDirectory(nullptr);
-        hNn->SetDirectory(nullptr);
-        double iP = hPn->Integral(); if (iP > 0.) hPn->Scale(1./iP);
-        double iN = hNn->Integral(); if (iN > 0.) hNn->Scale(1./iN);
-
-        // Difference: positive eta minus negative eta
-        hPn->Add(hNn, -1.);
-
-        SetHistStyle(hPn, scenColors[is], kMarkerNC + is);
-
-        double locmax = std::max(std::fabs(hPn->GetMinimum()),
-                                  hPn->GetMaximum());
-        if (locmax > ymax1) ymax1 = locmax;
-
-        if (!firstDrawn1) {
-            hPn->SetTitle("#phi* (#eta>0) - (#eta<0) difference;"
-                           "#phi* [rad];#Delta(normalised counts)");
-            hPn->GetYaxis()->SetRangeUser(-0.001, 0.001); // placeholder
-            hPn->Draw("HIST");
-            firstDrawn1 = true;
-        } else {
-            hPn->Draw("HIST SAME");
-        }
-        leg1->AddEntry(hPn, scenLabels[is], "l");
-    }
-    if (firstDrawn1) {
-        // Update axis range using actual data
-        gPad->GetListOfPrimitives()->At(0);  // The first histogram
-        ymax1 = (ymax1 < 1.e-8) ? 0.002 : ymax1 * 1.35;
-        // Note: changing the range after Draw requires GetHistogram()
-        // We add a zero reference line instead
-        TLine* zl1 = new TLine(-TMath::Pi(), 0., TMath::Pi(), 0.);
-        zl1->SetLineColor(kGray + 2); zl1->SetLineStyle(2); zl1->Draw();
-    }
-    leg1->Draw();
-    AddLabel(0.5, 0.94,
-             "Expect: sin-like modulation for DCA cut",
-             0.030, 22);
-
-    // ---- Panel 2: cos(theta*) difference ----
-    c->cd(2);
-    gPad->SetLeftMargin(0.14);
-    bool firstDrawn2 = false;
-    TLegend* leg2 = MakeLegend(0.15, 0.70, 0.60, 0.90);
-
-    for (int is = 0; is < 4; ++is) {
-        TDirectory* dirP = GetScenarioDir(f, scenNames[is], "EtaPos");
-        TDirectory* dirN = GetScenarioDir(f, scenNames[is], "EtaNeg");
-        if (!dirP || !dirN) continue;
-
-        TH1D* hP = static_cast<TH1D*>(SafeGet(dirP, "h1d_cosTheta"));
-        TH1D* hN = static_cast<TH1D*>(SafeGet(dirN, "h1d_cosTheta"));
-        if (!hP || !hN) continue;
-
-        TH1D* hPn = static_cast<TH1D*>(hP->Clone(Form("hCos_Pn_%d", is)));
-        TH1D* hNn = static_cast<TH1D*>(hN->Clone(Form("hCos_Nn_%d", is)));
-        hPn->SetDirectory(nullptr);
-        hNn->SetDirectory(nullptr);
-        double iP = hPn->Integral(); if (iP > 0.) hPn->Scale(1./iP);
-        double iN = hNn->Integral(); if (iN > 0.) hNn->Scale(1./iN);
-        hPn->Add(hNn, -1.);
-
-        SetHistStyle(hPn, scenColors[is], kMarkerNC + is);
-
-        if (!firstDrawn2) {
-            hPn->SetTitle("cos(#theta*) (#eta>0) - (#eta<0) difference;"
-                           "cos(#theta*);#Delta(normalised counts)");
-            hPn->Draw("HIST");
-            firstDrawn2 = true;
-        } else {
-            hPn->Draw("HIST SAME");
-        }
-        leg2->AddEntry(hPn, scenLabels[is], "l");
-    }
-    if (firstDrawn2) {
-        TLine* zl2 = new TLine(-1., 0., 1., 0.);
-        zl2->SetLineColor(kGray + 2); zl2->SetLineStyle(2); zl2->Draw();
-    }
-    leg2->Draw();
-    AddLabel(0.5, 0.94,
-             "Expect: near-flat difference (helicity effect is eta-symmetric)",
-             0.030, 22);
-
-    // ---- Panel 3: Integrated ring proxy EtaPos minus EtaNeg bar chart ----
-    c->cd(3);
-    gPad->SetLeftMargin(0.14);
-    gPad->SetBottomMargin(0.16);
-
-    // Build values manually
-    double vals[4] = {0.}, errs[4] = {0.};
-    for (int is = 0; is < 4; ++is) {
-        TDirectory* dirP = GetScenarioDir(f, scenNames[is], "EtaPos");
-        TDirectory* dirN = GetScenarioDir(f, scenNames[is], "EtaNeg");
-        if (!dirP || !dirN) continue;
-        TProfile* pP = static_cast<TProfile*>(SafeGet(dirP, "pRingProxy"));
-        TProfile* pN = static_cast<TProfile*>(SafeGet(dirN, "pRingProxy"));
-        if (!pP || !pN) continue;
-        vals[is] = pP->GetBinContent(1) - pN->GetBinContent(1);
-        errs[is] = std::sqrt(pP->GetBinError(1) * pP->GetBinError(1) +
-                              pN->GetBinError(1) * pN->GetBinError(1));
-    }
-
-    double ymax3 = 0.;
-    for (int is = 0; is < 4; ++is)
-        if (std::fabs(vals[is]) + errs[is] > ymax3)
-            ymax3 = std::fabs(vals[is]) + errs[is];
-    ymax3 = (ymax3 < 1.e-8) ? 0.01 : ymax3 * 1.5;
-
-    TH1D* hDummy = new TH1D("hDummy3",
-                              "<R_{proxy}>_{#eta>0} - <R_{proxy}>_{#eta<0};"
-                              "Scenario;#Delta<R_{proxy}>",
-                              4, 0., 4.);
-    hDummy->SetStats(0);
-    hDummy->GetYaxis()->SetRangeUser(-ymax3, ymax3);
-    for (int is = 0; is < 4; ++is) hDummy->GetXaxis()->SetBinLabel(is+1, scenLabels[is]);
-    hDummy->GetXaxis()->SetLabelSize(0.06);
-    hDummy->Draw();
-
-    TLine* zl3 = new TLine(0., 0., 4., 0.);
-    zl3->SetLineColor(kGray + 2); zl3->SetLineStyle(2); zl3->SetLineWidth(2);
-    zl3->Draw();
-
-    for (int is = 0; is < 4; ++is) {
-        double xc = is + 0.5;
-        double capW = 0.12;
-        // Central value bar
-        TLine* barC = new TLine(xc - capW, vals[is], xc + capW, vals[is]);
-        barC->SetLineColor(scenColors[is]); barC->SetLineWidth(4); barC->Draw();
-        // Error bar
-        TLine* barE = new TLine(xc, vals[is]-errs[is], xc, vals[is]+errs[is]);
-        barE->SetLineColor(scenColors[is]); barE->SetLineWidth(2); barE->Draw();
-    }
-
-    AddLabel(0.5, 0.94,
-             "Antisymmetric component: non-zero = fake ring signal",
-             0.030, 22);
-    AddLabel(0.5, 0.88,
-             "Expect large value for DCA cut; ~0 for pT cut",
-             0.026, 22);
-
-    c->cd(0);
-    AddLabel(0.5, 0.997,
-             "#eta>0 minus #eta<0 difference plots: isolating the antisymmetric fake signal",
-             0.036, 22);
-
-    SaveCanvas(c, outDir, "fig10_etaDifference", fout);
-    delete c;
-}
-
-
-// ==========================================================================
-// MAIN FUNCTION: plotHelicityEfficiency
-// --------------------------------------------------------------------------
-// Reads the output ROOT file from helicityEfficiencyToyModel.cxx and
-// generates all 10 diagnostic figure PDFs.
-//
-// Parameters:
-//   inputFile  -- path to the ROOT file produced by the toy model
-//                 (default: "helicityEffOutput.root")
-//   outDir     -- directory where PDF figures are saved
-//                 (default: "plots")
-// ==========================================================================
-void plotHelicityEfficiency(
-    const char* inputFile = "helicityEffOutput.root",
-    const char* outDir    = "plots")
-{
-    // Suppress ROOT info messages to keep terminal output clean
     gROOT->ProcessLine("gErrorIgnoreLevel = kWarning;");
 
-    printf("\n");
-    printf("========================================================\n");
+    TString outDir = gSystem->DirName(inputFile);
+
+    printf("\n========================================================\n");
     printf("  plotHelicityEfficiency\n");
     printf("  Input : %s\n", inputFile);
-    printf("  Output: %s/\n", outDir);
+    printf("  Output folder : %s\n", outDir.Data());
     printf("========================================================\n\n");
 
-    TString rootOutName = (TString) outDir + "/../plots.root"; // To see it all in a single .root file. Saves on the same level as the helicity_baseline.root file
-    TFile *fout = new TFile(rootOutName, "RECREATE");
-
-    // Open the input file in READ mode
-    TFile* f = TFile::Open(inputFile, "READ");
-    if (!f || f->IsZombie()) {
-        printf("ERROR: Cannot open file '%s'. Aborting.\n", inputFile);
+    // Output ROOT file placed next to the input file
+    TString outRootPath = outDir + "/plots.root";
+    TFile* fout = new TFile(outRootPath, "RECREATE");
+    if (!fout || fout->IsZombie()) {
+        printf("ERROR: Cannot create output file '%s'. Aborting.\n", outRootPath.Data());
         return;
     }
 
-    // ---- Global style settings ----
-    gStyle->SetOptStat(0);          // No stat boxes
-    gStyle->SetOptTitle(0);         // No automatic title boxes (we draw manually)
-    gStyle->SetPadTickX(1);         // Ticks on both sides of X axis
-    gStyle->SetPadTickY(1);         // Ticks on both sides of Y axis
+    TFile* f = TFile::Open(inputFile, "READ");
+    if (!f || f->IsZombie()) {
+        printf("ERROR: Cannot open '%s'. Aborting.\n", inputFile);
+        fout->Close();
+        return;
+    }
+
+    // Global style
+    gStyle->SetOptStat(0);
+    gStyle->SetOptTitle(0);
+    gStyle->SetPadTickX(1);
+    gStyle->SetPadTickY(1);
     gStyle->SetFrameLineWidth(1);
     gStyle->SetTitleSize(0.05, "XYZ");
     gStyle->SetLabelSize(0.045, "XYZ");
     gStyle->SetTitleOffset(1.1, "Y");
 
+    // Lambda kinematics -- shared, written at the fout top level
+    printf("Producing kinematics figure...\n");
+    MakeFigKin(f, fout);
 
-    // ---- Figure 1: 2D maps for each eta selection ----
-    printf("Producing Figure 1: 2D (cos theta*, phi*) maps...\n");
-    for (const char* eta : {"EtaPos", "EtaNeg", "All"})
-        MakeFig1_2DMaps(f, fout, eta, outDir);
+    // Per-family figures
+    const char* famNames[2] = {"WithEtaGate", "WithoutEtaGate"};
+    for (const char* famName : famNames) {
+        TDirectory* famDir = GetDir(f, famName);
+        if (!famDir) { printf("WARNING: family '%s' not found -- skipping.\n", famName); continue; }
 
-    // ---- Figure 2: cos(theta*) projections ----
-    printf("Producing Figure 2: cos(theta*) projections...\n");
-    for (const char* eta : {"EtaPos", "EtaNeg", "All"})
-        MakeFig2_CosTheta(f, fout, eta, outDir);
+        // Create the output sub-directory for this family
+        TDirectory* famOut = fout->mkdir(famName);
 
-    // ---- Figure 3: phi* projections with sin fit ----
-    printf("Producing Figure 3: phi* projections...\n");
-    for (const char* eta : {"EtaPos", "EtaNeg", "All"})
-        MakeFig3_PhiStar(f, fout, eta, outDir);
+        printf("Producing figures for family: %s\n", famName);
 
-    // ---- Figure 4: <R_proxy> vs Lambda eta ----
-    printf("Producing Figure 4: <R_proxy> vs eta...\n");
-    MakeFig4_RingVsEta(f, fout, outDir);
+        // Figures 1-3: one canvas per eta selection
+        for (const char* eta : {"EtaPos", "EtaNeg", "All"}) {
+            MakeFig1_2DMaps  (famDir, famOut, famName, eta);
+            MakeFig2_CosTheta(famDir, famOut, famName, eta);
+            MakeFig3_PhiStar (famDir, famOut, famName, eta);
+        }
 
-    // ---- Figure 5: <R_proxy> vs Lambda pT ----
-    printf("Producing Figure 5: <R_proxy> vs pT...\n");
-    MakeFig5_RingVsPt(f, fout, outDir);
-
-    // ---- Figure 6: Integrated ring proxy bar chart ----
-    printf("Producing Figure 6: Integrated <R_proxy>...\n");
-    MakeFig6_IntegratedRing(f, fout, outDir);
-
-    // ---- Figure 7: Daughter pT distributions ----
-    printf("Producing Figure 7: Daughter pT distributions...\n");
-    MakeFig7_DaughterPt(f, fout, outDir);
-
-    // ---- Figure 8: Daughter DCA distributions ----
-    printf("Producing Figure 8: Daughter DCA distributions...\n");
-    MakeFig8_DaughterDCA(f, fout, outDir);
-
-    // ---- Figure 9: Lambda kinematics ----
-    printf("Producing Figure 9: Lambda kinematics...\n");
-    MakeFig9_LambdaKin(f, fout, outDir);
-
-    // ---- Figure 10: eta>0 minus eta<0 antisymmetry ----
-    printf("Producing Figure 10: eta antisymmetry difference plots...\n");
-    MakeFig10_EtaDifference(f, fout, outDir);
+        // Figures 4-9: one canvas each (use "All" eta combined internally)
+        MakeFig4_RingProxy    (famDir, famOut, famName);
+        MakeFig5_RingVsPt     (famDir, famOut, famName);
+        MakeFig6_IntegratedRing(famDir, famOut, famName);
+        MakeFig7_DaughterPt   (f, famDir, famOut, famName);
+        MakeFig8_DaughterDCA  (f, famDir, famOut, famName);
+        MakeFig9_EtaDiff      (famDir, famOut, famName);
+    }
 
     f->Close();
+    fout->Write("", TObject::kOverwrite);
     fout->Close();
 
     printf("\n========================================================\n");
-    printf("  All figures saved to: %s/\n", outDir);
-    printf("  Total: 10 multi-panel figures (13 PDF files).\n");
+    printf("  Output written to: %s\n", outRootPath.Data());
     printf("========================================================\n\n");
 }
 // end of plotHelicityEfficiency.cxx

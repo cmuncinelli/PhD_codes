@@ -133,6 +133,11 @@
 //   pRingProxy        -- TProfile: integrated <R_proxy>
 //   pRingProxyVsEta   -- TProfile: <R_proxy> vs Lambda eta
 //   pRingProxyVsPt    -- TProfile: <R_proxy> vs Lambda pT
+//   h1d_ringProxyJet  -- Same as above, but using a random direction as if the jet proxy
+//   pRingProxyJet     -- Same as above, but using a random direction as if the jet proxy
+//   pRingProxyJetVsEta -- Same as above, but using a random direction as if the jet proxy
+//   pRingProxyJetVsEtaJet -- TProfile: Sees the dependency with the random jet proxy's eta
+//   pRingProxyJetVsPt -- Same as above, but using a random direction as if the jet proxy
 //   h1d_decayRadius   -- transverse decay vertex radius [cm]
 //   h1d_pT_proton     -- proton pT in lab frame
 //   h1d_pT_pion       -- pion pT in lab frame
@@ -141,7 +146,7 @@
 //   h1d_pT_lambda     -- Lambda pT
 //   h1d_eta_lambda    -- Lambda eta
 //
-//   Reference analysis code: lambdaJetPolarizationIonsDerived.cxx (ALICE O2)
+//   Reference analysis code: lambdaJetPolarizationIonsDerived.cxx (O2Physics)
 // ==========================================================================
 
 // --- Standard ROOT headers ---
@@ -198,8 +203,8 @@ static const int kChargePion   = -1;
 // pT/|p| is smaller than this (Lambda nearly collinear with beam axis)
 static const double kMinSinTheta = 1.e-4;
 
-constexpr double Pi = TMath::Pi();
-constexpr double TwoPi = 2.0*Pi;
+static const double Pi = TMath::Pi();
+static const double TwoPi = 2.0*Pi;
 
 
 // ==========================================================================
@@ -365,10 +370,19 @@ struct ScenarioHistos {
     // R_proxy = (3/alpha) * p*_D . (z x lambda_unit) / |z x lambda_unit|
     //         = -(3/alpha) * sin(theta*) * cos(phi*)
     // Directly measures the left-right asymmetry as a ring-like quantity.
-    TH1D*    h1d_ringProxy;      // distribution of R_proxy
+    TH1D*     h1d_ringProxy;     // distribution of R_proxy (weird, but could be interesting!)
     TProfile* pRingProxy;        // integrated <R_proxy> (one bin at x=0)
     TProfile* pRingProxyVsEta;   // <R_proxy> vs Lambda pseudorapidity
     TProfile* pRingProxyVsPt;    // <R_proxy> vs Lambda pT
+
+    // Same, but for the ring observable calculated with respect to a randomly sampled direction acting as the jet:
+    // (AEE should persist even if the trigger direction is totally randomized. In a way, it depends only on the Lambdas,
+    //  not on the jets' direction)
+    TH1D*     h1d_ringProxyJet;     // distribution of R_proxyJet values (weird, but could be interesting!)
+    TProfile* pRingProxyJet;        // integrated <R_proxyJet> (one bin at x=0)
+    TProfile* pRingProxyJetVsEta;   // <R_proxyJet> vs Lambda pseudorapidity
+    TProfile* pRingProxyJetVsEtaJet;// <R_proxyJet> vs Jet pseudorapidity
+    TProfile* pRingProxyJetVsPt;    // <R_proxyJet> vs Lambda pT
 
     // -- Decay geometry and daughter kinematics (useful for diagnosis) --
     TH1D*    h1d_decayRadius;    // transverse decay vertex radius [cm]
@@ -410,10 +424,11 @@ struct FamilyHistos {
  * so ROOT associates them with the correct directory.
  *
  * @param dir  Pointer to an existing TDirectory in which histograms are booked.
+ * @param etaMaxDetector  Maximum acceptance allowed for Toy Model lambda daughters (and jets)
  * @return     A filled ScenarioHistos struct with all histogram pointers set.
  */
 // ==========================================================================
-static ScenarioHistos BookScenario(TDirectory* dir)
+static ScenarioHistos BookScenario(TDirectory* dir, double etaMaxDetector)
 {
     ScenarioHistos h;
 
@@ -434,18 +449,25 @@ static ScenarioHistos BookScenario(TDirectory* dir)
     double rmax = kPolPrefactor * 1.05; // Slight margin beyond max value
     h.h1d_ringProxy = new TH1D("h1d_ringProxy", "Ring observable proxy (z-hat as jet direction); R_{proxy};Counts", 120, -rmax, rmax);
     h.pRingProxy = new TProfile("pRingProxy", "Integrated <R_{proxy}> (single-bin TProfile); bin;<R_{proxy}>", 1, -0.5, 0.5);
-    h.pRingProxyVsEta = new TProfile("pRingProxyVsEta", "<R_{proxy}> vs #Lambda pseudorapidity; #eta_{#Lambda};<R_{proxy}>", 18, -0.9, 0.9); // 18 bins, 0.1 wide each
+    h.pRingProxyVsEta = new TProfile("pRingProxyVsEta", "<R_{proxy}> vs #Lambda pseudorapidity; #eta_{#Lambda};<R_{proxy}>", 18, -etaMaxDetector, etaMaxDetector); // 18 bins, 0.1 wide each if etaMaxDetector = 0.9
     h.pRingProxyVsPt = new TProfile("pRingProxyVsPt", "<R_{proxy}> vs #Lambda p_{T}; p_{T}^{#Lambda} [GeV/c];<R_{proxy}>", 20, 0., 5.); // 20 bins of 0.25 GeV/c each
 
+    // ---------- Ring observable proxy for randomly sampled jet direction ----------
+    h.h1d_ringProxyJet = new TH1D("h1d_ringProxyJet", "Ring observable proxy (random jet direction); R_{proxyJet};Counts", 120, -rmax, rmax);
+    h.pRingProxyJet = new TProfile("pRingProxyJet", "Integrated <R_{proxyJet}> (single-bin TProfile); bin;<R_{proxyJet}>", 1, -0.5, 0.5);
+    h.pRingProxyJetVsEta = new TProfile("pRingProxyJetVsEta", "<R_{proxyJet}> vs #Lambda pseudorapidity; #eta_{#Lambda};<R_{proxyJet}>", 18, -etaMaxDetector, etaMaxDetector);
+    h.pRingProxyJetVsEtaJet = new TProfile("pRingProxyJetVsEtaJet", "<R_{proxyJet}> vs #Lambda pseudorapidity; #eta_{#Lambda};<R_{proxyJet}>", 18, -etaMaxDetector, etaMaxDetector);
+    h.pRingProxyJetVsPt = new TProfile("pRingProxyJetVsPt", "<R_{proxyJet}> vs #Lambda p_{T}; p_{T}^{#Lambda} [GeV/c];<R_{proxyJet}>", 20, 0., 5.); // 20 bins of 0.25 GeV/c each
+
     // ---------- Decay vertex and daughter kinematics ----------
-    h.h1d_decayRadius = new TH1D("h1d_decayRadius", "Transverse decay vertex radius; r_{decay} = #sqrt{x_{v}^{2}+y_{v}^{2}} [cm];Counts", 150, 0., 150.);     // 0 to 150 cm (covers most of ITS/TPC inner field cage)
+    h.h1d_decayRadius = new TH1D("h1d_decayRadius", "Transverse decay vertex radius; r_{decay} = #sqrt{x_{v}^{2}+y_{v}^{2}} [cm];Counts", 150, 0., 150.); // 0 to 150 cm (covers most of ITS/TPC inner field cage)
     h.h1d_pT_proton = new TH1D("h1d_pT_proton", "Proton p_{T} in lab frame; p_{T}^{proton} [GeV/c];Counts", 100, 0., 5.);
     h.h1d_pT_pion = new TH1D("h1d_pT_pion", "Pion p_{T} in lab frame; p_{T}^{#pi} [GeV/c];Counts", 100, 0., 5.);
     h.h1d_DCA_proton = new TH1D("h1d_DCA_proton", "Proton DCA_{xy} to primary vertex; DCA_{xy}^{proton} [cm];Counts", 200, 0., 10.); // Fine binning near 0 to see the cut clearly
     h.h1d_DCA_pion = new TH1D("h1d_DCA_pion", "Pion DCA_{xy} to primary vertex; DCA_{xy}^{#pi} [cm];Counts", 200, 0., 10.);
     // ---------- Lambda kinematics ----------
     h.h1d_pT_lambda = new TH1D("h1d_pT_lambda", "#Lambda p_{T}; p_{T}^{#Lambda} [GeV/c];Counts", 100, 0., 10.);
-    h.h1d_eta_lambda = new TH1D("h1d_eta_lambda", "#Lambda pseudorapidity; #eta_{#Lambda};Counts", 36, -0.9, 0.9); // 0.05 per bin, matching typical ALICE acceptance
+    h.h1d_eta_lambda = new TH1D("h1d_eta_lambda", "#Lambda pseudorapidity; #eta_{#Lambda};Counts", 36, -etaMaxDetector, etaMaxDetector);
 
     return h;
 }
@@ -462,6 +484,7 @@ static ScenarioHistos BookScenario(TDirectory* dir)
  * @param cosTheta    cos(theta*) = p*_proton_unit . e1.
  * @param phi         phi* = atan2(p*_proton.e3, p*_proton.e2) [rad].
  * @param ringProxy   R_proxy = (3/alpha) * p*_D . (z x lambda_unit)/||z x lambda_unit|| .
+ * @param ringProxyJet Same as R_proxy, but the jet direction takes the place of the z axis
  * @param decayR      Transverse decay vertex radius [cm].
  * @param pT_proton   Proton pT in the lab frame [GeV/c].
  * @param pT_pion     Pion pT in the lab frame [GeV/c].
@@ -469,19 +492,22 @@ static ScenarioHistos BookScenario(TDirectory* dir)
  * @param dca_pion    Pion DCA_xy to PV [cm].
  * @param pT_lambda   Lambda pT [GeV/c].
  * @param eta_lambda  Lambda pseudorapidity.
+ * @param eta_jet      Randomly sampled jet's pseudorapidity.
  */
 // ==========================================================================
 static void FillScenario(ScenarioHistos& h,
                           double cosTheta,
                           double phi,
                           double ringProxy,
+                          double ringProxyJet,
                           double decayR,
                           double pT_proton,
                           double pT_pion,
                           double dca_proton,
                           double dca_pion,
                           double pT_lambda,
-                          double eta_lambda)
+                          double eta_lambda,
+                          double eta_jet)
 {
     // Main diagnostic histograms
     h.h2d_cosTheta_phi->Fill(cosTheta, phi);
@@ -493,6 +519,12 @@ static void FillScenario(ScenarioHistos& h,
     h.pRingProxy->Fill(0., ringProxy); // integrated average
     h.pRingProxyVsEta->Fill(eta_lambda, ringProxy);
     h.pRingProxyVsPt->Fill(pT_lambda, ringProxy);
+
+    h.h1d_ringProxyJet->Fill(ringProxyJet);
+    h.pRingProxyJet->Fill(0., ringProxyJet); // integrated average
+    h.pRingProxyJetVsEta->Fill(eta_lambda, ringProxyJet);
+    h.pRingProxyJetVsEtaJet->Fill(eta_jet, ringProxyJet);
+    h.pRingProxyJetVsPt->Fill(pT_lambda, ringProxyJet);
 
     // Kinematics
     h.h1d_decayRadius->Fill(decayR);
@@ -526,13 +558,15 @@ static void FillScenario(ScenarioHistos& h,
  * @param hPos          Output: ScenarioHistos booked for eta_Lambda >= 0.
  * @param hNeg          Output: ScenarioHistos booked for eta_Lambda < 0.
  * @param hAll          Output: ScenarioHistos booked for both eta halves combined.
+ * @param etaMaxDetector  Maximum acceptance allowed for Toy Model lambda daughters (and jets)
  */
 // ==========================================================================
 static void CreateSubdirs(TDirectory*        parent,
                            const char*        scenarioName,
                            ScenarioHistos&    hPos,
                            ScenarioHistos&    hNeg,
-                           ScenarioHistos&    hAll)
+                           ScenarioHistos&    hAll,
+                           double etaMaxDetector)
 {
     // Create the top-level scenario directory
     TDirectory* dirScen = parent->mkdir(scenarioName);
@@ -543,9 +577,9 @@ static void CreateSubdirs(TDirectory*        parent,
     TDirectory* dirAll = dirScen->mkdir("All");
 
     // Book histograms inside each sub-directory
-    hPos = BookScenario(dirPos);
-    hNeg = BookScenario(dirNeg);
-    hAll = BookScenario(dirAll);
+    hPos = BookScenario(dirPos, etaMaxDetector);
+    hNeg = BookScenario(dirNeg, etaMaxDetector);
+    hAll = BookScenario(dirAll, etaMaxDetector);
 
     // Return to parent directory so subsequent mkdir calls start from there
     parent->cd();
@@ -558,18 +592,17 @@ static void CreateSubdirs(TDirectory*        parent,
  *        DCACutOnly, BothCuts) under @p parent and books all histograms into
  *        the provided FamilyHistos struct.
  *
- * @param parent  Pointer to the parent TDirectory (e.g. the WithEtaGate or
- *                WithoutEtaGate top-level directory).
- * @param f       Output: FamilyHistos struct whose 12 ScenarioHistos members
- *                will be populated.
+ * @param parent  Pointer to the parent TDirectory (e.g. the WithEtaGate or WithoutEtaGate top-level directory).
+ * @param f       Output: FamilyHistos struct whose 12 ScenarioHistos members will be populated.
+ * @param etaMaxDetector  Maximum acceptance allowed for Toy Model lambda daughters (and jets)
  */
 // ==========================================================================
-static void CreateFamily(TDirectory* parent, FamilyHistos& f)
+static void CreateFamily(TDirectory* parent, FamilyHistos& f, double etaMaxDetector)
 {
-    CreateSubdirs(parent, "NoCuts",     f.NC_Pos, f.NC_Neg, f.NC_All);
-    CreateSubdirs(parent, "pTCutOnly",  f.PT_Pos, f.PT_Neg, f.PT_All);
-    CreateSubdirs(parent, "DCACutOnly", f.DC_Pos, f.DC_Neg, f.DC_All);
-    CreateSubdirs(parent, "BothCuts",   f.BC_Pos, f.BC_Neg, f.BC_All);
+    CreateSubdirs(parent, "NoCuts",     f.NC_Pos, f.NC_Neg, f.NC_All, etaMaxDetector);
+    CreateSubdirs(parent, "pTCutOnly",  f.PT_Pos, f.PT_Neg, f.PT_All, etaMaxDetector);
+    CreateSubdirs(parent, "DCACutOnly", f.DC_Pos, f.DC_Neg, f.DC_All, etaMaxDetector);
+    CreateSubdirs(parent, "BothCuts",   f.BC_Pos, f.BC_Neg, f.BC_All, etaMaxDetector);
 }
 
 
@@ -582,20 +615,22 @@ static void CreateFamily(TDirectory* parent, FamilyHistos& f)
  * corresponding cut booleans.  Within each scenario the correct eta half
  * (EtaPos or EtaNeg) and the combined All directory are both filled.
  *
- * @param f           Reference to the FamilyHistos struct to fill.
- * @param passPt      True if both daughters pass the minimum-pT cut.
- * @param passDca     True if both daughters pass the minimum-DCA cut.
- * @param etaPos      True if eta_Lambda >= 0 (routes fill to EtaPos vs EtaNeg).
- * @param cosTheta    cos(theta*) = p*_proton_unit . e1.
- * @param phi_star    phi* = atan2(p*_proton.e3, p*_proton.e2) [rad].
- * @param ringProxy   R_proxy = (3/alpha) * p*_D . (z x lambda_unit)/|...| .
- * @param decayR      Transverse decay vertex radius [cm].
- * @param pT_p        Proton pT in the lab frame [GeV/c].
- * @param pT_pi       Pion pT in the lab frame [GeV/c].
- * @param dca_proton  Proton DCA_xy to the primary vertex [cm].
- * @param dca_pion    Pion DCA_xy to the primary vertex [cm].
- * @param pT_lam      Lambda pT [GeV/c].
- * @param eta_lam     Lambda pseudorapidity.
+ * @param f            Reference to the FamilyHistos struct to fill.
+ * @param passPt       True if both daughters pass the minimum-pT cut.
+ * @param passDca      True if both daughters pass the minimum-DCA cut.
+ * @param etaPos       True if eta_Lambda >= 0 (routes fill to EtaPos vs EtaNeg).
+ * @param cosTheta     cos(theta*) = p*_proton_unit . e1.
+ * @param phi_star     phi* = atan2(p*_proton.e3, p*_proton.e2) [rad].
+ * @param ringProxy    R_proxy = (3/alpha) * p*_D . (z x lambda_unit)/|...| .
+ * @param ringProxyJet Same as R_proxy, but the jet direction takes the place of the z axis
+ * @param decayR       Transverse decay vertex radius [cm].
+ * @param pT_p         Proton pT in the lab frame [GeV/c].
+ * @param pT_pi        Pion pT in the lab frame [GeV/c].
+ * @param dca_proton   Proton DCA_xy to the primary vertex [cm].
+ * @param dca_pion     Pion DCA_xy to the primary vertex [cm].
+ * @param pT_lam       Lambda pT [GeV/c].
+ * @param eta_lam      Lambda pseudorapidity.
+ * @param eta_jet      Randomly sampled jet's pseudorapidity.
  */
 // ==========================================================================
 static void FillFamily(FamilyHistos& f,
@@ -605,21 +640,23 @@ static void FillFamily(FamilyHistos& f,
                         double cosTheta,
                         double phi_star,
                         double ringProxy,
+                        double ringProxyJet,
                         double decayR,
                         double pT_p,
                         double pT_pi,
                         double dca_proton,
                         double dca_pion,
                         double pT_lam,
-                        double eta_lam)
+                        double eta_lam,
+                        double eta_jet)
 {
     // Local lambda that fills one scenario's eta-half and All subdirectory.
     // Captures all per-event quantities by reference so we only pass the
     // three ScenarioHistos pointers that change between scenarios.
     auto fill = [&](ScenarioHistos& hPos, ScenarioHistos& hNeg, ScenarioHistos& hAll) {
         ScenarioHistos& hEta = etaPos ? hPos : hNeg;
-        FillScenario(hEta,  cosTheta, phi_star, ringProxy, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam);
-        FillScenario(hAll,  cosTheta, phi_star, ringProxy, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam);
+        FillScenario(hEta,  cosTheta, phi_star, ringProxy, ringProxyJet, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet);
+        FillScenario(hAll,  cosTheta, phi_star, ringProxy, ringProxyJet, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet);
     };
 
     // Scenario 1: No cuts (always filled -- serves as a flat-distribution
@@ -742,22 +779,23 @@ void helicityEfficiencyToyModel(
     // all histograms.  CreateFamily calls CreateSubdirs four times internally.
     FamilyHistos famNG; // Without eta gate
     FamilyHistos famEG; // With eta gate
-    CreateFamily(dirNG, famNG);
-    CreateFamily(dirEG, famEG);
+    CreateFamily(dirNG, famNG, etaMaxDetector);
+    CreateFamily(dirEG, famEG, etaMaxDetector);
 
     // Extra kinematics directory: Lambda distribution BEFORE any decay cuts,
     // only subject to the generation acceptance (pT and rapidity windows).
     TDirectory* dirKin = outFile->mkdir("Kinematics");
     dirKin->cd();
     TH1D* hKin_pT_lambda  = new TH1D("hKin_pT_lambda", "Generated #Lambda p_{T};p_{T}^{#Lambda} [GeV/c];Counts", 100, 0., 10.);
-    TH1D* hKin_rap_lambda = new TH1D("hKin_rap_lambda", "Generated #Lambda rapidity;y_{#Lambda};Counts", 36, -0.9, 0.9);
-    TH1D* hKin_eta_lambda = new TH1D("hKin_eta_lambda", "Generated #Lambda pseudorapidity;#eta_{#Lambda};Counts", 36, -0.9, 0.9);
+    TH1D* hKin_rap_lambda = new TH1D("hKin_rap_lambda", "Generated #Lambda rapidity;y_{#Lambda};Counts", 36, -rapMax_Lambda, rapMax_Lambda);
+    TH1D* hKin_eta_lambda = new TH1D("hKin_eta_lambda", "Generated #Lambda pseudorapidity;#eta_{#Lambda};Counts", 36, -etaMaxDetector, etaMaxDetector);
     TH1D* hKin_phi_lambda = new TH1D("hKin_phi_lambda", "Generated #Lambda azimuth;#phi_{#Lambda} [rad];Counts", 64, -TMath::Pi(), TMath::Pi());
     TH1D* hKin_decayR     = new TH1D("hKin_decayR", "All transverse decay radii;r_{decay} [cm];Counts", 150, 0., 150.);
     TH1D* hKin_pT_proton  = new TH1D("hKin_pT_proton", "All proton p_{T} (pre-cut);p_{T}^{p} [GeV/c];Counts", 100, 0., 5.);
     TH1D* hKin_pT_pion    = new TH1D("hKin_pT_pion", "All pion p_{T} (pre-cut);p_{T}^{#pi} [GeV/c];Counts", 100, 0., 5.);
     TH1D* hKin_DCA_proton = new TH1D("hKin_DCA_proton", "All proton DCA_{xy} (pre-cut);DCA_{xy}^{p} [cm];Counts", 200, 0., 10.);
     TH1D* hKin_DCA_pion   = new TH1D("hKin_DCA_pion", "All pion DCA_{xy} (pre-cut);DCA_{xy}^{#pi} [cm];Counts", 200, 0., 10.);
+    TH1D* hKin_eta_jet    = new TH1D("hKin_eta_jet", "Jet pseudorapidity; #eta_{Jet};Counts", 36, -etaMaxDetector, etaMaxDetector);
     outFile->cd(); // Back to root of output file
 
     // -----------------------------------------------------------------------
@@ -777,8 +815,9 @@ void helicityEfficiencyToyModel(
     // -----------------------------------------------------------------------
     printf("Starting generation of %ld Lambdas...\n", nLambdas);
 
-    long nGenerated   = 0; // Lambdas for which decay was successfully set up
-    long nCollinear   = 0; // Lambdas skipped because pT/|p| < kMinSinTheta
+    long nGenerated = 0; // Lambdas for which decay was successfully set up
+    long nCollinear = 0; // Lambdas skipped because pT/|p| < kMinSinTheta
+    int  nLambdasSinceJetShuffle = 0; // Lambdas since the jet direction last shuffled
 
     // Progress report every 10%
     long nProgress = nLambdas / 10;
@@ -803,6 +842,26 @@ void helicityEfficiencyToyModel(
 
     double mTpeak = std::sqrt(ptPeak * ptPeak + kMassLambda * kMassLambda);
     double fmax = 1.10 * ptPeak * std::exp(-mTpeak / T_thermal);
+
+    // Creating a jet proxy facing a random direction
+        // Preliminary analysis on data shows that AEE effects indeed persist even with a random jet direction.
+        // This makes sense, as the AEE is an effect somewhat "intrinsic" to the Lambda daughters interacting
+        // with the magnetic field, not so much of the ring observable's proxy direction
+    double randPhiJet = rng.Uniform(0., TwoPi);
+    double sinPhiJet  = std::sin(randPhiJet);
+    double cosPhiJet  = std::cos(randPhiJet);
+    // Sampling cos(theta) only within the detector range, also for consistency:
+    double cosThetaMax = std::tanh(etaMaxDetector);
+    double cosThetaJet = rng.Uniform(-cosThetaMax, cosThetaMax); // Uniformly sampled in solid angle, yet within the detectable region
+    double sinThetaJet = std::sqrt(1. - cosThetaJet * cosThetaJet);
+    
+    // Calculating the jet component directions (could use TVector3, but this formulation is a bit faster in the hot loop)
+    // TVector3 jetProxyDirection(sinThetaJet * cosPhiJet, sinThetaJet * sinPhiJet, cosThetaJet);
+    double jx = sinThetaJet * cosPhiJet;
+    double jy = sinThetaJet * sinPhiJet;
+    double jz = cosThetaJet;
+    double eta_jet = std::atanh(cosThetaJet);
+    hKin_eta_jet->Fill(eta_jet); // Colecting the kinematics of the first sampled jet as well
 
     for (long iLam = 0; iLam < nLambdas; ++iLam) {
         // ---- Progress printout ----
@@ -958,17 +1017,53 @@ void helicityEfficiencyToyModel(
         // 3.7  Compute the ring observable proxy (z_hat as if jet direction)
         // ==================================================================
         // t_hat = z_hat = (0, 0, 1)
-        // t_hat x lambda_unit = z_hat x (lx, ly, lz) = (-ly, lx, 0)
-        // |z_hat x lambda_unit| = sqrt(lx^2 + ly^2) = pT / |p| = sinTheta_lam
+        // t_hat x lambda_momentum = z_hat x (lx, ly, lz) = (-ly, lx, 0)
+        // |z_hat x lambda_momentum| = sqrt(lx^2 + ly^2) = pT / |p| = sinTheta_lam
         //
         // Normalized cross product = (-ly, lx, 0) / sinTheta_lam
-        //                          = (-py, px, 0) / pT     (after scaling)
-        //
+        //                          = (-py, px, 0) / pT (after scaling)
         // ring_proxy = (3/alpha) * p_star_unit . (-py, px, 0) / pT
-        //
-        // Note: this equals -(3/alpha) * p_star_unit . e2 = -(3/alpha) * sin(theta*) * cos(phi*)
-        TVector3 crossVec(-py_lam / pT_lam, px_lam / pT_lam, 0.); // crossVec is already unit-normalized (|(-py, px, 0)| / pT = 1)
-        double ringProxy = kPolPrefactor * p_star_unit.Dot(crossVec);
+        double ringProxy = kPolPrefactor * (-p_star_unit.X() * py_lam + p_star_unit.Y() * px_lam) / pT_lam;
+
+        // ==================================================================
+        // 3.7.1  Compute the ring observable proxy using randomly sampled jet
+        // ==================================================================
+        if (nLambdasSinceJetShuffle == 3){
+            // Every fourth Lambda that used the same jet direction will trigger a reshuffle of the jet direction
+            // Physically, this would mean saying that there are about 4 Lambdas in the same event. One can test
+            // if this makes much of an impact due to introducing a correlation between the Lambdas.
+            // Realistically, data shows about 2 Lambda *candidates* on average, for events that do have a Lambda.
+            // And data also shows about 2 jets (on average) per event, in events that do have a jet, so this may
+            // not be so far off. Probably would be interesting to know the correlation between N_Lambda and N_Jets
+            // per event, to estimate this number a little bit better.
+            randPhiJet = rng.Uniform(0., TwoPi);
+            cosThetaJet = rng.Uniform(-cosThetaMax, cosThetaMax);
+            sinPhiJet = std::sin(randPhiJet);
+            cosPhiJet = std::cos(randPhiJet);
+            sinThetaJet = std::sqrt(1. - cosThetaJet * cosThetaJet);
+            
+            // Re-evaluate jet direction components:
+            jx = sinThetaJet * cosPhiJet;
+            jy = sinThetaJet * sinPhiJet;
+            jz = cosThetaJet;
+            eta_jet = std::atanh(cosThetaJet);
+            hKin_eta_jet->Fill(eta_jet); // This is filled inside the if block, as we only want to map this once for each jet
+
+            nLambdasSinceJetShuffle = 0;
+        }
+        else nLambdasSinceJetShuffle++;
+
+        // Calculating the cross-product by hand (just a tiny bit faster, probably):
+        // 1) Cross product c = jet_hat x p_Lambda
+        double cx = jy * pz_lam - jz * py_lam;
+        double cy = jz * px_lam - jx * pz_lam;
+        double cz = jx * py_lam - jy * px_lam;
+
+        // 2) Normalization factor for the cross product
+        double inv_c_norm = 1.0 / std::sqrt(cx * cx + cy * cy + cz * cz);
+
+        // 3) Dot product with p_star_unit
+        double ringProxyJet = kPolPrefactor * (p_star_unit.X() * cx + p_star_unit.Y() * cy + p_star_unit.Z() * cz) * inv_c_norm;
 
         // ==================================================================
         // 3.8  Compute DCA_xy of each daughter to the primary vertex
@@ -1006,15 +1101,15 @@ void helicityEfficiencyToyModel(
         // WithoutEtaGate: fill for all events regardless of daughter eta.
         // Kept as a comparison to show the inconsistency of omitting the gate.
         FillFamily(famNG, passPtCut, passDcaCut, etaPos,
-                   cosTheta, phi_star, ringProxy, decayR,
-                   pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam);
+                   cosTheta, phi_star, ringProxy, ringProxyJet, decayR,
+                   pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet);
 
         // WithEtaGate: only fill when both daughters are inside the acceptance.
         // This is the physically consistent set.
         if (passEtaGate)
             FillFamily(famEG, passPtCut, passDcaCut, etaPos,
-                       cosTheta, phi_star, ringProxy, decayR,
-                       pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam);
+                       cosTheta, phi_star, ringProxy, ringProxyJet, decayR,
+                       pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet);
 
         ++nGenerated;
 

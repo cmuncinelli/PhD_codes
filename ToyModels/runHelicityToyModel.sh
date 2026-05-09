@@ -367,17 +367,15 @@ execute_job() {
 
     local OUTDIR="${BASE_DIR}/${SUBDIR}"
     local ROOT_FILE="${OUTDIR}/helicity_${NAME}.root"
-    local PLOTS_DIR="${OUTDIR}/plots"
     local LOG_FILE="${LOG_DIR}/${NAME}.log"
 
     mkdir -p "${OUTDIR}"
-    mkdir -p "${PLOTS_DIR}"
 
     # Build ROOT call strings.
     # Single quotes around the macro path protect spaces; the inner double
     # quotes around the ROOT file path protect spaces in BASE_DIR.
     local GEN_CALL="${N},\"${ROOT_FILE}\",${BZ},${PTMIN_LAM},${PTMAX_LAM},${RAPMAX},${ETAMAX},${T},${PTMIN_P},${PTMIN_PI},${DCAMIN_P},${DCAMIN_PI},${SEED}"
-    local PLT_CALL="\"${ROOT_FILE}\",\"${PLOTS_DIR}\""
+    local PLT_CALL="\"${ROOT_FILE}\""
 
     # Write log header
     {
