@@ -719,8 +719,8 @@ static void MakeFig7_DaughterPt(TFile* f, TDirectory* famDir,
         if (hPostN) hPostN->Draw("HIST SAME");
 
         TLegend* leg = MakeLegend(0.45, 0.72, 0.88, 0.88);
-        leg->AddEntry(hPreN, "Pre-cut", "l");
-        if (hPostN) leg->AddEntry(hPostN, "After p_{T} cut", "l");
+        leg->AddEntry(hPreN, "Pre-cut (no #eta cut)", "l");
+        if (hPostN) leg->AddEntry(hPostN, "After p_{T} cut (with #eta cut)", "l");
         leg->Draw("SAME");
 
         AddLabel(0.5, 0.93, Form("%s p_{T}", pname), 0.04, 22);
@@ -779,8 +779,8 @@ static void MakeFig8_DaughterDCA(TFile* f, TDirectory* famDir,
         if (hPostN) hPostN->Draw("HIST SAME");
 
         TLegend* leg = MakeLegend(0.45, 0.72, 0.88, 0.88);
-        leg->AddEntry(hPreN, "Pre-cut", "l");
-        if (hPostN) leg->AddEntry(hPostN, "After DCA cut", "l");
+        leg->AddEntry(hPreN, "Pre-cut (no #eta cut)", "l");
+        if (hPostN) leg->AddEntry(hPostN, "After DCA cut (with #eta cut)", "l");
         leg->Draw("SAME");
 
         AddLabel(0.5, 0.93, Form("%s DCA_{xy}", pname), 0.04, 22);
