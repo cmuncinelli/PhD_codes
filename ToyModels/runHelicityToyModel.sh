@@ -201,7 +201,7 @@ MAX_PARALLEL=64
 # Default Lambda count per run.
 # At ~90 s per 10M Lambdas, 1B = ~900 s (~15 min) per run.
 # With ~59 runs in parallel on 192 cores, total wall time ~ 15 min.
-DEFAULT_N=30000000000 # 10.000.000.000 Lambdas takes about 8 hours
+DEFAULT_N=60000000000 # 10.000.000.000 Lambdas takes about 8 hours
 # DEFAULT_N=10000000 # For testing only (~30 s per run)
 
 # ROOT executable (set to full path if not in PATH, e.g. /opt/root/bin/root)
@@ -773,10 +773,10 @@ if family_in_scope 10; then
     run_family_header 10 "MAGNETIC FIELD  [AEE: field sign and strength, with HEE tests using min pT cuts]"
 
     #               NAME               SUBDIR                          N             Bz       pTminL pTmaxL  rap   eta    T    pTp   pTpi  dcaP   dcaPi  seed
-    register_job   "field_vlow"       "10_BField/field_vlow"        ${DEFAULT_N}   0.0001   0.0   10.0   5.0   0.9   0.30  0.200   0.200   0.050  0.050  0
-    register_job   "field_b050"       "10_BField/field_b050"        ${DEFAULT_N}   0.50     0.0   10.0   5.0   0.9   0.30  0.200   0.200   0.050  0.050  0
-    register_job   "field_b100"       "10_BField/field_b100"        ${DEFAULT_N}   1.00     0.0   10.0   5.0   0.9   0.30  0.200   0.200   0.050  0.050  0
-    register_job   "field_b050neg"    "10_BField/field_b050neg"     ${DEFAULT_N}   -0.50    0.0   10.0   5.0   0.9   0.30  0.200   0.200   0.050  0.050  0
+    register_job   "field_vlow"       "10_BField/fieldCuts_vlow"        ${DEFAULT_N}   0.0001   0.0   10.0   5.0   0.9   0.30  0.200   0.200   0.050  0.050  0
+    register_job   "field_b050"       "10_BField/fieldCuts_b050"        ${DEFAULT_N}   0.50     0.0   10.0   5.0   0.9   0.30  0.200   0.200   0.050  0.050  0
+    register_job   "field_b100"       "10_BField/fieldCuts_b100"        ${DEFAULT_N}   1.00     0.0   10.0   5.0   0.9   0.30  0.200   0.200   0.050  0.050  0
+    register_job   "field_b050neg"    "10_BField/fieldCuts_b050neg"     ${DEFAULT_N}   -0.50    0.0   10.0   5.0   0.9   0.30  0.200   0.200   0.050  0.050  0
 fi
 
 

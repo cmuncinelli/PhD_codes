@@ -1033,7 +1033,7 @@ static void MakeFig10_RingProxyJetVsEta(TDirectory* famDir, TDirectory* famOut, 
  * @brief Fig 11 -- <R_proxy_jet> vs Lambda pT for all four scenarios.
  */
 // ==========================================================================
-static void MakeFig11_RingVsPtJet(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
+static void MakeFig11_ringJetVsPt(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
 {
     ScenDirs sd = GetScenDirs(famDir, "All");
     TProfile* pNC = sd.nc ? static_cast<TProfile*>(SafeGet(sd.nc, "pRingProxyJetVsPt")) : nullptr;
@@ -1055,7 +1055,7 @@ static void MakeFig11_RingVsPtJet(TDirectory* famDir, TDirectory* famOut, const 
     }
     ymax = (ymax < 1.e-6) ? 0.05 : ymax * 1.35;
 
-    TCanvas* c = new TCanvas(Form("c_%s_ringVsPtJet", famLabel), "", 750, 600);
+    TCanvas* c = new TCanvas(Form("c_%s_ringJetVsPt", famLabel), "", 750, 600);
     c->SetLeftMargin(0.14);  c->SetBottomMargin(0.13);
 
     pNC->SetTitle(Form("<R_{proxy}^{jet}> vs #Lambda p_{T} -- %s;p_{T}^{#Lambda} [GeV/c];<R_{proxy}^{jet}>", famLabel));
@@ -1279,7 +1279,7 @@ void plotHelicityEfficiency(const char* inputFile = "helicityEffOutput.root")
 
         // Random jet direction proxy figures:
         MakeFig10_RingProxyJetVsEta (famDir, famOut, famName);
-        MakeFig11_RingVsPtJet       (famDir, famOut, famName);
+        MakeFig11_ringJetVsPt       (famDir, famOut, famName);
         MakeFig12_IntegratedRingJet (famDir, famOut, famName);
     }
 
