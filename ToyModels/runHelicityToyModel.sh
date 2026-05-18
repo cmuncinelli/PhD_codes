@@ -134,6 +134,7 @@
 #   ./runHelicityToyModel.sh --jobs 8           # Override parallelism limit
 #   ./runHelicityToyModel.sh --dry-run          # Print jobs without executing
 #   ./runHelicityToyModel.sh --list             # List all registered jobs and exit
+#   ./runHelicityToyModel.sh --plot             # Skip generation, run plotter only
 #   ./runHelicityToyModel.sh --help             # Show this help
 #
 # OUTPUT STRUCTURE
@@ -218,6 +219,7 @@ PLT_MACRO="${SCRIPT_DIR}/plotHelicityEfficiency.cxx"
 
 DRY_RUN=0
 LIST_ONLY=0
+PLOT_ONLY=0
 FAMILIES_TO_RUN=()
 
 print_help() {
@@ -230,6 +232,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --help|-h)
             print_help
+            ;;
+        --plot|-p)
+            PLOT_ONLY=1
+            shift
             ;;
         --dry-run|-n)
             DRY_RUN=1
@@ -386,22 +392,27 @@ execute_job() {
         echo ""
     } > "${LOG_FILE}"
 
-    # Run generator
     local T0; T0=$(date +%s)
-    if eval "${ROOT_EXE} -l -b -q '${GEN_MACRO}(${GEN_CALL})'" \
-            >> "${LOG_FILE}" 2>&1; then
-        local T1; T1=$(date +%s)
-        echo "Generator OK  ($(( T1 - T0 )) s)" >> "${LOG_FILE}"
-    else
-        local STATUS=$?
-        echo "Generator FAILED (exit ${STATUS})" >> "${LOG_FILE}"
-        echo "ERROR [${NAME}]: generator failed (exit ${STATUS}). Log: ${LOG_FILE}" >&2
-        return ${STATUS}
+    # -------------------------------------------------------------------------
+    # CONDITIONAL GENERATOR EXECUTION (if you only update the plotting function, then you may not want to re-generate the data)
+    # -------------------------------------------------------------------------
+    if [[ ${PLOT_ONLY} -eq 0 ]]; then
+        if eval "${ROOT_EXE} -l -b -q '${GEN_MACRO}(${GEN_CALL})'" \
+                >> "${LOG_FILE}" 2>&1; then
+            local T1; T1=$(date +%s)
+            echo "Generator OK  ($(( T1 - T0 )) s)" >> "${LOG_FILE}"
+        else
+            local STATUS=$?
+            echo "Generator FAILED (exit ${STATUS})" >> "${LOG_FILE}"
+            echo "ERROR [${NAME}]: generator failed (exit ${STATUS}). Log: ${LOG_FILE}" >&2
+            return ${STATUS}
+        fi
+        echo "" >> "${LOG_FILE}"
     fi
 
     echo "" >> "${LOG_FILE}"
 
-    # Run plotter
+    # Run plotter (always runs -- this is cheap!)
     local T2; T2=$(date +%s)
     if eval "${ROOT_EXE} -l -b -q '${PLT_MACRO}(${PLT_CALL})'" \
             >> "${LOG_FILE}" 2>&1; then
@@ -426,7 +437,7 @@ execute_job() {
 # Export so GNU parallel can call it across forked subshells
 export -f execute_job
 # Also export the path variables that execute_job needs
-export BASE_DIR LOG_DIR ROOT_EXE GEN_MACRO PLT_MACRO
+export BASE_DIR LOG_DIR ROOT_EXE GEN_MACRO PLT_MACRO PLOT_ONLY
 
 
 # =============================================================================

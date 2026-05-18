@@ -618,9 +618,10 @@ static void MakeFig6_IntegratedRing(TDirectory* famDir, TDirectory* famOut, cons
         }
     }
     
-    // Enforce a hard minimum scale of 0.02 so we don't zoom in on microscopic 
-    // statistical noise, and increase the margin multiplier to zoom out.
-    globalMax = std::max(0.02, globalMax * 2.5);
+    // // Enforce a hard minimum scale of 0.02 so we don't zoom in on microscopic 
+    // // statistical noise, and increase the margin multiplier to zoom out.
+    // globalMax = std::max(0.02, globalMax * 2.5);
+    globalMax = globalMax * 1.5;
 
     TCanvas* c = new TCanvas(Form("c_%s_intRing", famLabel), "", 1050, 500);
     c->Divide(3, 1, 0.004, 0.002);
@@ -1104,9 +1105,10 @@ static void MakeFig12_IntegratedRingJet(TDirectory* famDir, TDirectory* famOut, 
         }
     }
     
-    // Enforce a hard minimum scale of 0.02 so we don't zoom in on microscopic 
-    // statistical noise, and increase the margin multiplier to zoom out.
-    globalMax = std::max(0.02, globalMax * 2.5);
+    // // Enforce a hard minimum scale of 0.02 so we don't zoom in on microscopic 
+    // // statistical noise, and increase the margin multiplier to zoom out.
+    // globalMax = std::max(0.02, globalMax * 2.5);
+    globalMax = globalMax * 1.2;
 
     TCanvas* c = new TCanvas(Form("c_%s_intRingJet", famLabel), "", 1050, 500);
     c->Divide(3, 1, 0.004, 0.002);
@@ -1147,6 +1149,122 @@ static void MakeFig12_IntegratedRingJet(TDirectory* famDir, TDirectory* famOut, 
 
     c->cd(0);
     AddLabel(0.5, 0.995, Form("Integrated <R_{proxy}^{jet}> per scenario -- %s", famLabel), 0.036, 22);
+    WriteCanvas(c, famOut);
+    delete c;
+}
+
+// ==========================================================================
+/**
+ * @brief Fig 13 -- 2-panel random jet ring observable proxy figure.
+ *
+ * Left panel: distributions of R_proxyJet for all four scenarios ("All" eta),
+ * normalised to unit area.  Right panel: profile <R_proxyJet> vs Lambda eta for
+ * all four scenarios.
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory.
+ * @param famLabel  Short label used in object names.
+ */
+// ==========================================================================
+static void MakeFig13_RingProxyJet(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
+{
+    // --- Retrieve distributions (h1d_ringProxyJet) from "All" directories ---
+    TH1D* hDistNC = nullptr;  TH1D* hDistPT = nullptr;
+    TH1D* hDistDC = nullptr;  TH1D* hDistBC = nullptr;
+    {
+        TDirectory* dNC = GetScenarioDir(famDir, "NoCuts",     "All");
+        TDirectory* dPT = GetScenarioDir(famDir, "pTCutOnly",  "All");
+        TDirectory* dDC = GetScenarioDir(famDir, "DCACutOnly", "All");
+        TDirectory* dBC = GetScenarioDir(famDir, "BothCuts",   "All");
+        if (dNC) hDistNC = static_cast<TH1D*>(SafeGet(dNC, "h1d_ringProxyJet"));
+        if (dPT) hDistPT = static_cast<TH1D*>(SafeGet(dPT, "h1d_ringProxyJet"));
+        if (dDC) hDistDC = static_cast<TH1D*>(SafeGet(dDC, "h1d_ringProxyJet"));
+        if (dBC) hDistBC = static_cast<TH1D*>(SafeGet(dBC, "h1d_ringProxyJet"));
+    }
+
+    // --- Retrieve <R_proxyJet> vs eta profiles from "All" ---
+    ScenDirs sd = GetScenDirs(famDir, "All");
+    TProfile* pNC = sd.nc ? static_cast<TProfile*>(SafeGet(sd.nc, "pRingProxyJetVsEta")) : nullptr;
+    TProfile* pPT = sd.pt ? static_cast<TProfile*>(SafeGet(sd.pt, "pRingProxyJetVsEta")) : nullptr;
+    TProfile* pDC = sd.dc ? static_cast<TProfile*>(SafeGet(sd.dc, "pRingProxyJetVsEta")) : nullptr;
+    TProfile* pBC = sd.bc ? static_cast<TProfile*>(SafeGet(sd.bc, "pRingProxyJetVsEta")) : nullptr;
+    if (!pNC && !hDistNC) return;
+
+    TH1D* hDnc = SafeClone(hDistNC);
+    TH1D* hDpt = SafeClone(hDistPT);
+    TH1D* hDdc = SafeClone(hDistDC);
+    TH1D* hDbc = SafeClone(hDistBC);
+    
+    SetHistStyle(hDnc, kColNoCuts, kMarkerNC);  SetHistStyle(hDpt, kColPtCut,  kMarkerPT);
+    SetHistStyle(hDdc, kColDcaCut, kMarkerDC);  SetHistStyle(hDbc, kColBoth,   kMarkerBC);
+
+    SetHistStyle(pNC, kColNoCuts, kMarkerNC);   SetHistStyle(pPT, kColPtCut,  kMarkerPT);
+    SetHistStyle(pDC, kColDcaCut, kMarkerDC);   SetHistStyle(pBC, kColBoth,   kMarkerBC);
+
+    TCanvas* c = new TCanvas(Form("c_%s_ringProxyJetDist", famLabel), "", 1200, 550);
+    c->Divide(2, 1, 0.004, 0.002);
+
+    // ---- Left panel: R_proxyJet distribution ----
+    c->cd(1);
+    gPad->SetLeftMargin(0.14);  gPad->SetBottomMargin(0.13);
+    {
+        double ymax = 0.;
+        for (TH1D* h : {hDnc, hDpt, hDdc, hDbc}) { if (h && h->GetMaximum() > ymax) ymax = h->GetMaximum(); }
+        ymax *= 1.3;
+        if (hDnc) {
+            hDnc->SetTitle(Form("R_{proxy}^{jet} distribution -- %s;R_{proxy}^{jet};Counts", famLabel));
+            hDnc->GetYaxis()->SetRangeUser(0., ymax);
+            hDnc->Draw("HIST");
+        }
+        if (hDpt) hDpt->Draw("HIST SAME");
+        if (hDdc) hDdc->Draw("HIST SAME");
+        if (hDbc) hDbc->Draw("HIST SAME");
+        TLine* zl = new TLine(0., 0., 0., ymax);
+        zl->SetLineColor(kGray + 2);  zl->SetLineStyle(3);  zl->Draw("SAME");
+        TLegend* leg = MakeLegend(0.15, 0.70, 0.60, 0.88);
+        if (hDnc) leg->AddEntry(hDnc, kScenLabels[0], "l");
+        if (hDpt) leg->AddEntry(hDpt, kScenLabels[1], "l");
+        if (hDdc) leg->AddEntry(hDdc, kScenLabels[2], "l");
+        if (hDbc) leg->AddEntry(hDbc, kScenLabels[3], "l");
+        leg->Draw("SAME");
+    }
+
+    // ---- Right panel: <R_proxyJet> vs eta ----
+    c->cd(2);
+    gPad->SetLeftMargin(0.14);  gPad->SetBottomMargin(0.13);
+    {
+        double ymax = 0.;
+        for (TProfile* p : {pNC, pPT, pDC, pBC}) {
+            if (!p) continue;
+            for (int ib = 1; ib <= p->GetNbinsX(); ++ib) {
+                double v = std::fabs(p->GetBinContent(ib)) + p->GetBinError(ib);
+                if (v > ymax) ymax = v;
+            }
+        }
+        ymax = (ymax < 1.e-6) ? 0.05 : ymax * 1.35;
+        if (pNC) {
+            pNC->SetTitle(Form("<R_{proxy}^{jet}> vs #eta_{#Lambda} -- %s;#eta_{#Lambda};<R_{proxy}^{jet}>", famLabel));
+            pNC->GetYaxis()->SetRangeUser(-ymax, ymax);
+            pNC->Draw("EP");
+        }
+        if (pPT) pPT->Draw("EP SAME");
+        if (pDC) pDC->Draw("EP SAME");
+        if (pBC) pBC->Draw("EP SAME");
+        double etaMax = pNC ? pNC->GetXaxis()->GetXmax() : 0.9;
+        TLine* zl  = new TLine(-etaMax, 0., etaMax, 0.);
+        zl->SetLineColor(kGray + 2);   zl->SetLineStyle(2);  zl->Draw("SAME");
+        TLine* eta0 = new TLine(0., -ymax, 0., ymax);
+        eta0->SetLineColor(kGray + 1); eta0->SetLineStyle(3); eta0->Draw("SAME");
+        TLegend* leg = MakeLegend(0.15, 0.72, 0.50, 0.89);
+        if (pNC) leg->AddEntry(pNC, kScenLabels[0], "ep");
+        if (pPT) leg->AddEntry(pPT, kScenLabels[1], "ep");
+        if (pDC) leg->AddEntry(pDC, kScenLabels[2], "ep");
+        if (pBC) leg->AddEntry(pBC, kScenLabels[3], "ep");
+        leg->Draw("SAME");
+    }
+
+    c->cd(0);
+    AddLabel(0.5, 0.995, Form("Jet Ring observable proxy -- %s", famLabel), 0.036, 22);
     WriteCanvas(c, famOut);
     delete c;
 }
@@ -1278,8 +1396,10 @@ void plotHelicityEfficiency(const char* inputFile = "helicityEffOutput.root")
         MakeFig9_EtaDiff      (famDir, famOut, famName);
 
         // Random jet direction proxy figures:
-        MakeFig10_RingProxyJetVsEta (famDir, famOut, famName);
+        // (numeration got confusing, but the plots are now saved in the same order for the \hat z and \hat jet proxies)
+        MakeFig13_RingProxyJet      (famDir, famOut, famName);
         MakeFig11_ringJetVsPt       (famDir, famOut, famName);
+        MakeFig10_RingProxyJetVsEta (famDir, famOut, famName);
         MakeFig12_IntegratedRingJet (famDir, famOut, famName);
     }
 
