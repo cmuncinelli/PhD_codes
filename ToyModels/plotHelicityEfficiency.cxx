@@ -59,6 +59,9 @@
 #include <TMath.h>
 #include <TSystem.h>
 #include <TROOT.h>
+// New for the non-SEM error estimators of integrated ring observables:
+#include <TGraphErrors.h>
+#include <TMarker.h>
 
 #include <cstdio>
 #include <cstring>
@@ -1032,6 +1035,15 @@ static void MakeFig10_RingProxyJetVsEta(TDirectory* famDir, TDirectory* famOut, 
 // ==========================================================================
 /**
  * @brief Fig 11 -- <R_proxy_jet> vs Lambda pT for all four scenarios.
+ *
+ * Single panel figure displaying the profile of the jet ring observable 
+ * proxy (<R_proxy_jet>) as a function of the Lambda transverse momentum (pT).
+ * Overlays all four cut scenarios (No Cuts, pT Cut Only, DCA Cut Only, Both Cuts)
+ * using the inclusive ("All") pseudorapidity selection.
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory.
+ * @param famLabel  Short label used in object names.
  */
 // ==========================================================================
 static void MakeFig11_ringJetVsPt(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
@@ -1084,7 +1096,20 @@ static void MakeFig11_ringJetVsPt(TDirectory* famDir, TDirectory* famOut, const 
 
 // ==========================================================================
 /**
- * @brief Fig 12 -- integrated <R_proxy_jet> bar chart, one panel per eta selection.
+ * @brief Fig 12 -- Integrated <R_proxy_jet> bar chart per scenario.
+ *
+ * 3 panels:
+ * Left:   EtaPos (#eta_{#Lambda} > 0)
+ * Middle: EtaNeg (#eta_{#Lambda} < 0)
+ * Right:  All Eta
+ *
+ * Each panel displays a 1D chart of the integrated jet ring observable proxy 
+ * (<R_proxy_jet>) extracted from the single-bin TProfiles for the four 
+ * different cut scenarios.
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory.
+ * @param famLabel  Short label used in object names.
  */
 // ==========================================================================
 static void MakeFig12_IntegratedRingJet(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
@@ -1149,6 +1174,89 @@ static void MakeFig12_IntegratedRingJet(TDirectory* famDir, TDirectory* famOut, 
 
     c->cd(0);
     AddLabel(0.5, 0.995, Form("Integrated <R_{proxy}^{jet}> per scenario -- %s", famLabel), 0.036, 22);
+    WriteCanvas(c, famOut);
+    delete c;
+}
+
+// ==========================================================================
+/**
+ * @brief Fig 12 (event-mean variant) -- integrated <R_proxy_jet> bar chart
+ *        using the event-mean uncertainty estimator, one panel per eta selection.
+ *
+ * @details
+ * Mirrors MakeFig12_IntegratedRingJet exactly in layout, but replaces the
+ * TProfile SEM with the event-mean-based uncertainty that correctly accounts
+ * for intra-event correlations arising from Lambdas sharing the same jet
+ * direction.
+ *
+ * Central value: hEventMeanRingProxyJet->GetMean()
+ *   -- mean of the per-event averages R_e = (1/N_e) sum_i R_i
+ * Uncertainty:   hEventMeanRingProxyJet->GetMeanError() = StdDev(R_e) / sqrt(N_events)
+ *   -- properly treats jet groups as the independent sampling unit
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory in the plots ROOT file.
+ * @param famLabel  Short label used in canvas and object names.
+ */
+// ==========================================================================
+static void MakeFig12_IntegratedRingJetEvt(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
+{
+    const char* etaSels[3]   = {"EtaPos", "EtaNeg", "All"};
+    const char* etaLabels[3] = {"#eta_{#Lambda} > 0", "#eta_{#Lambda} < 0", "All #eta"};
+
+    // Global y range from event-mean errors across all panels
+    double globalMax = 0.;
+    for (int ie = 0; ie < 3; ++ie) {
+        for (int is = 0; is < 4; ++is) {
+            TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
+            if (!dir) continue;
+            TH1D* h = static_cast<TH1D*>(SafeGet(dir, "hEventMeanRingProxyJet"));
+            if (!h || h->GetEntries() == 0) continue;
+            double v = std::fabs(h->GetMean()) + h->GetMeanError();
+            if (v > globalMax) globalMax = v;
+        }
+    }
+    globalMax = (globalMax < 1.e-8) ? 0.01 : globalMax * 1.5;
+
+    TCanvas* c = new TCanvas(Form("c_%s_intRingJetEvt", famLabel), "", 1050, 500);
+    c->Divide(3, 1, 0.004, 0.002);
+
+    for (int ie = 0; ie < 3; ++ie) {
+        c->cd(ie + 1);
+        gPad->SetLeftMargin(0.18);  gPad->SetBottomMargin(0.16);
+
+        TH1D* hBar = new TH1D(Form("hBarJetEvt_%s_%s", famLabel, etaSels[ie]),
+                               Form("<R_{proxy}^{jet}> (event-mean) -- %s;Scenario;<R_{proxy}^{jet}>", etaLabels[ie]),
+                               4, 0., 4.);
+        hBar->SetDirectory(nullptr);
+        hBar->GetYaxis()->SetRangeUser(-globalMax, globalMax);
+        hBar->SetStats(0);
+        for (int is = 0; is < 4; ++is) hBar->GetXaxis()->SetBinLabel(is + 1, kScenLabels[is]);
+        hBar->GetXaxis()->SetLabelSize(0.055);
+        hBar->Draw("AXIS");
+
+        TLine* zl = new TLine(0., 0., 4., 0.);
+        zl->SetLineColor(kGray + 2);  zl->SetLineStyle(2);  zl->SetLineWidth(2);  zl->Draw("SAME");
+
+        for (int is = 0; is < 4; ++is) {
+            TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
+            if (!dir) continue;
+            TH1D* h = static_cast<TH1D*>(SafeGet(dir, "hEventMeanRingProxyJet"));
+            if (!h || h->GetEntries() == 0) continue;
+
+            TH1D* hPt = new TH1D(Form("hPtJetEvt12_%s_%d_%d", famLabel, ie, is), "", 4, 0., 4.);
+            hPt->SetDirectory(nullptr);
+            hPt->SetBinContent(is + 1, h->GetMean());
+            hPt->SetBinError  (is + 1, h->GetMeanError());
+            SetHistStyle(hPt, kScenColors[is], kScenMarkers[is]);
+            hPt->SetLineWidth(3);
+            hPt->Draw("E1 SAME");
+        }
+        AddLabel(0.5, 0.96, etaLabels[ie], 0.045, 22);
+    }
+
+    c->cd(0);
+    AddLabel(0.5, 0.995, Form("Integrated <R_{proxy}^{jet}> (event-mean estimator) -- %s", famLabel), 0.036, 22);
     WriteCanvas(c, famOut);
     delete c;
 }
@@ -1265,6 +1373,218 @@ static void MakeFig13_RingProxyJet(TDirectory* famDir, TDirectory* famOut, const
 
     c->cd(0);
     AddLabel(0.5, 0.995, Form("Jet Ring observable proxy -- %s", famLabel), 0.036, 22);
+    WriteCanvas(c, famOut);
+    delete c;
+}
+
+
+// ==========================================================================
+/**
+ * @brief Fig 14 -- direct overlay comparison of TProfile SEM vs event-mean
+ *        uncertainty for the integrated <R_proxy_jet>, one panel per eta selection.
+ *
+ * @details
+ * For each (scenario, eta) combination, two points are drawn at slightly
+ * offset x positions so both estimators are visible simultaneously:
+ *
+ *   Filled marker (x - 0.12): naive TProfile SEM, assumes all entries independent
+ *   Open  marker  (x + 0.12): event-mean sigma / sqrt(N_events), accounts for
+ *                              intra-event correlations from shared jet direction
+ *
+ * A ratio of open/filled error bar height > 1 indicates that the TProfile
+ * was underestimating the true uncertainty.  Agreement confirms that the
+ * intra-event correlation is negligible at the current jet-group size.
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory in the plots ROOT file.
+ * @param famLabel  Short label used in canvas and object names.
+ */
+// ==========================================================================
+static void MakeFig14_RingJetErrComparison(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
+{
+    const char* etaSels[3]   = {"EtaPos", "EtaNeg", "All"};
+    const char* etaLabels[3] = {"#eta_{#Lambda} > 0", "#eta_{#Lambda} < 0", "All #eta"};
+
+    // Open marker counterparts for kScenMarkers {20,21,22,23}
+    static const int kOpenMarkers[4] = {24, 25, 26, 32};
+
+    // Global y range covering both estimators
+    double globalMax = 0.;
+    for (int ie = 0; ie < 3; ++ie) {
+        for (int is = 0; is < 4; ++is) {
+            TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
+            if (!dir) continue;
+            TProfile* p = static_cast<TProfile*>(SafeGet(dir, "pRingProxyJet"));
+            TH1D*     h = static_cast<TH1D*>(SafeGet(dir, "hEventMeanRingProxyJet"));
+            if (p) {
+                double v = std::fabs(p->GetBinContent(1)) + p->GetBinError(1);
+                if (v > globalMax) globalMax = v;
+            }
+            if (h && h->GetEntries() > 0) {
+                double v = std::fabs(h->GetMean()) + h->GetMeanError();
+                if (v > globalMax) globalMax = v;
+            }
+        }
+    }
+    globalMax = (globalMax < 1.e-8) ? 0.01 : globalMax * 1.6;
+
+    TCanvas* c = new TCanvas(Form("c_%s_ringJetErrComp", famLabel), "", 1050, 500);
+    c->Divide(3, 1, 0.004, 0.002);
+
+    for (int ie = 0; ie < 3; ++ie) {
+        c->cd(ie + 1);
+        gPad->SetLeftMargin(0.18);  gPad->SetBottomMargin(0.16);
+
+        // Axis frame with scenario bin labels
+        TH1D* hBar = new TH1D(Form("hBarErrComp_%s_%s", famLabel, etaSels[ie]),
+                               Form("<R_{proxy}^{jet}> -- %s;Scenario;<R_{proxy}^{jet}>", etaLabels[ie]),
+                               4, 0., 4.);
+        hBar->SetDirectory(nullptr);
+        hBar->GetYaxis()->SetRangeUser(-globalMax, globalMax);
+        hBar->SetStats(0);
+        for (int is = 0; is < 4; ++is) hBar->GetXaxis()->SetBinLabel(is + 1, kScenLabels[is]);
+        hBar->GetXaxis()->SetLabelSize(0.055);
+        hBar->Draw("AXIS");
+
+        TLine* zl = new TLine(0., 0., 4., 0.);
+        zl->SetLineColor(kGray + 2);  zl->SetLineStyle(2);  zl->SetLineWidth(2);  zl->Draw("SAME");
+
+        for (int is = 0; is < 4; ++is) {
+            TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
+            if (!dir) continue;
+            TProfile* p = static_cast<TProfile*>(SafeGet(dir, "pRingProxyJet"));
+            TH1D*     h = static_cast<TH1D*>(SafeGet(dir, "hEventMeanRingProxyJet"));
+
+            // Bin center for scenario 'is' in a 4-bin histo spanning [0,4]
+            double xCtr = is + 0.5;
+
+            // -- TProfile SEM: filled marker, shifted left --
+            if (p) {
+                TGraphErrors* grS = new TGraphErrors(1);
+                grS->SetPoint    (0, xCtr - 0.12, p->GetBinContent(1));
+                grS->SetPointError(0, 0.,          p->GetBinError(1));
+                grS->SetMarkerStyle(kScenMarkers[is]);
+                grS->SetMarkerColor(kScenColors[is]);
+                grS->SetLineColor  (kScenColors[is]);
+                grS->SetLineWidth(2);
+                grS->SetMarkerSize(1.1);
+                grS->Draw("P SAME");
+            }
+
+            // -- Event-mean sigma: open marker, shifted right --
+            if (h && h->GetEntries() > 0) {
+                TGraphErrors* grE = new TGraphErrors(1);
+                grE->SetPoint    (0, xCtr + 0.12, h->GetMean());
+                grE->SetPointError(0, 0.,          h->GetMeanError());
+                grE->SetMarkerStyle(kOpenMarkers[is]);
+                grE->SetMarkerColor(kScenColors[is]);
+                grE->SetLineColor  (kScenColors[is]);
+                grE->SetLineWidth(2);
+                grE->SetMarkerSize(1.1);
+                grE->Draw("P SAME");
+            }
+        }
+        AddLabel(0.5, 0.96, etaLabels[ie], 0.045, 22);
+
+        // Legend on the rightmost (All) panel only
+        if (ie == 2) {
+            TLegend* leg = MakeLegend(0.18, 0.50, 0.95, 0.88);
+            for (int is = 0; is < 4; ++is) {
+                TLine* dummy = new TLine();
+                dummy->SetLineColor(kScenColors[is]);  dummy->SetLineWidth(2);
+                leg->AddEntry(dummy, kScenLabels[is], "l");
+            }
+            TMarker* mFull = new TMarker(0., 0., 20);
+            mFull->SetMarkerColor(kBlack);  mFull->SetMarkerSize(1.1);
+            leg->AddEntry(mFull, "TProfile SEM (filled)", "p");
+            TMarker* mOpen = new TMarker(0., 0., 24);
+            mOpen->SetMarkerColor(kBlack);  mOpen->SetMarkerSize(1.1);
+            leg->AddEntry(mOpen, "Event-mean #sigma (open)", "p");
+            leg->Draw("SAME");
+        }
+    }
+
+    c->cd(0);
+    AddLabel(0.5, 0.995, Form("SEM vs event-mean uncertainty comparison -- %s", famLabel), 0.036, 22);
+    WriteCanvas(c, famOut);
+    delete c;
+}
+
+// ==========================================================================
+/**
+ * @brief Fig 15 -- distribution of per-event R_proxy_jet means, all scenarios.
+ *
+ * @details
+ * Analog of Fig13's left panel, but drawing hEventMeanRingProxyJet (the
+ * distribution of R_e = mean ringProxyJet within each jet group) rather than
+ * the per-Lambda h1d_ringProxyJet.
+ *
+ * This distribution is expected to be:
+ *   - Much narrower than h1d_ringProxyJet by a factor ~1/sqrt(N_per_event),
+ *   - Approximately Gaussian (central limit theorem acting on the group means),
+ *   - Centred near zero for all scenarios (any shift would indicate a bias).
+ *
+ * Its standard deviation divided by sqrt(N_events) is exactly the event-mean
+ * uncertainty plotted in MakeFig12_IntegratedRingJetEvt and MakeFig14.
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory in the plots ROOT file.
+ * @param famLabel  Short label used in canvas and object names.
+ */
+// ==========================================================================
+static void MakeFig15_EventMeanDist(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
+{
+    TH1D* hNC = nullptr;  TH1D* hPT = nullptr;
+    TH1D* hDC = nullptr;  TH1D* hBC = nullptr;
+    {
+        TDirectory* dNC = GetScenarioDir(famDir, "NoCuts",     "All");
+        TDirectory* dPT = GetScenarioDir(famDir, "pTCutOnly",  "All");
+        TDirectory* dDC = GetScenarioDir(famDir, "DCACutOnly", "All");
+        TDirectory* dBC = GetScenarioDir(famDir, "BothCuts",   "All");
+        if (dNC) hNC = static_cast<TH1D*>(SafeGet(dNC, "hEventMeanRingProxyJet"));
+        if (dPT) hPT = static_cast<TH1D*>(SafeGet(dPT, "hEventMeanRingProxyJet"));
+        if (dDC) hDC = static_cast<TH1D*>(SafeGet(dDC, "hEventMeanRingProxyJet"));
+        if (dBC) hBC = static_cast<TH1D*>(SafeGet(dBC, "hEventMeanRingProxyJet"));
+    }
+    if (!hNC) return;
+
+    TH1D* hNCc = SafeClone(hNC);
+    TH1D* hPTc = SafeClone(hPT);
+    TH1D* hDCc = SafeClone(hDC);
+    TH1D* hBCc = SafeClone(hBC);
+
+    SetHistStyle(hNCc, kColNoCuts, kMarkerNC);  SetHistStyle(hPTc, kColPtCut,  kMarkerPT);
+    SetHistStyle(hDCc, kColDcaCut, kMarkerDC);  SetHistStyle(hBCc, kColBoth,   kMarkerBC);
+
+    double ymax = 0.;
+    for (TH1D* h : {hNCc, hPTc, hDCc, hBCc}) {
+        if (h && h->GetMaximum() > ymax) ymax = h->GetMaximum();
+    }
+    ymax *= 1.3;
+
+    TCanvas* c = new TCanvas(Form("c_%s_evtMeanDist", famLabel), "", 750, 600);
+    c->SetLeftMargin(0.14);  c->SetBottomMargin(0.13);
+
+    if (hNCc) {
+        hNCc->SetTitle(Form("Per-event mean R_{proxy}^{jet} distribution -- %s;"
+                            "#bar{R}_{proxy}^{jet} per jet group;Events", famLabel));
+        hNCc->GetYaxis()->SetRangeUser(0., ymax);
+        hNCc->Draw("HIST");
+    }
+    if (hPTc) hPTc->Draw("HIST SAME");
+    if (hDCc) hDCc->Draw("HIST SAME");
+    if (hBCc) hBCc->Draw("HIST SAME");
+
+    TLine* zl = new TLine(0., 0., 0., ymax);
+    zl->SetLineColor(kGray + 2);  zl->SetLineStyle(3);  zl->Draw("SAME");
+
+    TLegend* leg = MakeLegend(0.15, 0.70, 0.60, 0.88);
+    if (hNCc) leg->AddEntry(hNCc, kScenLabels[0], "l");
+    if (hPTc) leg->AddEntry(hPTc, kScenLabels[1], "l");
+    if (hDCc) leg->AddEntry(hDCc, kScenLabels[2], "l");
+    if (hBCc) leg->AddEntry(hBCc, kScenLabels[3], "l");
+    leg->Draw("SAME");
+
     WriteCanvas(c, famOut);
     delete c;
 }
@@ -1401,6 +1721,11 @@ void plotHelicityEfficiency(const char* inputFile = "helicityEffOutput.root")
         MakeFig11_ringJetVsPt       (famDir, famOut, famName);
         MakeFig10_RingProxyJetVsEta (famDir, famOut, famName);
         MakeFig12_IntegratedRingJet (famDir, famOut, famName);
+
+        // Event-mean estimator figures
+        MakeFig12_IntegratedRingJetEvt (famDir, famOut, famName);
+        MakeFig14_RingJetErrComparison (famDir, famOut, famName);
+        MakeFig15_EventMeanDist        (famDir, famOut, famName);
     }
 
     // Lambda kinematics -- shared, written at the fout top level

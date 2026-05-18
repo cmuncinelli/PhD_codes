@@ -384,6 +384,16 @@ struct ScenarioHistos {
     TProfile* pRingProxyJetVsEtaJet;// <R_proxyJet> vs Jet pseudorapidity
     TProfile* pRingProxyJetVsPt;    // <R_proxyJet> vs Lambda pT
 
+    // Some histograms for a better error estimation than the SEM:
+      // When we choose nLambdasSinceJetShuffle == 3, we are implicitly creating a correlation between 
+      // four Lambdas, as if they were in the same event. That can make the SEM error bars underestimate
+      // the error, which may make it look like we have non-zero spurious-signal even after integrating
+      // everything in eta.
+    // Per-event mean estimator for the integrated ring-jet observable:
+    TH1D*  hEventMeanRingProxyJet; // one fill per event (jet group); mean +/- error = unbiased estimator
+    double evtSumRpj = 0.;         // running sum of ringProxyJet values in the current event
+    int    evtCntRpj = 0;          // number of entries accumulated so far in each event
+
     // -- Decay geometry and daughter kinematics (useful for diagnosis) --
     TH1D*    h1d_decayRadius;    // transverse decay vertex radius [cm]
     TH1D*    h1d_pT_proton;      // proton pT in lab frame [GeV/c]
@@ -458,6 +468,12 @@ static ScenarioHistos BookScenario(TDirectory* dir, double etaMaxDetector)
     h.pRingProxyJetVsEta = new TProfile("pRingProxyJetVsEta", "<R_{proxyJet}> vs #Lambda pseudorapidity; #eta_{#Lambda};<R_{proxyJet}>", 9, -etaMaxDetector, etaMaxDetector);
     h.pRingProxyJetVsEtaJet = new TProfile("pRingProxyJetVsEtaJet", "<R_{proxyJet}> vs Jet; #eta_{Jet};<R_{proxyJet}>", 9, -etaMaxDetector, etaMaxDetector);
     h.pRingProxyJetVsPt = new TProfile("pRingProxyJetVsPt", "<R_{proxyJet}> vs #Lambda p_{T}; p_{T}^{#Lambda} [GeV/c];<R_{proxyJet}>", 10, 0., 5.); // 20 bins of 0.25 GeV/c each
+    
+    // For the per-event mean estimators for better error bars, considering correlations:
+    double evrmax = kPolPrefactor * 1.05;
+    h.hEventMeanRingProxyJet = new TH1D("hEventMeanRingProxyJet", "Event-mean <R_{proxyJet}> per jet group; #bar{R}_{proxyJet} per event; Events", 200, -evrmax, evrmax);
+    h.evtSumRpj = 0.;
+    h.evtCntRpj = 0;
 
     // ---------- Decay vertex and daughter kinematics ----------
     h.h1d_decayRadius = new TH1D("h1d_decayRadius", "Transverse decay vertex radius; r_{decay} = #sqrt{x_{v}^{2}+y_{v}^{2}} [cm];Counts", 180, 0., 180.); // 0 to 150 cm (would cover most of ITS/TPC inner field cage)
@@ -525,6 +541,10 @@ static void FillScenario(ScenarioHistos& h,
     h.pRingProxyJetVsEta->Fill(eta_lambda, ringProxyJet);
     h.pRingProxyJetVsEtaJet->Fill(eta_jet, ringProxyJet);
     h.pRingProxyJetVsPt->Fill(pT_lambda, ringProxyJet);
+
+    // Accumulate for the event-mean estimator; flush happens at jet reshuffle:
+    h.evtSumRpj += ringProxyJet;
+    h.evtCntRpj++;
 
     // Kinematics
     h.h1d_decayRadius->Fill(decayR);
@@ -674,6 +694,74 @@ static void FillFamily(FamilyHistos& f,
     // Scenario 4: Both cuts
     if (passPt && passDca)
         fill(f.BC_Pos, f.BC_Neg, f.BC_All);
+}
+
+// ==========================================================================
+/**
+ * @brief Closes the current implicit event in one ScenarioHistos accumulator
+ *        and records its mean ringProxyJet value.
+ *
+ * @details
+ * Lambdas are grouped into implicit "events" by the jet-reshuffle logic in
+ * the main loop: all Lambdas that share the same random jet direction belong
+ * to the same event.  While those Lambdas are being processed, their
+ * ringProxyJet values are accumulated in @p h.evtSumRpj / @p h.evtCntRpj
+ * rather than being flushed immediately.
+ *
+ * When the jet direction is about to change (or after the main loop ends),
+ * this function computes the event mean R_e = evtSumRpj / evtCntRpj and
+ * fills it into hEventMeanRingProxyJet.  The accumulators are then zeroed
+ * so the next event starts clean.
+ *
+ * The spread of hEventMeanRingProxyJet across many events provides an
+ * uncertainty estimate that correctly accounts for (ARTIFICIAL!) intra-event
+ * correlations, unlike the plain SEM returned by TProfile which assumes all
+ * entries are independent:
+ *   sigma(R_bar) = hEventMeanRingProxyJet->GetMeanError() = StdDev(R_e) / sqrt(N_events)
+ *
+ * Nothing is performed if no entries were accumulated (e.g. all Lambdas in the event were
+ * rejected by cuts).
+ *
+ * @param h  Reference to the ScenarioHistos whose accumulator is to be flushed.
+ */
+// ==========================================================================
+static void FlushEventMean(ScenarioHistos& h) {
+    if (h.evtCntRpj > 0) {
+        h.hEventMeanRingProxyJet->Fill(h.evtSumRpj / h.evtCntRpj);
+        h.evtSumRpj = 0.;
+        h.evtCntRpj = 0;
+    }
+}
+
+
+// ==========================================================================
+/**
+ * @brief Flushes the event accumulators for all twelve ScenarioHistos inside
+ *        a FamilyHistos struct.
+ *
+ * @details
+ * Calls FlushEventMean() on every (cut scenario) x (eta half) combination
+ * held by @p f.  This covers the full 4 x 3 = 12 ScenarioHistos members:
+ *
+ *   NoCuts     x { EtaPos, EtaNeg, All }
+ *   pTCutOnly  x { EtaPos, EtaNeg, All }
+ *   DCACutOnly x { EtaPos, EtaNeg, All }
+ *   BothCuts   x { EtaPos, EtaNeg, All }
+ *
+ * Must be called:
+ *   (a) inside the jet-reshuffle block, BEFORE drawing the new jet direction,
+ *       to close the event that just ended; and
+ *   (b) once after the main loop, to flush the last partial event that may
+ *       not have triggered a reshuffle.
+ *
+ * @param f  Reference to the FamilyHistos whose twelve accumulators are flushed.
+ */
+// ==========================================================================
+static void FlushEventMeansFamily(FamilyHistos& f) {
+    FlushEventMean(f.NC_Pos); FlushEventMean(f.NC_Neg); FlushEventMean(f.NC_All);
+    FlushEventMean(f.PT_Pos); FlushEventMean(f.PT_Neg); FlushEventMean(f.PT_All);
+    FlushEventMean(f.DC_Pos); FlushEventMean(f.DC_Neg); FlushEventMean(f.DC_All);
+    FlushEventMean(f.BC_Pos); FlushEventMean(f.BC_Neg); FlushEventMean(f.BC_All);
 }
 
 
@@ -1029,6 +1117,10 @@ void helicityEfficiencyToyModel(
         // 3.7.1  Compute the ring observable proxy using randomly sampled jet
         // ==================================================================
         if (nLambdasSinceJetShuffle == 3){
+            // Close the current event before drawing a new jet:
+            FlushEventMeansFamily(famNG);
+            FlushEventMeansFamily(famEG);
+
             // Every fourth Lambda that used the same jet direction will trigger a reshuffle of the jet direction
             // Physically, this would mean saying that there are about 4 Lambdas in the same event. One can test
             // if this makes much of an impact due to introducing a correlation between the Lambdas.
@@ -1115,6 +1207,10 @@ void helicityEfficiencyToyModel(
 
     } // end main loop over Lambdas
 
+    // Flush whatever partial event is left in the accumulators:
+    FlushEventMeansFamily(famNG);
+    FlushEventMeansFamily(famEG);
+
     // -----------------------------------------------------------------------
     // 4) Print summary statistics
     // -----------------------------------------------------------------------
@@ -1143,31 +1239,66 @@ void helicityEfficiencyToyModel(
     PrintCutStats("WithoutEtaGate", famNG);
     PrintCutStats("WithEtaGate",    famEG);
 
-    // Helper lambda to print integrated ring proxy values for one family
-    auto PrintRingFamily = [](const char* familyLabel, const FamilyHistos& f) {
-        auto PrintRing = [](const char* label,
-                            const ScenarioHistos& hA,
-                            const ScenarioHistos& hP,
-                            const ScenarioHistos& hN) {
-            double rAll = hA.pRingProxy->GetBinContent(1);
-            double eAll = hA.pRingProxy->GetBinError(1);
-            double rPos = hP.pRingProxy->GetBinContent(1);
-            double ePos = hP.pRingProxy->GetBinError(1);
-            double rNeg = hN.pRingProxy->GetBinContent(1);
-            double eNeg = hN.pRingProxy->GetBinError(1);
-            printf("    %-12s  All: %+.4e +/- %.4e  EtaPos: %+.4e +/- %.4e  EtaNeg: %+.4e +/- %.4e\n",
-                   label, rAll, eAll, rPos, ePos, rNeg, eNeg);
+    // Helper lambda to print the jet-proxy ring observable for one family,
+    // showing both the naive TProfile SEM and the event-mean-based uncertainty
+    // side by side so they can be compared directly.
+    auto PrintRingJetFamily = [](const char* familyLabel, const FamilyHistos& f) {
+
+        // Prints one scenario row: TProfile SEM vs event-mean sigma/sqrt(N_events)
+        auto PrintRingJet = [](const char* label,
+                               const ScenarioHistos& hA,
+                               const ScenarioHistos& hP,
+                               const ScenarioHistos& hN) {
+
+            // --- TProfile SEM (assumes independent entries) ---
+            double rAll_prof = hA.pRingProxyJet->GetBinContent(1);
+            double eAll_prof = hA.pRingProxyJet->GetBinError(1);
+            double rPos_prof = hP.pRingProxyJet->GetBinContent(1);
+            double ePos_prof = hP.pRingProxyJet->GetBinError(1);
+            double rNeg_prof = hN.pRingProxyJet->GetBinContent(1);
+            double eNeg_prof = hN.pRingProxyJet->GetBinError(1);
+
+            // --- Event-mean estimator: sigma(R_e) / sqrt(N_events) ---
+            double rAll_evt = hA.hEventMeanRingProxyJet->GetMean();
+            double eAll_evt = hA.hEventMeanRingProxyJet->GetMeanError();
+            double rPos_evt = hP.hEventMeanRingProxyJet->GetMean();
+            double ePos_evt = hP.hEventMeanRingProxyJet->GetMeanError();
+            double rNeg_evt = hN.hEventMeanRingProxyJet->GetMean();
+            double eNeg_evt = hN.hEventMeanRingProxyJet->GetMeanError();
+
+            // Number of events (jet groups) that contributed at least one entry
+            double nEvtAll = (double)hA.hEventMeanRingProxyJet->GetEntries();
+            double nEvtPos = (double)hP.hEventMeanRingProxyJet->GetEntries();
+            double nEvtNeg = (double)hN.hEventMeanRingProxyJet->GetEntries();
+
+            printf("    %-12s\n", label);
+            printf("      TProfile SEM    All: %+.4e +/- %.4e  EtaPos: %+.4e +/- %.4e  EtaNeg: %+.4e +/- %.4e\n",
+                   rAll_prof, eAll_prof, rPos_prof, ePos_prof, rNeg_prof, eNeg_prof);
+            printf("      Event-mean      All: %+.4e +/- %.4e  EtaPos: %+.4e +/- %.4e  EtaNeg: %+.4e +/- %.4e\n",
+                   rAll_evt,  eAll_evt,  rPos_evt,  ePos_evt,  rNeg_evt,  eNeg_evt);
+            printf("      N_events (jet groups w/ >=1 entry)   All: %.0f   EtaPos: %.0f   EtaNeg: %.0f\n",
+                   nEvtAll, nEvtPos, nEvtNeg);
+
+            // Ratio of the two error estimates: > 1 means TProfile was optimistic
+            // Guard against division by zero in edge cases
+            double ratioAll = (eAll_prof > 0.) ? eAll_evt / eAll_prof : 0.;
+            double ratioPos = (ePos_prof > 0.) ? ePos_evt / ePos_prof : 0.;
+            double ratioNeg = (eNeg_prof > 0.) ? eNeg_evt / eNeg_prof : 0.;
+            printf("      err ratio evt/prof  All: %.3f   EtaPos: %.3f   EtaNeg: %.3f"
+                   "  (>1 => TProfile underestimated uncertainty)\n",
+                   ratioAll, ratioPos, ratioNeg);
         };
-        printf("  [%s] <R_proxy> summary  (expected: 0 for NoCuts):\n", familyLabel);
-        PrintRing("NoCuts",     f.NC_All, f.NC_Pos, f.NC_Neg);
-        PrintRing("pTCutOnly",  f.PT_All, f.PT_Pos, f.PT_Neg);
-        PrintRing("DCACutOnly", f.DC_All, f.DC_Pos, f.DC_Neg);
-        PrintRing("BothCuts",   f.BC_All, f.BC_Pos, f.BC_Neg);
+
+        printf("  [%s] <R_proxyJet> summary -- TProfile SEM vs event-mean estimator:\n", familyLabel);
+        PrintRingJet("NoCuts",     f.NC_All, f.NC_Pos, f.NC_Neg);
+        PrintRingJet("pTCutOnly",  f.PT_All, f.PT_Pos, f.PT_Neg);
+        PrintRingJet("DCACutOnly", f.DC_All, f.DC_Pos, f.DC_Neg);
+        PrintRingJet("BothCuts",   f.BC_All, f.BC_Pos, f.BC_Neg);
         printf("\n");
     };
 
-    PrintRingFamily("WithoutEtaGate", famNG);
-    PrintRingFamily("WithEtaGate",    famEG);
+    PrintRingJetFamily("WithoutEtaGate", famNG);
+    PrintRingJetFamily("WithEtaGate",    famEG);
 
     // -----------------------------------------------------------------------
     // 5) Write all histograms to disk and close
