@@ -304,7 +304,7 @@ static void DrawVectorFieldPanel(TProfile2D* hX, TProfile2D* hY, TProfile2D* hZ,
                                   const char* title,
                                   double minEntries    = 50.,
                                   int    arrowBlockSize = 4,
-                                  double scalePercentile = 0.90)
+                                  double scalePercentile = 0.95)
 {
     if (!hX || !hY || !hZ) return;
 
@@ -338,23 +338,37 @@ static void DrawVectorFieldPanel(TProfile2D* hX, TProfile2D* hY, TProfile2D* hZ,
     int    nTilesX = nBinsX / bs;
     int    nTilesY = nBinsY / bs;
 
-    // ---- Pass 1: accumulate tile averages ----
-    struct Tile { double xc, yc, bx, by; bool valid = false; };
+    // ---- Pass 1: accumulate tile averages & propagate errors ----
+    struct Tile { 
+        double xc, yc;
+        double bx, by, err_bx, err_by;
+        double mag, err_mag;
+        bool valid = false; 
+    };
     std::vector<Tile> tiles(nTilesX * nTilesY);
 
     for (int itx = 0; itx < nTilesX; ++itx) {
         for (int ity = 0; ity < nTilesY; ++ity) {
             double sumBx = 0., sumBy = 0.;
+            double sumErrBx2 = 0., sumErrBy2 = 0.;
             int    nUsed = 0;
+            
             for (int dix = 0; dix < bs; ++dix) {
                 for (int diy = 0; diy < bs; ++diy) {
                     int ix = itx * bs + dix + 1;
                     int iy = ity * bs + diy + 1;
                     int gb = hX->GetBin(ix, iy);
                     if (hX->GetBinEntries(gb) < minEntries) continue;
+                    
                     sumBx += hX->GetBinContent(ix, iy);
                     sumBy += hY->GetBinContent(ix, iy);
-                    ++nUsed;
+                    
+                    double errX = hX->GetBinError(ix, iy);
+                    double errY = hY->GetBinError(ix, iy);
+                    sumErrBx2 += errX * errX;
+                    sumErrBy2 += errY * errY;
+                    
+                    nUsed++;
                 }
             }
 
@@ -368,30 +382,55 @@ static void DrawVectorFieldPanel(TProfile2D* hX, TProfile2D* hY, TProfile2D* hZ,
             Tile& t = tiles[itx * nTilesY + ity];
             t.xc = xc;  t.yc = yc;
             if (nUsed > 0) {
-                t.bx    = sumBx / nUsed;
-                t.by    = sumBy / nUsed;
+                t.bx     = sumBx / nUsed;
+                t.by     = sumBy / nUsed;
+                t.err_bx = std::sqrt(sumErrBx2) / nUsed;
+                t.err_by = std::sqrt(sumErrBy2) / nUsed;
+                
+                t.mag = std::sqrt(t.bx * t.bx + t.by * t.by);
+                
+                // Magnitude error propagation
+                if (t.mag > 1.e-12) 
+                    t.err_mag = std::sqrt(t.bx * t.bx * t.err_bx * t.err_bx + t.by * t.by * t.err_by * t.err_by) / t.mag;
+                else
+                    t.err_mag = 0.;
+                
                 t.valid = true;
             }
         }
     }
 
-    // ---- Robust scale reference: sort magnitudes, take percentile ----
-    std::vector<double> mags;
-    mags.reserve(tiles.size());
-    for (const Tile& t : tiles)
-        if (t.valid) mags.push_back(std::sqrt(t.bx*t.bx + t.by*t.by));
-    if (mags.empty()) return;
+    // ---- Collect valid tiles & sort by magnitude ----
+    std::vector<Tile*> validTiles;
+    validTiles.reserve(tiles.size());
+    for (Tile& t : tiles) {
+        if (t.valid) validTiles.push_back(&t);
+    }
+    if (validTiles.empty()) return;
 
-    std::sort(mags.begin(), mags.end());
-    // Clamp index safely; always at least the median if percentile is very low
-    int pIdx = static_cast<int>(scalePercentile * static_cast<double>(mags.size()));
-    pIdx = std::max(0, std::min(pIdx, static_cast<int>(mags.size()) - 1));
-    double scaleRef = mags[pIdx];
+    std::sort(validTiles.begin(), validTiles.end(),
+              [](const Tile* a, const Tile* b) { return a->mag < b->mag; });
+
+    // ---- Percentile index ----
+    int pIdx = static_cast<int>(scalePercentile * static_cast<double>(validTiles.size() - 1)); // Notice the -1 subtraction to not bias upwards.
+                                                                                               // For instance, if we have 100 elements, the 95th percentile
+                                                                                               // is actually on index 94, as indices go from 0 to 99
+    pIdx = std::max(0, std::min(pIdx, static_cast<int>(validTiles.size()) - 1));
+
+    // ---- Percentile reference ----
+    double scaleRef    = validTiles[pIdx]->mag;
+    double scaleRefErr = validTiles[pIdx]->err_mag;
 
     // Fallback: if the chosen percentile lands on zero (e.g. many empty tiles),
     // walk up to the first non-zero magnitude so we always draw something
     if (scaleRef < 1.e-12) {
-        for (double m : mags) { if (m > 1.e-12) { scaleRef = m; break; } }
+        for (Tile* t : validTiles) {
+            if (t->mag > 1.e-12) {
+                scaleRef    = t->mag;
+                scaleRefErr = t->err_mag; // Ensures the error tracks the new fallback magnitude
+                break;
+            }
+        }
     }
     if (scaleRef < 1.e-12) return;
 
@@ -401,13 +440,12 @@ static void DrawVectorFieldPanel(TProfile2D* hX, TProfile2D* hY, TProfile2D* hZ,
     // ---- Pass 2: draw arrows, capping length at the scale reference ----
     for (const Tile& t : tiles) {
         if (!t.valid) continue;
-        double mag = std::sqrt(t.bx*t.bx + t.by*t.by);
-        if (mag < 0.05 * scaleRef) continue; // suppress near-zero noise
+        if (t.mag < 0.05 * scaleRef) continue; // suppress near-zero noise
 
         // Cap outlier arrows at scaleRef length; direction is always correct
-        double drawLen = std::min(mag, scaleRef) * scale;
-        double x2 = t.xc + (t.bx / mag) * drawLen;
-        double y2 = t.yc + (t.by / mag) * drawLen;
+        double drawLen = std::min(t.mag, scaleRef) * scale;
+        double x2 = t.xc + (t.bx / t.mag) * drawLen;
+        double y2 = t.yc + (t.by / t.mag) * drawLen;
 
         TArrow* arr = new TArrow(t.xc, t.yc, x2, y2, 0.012, ">");
         arr->SetLineColor(kBlack);
@@ -415,6 +453,32 @@ static void DrawVectorFieldPanel(TProfile2D* hX, TProfile2D* hY, TProfile2D* hZ,
         arr->SetLineWidth(2);
         arr->Draw();
     }
+
+    // Reporting the maximum scale of magnitudes -- this must be on top of the arrows, for readability:
+    // ----- Compute plot-coordinate placement -----
+    double xMin = hZd->GetXaxis()->GetXmin();
+    double xMax = hZd->GetXaxis()->GetXmax();
+    double yMin = hZd->GetYaxis()->GetXmin();
+    double yMax = hZd->GetYaxis()->GetXmax();
+    double x1 = xMin + 0.05 * (xMax - xMin);
+    double x2 = xMin + 0.65 * (xMax - xMin); // Increased from 0.48 to 0.58 to accommodate the error bar
+    double y1 = yMax - 0.16 * (yMax - yMin);
+    double y2 = yMax - 0.05 * (yMax - yMin);
+
+    // ----- Background box -----
+    TPaveText* pave = new TPaveText(x1, y1, x2, y2, "arc");
+    pave->SetCornerRadius(0.15);
+    pave->SetFillColor(kWhite);
+    pave->SetFillStyle(1001);
+    pave->SetBorderSize(0);
+    pave->SetMargin(0.02);
+    pave->SetTextAlign(12); // left-center in the pave
+    pave->SetTextFont(63);
+    pave->SetTextSize(18);
+    
+    double percentile = scalePercentile * 100.;
+    pave->AddText(Form("|#LTp*_{T}#GT|_{%.0fpct} = (%.2f #pm %.2f)%%", percentile, scaleRef * 100., scaleRefErr * 100.));
+    pave->Draw();
 }
 
 // ==========================================================================
@@ -1832,9 +1896,22 @@ static void MakeFig16_PstarVectorField(TDirectory* famDir, TDirectory* famOut,
     for (int irow = 0; irow < 2; ++irow) {
         for (int icol = 0; icol < 3; ++icol) {
             c->cd(++panel);
+            gPad->SetTopMargin(0.05);
+            if (icol == 0)
+                gPad->SetLeftMargin(0.08);
+            else
+                gPad->SetLeftMargin(0.09);
             gPad->SetRightMargin(0.16);
-            gPad->SetLeftMargin(0.11);
-            gPad->SetBottomMargin(0.13);
+
+            if (irow == 0)
+                gPad->SetTopMargin(0.12);
+            else
+                gPad->SetTopMargin(0.05);
+
+            if (irow == 1)
+                gPad->SetBottomMargin(0.10);
+            else
+                gPad->SetBottomMargin(0.08);
 
             TDirectory* dir = GetScenarioDir(famDir, cutRows[irow], etaSels[icol]);
             if (!dir) continue;
@@ -1844,19 +1921,21 @@ static void MakeFig16_PstarVectorField(TDirectory* famDir, TDirectory* famOut,
             TProfile2D* hZ = static_cast<TProfile2D*>(SafeGet(dir, "pPstarZ_vsPxPy"));
             if (!hX || !hY || !hZ) continue;
 
-            DrawVectorFieldPanel(hX, hY, hZ,
-                // Form("<p*_{z}> + #vec{<p*_{T}>};"
-                Form(" ;p_{x}^{#Lambda} [GeV/c];p_{y}^{#Lambda} [GeV/c];<p*_{z}>")); // No title works best here
-            AddLabel(0.50, 0.965,
-                Form("%s  --  %s", cutLabels[irow], etaLabels[icol]),
-                0.040, 22);
+            // Giving a better offset for the Z axis label -- This is done outside of the function to avoid gPad updates:
+            if (icol == 2)
+                hZ->GetZaxis()->SetTitleOffset(1.5);
+            else
+                hZ->GetZaxis()->SetTitleOffset(1.6);
+            DrawVectorFieldPanel(hX, hY, hZ, Form(" ;p_{x}^{#Lambda} [GeV/c];p_{y}^{#Lambda} [GeV/c];<p*_{z}>")); // No title works best here, so don't use Form("<p*_{z}> + #vec{<p*_{T}>};"
+            if (irow == 0)
+                AddLabel(0.50, 0.905, Form("%s  --  %s", cutLabels[irow], etaLabels[icol]), 0.040, 22);
+            else
+                AddLabel(0.50, 0.975, Form("%s  --  %s", cutLabels[irow], etaLabels[icol]), 0.040, 22);
         }
     }
 
     c->cd(0);
-    AddLabel(0.5, 0.997,
-        Form("Spurious #LTp*#GT polarisation vector field  --  %s", famLabel),
-        0.033, 22);
+    AddLabel(0.5, 0.98, Form("Spurious #LTp*#GT polarisation vector field  --  %s", famLabel), 0.033, 22);
     WriteCanvas(c, famOut);
     delete c;
 }
@@ -1898,9 +1977,22 @@ static void MakeFig16s_PstarVectorFieldSupp(TDirectory* famDir, TDirectory* famO
     for (int irow = 0; irow < 2; ++irow) {
         for (int icol = 0; icol < 3; ++icol) {
             c->cd(++panel);
+            gPad->SetTopMargin(0.05);
+            if (icol == 0)
+                gPad->SetLeftMargin(0.08);
+            else
+                gPad->SetLeftMargin(0.09);
             gPad->SetRightMargin(0.16);
-            gPad->SetLeftMargin(0.11);
-            gPad->SetBottomMargin(0.13);
+
+            if (irow == 0)
+                gPad->SetTopMargin(0.12);
+            else
+                gPad->SetTopMargin(0.05);
+
+            if (irow == 1)
+                gPad->SetBottomMargin(0.10);
+            else
+                gPad->SetBottomMargin(0.08);
 
             TDirectory* dir = GetScenarioDir(famDir, cutRows[irow], etaSels[icol]);
             if (!dir) continue;
@@ -1910,19 +2002,21 @@ static void MakeFig16s_PstarVectorFieldSupp(TDirectory* famDir, TDirectory* famO
             TProfile2D* hZ = static_cast<TProfile2D*>(SafeGet(dir, "pPstarZ_vsPxPy"));
             if (!hX || !hY || !hZ) continue;
 
-            DrawVectorFieldPanel(hX, hY, hZ,
-                // Form("<p*_{z}> + #vec{<p*_{T}>};"
-                Form(" ;p_{x}^{#Lambda} [GeV/c];p_{y}^{#Lambda} [GeV/c];<p*_{z}>")); // No title works best here
-            AddLabel(0.50, 0.965,
-                Form("%s  --  %s", cutLabels[irow], etaLabels[icol]),
-                0.040, 22);
+            // Giving a better offset for the Z axis label -- This is done outside of the function to avoid gPad updates:
+            if (icol == 2)
+                hZ->GetZaxis()->SetTitleOffset(1.5);
+            else
+                hZ->GetZaxis()->SetTitleOffset(1.6);
+            DrawVectorFieldPanel(hX, hY, hZ, Form(" ;p_{x}^{#Lambda} [GeV/c];p_{y}^{#Lambda} [GeV/c];<p*_{z}>")); // No title works best here, so don't use Form("<p*_{z}> + #vec{<p*_{T}>};"
+            if (irow == 0)
+                AddLabel(0.50, 0.905, Form("%s  --  %s", cutLabels[irow], etaLabels[icol]), 0.040, 22);
+            else
+                AddLabel(0.50, 0.975, Form("%s  --  %s", cutLabels[irow], etaLabels[icol]), 0.040, 22);
         }
     }
 
     c->cd(0);
-    AddLabel(0.5, 0.997,
-        Form("Spurious #LTp*#GT vector field (intermediate cuts)  --  %s", famLabel),
-        0.033, 22);
+    AddLabel(0.5, 0.98, Form("Spurious #LTp*#GT vector field (intermediate cuts)  --  %s", famLabel), 0.033, 22);
     WriteCanvas(c, famOut);
     delete c;
 }
