@@ -268,41 +268,47 @@ static TH1D* SafeClone(TH1D* h) {
  * @details
  * The colour background encodes <p*_z> on a diverging palette (set by the
  * caller via gStyle->SetPalette) with a symmetric Z range derived from the
- * data.  Arrows are drawn at the centres of arrowBlockSize x arrowBlockSize
- * tiles of (px_lam, py_lam) bins; within each tile the mean <p*_x> and
- * <p*_y> are averaged over all bins that individually pass @p minEntries.
- * This decouples colour resolution (fine bins) from arrow visibility (large
- * tiles), so the ring structure remains legible even at modest statistics.
+ * data.  Arrows represent the mean transverse proton direction in the Lambda
+ * rest frame, averaged over arrowBlockSize x arrowBlockSize tiles of bins.
  *
- * Arrow lengths are normalised globally: the longest arrow in the panel spans
- * 0.45 * tileWidth, preserving relative magnitudes between tiles.  Tiles
- * whose averaged transverse magnitude is below 5% of the global maximum are
- * suppressed to avoid noise arrows in sparse or near-zero regions.
+ * Arrow scaling is robust against edge outliers: all valid tile magnitudes
+ * are collected, sorted, and the scalePercentile-th percentile is used as
+ * the normalisation reference (scaleRef).  The longest "typical" arrow spans
+ * 0.45 * tileWidth.  Tiles whose averaged magnitude exceeds scaleRef have
+ * their arrow length capped at 0.45 * tileWidth, so one noisy edge tile
+ * cannot compress the rest of the field into invisibility.
+ *
+ * Tiles with fewer than minEntries occupied bins inside them, or whose
+ * averaged transverse magnitude is below 5% of scaleRef, are suppressed.
  *
  * Must be called while the target TPad is current (gPad).
  *
- * @param hX             TProfile2D of <p*_x> vs (px_lam, py_lam).
- * @param hY             TProfile2D of <p*_y> vs (px_lam, py_lam).
- * @param hZ             TProfile2D of <p*_z> vs (px_lam, py_lam) [colormap].
- * @param title          Histogram title string; pass nullptr to suppress title.
- * @param minEntries     Minimum per-bin entry count to include in tile average.
- *                       Default: 50 (safe for >=1M Lambdas with 20x20 bins).
- * @param arrowBlockSize Side length of the averaging tile in bins.
- *                       Default: 4 (4x4 = 16 bins per arrow, 25 arrows/axis
- *                       for a 20-bin grid).  Other useful values for 20 bins:
- *                       1 (per-bin, tiny), 2 (100 arrows), 5 (16 arrows),
- *                       10 (4 arrows).  Non-divisors silently drop the last
- *                       partial tile.
+ * @param hX              TProfile2D of <p*_x> vs (px_lam, py_lam).
+ * @param hY              TProfile2D of <p*_y> vs (px_lam, py_lam).
+ * @param hZ              TProfile2D of <p*_z> vs (px_lam, py_lam) [colormap].
+ * @param title           Histogram title string; pass nullptr to suppress.
+ * @param minEntries      Minimum per-bin entry count to include in a tile.
+ *                        Default: 50.
+ * @param arrowBlockSize  Side length of the averaging tile in bins.
+ *                        Default: 4 (4x4 tiles, 25 arrows/axis for 20 bins).
+ *                        Valid choices for 20 bins: 1, 2, 4, 5, 10, 20.
+ * @param scalePercentile Fraction of tile magnitudes used as the length
+ *                        normalisation reference.  0.90 (default) means the
+ *                        90th-percentile magnitude maps to the full arrow
+ *                        length; the top 10% are drawn capped at that length.
+ *                        Tighten toward 0.75 if outliers are still visible;
+ *                        loosen toward 1.0 to recover the old max-based behaviour.
  */
 // ==========================================================================
 static void DrawVectorFieldPanel(TProfile2D* hX, TProfile2D* hY, TProfile2D* hZ,
                                   const char* title,
-                                  double minEntries   = 50.,
-                                  int arrowBlockSize  = 4)
+                                  double minEntries    = 50.,
+                                  int    arrowBlockSize = 4,
+                                  double scalePercentile = 0.90)
 {
     if (!hX || !hY || !hZ) return;
 
-    // ---- COLZ background: clone Z so we can set its range without side-effects ----
+    // ---- COLZ background ----
     TProfile2D* hZd = static_cast<TProfile2D*>(
         hZ->Clone(Form("hVFZ_tmp_%d", gCloneIdx++)));
     hZd->SetDirectory(nullptr);
@@ -321,30 +327,28 @@ static void DrawVectorFieldPanel(TProfile2D* hX, TProfile2D* hY, TProfile2D* hZ,
     hZd->SetMinimum(-zmax);
     hZd->SetMaximum( zmax);
     hZd->Draw("COLZ");
-    gPad->Update(); // forces palette axis before arrow overlay
+    gPad->Update();
 
-    // ---- Arrow grid setup ----
-    int nBinsX  = hX->GetNbinsX();
-    int nBinsY  = hX->GetNbinsY();
-    int bs      = arrowBlockSize;
-    double binW = hX->GetXaxis()->GetBinWidth(1); // uniform binning assumed
-    double tileW= bs * binW;                       // physical width of one tile
+    // ---- Tile grid parameters ----
+    int    bs      = arrowBlockSize;
+    int    nBinsX  = hX->GetNbinsX();
+    int    nBinsY  = hX->GetNbinsY();
+    double binW    = hX->GetXaxis()->GetBinWidth(1);
+    double tileW   = bs * binW;
+    int    nTilesX = nBinsX / bs;
+    int    nTilesY = nBinsY / bs;
 
-    int nTilesX = nBinsX / bs; // partial last tile dropped if bs !| nBinsX
-    int nTilesY = nBinsY / bs;
-
-    // ---- Pass 1: accumulate tile averages, find global max magnitude ----
+    // ---- Pass 1: accumulate tile averages ----
     struct Tile { double xc, yc, bx, by; bool valid = false; };
     std::vector<Tile> tiles(nTilesX * nTilesY);
 
-    double maxMag = 0.;
     for (int itx = 0; itx < nTilesX; ++itx) {
         for (int ity = 0; ity < nTilesY; ++ity) {
             double sumBx = 0., sumBy = 0.;
             int    nUsed = 0;
             for (int dix = 0; dix < bs; ++dix) {
                 for (int diy = 0; diy < bs; ++diy) {
-                    int ix = itx * bs + dix + 1; // ROOT bins: 1-indexed
+                    int ix = itx * bs + dix + 1;
                     int iy = ity * bs + diy + 1;
                     int gb = hX->GetBin(ix, iy);
                     if (hX->GetBinEntries(gb) < minEntries) continue;
@@ -354,9 +358,8 @@ static void DrawVectorFieldPanel(TProfile2D* hX, TProfile2D* hY, TProfile2D* hZ,
                 }
             }
 
-            // Tile centre in axis coordinates
-            int  firstBinX = itx * bs + 1,  lastBinX = firstBinX + bs - 1;
-            int  firstBinY = ity * bs + 1,  lastBinY = firstBinY + bs - 1;
+            int    firstBinX = itx * bs + 1, lastBinX = firstBinX + bs - 1;
+            int    firstBinY = ity * bs + 1, lastBinY = firstBinY + bs - 1;
             double xc = 0.5 * (hX->GetXaxis()->GetBinLowEdge(firstBinX) +
                                 hX->GetXaxis()->GetBinUpEdge (lastBinX));
             double yc = 0.5 * (hX->GetYaxis()->GetBinLowEdge(firstBinY) +
@@ -368,26 +371,45 @@ static void DrawVectorFieldPanel(TProfile2D* hX, TProfile2D* hY, TProfile2D* hZ,
                 t.bx    = sumBx / nUsed;
                 t.by    = sumBy / nUsed;
                 t.valid = true;
-                double mag = std::sqrt(t.bx*t.bx + t.by*t.by);
-                if (mag > maxMag) maxMag = mag;
             }
         }
     }
-    if (maxMag < 1.e-12) return; // nothing to draw
 
-    // Longest arrow spans 0.8 * tileWidth; shorter arrows scale proportionally
-    double scale = 0.8 * tileW / maxMag;
+    // ---- Robust scale reference: sort magnitudes, take percentile ----
+    std::vector<double> mags;
+    mags.reserve(tiles.size());
+    for (const Tile& t : tiles)
+        if (t.valid) mags.push_back(std::sqrt(t.bx*t.bx + t.by*t.by));
+    if (mags.empty()) return;
 
-    // ---- Pass 2: draw arrows ----
+    std::sort(mags.begin(), mags.end());
+    // Clamp index safely; always at least the median if percentile is very low
+    int pIdx = static_cast<int>(scalePercentile * static_cast<double>(mags.size()));
+    pIdx = std::max(0, std::min(pIdx, static_cast<int>(mags.size()) - 1));
+    double scaleRef = mags[pIdx];
+
+    // Fallback: if the chosen percentile lands on zero (e.g. many empty tiles),
+    // walk up to the first non-zero magnitude so we always draw something
+    if (scaleRef < 1.e-12) {
+        for (double m : mags) { if (m > 1.e-12) { scaleRef = m; break; } }
+    }
+    if (scaleRef < 1.e-12) return;
+
+    // full-reference arrow = 0.6 tile widths
+    double scale = 0.6 * tileW / scaleRef;
+
+    // ---- Pass 2: draw arrows, capping length at the scale reference ----
     for (const Tile& t : tiles) {
         if (!t.valid) continue;
         double mag = std::sqrt(t.bx*t.bx + t.by*t.by);
-        if (mag < 0.05 * maxMag) continue; // suppress sub-5% noise tiles
+        if (mag < 0.05 * scaleRef) continue; // suppress near-zero noise
 
-        TArrow* arr = new TArrow(t.xc, t.yc,
-                                  t.xc + scale * t.bx,
-                                  t.yc + scale * t.by,
-                                  0.012, ">"); // 0.012 NDC head, larger for block arrows
+        // Cap outlier arrows at scaleRef length; direction is always correct
+        double drawLen = std::min(mag, scaleRef) * scale;
+        double x2 = t.xc + (t.bx / mag) * drawLen;
+        double y2 = t.yc + (t.by / mag) * drawLen;
+
+        TArrow* arr = new TArrow(t.xc, t.yc, x2, y2, 0.012, ">");
         arr->SetLineColor(kBlack);
         arr->SetFillColor(kBlack);
         arr->SetLineWidth(2);

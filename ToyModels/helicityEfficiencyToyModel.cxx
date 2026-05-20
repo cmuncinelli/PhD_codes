@@ -615,7 +615,8 @@ static void FillScenario(ScenarioHistos& h,
                           double pstar_y,
                           double pstar_z,
                           double px_lam,
-                          double py_lam)
+                          double py_lam,
+                          double phi_lam)
 {
     // Main diagnostic histograms
     h.h2d_cosTheta_phi->Fill(cosTheta, phi);
@@ -648,7 +649,6 @@ static void FillScenario(ScenarioHistos& h,
     h.h1d_eta_lambda->Fill(eta_lambda);
 
     // Vector field fills
-    double phi_lam = std::atan2(py_lam, px_lam); // [-pi, pi]
     h.pPstarX_vsPxPy->Fill(px_lam, py_lam, pstar_x);
     h.pPstarY_vsPxPy->Fill(px_lam, py_lam, pstar_y);
     h.pPstarZ_vsPxPy->Fill(px_lam, py_lam, pstar_z);
@@ -774,15 +774,16 @@ static void FillFamily(FamilyHistos& f,
                         double pstar_y,
                         double pstar_z,
                         double px_lam,
-                        double py_lam)
+                        double py_lam,
+                        double phi_lam)
 {
     // Local lambda that fills one scenario's eta-half and All subdirectory.
     // Captures all per-event quantities by reference so we only pass the
     // three ScenarioHistos pointers that change between scenarios.
     auto fill = [&](ScenarioHistos& hPos, ScenarioHistos& hNeg, ScenarioHistos& hAll) {
         ScenarioHistos& hEta = etaPos ? hPos : hNeg;
-        FillScenario(hEta,  cosTheta, phi_star, ringProxy, ringProxyJet, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet, pstar_x, pstar_y, pstar_z, px_lam, py_lam);
-        FillScenario(hAll,  cosTheta, phi_star, ringProxy, ringProxyJet, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet, pstar_x, pstar_y, pstar_z, px_lam, py_lam);
+        FillScenario(hEta,  cosTheta, phi_star, ringProxy, ringProxyJet, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet, pstar_x, pstar_y, pstar_z, px_lam, py_lam, phi_lam);
+        FillScenario(hAll,  cosTheta, phi_star, ringProxy, ringProxyJet, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet, pstar_x, pstar_y, pstar_z, px_lam, py_lam, phi_lam);
     };
 
     // Scenario 1: No cuts (always filled -- serves as a flat-distribution
@@ -1399,7 +1400,7 @@ void helicityEfficiencyToyModel(
         FillFamily(famNG, passPtCut, passDcaCut, etaPos,
                    cosTheta, phi_star, ringProxy, ringProxyJet, decayR,
                    pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet,
-                   p_star_unit.X(), p_star_unit.Y(), p_star_unit.Z(), px_lam, py_lam);
+                   p_star_unit.X(), p_star_unit.Y(), p_star_unit.Z(), px_lam, py_lam, phi_lam);
 
         // WithEtaGate: only fill when both daughters are inside the acceptance.
         // This is the physically consistent set.
@@ -1407,7 +1408,7 @@ void helicityEfficiencyToyModel(
             FillFamily(famEG, passPtCut, passDcaCut, etaPos,
                        cosTheta, phi_star, ringProxy, ringProxyJet, decayR,
                        pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet,
-                       p_star_unit.X(), p_star_unit.Y(), p_star_unit.Z(), px_lam, py_lam);
+                       p_star_unit.X(), p_star_unit.Y(), p_star_unit.Z(), px_lam, py_lam, phi_lam);
 
         ++nGenerated;
 
