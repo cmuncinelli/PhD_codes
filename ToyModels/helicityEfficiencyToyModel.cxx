@@ -203,8 +203,40 @@ static const int kChargePion   = -1;
 // pT/|p| is smaller than this (Lambda nearly collinear with beam axis)
 static const double kMinSinTheta = 1.e-4;
 
+// ==========================================================================
+// Mathematical constants and other useful constants for error bars:
+// ==========================================================================
 static const double Pi = TMath::Pi();
 static const double TwoPi = 2.0*Pi;
+
+// Number of independent chunks for the data-chunking error estimator.
+// Each jet-group event is assigned to one chunk sequentially (round-robin).
+// The final error is stddev(chunk_means) / sqrt(K_filled), which properly
+// accounts for intra-event correlations.
+// The whole problem in doing otherwise is that just taking an average of
+// per-event averages did not seem to properly grasp the REALLY LARGE correlations
+// that come from making cuts in eta, dca or min pT of the daughters!
+// The no-cuts (and no eta cuts) histograms had stable error bars, but as soon
+// as you start introducing cuts which create preferential regions of the phase space,
+// we start seeing underestimated error bars: re-running the same code, with the same
+// statistics, was making the mean <R> values fluctuate around zero with error bars
+// that were not consistent of each other -- error was underestimated!!!
+// The per-event average should already deal with the correlation/covariance that arises
+// from (artificially) making 4 or so Lambdas share the same randomly sorted jet direction.
+// (do notice that the per-event mean is not implemented as filling histograms with sumEvent/countsEvent,
+//  because events with different amounts of Lambdas have different statistical weights that are counterbalanced
+//  by weighting (multiplying) by countsEvent. The magic of per-event averaging comes in flushing the counters
+//  once per event, which then makes the variance of this new set account for intra-event correlations.
+//  See the comments in FlushEventMean if this is still not that clear here.)
+// This should be a small correlation, but still a correlation. What we are trying to fix
+// with this kChunks strategy is to get an error bar that grasps the correlation introduced
+// from doing kinematic cuts: as I've shown (check the end of log 655), min pT cuts, DCA cuts
+// and so on create regions of the phase space that were preferentially sampled, so there is
+// no longer an IID constraint on the Lambdas and they have a covariance.
+// At most 4 or so Lambdas per event is too little to grasp this phase-space covariance, so another "level"
+// of averaging could possibly do the trick.
+// At least, the goal of the kChunks is to do so. I might have missed something when thinking this through...
+static const int kChunks = 200; // Increased from 50 to 200
 
 
 // ==========================================================================
@@ -247,7 +279,7 @@ double ComputeThermalPtMaximum(double T){
  *   Recomputing the envelope maximum for every sampled Lambda would be
  *   unnecessarily expensive.
  *
- * @param rng    Pointer to TRandom3 random-number generator (if not passed by reference, the RNG list of already-used values would not be updated properly!)
+ * @param rng    TRandom3 random-number generator, passed by reference (if not passed by reference, the RNG list of already-used values would not be updated properly!)
  * @param T      Boltzmann temperature parameter [GeV]
  * @param pTmin  Lower bound of sampling interval [GeV/c]
  * @param pTmax  Upper bound of sampling interval [GeV/c]
@@ -256,11 +288,11 @@ double ComputeThermalPtMaximum(double T){
  * @return One accepted Lambda transverse momentum pT [GeV/c]
  * ==========================================================================
  */
-static double SampleLambdaPt(TRandom3* rng, double T, double pTmin, double pTmax, double fmax){
+static double SampleLambdaPt(TRandom3 &rng, double T, double pTmin, double pTmax, double fmax){
     // -- Repeat until one trial pT is accepted --
     while (true) {
         // -- Generate a trial pT uniformly inside the requested interval --
-        double pt = pTmin + (pTmax - pTmin) * rng->Rndm();
+        double pt = pTmin + (pTmax - pTmin) * rng.Rndm();
         // -- Compute transverse mass corresponding to the trial pT --
         double mT = std::sqrt(pt * pt + kMassLambda * kMassLambda);
         // -- Evaluate the target Boltzmann weight at this pT --
@@ -269,7 +301,7 @@ static double SampleLambdaPt(TRandom3* rng, double T, double pTmin, double pTmax
         // -- Accept the trial pT with probability f/fmax --
         //    Geometrically: accept if a random point inside the rectangle
         //    [pTmin,pTmax] x [0,fmax] falls below the target curve f(pT)
-        if (rng->Rndm() * fmax < f)
+        if (rng.Rndm() * fmax < f)
             return pt;
     }
 }
@@ -391,8 +423,20 @@ struct ScenarioHistos {
       // everything in eta.
     // Per-event mean estimator for the integrated ring-jet observable:
     TH1D*  hEventMeanRingProxyJet; // one fill per event (jet group); mean +/- error = unbiased estimator
-    double evtSumRpj = 0.;         // running sum of ringProxyJet values in the current event
-    int    evtCntRpj = 0;          // number of entries accumulated so far in each event
+    TProfile* pEventMeanRingProxyJetIntegrated;
+    double evtSumRpj  = 0.;  // running sum of ringProxyJet values in the current event
+    int    evtCntRpj  = 0;   // number of entries accumulated so far in each event
+    long   evtIdxRpj  = 0;   // total events seen; drives chunk assignment (evtIdxRpj % kChunks)
+
+    // Data-chunking accumulators (one slot per chunk):
+    // After the main loop, FinalizeChunks() computes mu_k = chunkSumRpj[k]/chunkCntRpj[k]
+    // for every non-empty chunk and fills hChunkMeansRingProxyJet.
+    // hChunkMeansRingProxyJet->GetMeanError() then gives stddev(mu_k)/sqrt(K_filled),
+    // which is the (with luck!) bulletproof error estimate the chunking method was designed to produce.
+    double chunkSumRpj[kChunks];    // sum of all accepted ringProxyJet values per chunk
+    long   chunkCntRpj[kChunks];    // count of all accepted entries/Lambdas per chunk
+    TH1D*  hChunkMeansRingProxyJet; // K fills (one per non-empty chunk); GetMeanError() = final error
+    TProfile* pChunkMeansRingProxyJetIntegrated; // A single pre-integrated observable. Should be easier to read on the final .root.
 
     // -- Decay geometry and daughter kinematics (useful for diagnosis) --
     TH1D*    h1d_decayRadius;    // transverse decay vertex radius [cm]
@@ -470,10 +514,18 @@ static ScenarioHistos BookScenario(TDirectory* dir, double etaMaxDetector)
     h.pRingProxyJetVsPt = new TProfile("pRingProxyJetVsPt", "<R_{proxyJet}> vs #Lambda p_{T}; p_{T}^{#Lambda} [GeV/c];<R_{proxyJet}>", 10, 0., 5.); // 20 bins of 0.25 GeV/c each
     
     // For the per-event mean estimators for better error bars, considering correlations:
-    double evrmax = kPolPrefactor * 1.05;
-    h.hEventMeanRingProxyJet = new TH1D("hEventMeanRingProxyJet", "Event-mean <R_{proxyJet}> per jet group; #bar{R}_{proxyJet} per event; Events", 200, -evrmax, evrmax);
+    double evRmax = kPolPrefactor * 1.05; // This proved to be an OK estimator
+    h.hEventMeanRingProxyJet = new TH1D("hEventMeanRingProxyJet", "Event-mean <R_{proxyJet}> per jet group; #bar{R}_{proxyJet} per event; Events", 200, -evRmax, evRmax);
+    h.pEventMeanRingProxyJetIntegrated = new TProfile("pEventMeanRingProxyJet", "Mean of all per-event means <R_{proxyJet}>; Dummy variable; Global mean <R_{proxyJet}>", 1, 0., 1.);
     h.evtSumRpj = 0.;
     h.evtCntRpj = 0;
+    h.evtIdxRpj = 0;
+    for (int k = 0; k < kChunks; ++k) {
+        h.chunkSumRpj[k] = 0.; h.chunkCntRpj[k] = 0;
+    }
+    double evRmaxChunks = kPolPrefactor * 0.05; // Instead of being in the order of |<R>| = 4, the per-chunk averages should already be close to the 10^(-3) magnitude
+    h.hChunkMeansRingProxyJet = new TH1D("hChunkMeansRingProxyJet", Form("Chunk means of <R_{proxyJet}> (%d chunks); #bar{R}_{proxyJet} per chunk; Chunks", kChunks), 100, -evRmaxChunks, evRmaxChunks);
+    h.pChunkMeansRingProxyJetIntegrated = new TProfile("pChunkMeansRingProxyJetIntegrated", Form("Mean of chunks of <R_{proxyJet}> (%d chunks); Dummy variable; Chunks", kChunks), 1, 0., 1.);
 
     // ---------- Decay vertex and daughter kinematics ----------
     h.h1d_decayRadius = new TH1D("h1d_decayRadius", "Transverse decay vertex radius; r_{decay} = #sqrt{x_{v}^{2}+y_{v}^{2}} [cm];Counts", 180, 0., 180.); // 0 to 150 cm (would cover most of ITS/TPC inner field cage)
@@ -726,11 +778,56 @@ static void FillFamily(FamilyHistos& f,
  */
 // ==========================================================================
 static void FlushEventMean(ScenarioHistos& h) {
-    if (h.evtCntRpj > 0) {
-        h.hEventMeanRingProxyJet->Fill(h.evtSumRpj / h.evtCntRpj);
+    // Chunk index is determined BEFORE the guard, so it advances for every
+    // jet-group event regardless of how many Lambdas survived cuts in this
+    // scenario. This keeps the chunk assignment in sync across all twelve
+    // ScenarioHistos that are flushed simultaneously by FlushEventMeansFamily.
+    // Possibly not the best choice, but this makes it so we could handle everything
+    // with just a single index!
+    int chunkIdx = (int)(h.evtIdxRpj % (long)kChunks);
+
+    if (h.evtCntRpj > 0) { // Only fill the scenarios where at least 1 Lambda passed the cuts
+        // Trying to implement weights based on the number of accepted particles per event:
+            // The no-cuts (with NO ETA CUT as well! That is a cut!) distribution of averages should look Gaussian.
+            // The distributions after each cut may be weirder combinations that are non-Gaussian (leptokurtic distributions, for instance).
+            // What we are trying to do is make this mean of in-event means properly grasp the covariance of the ring observable and then
+            // have an SEM error that is not underestimated as it was before.
+        double eventMean = h.evtSumRpj / h.evtCntRpj;
+        double weight = h.evtCntRpj; // More particles = higher statistical weight. We use the number of particles instead of, say, sqrt(counts)
+                                     // as the weight because this converges to the grand mean over all Lambdas (instead of a mean in each event, then
+                                     // a mean over events) and is an unbiased estimator.
+        h.hEventMeanRingProxyJet->Fill(eventMean, weight); // In the grand mean, this has the same contribution as if we considered all 4 lambdas of
+                                                           // each event separately, but notice that the variance of these means is different: it may
+                                                           // be larger than the variance that would appear if we filled per-particle instead of per-event
+                                                           // because we are now considering the covariance/"correlation" of having the same jet direction
+                                                           // for all particles in an "event".
+                                                           // In other words, the distribution of event means generally has a different variance than the
+                                                           // per-particle distribution because particles within the same event share common
+                                                           // event-level quantities (such as the jet direction), introducing covariance terms between
+                                                           // particles in the same event.
+        h.pEventMeanRingProxyJetIntegrated->Fill(0., eventMean, weight); // Fill the dummy bin with eventMean as the value and give it a weight based
+                                                                        // on counts. This should be the exact same as the TH1 if it indeed does report
+                                                                        // a running average for GetMean and GetMeanError instead of providing us a binned
+                                                                        // average and a binned average error, which would be bad here where the binning
+                                                                        // is much coarser than the true average. This is a DEBUG plot, just to make sure
+                                                                        // everything is working as it should in regular TH1s.
+                                                                        // Indeed, this does seem to be the case from the TStatBoxes after running.
+
+        // Accumulate raw (unweighted) sums into the chunk:
+          // (This also accumulates on a per-event average basis! The event is the smallest statistical entity here: all Lambdas in the same event are
+          //  guaranteed to have the same jet direction, and that is correlation. The kChunks strategy is then meant to grab another type of covariance/
+          //  correlation that was not being grasped yet: the correlation that arises from making kinematic cuts that select preferential phase space regions!)
+          // Using raw sums avoids the weighting paradox: mu_k will be computed as a plain ratio (total R in chunk) / (total entries in chunk),
+          // which is exactly the arithmetic mean over all Lambdas in that chunk.
+        h.chunkSumRpj[chunkIdx] += h.evtSumRpj;
+        h.chunkCntRpj[chunkIdx] += h.evtCntRpj;
+
         h.evtSumRpj = 0.;
-        h.evtCntRpj = 0;
+        h.evtCntRpj = 0; // This variable already knows how many Lambdas there are for each cut, be it in eta, DCA or pT min.
+                         // In that regard, it could possibly be used as a weight so as to not consider events where 1 Lambda
+                         // passed in the cuts as statistically equivalent to events where all 4 Lambdas passed the cuts.
     }
+    h.evtIdxRpj++; // Always advance: keeps chunk index consistent across all scenarios
 }
 
 
@@ -762,6 +859,57 @@ static void FlushEventMeansFamily(FamilyHistos& f) {
     FlushEventMean(f.PT_Pos); FlushEventMean(f.PT_Neg); FlushEventMean(f.PT_All);
     FlushEventMean(f.DC_Pos); FlushEventMean(f.DC_Neg); FlushEventMean(f.DC_All);
     FlushEventMean(f.BC_Pos); FlushEventMean(f.BC_Neg); FlushEventMean(f.BC_All);
+}
+
+// ==========================================================================
+/**
+ * @brief Computes the per-chunk means for one ScenarioHistos and fills
+ *        hChunkMeansRingProxyJet with one entry per non-empty chunk.
+ *
+ * @details
+ * Must be called ONCE, after the last FlushEventMean() call for this
+ * ScenarioHistos (i.e. after both FlushEventMeansFamily calls that follow
+ * the main loop).
+ *
+ * For each chunk k with at least one accumulated entry:
+ *   mu_k = chunkSumRpj[k] / chunkCntRpj[k]
+ * is filled into hChunkMeansRingProxyJet (unweighted).
+ *
+ * After all K_filled non-empty chunks are filled:
+ *   hChunkMeansRingProxyJet->GetMean()      = grand mean  (agrees with TProfile)
+ *   hChunkMeansRingProxyJet->GetMeanError() = stddev(mu_k) / sqrt(K_filled)
+ *                                           = the bulletproof final error
+ *
+ * @param h  Reference to the ScenarioHistos to finalise.
+ */
+// ==========================================================================
+static void FinalizeChunks(ScenarioHistos& h) {
+    for (int k = 0; k < kChunks; ++k) {
+        if (h.chunkCntRpj[k] > 0) {
+            double mu_k = h.chunkSumRpj[k] / (double)h.chunkCntRpj[k];
+            h.hChunkMeansRingProxyJet->Fill(mu_k); // unweighted: ROOT SEM = stddev/sqrt(K_filled)
+            h.pChunkMeansRingProxyJetIntegrated->Fill(0., mu_k);
+        }
+    }
+}
+
+
+// ==========================================================================
+/**
+ * @brief Calls FinalizeChunks() on all twelve ScenarioHistos in a FamilyHistos.
+ *
+ * @details
+ * Must be called once, after the two final FlushEventMeansFamily() calls
+ * that drain the last partial event at the end of the main loop.
+ *
+ * @param f  Reference to the FamilyHistos to finalise.
+ */
+// ==========================================================================
+static void FinalizeChunksFamily(FamilyHistos& f) {
+    FinalizeChunks(f.NC_Pos); FinalizeChunks(f.NC_Neg); FinalizeChunks(f.NC_All);
+    FinalizeChunks(f.PT_Pos); FinalizeChunks(f.PT_Neg); FinalizeChunks(f.PT_All);
+    FinalizeChunks(f.DC_Pos); FinalizeChunks(f.DC_Neg); FinalizeChunks(f.DC_All);
+    FinalizeChunks(f.BC_Pos); FinalizeChunks(f.BC_Neg); FinalizeChunks(f.BC_All);
 }
 
 
@@ -893,7 +1041,9 @@ void helicityEfficiencyToyModel(
 
     // TGenPhaseSpace: decays a parent 4-vector into N daughters according to
     // Lorentz-invariant phase space (flat in LIPS = unpolarized).
-    TGenPhaseSpace decayGen;
+    TGenPhaseSpace decayGen; // Its gRandom should be zero-initialized so uses a random seed.
+                             // This means the "seed" parameter does not exactly fix all outputs,
+                             // but it fixes jet direction sampling.
 
     // Daughter masses array for Lambda -> p + pi-
     Double_t daughterMasses[2] = { kMassProton, kMassPion };
@@ -960,7 +1110,7 @@ void helicityEfficiencyToyModel(
         // 3.1  Generate Lambda 4-momentum
         // ==================================================================
         // Sample pT from thermal mT spectrum [GeV/c]
-        double pT_lam = SampleLambdaPt(&rng, T_thermal, pTmin_Lambda, pTmax_Lambda, fmax);
+        double pT_lam = SampleLambdaPt(rng, T_thermal, pTmin_Lambda, pTmax_Lambda, fmax);
 
         // Sample Lambda azimuthal angle uniformly in [0, 2pi)
         double phi_lam = rng.Uniform(0., TwoPi);
@@ -1029,7 +1179,7 @@ void helicityEfficiencyToyModel(
         //   r_lab = r_hat * l_lab = (p_vec/m_Lambda) * l_proper
         // Decay vertex position:
         //   v = (px, py, pz) / |p| * l_lab
-        double l_proper = -kCTauLambda * std::log(rng.Rndm());
+        double l_proper = -kCTauLambda * std::log(rng.Rndm()); // Sampling exponentially decaying distribution
 
         // -- Lab-frame decay vertex coordinates [cm] --
         double xv = (px_lam / kMassLambda) * l_proper;
@@ -1211,6 +1361,10 @@ void helicityEfficiencyToyModel(
     FlushEventMeansFamily(famNG);
     FlushEventMeansFamily(famEG);
 
+    // Compute chunk means now that all events have been flushed:
+    FinalizeChunksFamily(famNG);
+    FinalizeChunksFamily(famEG);
+
     // -----------------------------------------------------------------------
     // 4) Print summary statistics
     // -----------------------------------------------------------------------
@@ -1270,23 +1424,33 @@ void helicityEfficiencyToyModel(
             double nEvtAll = (double)hA.hEventMeanRingProxyJet->GetEntries();
             double nEvtPos = (double)hP.hEventMeanRingProxyJet->GetEntries();
             double nEvtNeg = (double)hN.hEventMeanRingProxyJet->GetEntries();
+            
+            // --- Chunking estimator (stddev(mu_k) / sqrt(K_filled), unweighted) ---
+            double rAll_chk = hA.hChunkMeansRingProxyJet->GetMean();
+            double eAll_chk = hA.hChunkMeansRingProxyJet->GetMeanError();
+            double rPos_chk = hP.hChunkMeansRingProxyJet->GetMean();
+            double ePos_chk = hP.hChunkMeansRingProxyJet->GetMeanError();
+            double rNeg_chk = hN.hChunkMeansRingProxyJet->GetMean();
+            double eNeg_chk = hN.hChunkMeansRingProxyJet->GetMeanError();
+
+            double nChkAll = (double)hA.hChunkMeansRingProxyJet->GetEntries();
+            double nChkPos = (double)hP.hChunkMeansRingProxyJet->GetEntries();
+            double nChkNeg = (double)hN.hChunkMeansRingProxyJet->GetEntries();
 
             printf("    %-12s\n", label);
             printf("      TProfile SEM    All: %+.4e +/- %.4e  EtaPos: %+.4e +/- %.4e  EtaNeg: %+.4e +/- %.4e\n",
                    rAll_prof, eAll_prof, rPos_prof, ePos_prof, rNeg_prof, eNeg_prof);
             printf("      Event-mean      All: %+.4e +/- %.4e  EtaPos: %+.4e +/- %.4e  EtaNeg: %+.4e +/- %.4e\n",
                    rAll_evt,  eAll_evt,  rPos_evt,  ePos_evt,  rNeg_evt,  eNeg_evt);
-            printf("      N_events (jet groups w/ >=1 entry)   All: %.0f   EtaPos: %.0f   EtaNeg: %.0f\n",
-                   nEvtAll, nEvtPos, nEvtNeg);
+            printf("      Chunking (%2.0f chk) All: %+.4e +/- %.4e  EtaPos: %+.4e +/- %.4e  EtaNeg: %+.4e +/- %.4e\n",
+                   nChkAll, rAll_chk, eAll_chk, rPos_chk, ePos_chk, rNeg_chk, eNeg_chk);
+            printf("      N_events   All: %.0f (evt) / %.0f (chk)   EtaPos: %.0f / %.0f   EtaNeg: %.0f / %.0f\n",
+                   nEvtAll, nChkAll, nEvtPos, nChkPos, nEvtNeg, nChkNeg);
 
-            // Ratio of the two error estimates: > 1 means TProfile was optimistic
-            // Guard against division by zero in edge cases
-            double ratioAll = (eAll_prof > 0.) ? eAll_evt / eAll_prof : 0.;
-            double ratioPos = (ePos_prof > 0.) ? ePos_evt / ePos_prof : 0.;
-            double ratioNeg = (eNeg_prof > 0.) ? eNeg_evt / eNeg_prof : 0.;
-            printf("      err ratio evt/prof  All: %.3f   EtaPos: %.3f   EtaNeg: %.3f"
-                   "  (>1 => TProfile underestimated uncertainty)\n",
-                   ratioAll, ratioPos, ratioNeg);
+            double ratioAll_ec = (eAll_prof > 0.) ? eAll_evt / eAll_prof : 0.;
+            double ratioAll_cc = (eAll_prof > 0.) ? eAll_chk / eAll_prof : 0.;
+            printf("      err ratio vs TProfile SEM -- evt/prof: %.3f   chk/prof: %.3f"
+                   "  (>1 => SEM underestimated)\n", ratioAll_ec, ratioAll_cc);
         };
 
         printf("  [%s] <R_proxyJet> summary -- TProfile SEM vs event-mean estimator:\n", familyLabel);

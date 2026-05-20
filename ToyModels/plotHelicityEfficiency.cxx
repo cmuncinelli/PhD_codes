@@ -1380,20 +1380,34 @@ static void MakeFig13_RingProxyJet(TDirectory* famDir, TDirectory* famOut, const
 
 // ==========================================================================
 /**
- * @brief Fig 14 -- direct overlay comparison of TProfile SEM vs event-mean
- *        uncertainty for the integrated <R_proxy_jet>, one panel per eta selection.
+ * @brief Fig 14 -- three-way overlay comparison of TProfile SEM, event-mean
+ *        uncertainty, and data-chunking uncertainty for the integrated
+ *        <R_proxy_jet>, one panel per eta selection.
  *
  * @details
- * For each (scenario, eta) combination, two points are drawn at slightly
- * offset x positions so both estimators are visible simultaneously:
+ * For each (scenario, eta) combination, three points are drawn at slightly
+ * offset x positions so all estimators are visible simultaneously:
  *
- *   Filled marker (x - 0.12): naive TProfile SEM, assumes all entries independent
- *   Open  marker  (x + 0.12): event-mean sigma / sqrt(N_events), accounts for
- *                              intra-event correlations from shared jet direction
+ *   Filled marker  (x - 0.18): naive TProfile SEM; assumes all N_Lambda entries
+ *                               are independent -- underestimates if intra-event
+ *                               correlations from the shared jet axis are present.
  *
- * A ratio of open/filled error bar height > 1 indicates that the TProfile
- * was underestimating the true uncertainty.  Agreement confirms that the
- * intra-event correlation is negligible at the current jet-group size.
+ *   Open marker    (x + 0.00): event-mean estimator; sigma(R_e)/sqrt(N_events),
+ *                               where R_e is the per-jet-group mean.  Correctly
+ *                               treats the jet group as the independent unit, but
+ *                               uses a weighted TH1D internally, which can still
+ *                               carry a ROOT-level weighting artefact.
+ *
+ *   Star marker    (x + 0.18): data-chunking estimator; stddev(mu_k)/sqrt(K_filled),
+ *                               where mu_k = raw_sum_k / raw_count_k for each of
+ *                               the kChunks sequential chunks of jet-group events.
+ *                               Entirely unweighted; immune to ROOT's effective-
+ *                               degrees-of-freedom trap.
+ *
+ * Hierarchy of trust (highest to lowest): chunking > event-mean > TProfile SEM.
+ * If all three agree, the intra-event correlation is negligible at the current
+ * jet-group size.  If the chunking bar is taller than the TProfile bar, the SEM
+ * was underestimating.
  *
  * @param famDir    Family directory in the input file.
  * @param famOut    Output sub-directory in the plots ROOT file.
@@ -1408,20 +1422,25 @@ static void MakeFig14_RingJetErrComparison(TDirectory* famDir, TDirectory* famOu
     // Open marker counterparts for kScenMarkers {20,21,22,23}
     static const int kOpenMarkers[4] = {24, 25, 26, 32};
 
-    // Global y range covering both estimators
+    // Global y range covering all three estimators
     double globalMax = 0.;
     for (int ie = 0; ie < 3; ++ie) {
         for (int is = 0; is < 4; ++is) {
             TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
             if (!dir) continue;
-            TProfile* p = static_cast<TProfile*>(SafeGet(dir, "pRingProxyJet"));
-            TH1D*     h = static_cast<TH1D*>(SafeGet(dir, "hEventMeanRingProxyJet"));
+            TProfile* p  = static_cast<TProfile*>(SafeGet(dir, "pRingProxyJet"));
+            TH1D*     he = static_cast<TH1D*>(SafeGet(dir, "hEventMeanRingProxyJet"));
+            TH1D*     hc = static_cast<TH1D*>(SafeGet(dir, "hChunkMeansRingProxyJet"));
             if (p) {
                 double v = std::fabs(p->GetBinContent(1)) + p->GetBinError(1);
                 if (v > globalMax) globalMax = v;
             }
-            if (h && h->GetEntries() > 0) {
-                double v = std::fabs(h->GetMean()) + h->GetMeanError();
+            if (he && he->GetEntries() > 0) {
+                double v = std::fabs(he->GetMean()) + he->GetMeanError();
+                if (v > globalMax) globalMax = v;
+            }
+            if (hc && hc->GetEntries() > 0) {
+                double v = std::fabs(hc->GetMean()) + hc->GetMeanError();
                 if (v > globalMax) globalMax = v;
             }
         }
@@ -1452,16 +1471,17 @@ static void MakeFig14_RingJetErrComparison(TDirectory* famDir, TDirectory* famOu
         for (int is = 0; is < 4; ++is) {
             TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
             if (!dir) continue;
-            TProfile* p = static_cast<TProfile*>(SafeGet(dir, "pRingProxyJet"));
-            TH1D*     h = static_cast<TH1D*>(SafeGet(dir, "hEventMeanRingProxyJet"));
+            TProfile* p  = static_cast<TProfile*>(SafeGet(dir, "pRingProxyJet"));
+            TH1D*     he = static_cast<TH1D*>(SafeGet(dir, "hEventMeanRingProxyJet"));
+            TH1D*     hc = static_cast<TH1D*>(SafeGet(dir, "hChunkMeansRingProxyJet"));
 
-            // Bin center for scenario 'is' in a 4-bin histo spanning [0,4]
+            // Bin centre for scenario 'is' in a 4-bin axis spanning [0,4]
             double xCtr = is + 0.5;
 
             // -- TProfile SEM: filled marker, shifted left --
             if (p) {
                 TGraphErrors* grS = new TGraphErrors(1);
-                grS->SetPoint    (0, xCtr - 0.12, p->GetBinContent(1));
+                grS->SetPoint    (0, xCtr - 0.18, p->GetBinContent(1));
                 grS->SetPointError(0, 0.,          p->GetBinError(1));
                 grS->SetMarkerStyle(kScenMarkers[is]);
                 grS->SetMarkerColor(kScenColors[is]);
@@ -1471,11 +1491,11 @@ static void MakeFig14_RingJetErrComparison(TDirectory* famDir, TDirectory* famOu
                 grS->Draw("P SAME");
             }
 
-            // -- Event-mean sigma: open marker, shifted right --
-            if (h && h->GetEntries() > 0) {
+            // -- Event-mean sigma: open marker, centred --
+            if (he && he->GetEntries() > 0) {
                 TGraphErrors* grE = new TGraphErrors(1);
-                grE->SetPoint    (0, xCtr + 0.12, h->GetMean());
-                grE->SetPointError(0, 0.,          h->GetMeanError());
+                grE->SetPoint    (0, xCtr + 0.00, he->GetMean());
+                grE->SetPointError(0, 0.,          he->GetMeanError());
                 grE->SetMarkerStyle(kOpenMarkers[is]);
                 grE->SetMarkerColor(kScenColors[is]);
                 grE->SetLineColor  (kScenColors[is]);
@@ -1483,12 +1503,25 @@ static void MakeFig14_RingJetErrComparison(TDirectory* famDir, TDirectory* famOu
                 grE->SetMarkerSize(1.1);
                 grE->Draw("P SAME");
             }
+
+            // -- Chunking estimator: full-star marker, shifted right --
+            if (hc && hc->GetEntries() > 0) {
+                TGraphErrors* grC = new TGraphErrors(1);
+                grC->SetPoint    (0, xCtr + 0.18, hc->GetMean());
+                grC->SetPointError(0, 0.,          hc->GetMeanError());
+                grC->SetMarkerStyle(29); // full 5-pointed star -- visually distinct from filled/open sets
+                grC->SetMarkerColor(kScenColors[is]);
+                grC->SetLineColor  (kScenColors[is]);
+                grC->SetLineWidth(2);
+                grC->SetMarkerSize(1.4); // stars look small at 1.1; bump up slightly
+                grC->Draw("P SAME");
+            }
         }
         AddLabel(0.5, 0.96, etaLabels[ie], 0.045, 22);
 
         // Legend on the rightmost (All) panel only
         if (ie == 2) {
-            TLegend* leg = MakeLegend(0.18, 0.50, 0.95, 0.88);
+            TLegend* leg = MakeLegend(0.18, 0.68, 0.95, 0.88);
             for (int is = 0; is < 4; ++is) {
                 TLine* dummy = new TLine();
                 dummy->SetLineColor(kScenColors[is]);  dummy->SetLineWidth(2);
@@ -1496,16 +1529,19 @@ static void MakeFig14_RingJetErrComparison(TDirectory* famDir, TDirectory* famOu
             }
             TMarker* mFull = new TMarker(0., 0., 20);
             mFull->SetMarkerColor(kBlack);  mFull->SetMarkerSize(1.1);
-            leg->AddEntry(mFull, "TProfile SEM (filled)", "p");
+            leg->AddEntry(mFull, "TProfile SEM (filled, left)", "p");
             TMarker* mOpen = new TMarker(0., 0., 24);
             mOpen->SetMarkerColor(kBlack);  mOpen->SetMarkerSize(1.1);
-            leg->AddEntry(mOpen, "Event-mean #sigma (open)", "p");
+            leg->AddEntry(mOpen, "Event-mean #sigma (open, centre)", "p");
+            TMarker* mStar = new TMarker(0., 0., 29);
+            mStar->SetMarkerColor(kBlack);  mStar->SetMarkerSize(1.4);
+            leg->AddEntry(mStar, "Chunking #sigma (star, right)", "p");
             leg->Draw("SAME");
         }
     }
 
     c->cd(0);
-    AddLabel(0.5, 0.995, Form("SEM vs event-mean uncertainty comparison -- %s", famLabel), 0.036, 22);
+    AddLabel(0.5, 0.995, Form("SEM vs event-mean vs chunking uncertainty -- %s", famLabel), 0.036, 22);
     WriteCanvas(c, famOut);
     delete c;
 }
