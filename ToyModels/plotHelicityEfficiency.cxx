@@ -63,6 +63,9 @@
 #include <TGraphErrors.h>
 #include <TMarker.h>
 
+#include <TArrow.h>
+#include <TProfile2D.h>
+
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -255,6 +258,141 @@ static TH1D* SafeClone(TH1D* h) {
     // histogram pollution and ensuring the TCanvas renders the overlays correctly!
     hc->SetDirectory(nullptr); 
     return hc;
+}
+
+// ==========================================================================
+/**
+ * @brief Draws one vector-field panel: pPstarZ as a COLZ background with
+ *        block-averaged transverse (px, py) arrows overlaid.
+ *
+ * @details
+ * The colour background encodes <p*_z> on a diverging palette (set by the
+ * caller via gStyle->SetPalette) with a symmetric Z range derived from the
+ * data.  Arrows are drawn at the centres of arrowBlockSize x arrowBlockSize
+ * tiles of (px_lam, py_lam) bins; within each tile the mean <p*_x> and
+ * <p*_y> are averaged over all bins that individually pass @p minEntries.
+ * This decouples colour resolution (fine bins) from arrow visibility (large
+ * tiles), so the ring structure remains legible even at modest statistics.
+ *
+ * Arrow lengths are normalised globally: the longest arrow in the panel spans
+ * 0.45 * tileWidth, preserving relative magnitudes between tiles.  Tiles
+ * whose averaged transverse magnitude is below 5% of the global maximum are
+ * suppressed to avoid noise arrows in sparse or near-zero regions.
+ *
+ * Must be called while the target TPad is current (gPad).
+ *
+ * @param hX             TProfile2D of <p*_x> vs (px_lam, py_lam).
+ * @param hY             TProfile2D of <p*_y> vs (px_lam, py_lam).
+ * @param hZ             TProfile2D of <p*_z> vs (px_lam, py_lam) [colormap].
+ * @param title          Histogram title string; pass nullptr to suppress title.
+ * @param minEntries     Minimum per-bin entry count to include in tile average.
+ *                       Default: 50 (safe for >=1M Lambdas with 20x20 bins).
+ * @param arrowBlockSize Side length of the averaging tile in bins.
+ *                       Default: 4 (4x4 = 16 bins per arrow, 25 arrows/axis
+ *                       for a 20-bin grid).  Other useful values for 20 bins:
+ *                       1 (per-bin, tiny), 2 (100 arrows), 5 (16 arrows),
+ *                       10 (4 arrows).  Non-divisors silently drop the last
+ *                       partial tile.
+ */
+// ==========================================================================
+static void DrawVectorFieldPanel(TProfile2D* hX, TProfile2D* hY, TProfile2D* hZ,
+                                  const char* title,
+                                  double minEntries   = 50.,
+                                  int arrowBlockSize  = 4)
+{
+    if (!hX || !hY || !hZ) return;
+
+    // ---- COLZ background: clone Z so we can set its range without side-effects ----
+    TProfile2D* hZd = static_cast<TProfile2D*>(
+        hZ->Clone(Form("hVFZ_tmp_%d", gCloneIdx++)));
+    hZd->SetDirectory(nullptr);
+    hZd->SetStats(0);
+    if (title) hZd->SetTitle(title);
+
+    double zmax = 0.;
+    for (int ix = 1; ix <= hZd->GetNbinsX(); ++ix)
+        for (int iy = 1; iy <= hZd->GetNbinsY(); ++iy) {
+            int gb = hZd->GetBin(ix, iy);
+            if (hZd->GetBinEntries(gb) < minEntries) continue;
+            double v = std::fabs(hZd->GetBinContent(ix, iy));
+            if (v > zmax) zmax = v;
+        }
+    zmax = (zmax < 1.e-10) ? 1.e-4 : zmax * 1.1;
+    hZd->SetMinimum(-zmax);
+    hZd->SetMaximum( zmax);
+    hZd->Draw("COLZ");
+    gPad->Update(); // forces palette axis before arrow overlay
+
+    // ---- Arrow grid setup ----
+    int nBinsX  = hX->GetNbinsX();
+    int nBinsY  = hX->GetNbinsY();
+    int bs      = arrowBlockSize;
+    double binW = hX->GetXaxis()->GetBinWidth(1); // uniform binning assumed
+    double tileW= bs * binW;                       // physical width of one tile
+
+    int nTilesX = nBinsX / bs; // partial last tile dropped if bs !| nBinsX
+    int nTilesY = nBinsY / bs;
+
+    // ---- Pass 1: accumulate tile averages, find global max magnitude ----
+    struct Tile { double xc, yc, bx, by; bool valid = false; };
+    std::vector<Tile> tiles(nTilesX * nTilesY);
+
+    double maxMag = 0.;
+    for (int itx = 0; itx < nTilesX; ++itx) {
+        for (int ity = 0; ity < nTilesY; ++ity) {
+            double sumBx = 0., sumBy = 0.;
+            int    nUsed = 0;
+            for (int dix = 0; dix < bs; ++dix) {
+                for (int diy = 0; diy < bs; ++diy) {
+                    int ix = itx * bs + dix + 1; // ROOT bins: 1-indexed
+                    int iy = ity * bs + diy + 1;
+                    int gb = hX->GetBin(ix, iy);
+                    if (hX->GetBinEntries(gb) < minEntries) continue;
+                    sumBx += hX->GetBinContent(ix, iy);
+                    sumBy += hY->GetBinContent(ix, iy);
+                    ++nUsed;
+                }
+            }
+
+            // Tile centre in axis coordinates
+            int  firstBinX = itx * bs + 1,  lastBinX = firstBinX + bs - 1;
+            int  firstBinY = ity * bs + 1,  lastBinY = firstBinY + bs - 1;
+            double xc = 0.5 * (hX->GetXaxis()->GetBinLowEdge(firstBinX) +
+                                hX->GetXaxis()->GetBinUpEdge (lastBinX));
+            double yc = 0.5 * (hX->GetYaxis()->GetBinLowEdge(firstBinY) +
+                                hX->GetYaxis()->GetBinUpEdge (lastBinY));
+
+            Tile& t = tiles[itx * nTilesY + ity];
+            t.xc = xc;  t.yc = yc;
+            if (nUsed > 0) {
+                t.bx    = sumBx / nUsed;
+                t.by    = sumBy / nUsed;
+                t.valid = true;
+                double mag = std::sqrt(t.bx*t.bx + t.by*t.by);
+                if (mag > maxMag) maxMag = mag;
+            }
+        }
+    }
+    if (maxMag < 1.e-12) return; // nothing to draw
+
+    // Longest arrow spans 0.8 * tileWidth; shorter arrows scale proportionally
+    double scale = 0.8 * tileW / maxMag;
+
+    // ---- Pass 2: draw arrows ----
+    for (const Tile& t : tiles) {
+        if (!t.valid) continue;
+        double mag = std::sqrt(t.bx*t.bx + t.by*t.by);
+        if (mag < 0.05 * maxMag) continue; // suppress sub-5% noise tiles
+
+        TArrow* arr = new TArrow(t.xc, t.yc,
+                                  t.xc + scale * t.bx,
+                                  t.yc + scale * t.by,
+                                  0.012, ">"); // 0.012 NDC head, larger for block arrows
+        arr->SetLineColor(kBlack);
+        arr->SetFillColor(kBlack);
+        arr->SetLineWidth(2);
+        arr->Draw();
+    }
 }
 
 // ==========================================================================
@@ -1625,6 +1763,257 @@ static void MakeFig15_EventMeanDist(TDirectory* famDir, TDirectory* famOut, cons
     delete c;
 }
 
+// ==========================================================================
+/**
+ * @brief Fig 16 -- main proton rest-frame polarisation vector field.
+ *
+ * @details
+ * A 2 x 3 canvas (cut x eta-selection):
+ *   Row 1: NoCuts    x { All eta | eta>0 | eta<0 }
+ *   Row 2: BothCuts  x { All eta | eta>0 | eta<0 }
+ *
+ * Each panel shows the average proton direction in the Lambda rest frame as
+ * a 2D vector field in the Lambda transverse momentum plane (px, py):
+ *   - Background colour:  <p*_z>  (out-of-plane component, diverging palette,
+ *                          centred at zero; encodes any azimuthal z-polarisation
+ *                          pattern induced by the cuts).
+ *   - Arrow direction:   (<p*_x>, <p*_y>) per (px_lam, py_lam) cell.
+ *   - Arrow length:       normalised to the global maximum transverse magnitude
+ *                          within the panel so relative strengths are preserved.
+ *
+ * The expected result in the NoCuts panel is a uniform near-zero field; after
+ * DCA cuts a ring-like pattern (arrows tangent to circles of constant pT)
+ * should emerge, driven by the magnetic-field-dependent acceptance.
+ *
+ * The supplemental figure MakeFig16s_PstarVectorFieldSupp shows the two
+ * intermediate cut scenarios (pTCutOnly, DCACutOnly).
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory in the plots ROOT file.
+ * @param famLabel  Short label used in canvas and object names.
+ */
+// ==========================================================================
+static void MakeFig16_PstarVectorField(TDirectory* famDir, TDirectory* famOut,
+                                        const char* famLabel)
+{
+    const char* etaSels[3]    = {"All",       "EtaPos",            "EtaNeg"};
+    const char* etaLabels[3]  = {"All #eta",  "#eta_{#Lambda}>0",  "#eta_{#Lambda}<0"};
+    const char* cutRows[2]    = {"NoCuts",    "BothCuts"};
+    const char* cutLabels[2]  = {"No Cuts",   "Both Cuts"};
+
+    // gStyle->SetPalette(kTemperatureMap); // diverging blue-white-red, zero = white
+
+    TCanvas* c = new TCanvas(Form("c_%s_pstarVF", famLabel), "", 1500, 950);
+    c->Divide(3, 2, 0.002, 0.002);
+
+    int panel = 0;
+    for (int irow = 0; irow < 2; ++irow) {
+        for (int icol = 0; icol < 3; ++icol) {
+            c->cd(++panel);
+            gPad->SetRightMargin(0.16);
+            gPad->SetLeftMargin(0.11);
+            gPad->SetBottomMargin(0.13);
+
+            TDirectory* dir = GetScenarioDir(famDir, cutRows[irow], etaSels[icol]);
+            if (!dir) continue;
+
+            TProfile2D* hX = static_cast<TProfile2D*>(SafeGet(dir, "pPstarX_vsPxPy"));
+            TProfile2D* hY = static_cast<TProfile2D*>(SafeGet(dir, "pPstarY_vsPxPy"));
+            TProfile2D* hZ = static_cast<TProfile2D*>(SafeGet(dir, "pPstarZ_vsPxPy"));
+            if (!hX || !hY || !hZ) continue;
+
+            DrawVectorFieldPanel(hX, hY, hZ,
+                // Form("<p*_{z}> + #vec{<p*_{T}>};"
+                Form(" ;p_{x}^{#Lambda} [GeV/c];p_{y}^{#Lambda} [GeV/c];<p*_{z}>")); // No title works best here
+            AddLabel(0.50, 0.965,
+                Form("%s  --  %s", cutLabels[irow], etaLabels[icol]),
+                0.040, 22);
+        }
+    }
+
+    c->cd(0);
+    AddLabel(0.5, 0.997,
+        Form("Spurious #LTp*#GT polarisation vector field  --  %s", famLabel),
+        0.033, 22);
+    WriteCanvas(c, famOut);
+    delete c;
+}
+
+// ==========================================================================
+/**
+ * @brief Fig 16s -- supplemental proton rest-frame polarisation vector field.
+ *
+ * @details
+ * Identical layout to MakeFig16_PstarVectorField but showing the two
+ * intermediate cut scenarios:
+ *   Row 1: pTCutOnly  x { All eta | eta>0 | eta<0 }
+ *   Row 2: DCACutOnly x { All eta | eta>0 | eta<0 }
+ *
+ * Comparing with the main figure allows the pT-cut and DCA-cut contributions
+ * to the fake ring pattern to be separated.  The DCA-only row is expected to
+ * show the clearest ring-like structure, since it is the DCA cut that couples
+ * directly to the helix geometry and thus to the Lambda azimuthal angle.
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory in the plots ROOT file.
+ * @param famLabel  Short label used in canvas and object names.
+ */
+// ==========================================================================
+static void MakeFig16s_PstarVectorFieldSupp(TDirectory* famDir, TDirectory* famOut,
+                                             const char* famLabel)
+{
+    const char* etaSels[3]    = {"All",       "EtaPos",            "EtaNeg"};
+    const char* etaLabels[3]  = {"All #eta",  "#eta_{#Lambda}>0",  "#eta_{#Lambda}<0"};
+    const char* cutRows[2]    = {"pTCutOnly",     "DCACutOnly"};
+    const char* cutLabels[2]  = {"p_{T} Cut Only", "DCA Cut Only"};
+
+    // gStyle->SetPalette(kTemperatureMap);
+
+    TCanvas* c = new TCanvas(Form("c_%s_pstarVFsupp", famLabel), "", 1500, 950);
+    c->Divide(3, 2, 0.002, 0.002);
+
+    int panel = 0;
+    for (int irow = 0; irow < 2; ++irow) {
+        for (int icol = 0; icol < 3; ++icol) {
+            c->cd(++panel);
+            gPad->SetRightMargin(0.16);
+            gPad->SetLeftMargin(0.11);
+            gPad->SetBottomMargin(0.13);
+
+            TDirectory* dir = GetScenarioDir(famDir, cutRows[irow], etaSels[icol]);
+            if (!dir) continue;
+
+            TProfile2D* hX = static_cast<TProfile2D*>(SafeGet(dir, "pPstarX_vsPxPy"));
+            TProfile2D* hY = static_cast<TProfile2D*>(SafeGet(dir, "pPstarY_vsPxPy"));
+            TProfile2D* hZ = static_cast<TProfile2D*>(SafeGet(dir, "pPstarZ_vsPxPy"));
+            if (!hX || !hY || !hZ) continue;
+
+            DrawVectorFieldPanel(hX, hY, hZ,
+                // Form("<p*_{z}> + #vec{<p*_{T}>};"
+                Form(" ;p_{x}^{#Lambda} [GeV/c];p_{y}^{#Lambda} [GeV/c];<p*_{z}>")); // No title works best here
+            AddLabel(0.50, 0.965,
+                Form("%s  --  %s", cutLabels[irow], etaLabels[icol]),
+                0.040, 22);
+        }
+    }
+
+    c->cd(0);
+    AddLabel(0.5, 0.997,
+        Form("Spurious #LTp*#GT vector field (intermediate cuts)  --  %s", famLabel),
+        0.033, 22);
+    WriteCanvas(c, famOut);
+    delete c;
+}
+
+// ==========================================================================
+/**
+ * @brief Fig 17 -- <p*> components vs Lambda azimuthal angle phi_lam.
+ *
+ * @details
+ * Three canvases (one per eta selection: All, EtaPos, EtaNeg).  Each canvas
+ * has three panels showing <p*_x>, <p*_y>, <p*_z> vs phi_lam, with all four
+ * cut scenarios overlaid in every panel.
+ *
+ * This is the compact 1D projection of the vector field: a ring-like
+ * polarisation bias from DCA cuts will appear as a sinusoidal modulation
+ * in <p*_x> and <p*_y> with period 2pi and a phase determined by the
+ * magnetic field orientation.  <p*_z> should remain flat if there is no
+ * out-of-plane component to the fake signal.
+ *
+ * The y-axis range is set globally across all three component panels and
+ * both positive and negative extremes so the relative amplitudes are
+ * directly comparable between panels.
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory in the plots ROOT file.
+ * @param famLabel  Short label used in canvas and object names.
+ */
+// ==========================================================================
+static void MakeFig17_PstarVsPhiLam(TDirectory* famDir, TDirectory* famOut,
+                                     const char* famLabel)
+{
+    const char* etaSels[3]   = {"All",      "EtaPos",            "EtaNeg"};
+    const char* etaLabels[3] = {"All #eta", "#eta_{#Lambda}>0",  "#eta_{#Lambda}<0"};
+
+    // Profile names and axis labels for the three components
+    const char* profNames[3]  = {"pPstarX_vsPhiLam",
+                                  "pPstarY_vsPhiLam",
+                                  "pPstarZ_vsPhiLam"};
+    const char* compLabels[3] = {"<p*_{x}>", "<p*_{y}>", "<p*_{z}>"};
+
+    for (int ie = 0; ie < 3; ++ie) {
+
+        // Collect all 12 profiles (4 scenarios x 3 components) and find global y range
+        TProfile* profs[4][3]; // [scenario][component]
+        double ymax = 0.;
+        for (int is = 0; is < 4; ++is) {
+            TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
+            for (int ic = 0; ic < 3; ++ic) {
+                profs[is][ic] = (dir)
+                    ? static_cast<TProfile*>(SafeGet(dir, profNames[ic]))
+                    : nullptr;
+                TProfile* p = profs[is][ic];
+                if (!p) continue;
+                for (int ib = 1; ib <= p->GetNbinsX(); ++ib) {
+                    double v = std::fabs(p->GetBinContent(ib)) + p->GetBinError(ib);
+                    if (v > ymax) ymax = v;
+                }
+            }
+        }
+        ymax = (ymax < 1.e-10) ? 0.01 : ymax * 1.45;
+
+        TCanvas* c = new TCanvas(
+            Form("c_%s_pstarPhi_%s", famLabel, etaSels[ie]), "", 1400, 500);
+        c->Divide(3, 1, 0.004, 0.002);
+
+        for (int ic = 0; ic < 3; ++ic) {
+            c->cd(ic + 1);
+            gPad->SetLeftMargin(0.15);
+            gPad->SetBottomMargin(0.15);
+
+            // Invisible axis frame so the y range and title are set before any Draw
+            TH1D* hFrame = new TH1D(
+                Form("hVFframe_%s_%s_%d", famLabel, etaSels[ie], ic),
+                Form("%s vs #phi_{#Lambda}  --  %s;"
+                     "#phi_{#Lambda} [rad];%s",
+                     compLabels[ic], etaLabels[ie], compLabels[ic]),
+                1, -TMath::Pi(), TMath::Pi());
+            hFrame->SetDirectory(nullptr);
+            hFrame->SetStats(0);
+            hFrame->GetYaxis()->SetRangeUser(-ymax, ymax);
+            hFrame->Draw("AXIS");
+
+            TLine* zl = new TLine(-TMath::Pi(), 0., TMath::Pi(), 0.);
+            zl->SetLineColor(kGray + 2);
+            zl->SetLineStyle(2);
+            zl->Draw("SAME");
+
+            for (int is = 0; is < 4; ++is) {
+                TProfile* p = profs[is][ic];
+                if (!p) continue;
+                SetHistStyle(p, kScenColors[is], kScenMarkers[is]);
+                p->Draw("EP SAME");
+            }
+
+            // Legend on the rightmost panel only
+            if (ic == 2) {
+                TLegend* leg = MakeLegend(0.16, 0.68, 0.62, 0.88);
+                for (int is = 0; is < 4; ++is)
+                    if (profs[is][ic])
+                        leg->AddEntry(profs[is][ic], kScenLabels[is], "ep");
+                leg->Draw("SAME");
+            }
+        }
+
+        c->cd(0);
+        AddLabel(0.5, 0.997,
+            Form("#LTp*#GT components vs #phi_{#Lambda}  --  %s  --  %s",
+                 famLabel, etaLabels[ie]),
+            0.034, 22);
+        WriteCanvas(c, famOut);
+        delete c;
+    }
+}
 
 // ==========================================================================
 /**
@@ -1734,34 +2123,48 @@ void plotHelicityEfficiency(const char* inputFile = "helicityEffOutput.root")
         // Create the output sub-directory for this family
         TDirectory* famOut = fout->mkdir(famName);
 
+        // ---- Output sub-directories (keeps each family folder navigable) ----
+        TDirectory* outEmis = famOut->mkdir("EmissionAngles");    // figs 1-3
+        TDirectory* outRingZ= famOut->mkdir("RingZHat");          // figs 4-6
+        TDirectory* outDaug = famOut->mkdir("Daughters");         // figs 7-8
+        // TDirectory* outEta  = famOut->mkdir("EtaAsymmetry");      // fig  9
+        TDirectory* outJet  = famOut->mkdir("RingJet");           // figs 10-15
+        TDirectory* outVF   = famOut->mkdir("PolarizationVectorField"); // figs 16-17
+
         printf("Producing figures for family: %s\n", famName);
 
-        // Figures 1-3: one canvas per eta selection
+        // Figs 1-3: one canvas per eta selection
         for (const char* eta : {"EtaPos", "EtaNeg", "All"}) {
-            MakeFig1_2DMaps  (famDir, famOut, famName, eta);
-            MakeFig2_CosTheta(famDir, famOut, famName, eta);
-            MakeFig3_PhiStar (famDir, famOut, famName, eta);
+            MakeFig1_2DMaps  (famDir, outEmis, famName, eta);
+            MakeFig2_CosTheta(famDir, outEmis, famName, eta);
+            MakeFig3_PhiStar (famDir, outEmis, famName, eta);
         }
 
-        // Figures 4-9: one canvas each (use "All" eta combined internally)
-        MakeFig4_RingProxy    (famDir, famOut, famName);
-        MakeFig5_RingVsPt     (famDir, famOut, famName);
-        MakeFig6_IntegratedRing(famDir, famOut, famName);
-        MakeFig7_DaughterPt   (f, famDir, famOut, famName);
-        MakeFig8_DaughterDCA  (f, famDir, famOut, famName);
-        MakeFig9_EtaDiff      (famDir, famOut, famName);
+        // Figs 4-6: z-hat ring proxy
+        MakeFig4_RingProxy    (famDir, outRingZ, famName);
+        MakeFig5_RingVsPt     (famDir, outRingZ, famName);
+        MakeFig6_IntegratedRing(famDir, outRingZ, famName);
 
-        // Random jet direction proxy figures:
-        // (numeration got confusing, but the plots are now saved in the same order for the \hat z and \hat jet proxies)
-        MakeFig13_RingProxyJet      (famDir, famOut, famName);
-        MakeFig11_ringJetVsPt       (famDir, famOut, famName);
-        MakeFig10_RingProxyJetVsEta (famDir, famOut, famName);
-        MakeFig12_IntegratedRingJet (famDir, famOut, famName);
+        // Figs 7-8: daughter kinematics
+        MakeFig7_DaughterPt  (f, famDir, outDaug, famName);
+        MakeFig8_DaughterDCA (f, famDir, outDaug, famName);
 
-        // Event-mean estimator figures
-        MakeFig12_IntegratedRingJetEvt (famDir, famOut, famName);
-        MakeFig14_RingJetErrComparison (famDir, famOut, famName);
-        MakeFig15_EventMeanDist        (famDir, famOut, famName);
+        // Fig 9: eta asymmetry
+        MakeFig9_EtaDiff     (famDir, famOut, famName);
+
+        // Figs 10-15: random jet-direction ring proxy and error estimators
+        MakeFig10_RingProxyJetVsEta   (famDir, outJet, famName);
+        MakeFig11_ringJetVsPt         (famDir, outJet, famName);
+        MakeFig12_IntegratedRingJet   (famDir, outJet, famName);
+        MakeFig12_IntegratedRingJetEvt(famDir, outJet, famName);
+        MakeFig13_RingProxyJet        (famDir, outJet, famName);
+        MakeFig14_RingJetErrComparison(famDir, outJet, famName);
+        MakeFig15_EventMeanDist       (famDir, outJet, famName);
+
+        // Figs 16-17: polarisation vector field
+        MakeFig16_PstarVectorField    (famDir, outVF, famName);
+        MakeFig16s_PstarVectorFieldSupp(famDir, outVF, famName);
+        MakeFig17_PstarVsPhiLam       (famDir, outVF, famName);
     }
 
     // Lambda kinematics -- shared, written at the fout top level

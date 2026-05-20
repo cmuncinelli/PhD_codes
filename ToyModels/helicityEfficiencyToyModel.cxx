@@ -448,6 +448,24 @@ struct ScenarioHistos {
     // -- Lambda kinematics --
     TH1D*    h1d_pT_lambda;      // Lambda pT [GeV/c]
     TH1D*    h1d_eta_lambda;     // Lambda pseudorapidity
+
+    // -- Proton rest-frame direction vector field vs Lambda transverse momentum --
+    // The three TProfile2Ds store <p*_x>, <p*_y>, <p*_z> in bins of (px_lam, py_lam).
+    // Together they form a 2D vector field in transverse momentum space.
+    // The expected ring-like structure from DCA cuts appears as arrows tangent to
+    // circles of constant pT, pointing in the direction of the average polarisation
+    // bias induced by the magnetic-field-dependent acceptance.
+    // pPstarZ_vsPxPy also serves as the colormap channel for the TProfile2D plots (out-of-plane component).
+    TProfile2D* pPstarX_vsPxPy;   // <p*_x> vs (px_lam, py_lam)
+    TProfile2D* pPstarY_vsPxPy;   // <p*_y> vs (px_lam, py_lam)
+    TProfile2D* pPstarZ_vsPxPy;   // <p*_z> vs (px_lam, py_lam)  [used as colormap -- cannot fit anything else in 2D!]
+
+    // 1D compact version: <p*_x,y,z> vs azimuthal angle phi_lam.
+    // Directly shows the sinusoidal modulation around the ring without
+    // needing any fancy arrow-drawing code that we do in plotHelicityEfficiency.cxx
+    TProfile*   pPstarX_vsPhiLam; // <p*_x> vs phi_lam
+    TProfile*   pPstarY_vsPhiLam; // <p*_y> vs phi_lam
+    TProfile*   pPstarZ_vsPhiLam; // <p*_z> vs phi_lam
 };
 
 
@@ -494,9 +512,9 @@ static ScenarioHistos BookScenario(TDirectory* dir, double etaMaxDetector)
         "cos(#theta*) [proton vs #Lambda dir];"
         "#phi* [proton azimuth around #Lambda] [rad]",
         50, -1., 1.,          // 50 bins in cos(theta*) in [-1, 1]
-        64, -TMath::Pi(), TMath::Pi()); // 64 bins in phi* in [-pi, pi]
+        64, -Pi, Pi); // 64 bins in phi* in [-pi, pi]
     h.h1d_cosTheta = new TH1D("h1d_cosTheta", "cos(#theta*) -- proton vs #Lambda direction; cos(#theta*);Counts", 50, -1., 1.);
-    h.h1d_phi = new TH1D("h1d_phi", "#phi* -- proton azimuth around #Lambda axis; #phi* [rad];Counts",64, -TMath::Pi(), TMath::Pi());
+    h.h1d_phi = new TH1D("h1d_phi", "#phi* -- proton azimuth around #Lambda axis; #phi* [rad];Counts",64, -Pi, Pi);
 
     // ---------- Ring observable proxy ----------
     // Range is set to [-3/alpha, +3/alpha] which covers the full prefactor.
@@ -537,6 +555,23 @@ static ScenarioHistos BookScenario(TDirectory* dir, double etaMaxDetector)
     h.h1d_pT_lambda = new TH1D("h1d_pT_lambda", "#Lambda p_{T}; p_{T}^{#Lambda} [GeV/c];Counts", 100, 0., 10.);
     h.h1d_eta_lambda = new TH1D("h1d_eta_lambda", "#Lambda pseudorapidity; #eta_{#Lambda};Counts", 36, -etaMaxDetector, etaMaxDetector);
 
+    // Vector field: average proton rest-frame direction in (px, py) space.
+    // Range [-3, 3] GeV/c covers >95% of the thermal spectrum (T~0.3 GeV).
+    // 40x40 bins give cells of ~0.15 GeV/c width, fine enough to resolve the ring but coarse enough to have good statistics per cell at 1M+ Lambdas.
+    // Notice that we can do a grid in (px,py) because that also relates finely with actual XY coordinates given a transverse travel time
+    // for the Lambda before decaying! If we actually want to plot this in spatial coordinates, just take (px,py) and multiply by the sampled
+    // Tau for each Lambda.
+    const double pXYmax = 3.0;
+    const int    pXYbin = 40; // 20x20 bins over [-3,3]: 0.3 GeV/c cells, clean COLZ display
+    h.pPstarX_vsPxPy = new TProfile2D("pPstarX_vsPxPy", "<p*_{x}> vs (p_{x}^{#Lambda}, p_{y}^{#Lambda});" "p_{x}^{#Lambda} [GeV/c];p_{y}^{#Lambda} [GeV/c];<p*_{x}>", pXYbin, -pXYmax, pXYmax,  pXYbin, -pXYmax, pXYmax);
+    h.pPstarY_vsPxPy = new TProfile2D("pPstarY_vsPxPy", "<p*_{y}> vs (p_{x}^{#Lambda}, p_{y}^{#Lambda});" "p_{x}^{#Lambda} [GeV/c];p_{y}^{#Lambda} [GeV/c];<p*_{y}>", pXYbin, -pXYmax, pXYmax,  pXYbin, -pXYmax, pXYmax);
+    h.pPstarZ_vsPxPy = new TProfile2D("pPstarZ_vsPxPy", "<p*_{z}> vs (p_{x}^{#Lambda}, p_{y}^{#Lambda});" "p_{x}^{#Lambda} [GeV/c];p_{y}^{#Lambda} [GeV/c];<p*_{z}>", pXYbin, -pXYmax, pXYmax,  pXYbin, -pXYmax, pXYmax);
+
+    // 1D phi profile: 32 bins of width ~0.2 rad, clean for a sinusoidal fit later if wanted
+    h.pPstarX_vsPhiLam = new TProfile("pPstarX_vsPhiLam", "<p*_{x}> vs #phi_{#Lambda}; #phi_{#Lambda} [rad]; <p*_{x}>", 32, -Pi, Pi);
+    h.pPstarY_vsPhiLam = new TProfile("pPstarY_vsPhiLam", "<p*_{y}> vs #phi_{#Lambda}; #phi_{#Lambda} [rad]; <p*_{y}>", 32, -Pi, Pi);
+    h.pPstarZ_vsPhiLam = new TProfile("pPstarZ_vsPhiLam", "<p*_{z}> vs #phi_{#Lambda}; #phi_{#Lambda} [rad]; <p*_{z}>", 32, -Pi, Pi);
+
     return h;
 }
 
@@ -575,7 +610,12 @@ static void FillScenario(ScenarioHistos& h,
                           double dca_pion,
                           double pT_lambda,
                           double eta_lambda,
-                          double eta_jet)
+                          double eta_jet,
+                          double pstar_x,
+                          double pstar_y,
+                          double pstar_z,
+                          double px_lam,
+                          double py_lam)
 {
     // Main diagnostic histograms
     h.h2d_cosTheta_phi->Fill(cosTheta, phi);
@@ -606,6 +646,15 @@ static void FillScenario(ScenarioHistos& h,
     h.h1d_DCA_pion->Fill(dca_pion);
     h.h1d_pT_lambda->Fill(pT_lambda);
     h.h1d_eta_lambda->Fill(eta_lambda);
+
+    // Vector field fills
+    double phi_lam = std::atan2(py_lam, px_lam); // [-pi, pi]
+    h.pPstarX_vsPxPy->Fill(px_lam, py_lam, pstar_x);
+    h.pPstarY_vsPxPy->Fill(px_lam, py_lam, pstar_y);
+    h.pPstarZ_vsPxPy->Fill(px_lam, py_lam, pstar_z);
+    h.pPstarX_vsPhiLam->Fill(phi_lam, pstar_x);
+    h.pPstarY_vsPhiLam->Fill(phi_lam, pstar_y);
+    h.pPstarZ_vsPhiLam->Fill(phi_lam, pstar_z);
 }
 
 
@@ -720,15 +769,20 @@ static void FillFamily(FamilyHistos& f,
                         double dca_pion,
                         double pT_lam,
                         double eta_lam,
-                        double eta_jet)
+                        double eta_jet,
+                        double pstar_x,
+                        double pstar_y,
+                        double pstar_z,
+                        double px_lam,
+                        double py_lam)
 {
     // Local lambda that fills one scenario's eta-half and All subdirectory.
     // Captures all per-event quantities by reference so we only pass the
     // three ScenarioHistos pointers that change between scenarios.
     auto fill = [&](ScenarioHistos& hPos, ScenarioHistos& hNeg, ScenarioHistos& hAll) {
         ScenarioHistos& hEta = etaPos ? hPos : hNeg;
-        FillScenario(hEta,  cosTheta, phi_star, ringProxy, ringProxyJet, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet);
-        FillScenario(hAll,  cosTheta, phi_star, ringProxy, ringProxyJet, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet);
+        FillScenario(hEta,  cosTheta, phi_star, ringProxy, ringProxyJet, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet, pstar_x, pstar_y, pstar_z, px_lam, py_lam);
+        FillScenario(hAll,  cosTheta, phi_star, ringProxy, ringProxyJet, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet, pstar_x, pstar_y, pstar_z, px_lam, py_lam);
     };
 
     // Scenario 1: No cuts (always filled -- serves as a flat-distribution
@@ -1025,7 +1079,7 @@ void helicityEfficiencyToyModel(
     TH1D* hKin_pT_lambda  = new TH1D("hKin_pT_lambda", "Generated #Lambda p_{T};p_{T}^{#Lambda} [GeV/c];Counts", 100, 0., 10.);
     TH1D* hKin_rap_lambda = new TH1D("hKin_rap_lambda", "Generated #Lambda rapidity;y_{#Lambda};Counts", 36, -rapMax_Lambda, rapMax_Lambda);
     TH1D* hKin_eta_lambda = new TH1D("hKin_eta_lambda", "Generated #Lambda pseudorapidity;#eta_{#Lambda};Counts", 36, -etaMaxDetector, etaMaxDetector);
-    TH1D* hKin_phi_lambda = new TH1D("hKin_phi_lambda", "Generated #Lambda azimuth;#phi_{#Lambda} [rad];Counts", 64, -TMath::Pi(), TMath::Pi());
+    TH1D* hKin_phi_lambda = new TH1D("hKin_phi_lambda", "Generated #Lambda azimuth;#phi_{#Lambda} [rad];Counts", 64, -Pi, Pi);
     TH1D* hKin_decayR     = new TH1D("hKin_decayR", "All transverse decay radii;r_{decay} [cm];Counts", 150, 0., 150.);
     TH1D* hKin_pT_proton  = new TH1D("hKin_pT_proton", "All proton p_{T} (pre-cut);p_{T}^{p} [GeV/c];Counts", 100, 0., 5.);
     TH1D* hKin_pT_pion    = new TH1D("hKin_pT_pion", "All pion p_{T} (pre-cut);p_{T}^{#pi} [GeV/c];Counts", 100, 0., 5.);
@@ -1104,7 +1158,7 @@ void helicityEfficiencyToyModel(
     for (long iLam = 0; iLam < nLambdas; ++iLam) {
         // ---- Progress printout ----
         if ((iLam + 1) % nProgress == 0)
-            printf("  %ld / %ld (%.0f%%)\n",iLam + 1, nLambdas, 100. * (iLam + 1) / nLambdas);
+            std::cout << "  " << (iLam + 1) << " / " << nLambdas << " (" << 100. * (iLam + 1) / nLambdas << "%)" << std::endl;
 
         // ==================================================================
         // 3.1  Generate Lambda 4-momentum
@@ -1344,14 +1398,16 @@ void helicityEfficiencyToyModel(
         // Kept as a comparison to show the inconsistency of omitting the gate.
         FillFamily(famNG, passPtCut, passDcaCut, etaPos,
                    cosTheta, phi_star, ringProxy, ringProxyJet, decayR,
-                   pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet);
+                   pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet,
+                   p_star_unit.X(), p_star_unit.Y(), p_star_unit.Z(), px_lam, py_lam);
 
         // WithEtaGate: only fill when both daughters are inside the acceptance.
         // This is the physically consistent set.
         if (passEtaGate)
             FillFamily(famEG, passPtCut, passDcaCut, etaPos,
                        cosTheta, phi_star, ringProxy, ringProxyJet, decayR,
-                       pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet);
+                       pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet,
+                       p_star_unit.X(), p_star_unit.Y(), p_star_unit.Z(), px_lam, py_lam);
 
         ++nGenerated;
 
