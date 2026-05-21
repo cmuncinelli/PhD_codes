@@ -83,7 +83,7 @@ evaluates four cut scenarios:
 | `BothCuts`   | Both pT and DCA cuts simultaneously   |
 
 Each run produces a ROOT file containing two parallel histogram directories to isolate geometric acceptance boundaries:
-- `WithoutEtaGate/` -- legacy, no daughter eta requirement (kept for reference)
+- `WithoutEtaGate/` -- legacy, no daughter eta requirement (kept for reference and for comparison on what type of biases are introduced by the eta gate)
 - `WithEtaGate/` -- physically consistent set (BOTH daughters in acceptance)
 
 Each family contains the four scenarios mentioned above, further split into
@@ -112,6 +112,12 @@ The main outputs per scenario directory are:
 - `pRingProxyJetVsEta` -- TProfile of `<R_proxyJet>` vs Lambda pseudorapidity.
 - `pRingProxyJetVsPt` -- TProfile of `<R_proxyJet>` vs Lambda pT.
 - `pRingProxyJet` -- single-bin TProfile giving the integrated mean.
+- 
+`pRingProxyJet_JetEtaPos` -- TProfile tracking integrated `<R_proxyJet>` for configurations where jet pseudorapidity `eta_jet >= 0` across all Lambda eta.
+- 
+`pRingProxyJet_JetEtaNeg` -- TProfile tracking integrated `<R_proxyJet>` for configurations where jet pseudorapidity `eta_jet < 0` across all Lambda eta.
+
+
 
 **Error estimation for the integrated jet ring proxy:**
 
@@ -161,6 +167,14 @@ underestimate the true uncertainty:
   32 bins over `[-pi, pi]`. These directly show the sinusoidal modulation around
   the ring without requiring any vector-field rendering.
 
+-  
+`pPstarX_vsPzPx`, `pPstarZ_vsPzPx`, `pPstarY_vsPzPx` -- TProfile2Ds displaying the proton rest-frame direction vector field mapped in the longitudinal-transverse ZX momentum plane against `(pz_lam, px_lam)`. Horizontal components display `<p*_z>`, vertical components display `<p*_x>`, and the out-of-plane background color map charts `<p*_y>`.
+
+-  
+`pPstarX_vsEtaLam`, `pPstarY_vsEtaLam`, `pPstarZ_vsEtaLam` -- 1D compact TProfile projections tracking the individual `<p*>` components against Lambda pseudorapidity `eta_lam` to reveal longitudinal structures driven by kinematics.
+
+
+
 **Daughter kinematics:**
 - `h1d_pT_proton`, `h1d_pT_pion` -- daughter pT distributions.
 - `h1d_DCA_proton`, `h1d_DCA_pion` -- daughter DCA_xy to PV distributions.
@@ -183,7 +197,7 @@ root -l -b -q 'helicityEfficiencyToyModel.cxx(2000000,"output.root",0.5,...)'
 **Run this file after the generator.**
 
 Reads the ROOT file produced by `helicityEfficiencyToyModel.cxx` and generates
-17 diagnostic figures organized into output subdirectories within the plots
+diagnostic figures organized into output subdirectories within the plots
 ROOT file. The output structure per family is:
 
 ```
@@ -192,8 +206,9 @@ ROOT file. The output structure per family is:
   RingZHat/          -- Figs 4–6
   Daughters/         -- Figs 7–8
   RingJet/           -- Figs 10–15
-  PolarizationVectorField/  -- Figs 16–17
+  PolarizationVectorField/  -- Figs 16–19
 ```
+
 Fig 9 (eta asymmetry) is saved directly in the family root directory.
 
 #### Figure descriptions
@@ -237,6 +252,12 @@ the jet axis.
   - Event-mean variant (`IntegratedRingJetEvt`): same layout, but uncertainty
     taken from `hEventMeanRingProxyJet->GetMeanError()`, which accounts for
     intra-event correlations.
+
+
+- 
+**Fig 12b**: Integrated `<R_proxyJet>` bar chart layout split into three distinct panels based on jet pseudorapidity selections (`eta_jet >= 0`, `eta_jet < 0`, and All `eta_jet`) to directly confirm spatial jet-axis dependence.
+
+
 - **Fig 13**: Left panel -- `R_proxyJet` per-Lambda distribution for all
   scenarios, normalised and overlaid. Right panel -- `<R_proxyJet>` vs
   Lambda pseudorapidity, all scenarios.
@@ -252,7 +273,7 @@ the jet axis.
   Gaussian. Its standard deviation / sqrt(N_events) is the event-mean
   uncertainty plotted in Figs 12 and 14.
 
-**Figs 16–17 (PolarizationVectorField):**
+**Figs 16–19 (PolarizationVectorField):** 
 
 - **Fig 16** (main + supplemental): Spurious `<p*>` polarization vector field
   in the `(px_Lambda, py_Lambda)` plane. The colormap shows `<p*_z>` (scaled to
@@ -270,6 +291,18 @@ the jet axis.
   angle `phi_Lambda`, one panel per component and one curve per cut scenario.
   Directly shows the sinusoidal modulation that drives the ring-like structure
   in Fig 16.
+- 
+**Fig 18**: Main proton rest-frame polarization vector field rendered in the longitudinal-transverse ZX momentum plane `(pz_lam, px_lam)` for the "No Cuts" and "Both Cuts" conditions. The background diverging palette encodes the out-of-plane `<p*_y>` component, while overlaid block-averaged arrows map the mean 2D proton direction (`<p*_z>`, `<p*_x>`) to diagnose longitudinal structures.
+
+
+- 
+**Fig 18s**: Supplemental ZX-plane polarization vector field displaying the behavior of the two intermediate cut configurations (`pTCutOnly` and `DCACutOnly`).
+
+
+- 
+**Fig 19**: 1D projections showing `<p*_x>`, `<p*_y>`, and `<p*_z>` components vs. Lambda pseudorapidity `eta_lam` across all four cut scenarios, tracking beam-direction modulations or kinematic biases introduced by selection rules.
+
+
 
 **Run with ROOT:**
 
@@ -279,7 +312,7 @@ root -l -b -q 'plotHelicityEfficiency.cxx("output.root","plots_dir")'
 
 ---
 
-### `runHelicityToyModel.sh`
+## `runHelicityToyModel.sh`
 
 **The coordinator script -- start here for a full parameter scan.**
 
