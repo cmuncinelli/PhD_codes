@@ -262,14 +262,16 @@ static TH1D* SafeClone(TH1D* h) {
 
 // ==========================================================================
 /**
- * @brief Draws one vector-field panel: pPstarZ as a COLZ background with
- *        block-averaged transverse (px, py) arrows overlaid.
+ * @brief Draws one vector-field panel: a COLZ background with
+ * block-averaged transverse/longitudinal arrows overlaid.
+ * In older versions, focused on one vector-field panel: pPstarZ as a COLZ
+ * background with block-averaged transverse (px, py) arrows overlaid.
  *
  * @details
- * The colour background encodes <p*_z> on a diverging palette (set by the
- * caller via gStyle->SetPalette) with a symmetric Z range derived from the
- * data.  Arrows represent the mean transverse proton direction in the Lambda
- * rest frame, averaged over arrowBlockSize x arrowBlockSize tiles of bins.
+ * The colour background encodes the out-of-plane component on a diverging palette 
+ * with a symmetric Z range derived from the data. Arrows represent the mean 
+ * 2D proton direction in the Lambda rest frame, averaged over arrowBlockSize x arrowBlockSize tiles.
+ * On the XY polarization plots, the colour background encodes <p*_z>.
  *
  * Arrow scaling is robust against edge outliers: all valid tile magnitudes
  * are collected, sorted, and the scalePercentile-th percentile is used as
@@ -279,14 +281,15 @@ static TH1D* SafeClone(TH1D* h) {
  * cannot compress the rest of the field into invisibility.
  *
  * Tiles with fewer than minEntries occupied bins inside them, or whose
- * averaged transverse magnitude is below 5% of scaleRef, are suppressed.
+ * averaged magnitude is below 5% of scaleRef, are suppressed.
  *
  * Must be called while the target TPad is current (gPad).
  *
- * @param hX              TProfile2D of <p*_x> vs (px_lam, py_lam).
- * @param hY              TProfile2D of <p*_y> vs (px_lam, py_lam).
- * @param hZ              TProfile2D of <p*_z> vs (px_lam, py_lam) [colormap].
+ * @param hX              TProfile2D for the X-component of the arrows. For the XY plot it is <p*_x> vs (px_lam, py_lam)
+ * @param hY              TProfile2D for the Y-component of the arrows. For the XY plot it is  <p*_y> vs (px_lam, py_lam)
+ * @param hZ              TProfile2D for the colormap background. For the XY plot it is  <p*_z> vs (px_lam, py_lam) [colormap]
  * @param title           Histogram title string; pass nullptr to suppress.
+ * @param magLabel        String used in the pave text to describe the vector magnitude (it may be transverse mag, or the ZX mag).
  * @param minEntries      Minimum per-bin entry count to include in a tile.
  *                        Default: 50.
  * @param arrowBlockSize  Side length of the averaging tile in bins.
@@ -302,8 +305,9 @@ static TH1D* SafeClone(TH1D* h) {
 // ==========================================================================
 static void DrawVectorFieldPanel(TProfile2D* hX, TProfile2D* hY, TProfile2D* hZ,
                                   const char* title,
-                                  double minEntries    = 50.,
-                                  int    arrowBlockSize = 4,
+                                  const char* magLabel   = "|#LTp*_{T}#GT|",
+                                  double minEntries      = 50.,
+                                  int    arrowBlockSize  = 4,
                                   double scalePercentile = 0.95)
 {
     if (!hX || !hY || !hZ) return;
@@ -458,14 +462,14 @@ static void DrawVectorFieldPanel(TProfile2D* hX, TProfile2D* hY, TProfile2D* hZ,
         arr->Draw();
     }
 
-    // Reporting the maximum scale of magnitudes -- this must be on top of the arrows, for readability:
+    // Reporting the maximum scale of magnitudes (or at least the percentile estimator of it) -- this must be on top of the arrows, for readability:
     // ----- Compute plot-coordinate placement -----
     double xMin = hZd->GetXaxis()->GetXmin();
     double xMax = hZd->GetXaxis()->GetXmax();
     double yMin = hZd->GetYaxis()->GetXmin();
     double yMax = hZd->GetYaxis()->GetXmax();
     double x1 = xMin + 0.05 * (xMax - xMin);
-    double x2 = xMin + 0.65 * (xMax - xMin); // Increased from 0.48 to 0.58 to accommodate the error bar
+    double x2 = xMin + 0.65 * (xMax - xMin);
     double y1 = yMax - 0.16 * (yMax - yMin);
     double y2 = yMax - 0.05 * (yMax - yMin);
 
@@ -481,7 +485,9 @@ static void DrawVectorFieldPanel(TProfile2D* hX, TProfile2D* hY, TProfile2D* hZ,
     pave->SetTextSize(18);
     
     double percentile = scalePercentile * 100.;
-    pave->AddText(Form("|#LTp*_{T}#GT|_{%.0fpct} = (%.2f #pm %.2f)%%", percentile, scaleRef * 100., scaleRefErr * 100.));
+    // pave->AddText(Form("|#LTp*_{T}#GT|_{%.0fpct} = (%.2f #pm %.2f)%%", percentile, scaleRef * 100., scaleRefErr * 100.));
+    // Use the dynamically injected magLabel here instead:
+    pave->AddText(Form("%s_{%.0fpct} = (%.2f #pm %.2f)%%", magLabel, percentile, scaleRef * 100., scaleRefErr * 100.));
     pave->Draw();
 }
 
@@ -1491,6 +1497,100 @@ static void MakeFig12_IntegratedRingJetEvt(TDirectory* famDir, TDirectory* famOu
 
 // ==========================================================================
 /**
+ * @brief Fig 12b -- integrated <R_proxyJet> bar chart split by jet eta sign.
+ *
+ * @details
+ * Same 3-panel layout as MakeFig12_IntegratedRingJet, but the three panels
+ * now show jet-eta selections instead of Lambda-eta selections:
+ *   JetEtaPos (#eta_{jet} >= 0) | JetEtaNeg (#eta_{jet} < 0) | All
+ *
+ * The "All" panel reads from pRingProxyJet (same as Fig 12); the JetEtaPos
+ * and JetEtaNeg panels read from the dedicated conditional TProfiles
+ * pRingProxyJet_JetEtaPos / pRingProxyJet_JetEtaNeg stored in each All
+ * scenario directory.  No fancy error propagation is applied here: the plain
+ * TProfile SEM is sufficient to establish whether the jet-eta dependence is
+ * real and to compare qualitatively with the Lambda-eta split.
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory in the plots ROOT file.
+ * @param famLabel  Short label used in canvas and object names.
+ */
+// ==========================================================================
+static void MakeFig12_IntegratedRingJetByJetEta(TDirectory* famDir, TDirectory* famOut,
+                                                  const char* famLabel)
+{
+    // Panel definitions: label, profile name to read from the "All" scenario dir
+    const char* panelLabels[3] = {"#eta_{jet} #geq 0",
+                                   "#eta_{jet} < 0",
+                                   "All #eta_{jet}"};
+    const char* profNames[3]   = {"pRingProxyJet_JetEtaPos",
+                                   "pRingProxyJet_JetEtaNeg",
+                                   "pRingProxyJet"};  // "All" reuses the main profile
+
+    // Global y range across all panels
+    double globalMax = 0.;
+    for (int ip = 0; ip < 3; ++ip) {
+        for (int is = 0; is < 4; ++is) {
+            TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], "All");
+            if (!dir) continue;
+            TProfile* p = static_cast<TProfile*>(SafeGet(dir, profNames[ip]));
+            if (!p) continue;
+            double v = std::fabs(p->GetBinContent(1)) + p->GetBinError(1);
+            if (v > globalMax) globalMax = v;
+        }
+    }
+    globalMax = (globalMax < 1.e-8) ? 0.01 : globalMax * 1.6;
+
+    TCanvas* c = new TCanvas(Form("c_%s_intRingJetByJetEta", famLabel), "", 1050, 500);
+    c->Divide(3, 1, 0.004, 0.002);
+
+    for (int ip = 0; ip < 3; ++ip) {
+        c->cd(ip + 1);
+        gPad->SetLeftMargin(0.12);
+        gPad->SetBottomMargin(0.10);
+
+        TH1D* hBar = new TH1D(Form("hBarJetEta_%s_%d", famLabel, ip), Form("<R_{proxy}^{jet}> (%s); ;<R_{proxy}^{jet}>", panelLabels[ip]), 4, 0., 4.);
+        hBar->SetDirectory(nullptr);
+        hBar->GetYaxis()->SetRangeUser(-globalMax, globalMax);
+        hBar->SetStats(0);
+        for (int is = 0; is < 4; ++is)
+            hBar->GetXaxis()->SetBinLabel(is + 1, kScenLabels[is]);
+        hBar->GetXaxis()->SetLabelSize(0.055);
+        hBar->Draw("AXIS");
+
+        TLine* zl = new TLine(0., 0., 4., 0.);
+        zl->SetLineColor(kGray + 2);
+        zl->SetLineStyle(2);
+        zl->SetLineWidth(2);
+        zl->Draw("SAME");
+
+        for (int is = 0; is < 4; ++is) {
+            TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], "All");
+            if (!dir) continue;
+            TProfile* p = static_cast<TProfile*>(SafeGet(dir, profNames[ip]));
+            if (!p) continue;
+
+            TH1D* hPt = new TH1D(Form("hPtJEta_%s_%d_%d", famLabel, ip, is), "", 4, 0., 4.);
+            hPt->SetDirectory(nullptr);
+            hPt->SetBinContent(is + 1, p->GetBinContent(1));
+            hPt->SetBinError  (is + 1, p->GetBinError(1));
+            SetHistStyle(hPt, kScenColors[is], kScenMarkers[is]);
+            hPt->SetLineWidth(3);
+            hPt->Draw("E1 SAME");
+        }
+        AddLabel(0.5, 0.93, panelLabels[ip], 0.045, 22);
+    }
+
+    c->cd(0);
+    AddLabel(0.5, 0.97,
+        Form("Integrated <R_{proxy}^{jet}> by jet #eta  --  %s", famLabel),
+        0.036, 22);
+    WriteCanvas(c, famOut);
+    delete c;
+}
+
+// ==========================================================================
+/**
  * @brief Fig 13 -- 2-panel random jet ring observable proxy figure.
  *
  * Left panel: distributions of R_proxyJet for all four scenarios ("All" eta),
@@ -1930,7 +2030,7 @@ static void MakeFig16_PstarVectorField(TDirectory* famDir, TDirectory* famOut,
                 hZ->GetZaxis()->SetTitleOffset(1.5);
             else
                 hZ->GetZaxis()->SetTitleOffset(1.6);
-            DrawVectorFieldPanel(hX, hY, hZ, Form(" ;p_{x}^{#Lambda} [GeV/c];p_{y}^{#Lambda} [GeV/c];<p*_{z}> [%]")); // No title works best here, so don't use Form("<p*_{z}> + #vec{<p*_{T}>};"
+            DrawVectorFieldPanel(hX, hY, hZ, " ;p_{x}^{#Lambda} [GeV/c];p_{y}^{#Lambda} [GeV/c];<p*_{z}> [%]"); // No title works best here, so don't use Form("<p*_{z}> + #vec{<p*_{T}>};"
                                                                                                                       // The Z axis will be converted to a percentage only inside the function call,
                                                                                                                       // to preserve the original object and only alter the function's inner clone.
             if (irow == 0)
@@ -2090,8 +2190,8 @@ static void MakeFig17_PstarVsPhiLam(TDirectory* famDir, TDirectory* famOut,
 
         for (int ic = 0; ic < 3; ++ic) {
             c->cd(ic + 1);
-            gPad->SetLeftMargin(0.15);
-            gPad->SetBottomMargin(0.15);
+            gPad->SetLeftMargin(0.12);
+            gPad->SetBottomMargin(0.10);
 
             // Invisible axis frame so the y range and title are set before any Draw
             TH1D* hFrame = new TH1D(
@@ -2099,7 +2199,7 @@ static void MakeFig17_PstarVsPhiLam(TDirectory* famDir, TDirectory* famOut,
                 Form("%s vs #phi_{#Lambda}  --  %s;"
                      "#phi_{#Lambda} [rad];%s",
                      compLabels[ic], etaLabels[ie], compLabels[ic]),
-                1, -TMath::Pi(), TMath::Pi());
+                1, 0, 2*TMath::Pi());
             hFrame->SetDirectory(nullptr);
             hFrame->SetStats(0);
             hFrame->GetYaxis()->SetRangeUser(-ymax, ymax);
@@ -2128,13 +2228,251 @@ static void MakeFig17_PstarVsPhiLam(TDirectory* famDir, TDirectory* famOut,
         }
 
         c->cd(0);
-        AddLabel(0.5, 0.997,
+        AddLabel(0.5, 0.97,
             Form("#LTp*#GT components vs #phi_{#Lambda}  --  %s  --  %s",
                  famLabel, etaLabels[ie]),
             0.034, 22);
         WriteCanvas(c, famOut);
         delete c;
     }
+}
+
+// ==========================================================================
+/**
+ * @brief Fig 18 -- main proton rest-frame polarisation vector field in the
+ * ZX (longitudinal-transverse) momentum plane.
+ *
+ * @details
+ * A 1 x 2 layout plotting the ZX plane (pz_lam, px_lam):
+ * - Background colour: <p*_y>  (out-of-plane component for the ZX cut).
+ * - Arrows:            (<p*_z>, <p*_x>) per (pz_lam, px_lam) tile.
+ *
+ * Captures longitudinal structure: whether the fake polarisation from DCA or
+ * pT cuts has a component that is correlated with both the transverse and beam
+ * directions, complementing the purely transverse XY picture in Fig 16.
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory in the plots ROOT file.
+ * @param famLabel  Short label used in canvas and object names.
+ */
+// ==========================================================================
+static void MakeFig18_PstarVectorFieldZX(TDirectory* famDir, TDirectory* famOut,
+                                          const char* famLabel)
+{
+    const char* cutRows[2]   = {"NoCuts",  "BothCuts"};
+    const char* cutLabels[2] = {"No Cuts", "Both Cuts"};
+
+    // gStyle->SetPalette(kTemperatureMap);
+
+    // Adjusted to a 1x2 layout canvas
+    TCanvas* c = new TCanvas(Form("c_%s_pstarVFzx", famLabel), "", 1100, 550);
+    c->Divide(2, 1, 0.004, 0.002);
+
+    for (int icol = 0; icol < 2; ++icol) {
+        c->cd(icol + 1);
+        gPad->SetTopMargin(0.08);
+        gPad->SetBottomMargin(0.12);
+        
+        if (icol == 0)
+            gPad->SetLeftMargin(0.10);
+        else
+            gPad->SetLeftMargin(0.12);
+            
+        gPad->SetRightMargin(0.16);
+
+        // Fetching the inclusive "All" eta phase space directly
+        TDirectory* dir = GetScenarioDir(famDir, cutRows[icol], "All");
+        if (!dir) continue;
+
+        // Arrow components: X (horizontal) and Z (vertical in this plane)
+        // Colormap: Y (out-of-plane)
+        TProfile2D* hX = static_cast<TProfile2D*>(SafeGet(dir, "pPstarX_vsPzPx"));
+        TProfile2D* hZ = static_cast<TProfile2D*>(SafeGet(dir, "pPstarZ_vsPzPx"));
+        TProfile2D* hY = static_cast<TProfile2D*>(SafeGet(dir, "pPstarY_vsPzPx"));
+        if (!hX || !hZ || !hY) continue;
+
+        // Apply Z-axis offset to hY, since it acts as the colormap for this plot
+        if (icol == 1)
+            hY->GetZaxis()->SetTitleOffset(1.3);
+        else
+            hY->GetZaxis()->SetTitleOffset(1.4);
+
+        // DrawVectorFieldPanel expects (hX_arrows, hY_arrows, hColormap, Title, MagLabel)
+        DrawVectorFieldPanel(hX, hZ, hY, " ;p_{z}^{#Lambda} [GeV/c];p_{x}^{#Lambda} [GeV/c];<p*_{y}> [%]", "|#LTp*_{zx}#GT|");
+        AddLabel(0.50, 0.95, cutLabels[icol], 0.045, 22);
+    }
+
+    c->cd(0);
+    AddLabel(0.5, 0.99,
+        Form("#LTp*#GT ZX-plane polarisation vector field  --  %s", famLabel),
+        0.038, 22);
+    WriteCanvas(c, famOut);
+    delete c;
+}
+
+// ==========================================================================
+/**
+ * @brief Fig 18s -- supplemental ZX-plane polarisation vector field for the
+ * two intermediate cut scenarios (pTCutOnly and DCACutOnly).
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory in the plots ROOT file.
+ * @param famLabel  Short label used in canvas and object names.
+ */
+// ==========================================================================
+static void MakeFig18s_PstarVectorFieldZXSupp(TDirectory* famDir, TDirectory* famOut,
+                                               const char* famLabel)
+{
+    const char* cutRows[2]   = {"pTCutOnly",      "DCACutOnly"};
+    const char* cutLabels[2] = {"p_{T} Cut Only", "DCA Cut Only"};
+
+    // gStyle->SetPalette(kTemperatureMap);
+
+    TCanvas* c = new TCanvas(Form("c_%s_pstarVFzxSupp", famLabel), "", 1100, 550);
+    c->Divide(2, 1, 0.004, 0.002);
+
+    for (int icol = 0; icol < 2; ++icol) {
+        c->cd(icol + 1);
+        gPad->SetTopMargin(0.08);
+        gPad->SetBottomMargin(0.12);
+        
+        if (icol == 0)
+            gPad->SetLeftMargin(0.10);
+        else
+            gPad->SetLeftMargin(0.12);
+            
+        gPad->SetRightMargin(0.16);
+
+        TDirectory* dir = GetScenarioDir(famDir, cutRows[icol], "All");
+        if (!dir) continue;
+
+        TProfile2D* hX = static_cast<TProfile2D*>(SafeGet(dir, "pPstarX_vsPzPx"));
+        TProfile2D* hZ = static_cast<TProfile2D*>(SafeGet(dir, "pPstarZ_vsPzPx"));
+        TProfile2D* hY = static_cast<TProfile2D*>(SafeGet(dir, "pPstarY_vsPzPx"));
+        if (!hX || !hZ || !hY) continue;
+
+        if (icol == 1)
+            hY->GetZaxis()->SetTitleOffset(1.3);
+        else
+            hY->GetZaxis()->SetTitleOffset(1.4);
+
+        DrawVectorFieldPanel(hX, hZ, hY, " ;p_{z}^{#Lambda} [GeV/c];p_{x}^{#Lambda} [GeV/c];<p*_{y}> [%]", "|#LTp*_{zx}#GT|");
+        
+        AddLabel(0.50, 0.95, cutLabels[icol], 0.045, 22);
+    }
+
+    c->cd(0);
+    AddLabel(0.5, 0.99,
+        Form("#LTp*#GT ZX-plane vector field (intermediate cuts)  --  %s", famLabel),
+        0.038, 22);
+    WriteCanvas(c, famOut);
+    delete c;
+}
+
+// ==========================================================================
+/**
+ * @brief Fig 19 -- <p*> components vs Lambda pseudorapidity.
+ *
+ * @details
+ * A single canvas with three panels showing <p*_x>, <p*_y>, and <p*_z> 
+ * vs eta_lam for all four cut scenarios.
+ *
+ * This is the natural 1D projection of the ZX vector field: eta_lam is the
+ * longitudinal kinematic variable (pz = pT * sinh(eta)), so any beam-direction
+ * bias from cuts will appear as an eta-dependent modulation here.
+ * Compare with MakeFig17_PstarVsPhiLam (phi modulation, XY plane) to separate
+ * transverse from longitudinal fake-polarisation effects.
+ *
+ * @param famDir   Family directory in the input file.
+ * @param famOut   Output sub-directory in the plots ROOT file.
+ * @param famLabel Short label used in canvas and object names.
+ */
+// ==========================================================================
+static void MakeFig19_PstarVsEtaLam(TDirectory* famDir, TDirectory* famOut,
+                                     const char* famLabel)
+{
+    const char* profNames[3] = {"pPstarX_vsEtaLam",
+                                 "pPstarY_vsEtaLam",
+                                 "pPstarZ_vsEtaLam"};
+    const char* compLabels[3]= {"<p*_{x}>", "<p*_{y}>", "<p*_{z}>"};
+
+    TProfile* profs[4][3];
+    double ymax = 0.;
+    
+    // ---- Fetch profiles for the inclusive "All" eta phase space ----
+    for (int is = 0; is < 4; ++is) {
+        // Hardcoding "All" to avoid redundant slicing on the X-axis variable
+        TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], "All"); 
+        
+        for (int ic = 0; ic < 3; ++ic) {
+            profs[is][ic] = dir
+                ? static_cast<TProfile*>(SafeGet(dir, profNames[ic]))
+                : nullptr;
+                
+            TProfile* p = profs[is][ic];
+            if (!p) continue;
+            
+            for (int ib = 1; ib <= p->GetNbinsX(); ++ib) {
+                double v = std::fabs(p->GetBinContent(ib)) + p->GetBinError(ib);
+                if (v > ymax) ymax = v;
+            }
+        }
+    }
+    
+    ymax = (ymax < 1.e-10) ? 0.01 : ymax * 1.45;
+
+    // ---- Create a single canvas ----
+    TCanvas* c = new TCanvas(
+        Form("c_%s_pstarEta", famLabel), "", 1400, 500);
+    c->Divide(3, 1, 0.004, 0.002);
+
+    for (int ic = 0; ic < 3; ++ic) {
+        c->cd(ic + 1);
+        gPad->SetLeftMargin(0.12);
+        gPad->SetBottomMargin(0.12);
+
+        TH1D* hFrame = new TH1D(
+            Form("hEtaFrame_%s_%d", famLabel, ic),
+            Form("%s vs #eta_{#Lambda};#eta_{#Lambda};%s",
+                 compLabels[ic], compLabels[ic]),
+            1, -0.9, 0.9);   // etaMaxDetector = 0.9; adjust if needed
+        hFrame->SetDirectory(nullptr);
+        hFrame->SetStats(0);
+        hFrame->GetYaxis()->SetRangeUser(-ymax, ymax);
+        hFrame->Draw("AXIS");
+
+        TLine* zl = new TLine(-0.9, 0., 0.9, 0.);
+        zl->SetLineColor(kGray + 2);
+        zl->SetLineStyle(2);
+        zl->Draw("SAME");
+
+        TLine* eta0 = new TLine(0., -ymax, 0., ymax);
+        eta0->SetLineColor(kGray + 1);
+        eta0->SetLineStyle(3);
+        eta0->Draw("SAME");
+
+        for (int is = 0; is < 4; ++is) {
+            TProfile* p = profs[is][ic];
+            if (!p) continue;
+            SetHistStyle(p, kScenColors[is], kScenMarkers[is]);
+            p->Draw("EP SAME");
+        }
+
+        if (ic == 2) {
+            TLegend* leg = MakeLegend(0.16, 0.68, 0.62, 0.88);
+            for (int is = 0; is < 4; ++is)
+                if (profs[is][ic])
+                    leg->AddEntry(profs[is][ic], kScenLabels[is], "ep");
+            leg->Draw("SAME");
+        }
+    }
+
+    c->cd(0);
+    AddLabel(0.5, 0.95,
+        Form("#LTp*#GT components vs #eta_{#Lambda}  --  %s", famLabel),
+        0.034, 22);
+    WriteCanvas(c, famOut);
+    delete c;
 }
 
 // ==========================================================================
@@ -2279,13 +2617,17 @@ void plotHelicityEfficiency(const char* inputFile = "helicityEffOutput.root")
         MakeFig11_ringJetVsPt         (famDir, outJet, famName);
         MakeFig12_IntegratedRingJet   (famDir, outJet, famName);
         MakeFig12_IntegratedRingJetEvt(famDir, outJet, famName);
+        MakeFig12_IntegratedRingJetByJetEta(famDir, outJet, famName);
         MakeFig13_RingProxyJet        (famDir, outJet, famName);
         MakeFig14_RingJetErrComparison(famDir, outJet, famName);
         MakeFig15_EventMeanDist       (famDir, outJet, famName);
 
-        // Figs 16-17: polarisation vector field
+        // Figs 16-19: polarisation vector field
         MakeFig16_PstarVectorField    (famDir, outVF, famName);
         MakeFig16s_PstarVectorFieldSupp(famDir, outVF, famName);
+        MakeFig18_PstarVectorFieldZX      (famDir, outVF, famName);
+        MakeFig18s_PstarVectorFieldZXSupp (famDir, outVF, famName);
+        MakeFig19_PstarVsEtaLam           (famDir, outVF, famName);
         MakeFig17_PstarVsPhiLam       (famDir, outVF, famName);
     }
 

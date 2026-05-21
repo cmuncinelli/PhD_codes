@@ -416,6 +416,13 @@ struct ScenarioHistos {
     TProfile* pRingProxyJetVsEtaJet;// <R_proxyJet> vs Jet pseudorapidity
     TProfile* pRingProxyJetVsPt;    // <R_proxyJet> vs Lambda pT
 
+    // Integrated <R_proxyJet> split by jet pseudorapidity sign.
+    // Fills happen conditionally inside FillScenario based on eta_jet.
+    // Allows the same integrated-ring study as MakeFig12 but binned by jet eta
+    // instead of Lambda eta, directly revealing the eta_jet dependence.
+    TProfile* pRingProxyJet_JetEtaPos; // <R_proxyJet> for eta_jet >= 0, all Lambda eta
+    TProfile* pRingProxyJet_JetEtaNeg; // <R_proxyJet> for eta_jet <  0, all Lambda eta
+
     // Some histograms for a better error estimation than the SEM:
       // When we choose nLambdasSinceJetShuffle == 3, we are implicitly creating a correlation between 
       // four Lambdas, as if they were in the same event. That can make the SEM error bars underestimate
@@ -466,6 +473,22 @@ struct ScenarioHistos {
     TProfile*   pPstarX_vsPhiLam; // <p*_x> vs phi_lam
     TProfile*   pPstarY_vsPhiLam; // <p*_y> vs phi_lam
     TProfile*   pPstarZ_vsPhiLam; // <p*_z> vs phi_lam
+
+    // -- Proton rest-frame direction vector field vs Lambda (pz, px) -- ZX plane --
+    // (Wrote it in the ZX plane because that is the most usual projection of the detector!)
+    // Captures the longitudinal structure: allows to visualize if the fake polarisation pattern
+    // has a component correlated with both the transverse and beam directions
+    // Arrow components: <p*_z> (horizontal, along beam) and <p*_x> (vertical).
+    // Colormap:         <p*_y> (out-of-plane for the ZX cut).
+    TProfile2D* pPstarX_vsPzPx;   // <p*_x> vs (pz_lam, px_lam)  [arrow y-component]
+    TProfile2D* pPstarZ_vsPzPx;   // <p*_z> vs (pz_lam, px_lam)
+    TProfile2D* pPstarY_vsPzPx;   // <p*_y> vs (pz_lam, px_lam)  [colormap]
+
+    // 1D compact version vs Lambda pseudorapidity (natural 1D variable for ZX,
+    // since pz = pT * sinh(eta) and the pattern is driven by longitudinal kinematics).
+    TProfile*   pPstarX_vsEtaLam; // <p*_x> vs eta_lam
+    TProfile*   pPstarY_vsEtaLam; // <p*_y> vs eta_lam
+    TProfile*   pPstarZ_vsEtaLam; // <p*_z> vs eta_lam
 };
 
 
@@ -530,6 +553,10 @@ static ScenarioHistos BookScenario(TDirectory* dir, double etaMaxDetector)
     h.pRingProxyJetVsEta = new TProfile("pRingProxyJetVsEta", "<R_{proxyJet}> vs #Lambda pseudorapidity; #eta_{#Lambda};<R_{proxyJet}>", 9, -etaMaxDetector, etaMaxDetector);
     h.pRingProxyJetVsEtaJet = new TProfile("pRingProxyJetVsEtaJet", "<R_{proxyJet}> vs Jet; #eta_{Jet};<R_{proxyJet}>", 9, -etaMaxDetector, etaMaxDetector);
     h.pRingProxyJetVsPt = new TProfile("pRingProxyJetVsPt", "<R_{proxyJet}> vs #Lambda p_{T}; p_{T}^{#Lambda} [GeV/c];<R_{proxyJet}>", 10, 0., 5.); // 20 bins of 0.25 GeV/c each
+
+        // Adding a study for the dependency with jet eta:
+    h.pRingProxyJet_JetEtaPos = new TProfile("pRingProxyJet_JetEtaPos", "Integrated <R_{proxyJet}> for #eta_{jet} #geq 0; bin; <R_{proxyJet}>", 1, -0.5, 0.5);
+    h.pRingProxyJet_JetEtaNeg = new TProfile("pRingProxyJet_JetEtaNeg", "Integrated <R_{proxyJet}> for #eta_{jet} < 0; bin; <R_{proxyJet}>", 1, -0.5, 0.5);
     
     // For the per-event mean estimators for better error bars, considering correlations:
     double evRmax = kPolPrefactor * 1.05; // This proved to be an OK estimator
@@ -562,15 +589,29 @@ static ScenarioHistos BookScenario(TDirectory* dir, double etaMaxDetector)
     // for the Lambda before decaying! If we actually want to plot this in spatial coordinates, just take (px,py) and multiply by the sampled
     // Tau for each Lambda.
     const double pXYmax = 3.0;
-    const int    pXYbin = 40; // 20x20 bins over [-3,3]: 0.3 GeV/c cells, clean COLZ display
+    const int    pXYbin = 40;
     h.pPstarX_vsPxPy = new TProfile2D("pPstarX_vsPxPy", "<p*_{x}> vs (p_{x}^{#Lambda}, p_{y}^{#Lambda});" "p_{x}^{#Lambda} [GeV/c];p_{y}^{#Lambda} [GeV/c];<p*_{x}>", pXYbin, -pXYmax, pXYmax,  pXYbin, -pXYmax, pXYmax);
     h.pPstarY_vsPxPy = new TProfile2D("pPstarY_vsPxPy", "<p*_{y}> vs (p_{x}^{#Lambda}, p_{y}^{#Lambda});" "p_{x}^{#Lambda} [GeV/c];p_{y}^{#Lambda} [GeV/c];<p*_{y}>", pXYbin, -pXYmax, pXYmax,  pXYbin, -pXYmax, pXYmax);
     h.pPstarZ_vsPxPy = new TProfile2D("pPstarZ_vsPxPy", "<p*_{z}> vs (p_{x}^{#Lambda}, p_{y}^{#Lambda});" "p_{x}^{#Lambda} [GeV/c];p_{y}^{#Lambda} [GeV/c];<p*_{z}>", pXYbin, -pXYmax, pXYmax,  pXYbin, -pXYmax, pXYmax);
 
     // 1D phi profile: 32 bins of width ~0.2 rad, clean for a sinusoidal fit later if wanted
-    h.pPstarX_vsPhiLam = new TProfile("pPstarX_vsPhiLam", "<p*_{x}> vs #phi_{#Lambda}; #phi_{#Lambda} [rad]; <p*_{x}>", 32, -Pi, Pi);
-    h.pPstarY_vsPhiLam = new TProfile("pPstarY_vsPhiLam", "<p*_{y}> vs #phi_{#Lambda}; #phi_{#Lambda} [rad]; <p*_{y}>", 32, -Pi, Pi);
-    h.pPstarZ_vsPhiLam = new TProfile("pPstarZ_vsPhiLam", "<p*_{z}> vs #phi_{#Lambda}; #phi_{#Lambda} [rad]; <p*_{z}>", 32, -Pi, Pi);
+    h.pPstarX_vsPhiLam = new TProfile("pPstarX_vsPhiLam", "<p*_{x}> vs #phi_{#Lambda}; #phi_{#Lambda} [rad]; <p*_{x}>", 32, 0., TwoPi);
+    h.pPstarY_vsPhiLam = new TProfile("pPstarY_vsPhiLam", "<p*_{y}> vs #phi_{#Lambda}; #phi_{#Lambda} [rad]; <p*_{y}>", 32, 0., TwoPi);
+    h.pPstarZ_vsPhiLam = new TProfile("pPstarZ_vsPhiLam", "<p*_{z}> vs #phi_{#Lambda}; #phi_{#Lambda} [rad]; <p*_{z}>", 32, 0., TwoPi);
+
+    // ZX vector field:
+    // px range same as XY [-3,3]; pz range wider [-4,4] since pz = pT*sinh(eta)
+    // and Lambda eta is larger than daughter eta.
+    const double pXmax = 3.0, pZmax = 4.0;
+    const int    pZXbin = 40;
+    h.pPstarX_vsPzPx = new TProfile2D("pPstarX_vsPzPx", ";<p*_{x}> vs (p_{z}^{#Lambda}, p_{x}^{#Lambda});" "p_{z}^{#Lambda} [GeV/c];p_{x}^{#Lambda} [GeV/c];<p*_{x}>", pZXbin, -pZmax, pZmax, pZXbin, -pXmax, pXmax);
+    h.pPstarZ_vsPzPx = new TProfile2D("pPstarZ_vsPzPx", ";<p*_{z}> vs (p_{z}^{#Lambda}, p_{x}^{#Lambda});" "p_{z}^{#Lambda} [GeV/c];p_{x}^{#Lambda} [GeV/c];<p*_{z}>", pZXbin, -pZmax, pZmax, pZXbin, -pXmax, pXmax);
+    h.pPstarY_vsPzPx = new TProfile2D("pPstarY_vsPzPx", ";<p*_{y}> vs (p_{z}^{#Lambda}, p_{x}^{#Lambda});" "p_{z}^{#Lambda} [GeV/c];p_{x}^{#Lambda} [GeV/c];<p*_{y}>", pZXbin, -pZmax, pZmax, pZXbin, -pXmax, pXmax);
+
+    // 1D eta profiles (18 bins, matching pRingProxyVsEta width)
+    h.pPstarX_vsEtaLam = new TProfile("pPstarX_vsEtaLam", "<p*_{x}> vs #eta_{#Lambda}; #eta_{#Lambda}; <p*_{x}>", 18, -etaMaxDetector, etaMaxDetector);
+    h.pPstarY_vsEtaLam = new TProfile("pPstarY_vsEtaLam", "<p*_{y}> vs #eta_{#Lambda}; #eta_{#Lambda}; <p*_{y}>", 18, -etaMaxDetector, etaMaxDetector);
+    h.pPstarZ_vsEtaLam = new TProfile("pPstarZ_vsEtaLam", "<p*_{z}> vs #eta_{#Lambda}; #eta_{#Lambda}; <p*_{z}>", 18, -etaMaxDetector, etaMaxDetector);
 
     return h;
 }
@@ -616,7 +657,8 @@ static void FillScenario(ScenarioHistos& h,
                           double pstar_z,
                           double px_lam,
                           double py_lam,
-                          double phi_lam)
+                          double phi_lam,
+                          double pz_lam)
 {
     // Main diagnostic histograms
     h.h2d_cosTheta_phi->Fill(cosTheta, phi);
@@ -634,6 +676,9 @@ static void FillScenario(ScenarioHistos& h,
     h.pRingProxyJetVsEta->Fill(eta_lambda, ringProxyJet);
     h.pRingProxyJetVsEtaJet->Fill(eta_jet, ringProxyJet);
     h.pRingProxyJetVsPt->Fill(pT_lambda, ringProxyJet);
+    // Jet-eta-split integrated profiles
+    if (eta_jet >= 0.) h.pRingProxyJet_JetEtaPos->Fill(0., ringProxyJet);
+    else h.pRingProxyJet_JetEtaNeg->Fill(0., ringProxyJet);
 
     // Accumulate for the event-mean estimator; flush happens at jet reshuffle:
     h.evtSumRpj += ringProxyJet;
@@ -655,6 +700,14 @@ static void FillScenario(ScenarioHistos& h,
     h.pPstarX_vsPhiLam->Fill(phi_lam, pstar_x);
     h.pPstarY_vsPhiLam->Fill(phi_lam, pstar_y);
     h.pPstarZ_vsPhiLam->Fill(phi_lam, pstar_z);
+
+    // ZX vector field fills
+    h.pPstarX_vsPzPx->Fill(pz_lam, px_lam, pstar_x);
+    h.pPstarZ_vsPzPx->Fill(pz_lam, px_lam, pstar_z);
+    h.pPstarY_vsPzPx->Fill(pz_lam, px_lam, pstar_y);
+    h.pPstarX_vsEtaLam->Fill(eta_lambda, pstar_x);
+    h.pPstarY_vsEtaLam->Fill(eta_lambda, pstar_y);
+    h.pPstarZ_vsEtaLam->Fill(eta_lambda, pstar_z);
 }
 
 
@@ -775,15 +828,16 @@ static void FillFamily(FamilyHistos& f,
                         double pstar_z,
                         double px_lam,
                         double py_lam,
-                        double phi_lam)
+                        double phi_lam,
+                        double pz_lam)
 {
     // Local lambda that fills one scenario's eta-half and All subdirectory.
     // Captures all per-event quantities by reference so we only pass the
     // three ScenarioHistos pointers that change between scenarios.
     auto fill = [&](ScenarioHistos& hPos, ScenarioHistos& hNeg, ScenarioHistos& hAll) {
         ScenarioHistos& hEta = etaPos ? hPos : hNeg;
-        FillScenario(hEta,  cosTheta, phi_star, ringProxy, ringProxyJet, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet, pstar_x, pstar_y, pstar_z, px_lam, py_lam, phi_lam);
-        FillScenario(hAll,  cosTheta, phi_star, ringProxy, ringProxyJet, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet, pstar_x, pstar_y, pstar_z, px_lam, py_lam, phi_lam);
+        FillScenario(hEta,  cosTheta, phi_star, ringProxy, ringProxyJet, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet, pstar_x, pstar_y, pstar_z, px_lam, py_lam, phi_lam, pz_lam);
+        FillScenario(hAll,  cosTheta, phi_star, ringProxy, ringProxyJet, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet, pstar_x, pstar_y, pstar_z, px_lam, py_lam, phi_lam, pz_lam);
     };
 
     // Scenario 1: No cuts (always filled -- serves as a flat-distribution
@@ -1400,7 +1454,7 @@ void helicityEfficiencyToyModel(
         FillFamily(famNG, passPtCut, passDcaCut, etaPos,
                    cosTheta, phi_star, ringProxy, ringProxyJet, decayR,
                    pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet,
-                   p_star_unit.X(), p_star_unit.Y(), p_star_unit.Z(), px_lam, py_lam, phi_lam);
+                   p_star_unit.X(), p_star_unit.Y(), p_star_unit.Z(), px_lam, py_lam, phi_lam, pz_lam);
 
         // WithEtaGate: only fill when both daughters are inside the acceptance.
         // This is the physically consistent set.
@@ -1408,7 +1462,7 @@ void helicityEfficiencyToyModel(
             FillFamily(famEG, passPtCut, passDcaCut, etaPos,
                        cosTheta, phi_star, ringProxy, ringProxyJet, decayR,
                        pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet,
-                       p_star_unit.X(), p_star_unit.Y(), p_star_unit.Z(), px_lam, py_lam, phi_lam);
+                       p_star_unit.X(), p_star_unit.Y(), p_star_unit.Z(), px_lam, py_lam, phi_lam, pz_lam);
 
         ++nGenerated;
 
