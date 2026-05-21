@@ -313,6 +313,10 @@ static void DrawVectorFieldPanel(TProfile2D* hX, TProfile2D* hY, TProfile2D* hZ,
         hZ->Clone(Form("hVFZ_tmp_%d", gCloneIdx++)));
     hZd->SetDirectory(nullptr);
     hZd->SetStats(0);
+
+    // Scale the clone by 100 to convert the colormap to a percentage
+    hZd->Scale(100.0);
+
     if (title) hZd->SetTitle(title);
 
     double zmax = 0.;
@@ -1926,7 +1930,9 @@ static void MakeFig16_PstarVectorField(TDirectory* famDir, TDirectory* famOut,
                 hZ->GetZaxis()->SetTitleOffset(1.5);
             else
                 hZ->GetZaxis()->SetTitleOffset(1.6);
-            DrawVectorFieldPanel(hX, hY, hZ, Form(" ;p_{x}^{#Lambda} [GeV/c];p_{y}^{#Lambda} [GeV/c];<p*_{z}>")); // No title works best here, so don't use Form("<p*_{z}> + #vec{<p*_{T}>};"
+            DrawVectorFieldPanel(hX, hY, hZ, Form(" ;p_{x}^{#Lambda} [GeV/c];p_{y}^{#Lambda} [GeV/c];<p*_{z}> [%]")); // No title works best here, so don't use Form("<p*_{z}> + #vec{<p*_{T}>};"
+                                                                                                                      // The Z axis will be converted to a percentage only inside the function call,
+                                                                                                                      // to preserve the original object and only alter the function's inner clone.
             if (irow == 0)
                 AddLabel(0.50, 0.905, Form("%s  --  %s", cutLabels[irow], etaLabels[icol]), 0.040, 22);
             else
