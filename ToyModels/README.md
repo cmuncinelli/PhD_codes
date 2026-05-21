@@ -86,12 +86,90 @@ Each run produces a ROOT file containing two parallel histogram directories to i
 - `WithoutEtaGate/` -- legacy, no daughter eta requirement (kept for reference)
 - `WithEtaGate/` -- physically consistent set (BOTH daughters in acceptance)
 
-Each family contains the four scenarios mentioned above, further split into `EtaPos`, `EtaNeg`, and `All` sub-directories. The key outputs are the `(cos theta*, phi*)` 2D maps, the ring observable proxy distributions and profiles, and the daughter kinematic distributions.
+Each family contains the four scenarios mentioned above, further split into
+`EtaPos`, `EtaNeg`, and `All` sub-directories.
+
+#### Key output histograms
+
+The main outputs per scenario directory are:
+
+**Emission angle distributions:**
+- `h2d_cosTheta_phi` -- 2D `(cos theta*, phi*)` map; primary diagnostic for
+  identifying which effect is active.
+- `h1d_cosTheta`, `h1d_phi` -- 1D projections.
+
+**Ring proxy along the beam axis (z-hat proxy):**
+- `h1d_ringProxy` -- per-Lambda distribution of the ring observable computed
+  with the beam direction (+z) as the jet axis.
+- `pRingProxyVsEta` -- TProfile of `<R_proxy>` vs Lambda pseudorapidity.
+- `pRingProxyVsPt` -- TProfile of `<R_proxy>` vs Lambda pT.
+- `pRingProxyIntegrated` -- single-bin TProfile giving the integrated mean.
+
+**Ring proxy along a random jet direction:**
+- `h1d_ringProxyJet` -- per-Lambda distribution of the ring observable using
+  a randomly drawn jet direction (reshuffled every `nLambdasSinceJetShuffle`
+  Lambdas to mimic a realistic jet-Lambda association).
+- `pRingProxyJetVsEta` -- TProfile of `<R_proxyJet>` vs Lambda pseudorapidity.
+- `pRingProxyJetVsPt` -- TProfile of `<R_proxyJet>` vs Lambda pT.
+- `pRingProxyJet` -- single-bin TProfile giving the integrated mean.
+
+**Error estimation for the integrated jet ring proxy:**
+
+Three parallel estimators are computed and stored to allow cross-checking of
+statistical uncertainty, motivated by the observation that kinematic cuts
+(min-pT, DCA) create preferentially sampled regions of phase space that
+introduce correlations between Lambdas and can cause the naive TProfile SEM to
+underestimate the true uncertainty:
+
+1. **TProfile SEM** (`pRingProxyJet`): the standard ROOT SEM, which assumes all
+   Lambda entries are statistically independent. Tends to underestimate the error,
+   specially once cuts are active because DCA and min pT cuts select preferential
+   regions of the Lambda phase space.
+
+2. **Per-event mean accumulators** (`hEventMeanRingProxyJet`,
+   `pEventMeanRingProxyJetIntegrated`): Lambdas that share the same randomly
+   drawn jet direction are grouped into an implicit *event* (jet group). At each
+   jet reshuffle, the mean `R_e = evtSumRpj / evtCntRpj` is computed and filled
+   (with a weight equal to the number of Lambdas that passed the cuts in that
+   event) into `hEventMeanRingProxyJet`. The final uncertainty is
+   `StdDev(R_e) / sqrt(N_events)`, which correctly accounts for intra-event
+   correlations arising from all Lambdas in an event sharing the same jet
+   direction. See `FlushEventMean()` and `FlushEventMeansFamily()`.
+
+3. **Data-chunking estimator** (`hChunkMeansRingProxyJet`,
+   `pChunkMeansRingProxyJetIntegrated`): the full run is partitioned into
+   `kChunks = 200` sequential chunks, with jet groups assigned round-robin
+   (chunk index = `evtIdxRpj % kChunks`). Crucially, the chunk index advances
+   for every jet-group event regardless of whether any Lambda survived the cuts,
+   keeping the assignment consistent across all twelve `ScenarioHistos`. After
+   the main loop, `FinalizeChunks()` computes the per-chunk mean
+   `mu_k = chunkSumRpj[k] / chunkCntRpj[k]` for each non-empty chunk and fills
+   it into `hChunkMeansRingProxyJet`. The final uncertainty is then
+   `StdDev(mu_k) / sqrt(K_filled)`, i.e. `hChunkMeansRingProxyJet->GetMeanError()`.
+   The motivation for this third level is to capture the phase-space covariance
+   introduced by kinematic cuts across events, which the per-event estimator
+   (limited to ~4 Lambdas per event) cannot fully resolve.
+
+**Polarization vector field:**
+- `pPstarX_vsPxPy`, `pPstarY_vsPxPy`, `pPstarZ_vsPxPy` -- TProfile2Ds of
+  `<p*_x>`, `<p*_y>`, `<p*_z>` in bins of `(px_Lambda, py_Lambda)` over
+  `[-3, 3] GeV/c` in a 40×40 grid. Together they form a 2D vector field in
+  Lambda transverse momentum space. The expected ring-like structure from DCA
+  cuts appears as arrows tangent to circles of constant pT.
+- `pPstarX_vsPhiLam`, `pPstarY_vsPhiLam`, `pPstarZ_vsPhiLam` -- 1D TProfiles
+  of the same three components vs the Lambda azimuthal angle `phi_Lambda`, in
+  32 bins over `[-pi, pi]`. These directly show the sinusoidal modulation around
+  the ring without requiring any vector-field rendering.
+
+**Daughter kinematics:**
+- `h1d_pT_proton`, `h1d_pT_pion` -- daughter pT distributions.
+- `h1d_DCA_proton`, `h1d_DCA_pion` -- daughter DCA_xy to PV distributions.
+- `h1d_decayR` -- transverse decay radius.
 
 **Run with ROOT:**
 
 ```bash
-# Default (1M Lambdas, all default parameters):
+# Default (all default parameters):
 root -l -b -q 'helicityEfficiencyToyModel.cxx'
 
 # Custom parameters (see preamble in the file for full signature):
@@ -104,19 +182,94 @@ root -l -b -q 'helicityEfficiencyToyModel.cxx(2000000,"output.root",0.5,...)'
 
 **Run this file after the generator.**
 
-Reads the ROOT file produced by `helicityEfficiencyToyModel.cxx` and
-generates 10 multi-panel diagnostic figure PDFs. The most important
-figures are:
+Reads the ROOT file produced by `helicityEfficiencyToyModel.cxx` and generates
+17 diagnostic figures organized into output subdirectories within the plots
+ROOT file. The output structure per family is:
 
-- **Fig 1**: 2D `(cos theta*, phi*)` maps for each cut scenario -- the
-  primary diagnostic for identifying which effect is active.
+```
+<FamilyDir>/
+  EmissionAngles/    -- Figs 1–3
+  RingZHat/          -- Figs 4–6
+  Daughters/         -- Figs 7–8
+  RingJet/           -- Figs 10–15
+  PolarizationVectorField/  -- Figs 16–17
+```
+Fig 9 (eta asymmetry) is saved directly in the family root directory.
+
+#### Figure descriptions
+
+**Figs 1–3 (EmissionAngles):** one canvas per eta selection (`EtaPos`, `EtaNeg`, `All`).
+
+- **Fig 1**: 2D `(cos theta*, phi*)` maps for each cut scenario. The primary
+  diagnostic for identifying which effect is active and the distortion it
+  introduces in the full decay angular distribution.
+- **Fig 2**: `cos(theta*)` projections for all four cut scenarios overlaid.
 - **Fig 3**: `phi*` projections with a `sin(phi*)` fit to the DCA-cut
-  distribution -- directly measures the left-right modulation amplitude.
-- **Fig 4**: `<R_proxy>` vs Lambda pseudorapidity -- the **antisymmetric
-  eta dependence** is the clearest signature of the DCA-cut fake signal.
-- **Fig 10**: `(eta > 0) - (eta < 0)` difference plots -- isolates the
-  antisymmetric fake component that appears as a non-zero ring observable
-  in the data.
+  distribution. Directly measures the left-right modulation amplitude.
+
+**Figs 4–6 (RingZHat):** ring observable using the beam direction (+z) as
+the jet axis.
+
+- **Fig 4**: `<R_proxy>` vs Lambda pseudorapidity -- the **antisymmetric eta
+  dependence** is the clearest signature of the DCA-cut fake signal.
+- **Fig 5**: `<R_proxy>` vs Lambda pT for all cut scenarios.
+- **Fig 6**: Integrated `<R_proxy>` bar chart per cut scenario and eta
+  selection, using TProfile SEMs.
+
+**Figs 7–8 (Daughters):**
+
+- **Fig 7**: Daughter pT distributions for each cut scenario.
+- **Fig 8**: Daughter DCA_xy-to-PV distributions for each cut scenario.
+
+**Fig 9** (saved at the family directory level):
+
+- **Fig 9**: `(eta > 0) - (eta < 0)` difference plots of the 2D
+  `(cos theta*, phi*)` distributions. Isolates the antisymmetric fake component
+  that would appear as a non-zero ring observable in the data.
+
+**Figs 10–15 (RingJet):** ring observable using a randomly drawn jet direction.
+
+- **Fig 10**: `<R_proxyJet>` vs Lambda pseudorapidity for all four cut scenarios.
+- **Fig 11**: `<R_proxyJet>` vs Lambda pT for all four cut scenarios.
+- **Fig 12** (two variants):
+  - TProfile SEM variant: integrated `<R_proxyJet>` bar chart per cut scenario,
+    one panel per eta selection, using the standard TProfile error.
+  - Event-mean variant (`IntegratedRingJetEvt`): same layout, but uncertainty
+    taken from `hEventMeanRingProxyJet->GetMeanError()`, which accounts for
+    intra-event correlations.
+- **Fig 13**: Left panel -- `R_proxyJet` per-Lambda distribution for all
+  scenarios, normalised and overlaid. Right panel -- `<R_proxyJet>` vs
+  Lambda pseudorapidity, all scenarios.
+- **Fig 14**: Three-way error comparison per scenario. For each of the four
+  cut scenarios (and three eta selections) the figure overlays three
+  estimators of the integrated mean: TProfile SEM (filled marker, shifted
+  left), event-mean sigma (open marker, centred), and chunking sigma
+  (5-pointed star, shifted right). A ratio > 1 (event or chunk vs TProfile)
+  means the TProfile was optimistic.
+- **Fig 15**: Distribution of per-event (per jet-group) means
+  `R_e` for all four cut scenarios. Expected to be much narrower than the
+  per-Lambda distribution by ~ `1/sqrt(N_per_event)` and approximately
+  Gaussian. Its standard deviation / sqrt(N_events) is the event-mean
+  uncertainty plotted in Figs 12 and 14.
+
+**Figs 16–17 (PolarizationVectorField):**
+
+- **Fig 16** (main + supplemental): Spurious `<p*>` polarization vector field
+  in the `(px_Lambda, py_Lambda)` plane. The colormap shows `<p*_z>` (scaled to
+  percent); overlaid arrows show the mean transverse direction `<p*_T>` in each
+  tile, scaled via a robust percentile-based normalization. Arrow length is
+  normalized to the **95th-percentile tile magnitude** (`scalePercentile = 0.95`
+  by default): tiles whose averaged transverse magnitude exceeds that reference
+  are drawn at full length (capped); all others are drawn proportionally. Tiles
+  with fewer than `minEntries = 50` occupied bins, or whose averaged magnitude
+  is below 5% of the reference, are suppressed. An annotation box in the upper-
+  left corner reports the percentile reference magnitude (mean and propagated
+  error) as a percentage. The supplemental canvas shows the same field for an
+  intermediate set of cuts.
+- **Fig 17**: `<p*_x>`, `<p*_y>`, `<p*_z>` as a function of Lambda azimuthal
+  angle `phi_Lambda`, one panel per component and one curve per cut scenario.
+  Directly shows the sinusoidal modulation that drives the ring-like structure
+  in Fig 16.
 
 **Run with ROOT:**
 
@@ -130,47 +283,98 @@ root -l -b -q 'plotHelicityEfficiency.cxx("output.root","plots_dir")'
 
 **The coordinator script -- start here for a full parameter scan.**
 
-Runs the generator and plotter across ten families of parameter
-variations specifically designed to isolate one effect by silencing the other.
-It organizes all output into a structured directory tree under a configurable
-base directory. Supports parallel execution (default `MAX_PARALLEL=64`) and
-produces one log file per run.
+Runs the generator and plotter across eleven families (0–10) of parameter
+variations designed to isolate one effect by silencing the other. It organizes
+all output into a structured directory tree under a configurable base directory.
+Supports parallel execution (default `MAX_PARALLEL=64`) and produces one log
+file per run.
+
+#### Command-line options
+
+| Flag | Alias | Description |
+|------|-------|-------------|
+| `--family N [M ...]` | `-f` | Run only the specified family(ies). Multiple integers accepted. |
+| `--jobs N` | `-j` | Override the maximum number of concurrent ROOT processes. |
+| `--dry-run` | `-n` | Print all commands without executing. |
+| `--list` | `-l` | Print the full job table and exit without running. |
+| `--plot` | `-p` | Skip the generator; run the plotter only. Useful when only `plotHelicityEfficiency.cxx` has changed. |
+| `--help` | `-h` | Print usage and exit. |
 
 **Quick start:**
 
 ```bash
 chmod +x runHelicityToyModel.sh
 
-# Run all families (may take 30-60 minutes with MAX_PARALLEL=4):
+# Run all families (may take ~15 min with MAX_PARALLEL=64 on a 192-core machine):
 ./runHelicityToyModel.sh
 
 # Run only one specific family:
 ./runHelicityToyModel.sh --family 1
 
+# Run families 2 and 3 simultaneously:
+./runHelicityToyModel.sh --family 2 3
+
+# Override parallelism:
+./runHelicityToyModel.sh --jobs 8
+
 # Preview all commands without executing:
 ./runHelicityToyModel.sh --dry-run
+
+# List all registered jobs and their parameters, then exit:
+./runHelicityToyModel.sh --list
+
+# Skip data generation and re-run only the plotter:
+./runHelicityToyModel.sh --plot
 ```
 
-The scan families and their physics motivation are documented in detail
-inside the script header. A brief summary:
+When `--plot` is set, the generator step is skipped for every job; the plotter
+always runs regardless (it is fast). This is exported as `PLOT_ONLY` so that
+all subshells dispatched via GNU parallel or the bash background pool see the
+same flag.
 
-| Family | Varied parameter        | Key question                                                                 |
-|--------|-------------------------|------------------------------------------------------------------------------|
-| 0      | Baseline                | Establish flat reference point with no cuts.                                 |
-| 1      | Asymmetric DCA cuts     | [AEE] Does the sign depend on which daughter's DCA dominates?                |
-| 2      | Symmetric DCA cuts      | [AEE] How does magnitude grow as a clean function of cut strength?           |
-| 3      | Magnetic field          | [AEE] Does asymmetry flip with B field polarity and scale with strength?     |
-| 4      | Lambda pT minimum       | How does the combined fake signal depend on the Lambda pT regime?            |
-| 5      | Daughter pT cuts        | [HEE] How does HEE isolate and grow with symmetric/asymmetric pT cuts?       |
-| 6      | Eta acceptance window   | How does fake signal magnitude change with detector acceptance?              |
-| 7      | Temperature scan        | How does the Lambda pT spectrum shape (Boltzmann T) affect the fake signal?  |
-| 8      | Ring kinematic windows  | Where is the fake signal largest across successive pT windows?               |
-| 9      | Realistic ALICE cuts    | What is the combined HEE+AEE estimate under experimental conditions?         |
+#### Scan families
 
-**Default output directory:** `/home/users/cicerodm/RingPol/HelicityToyModel/`
+| Family | Subdir | Varied parameter | Key question |
+|--------|--------|-----------------|--------------|
+| 0 | `0_Baseline/` | Baseline | Flat reference point with no cuts. |
+| 1 | `1_AsymDCA/` | Asymmetric DCA cuts | Does the AEE sign depend on which daughter's DCA dominates? |
+| 2 | `2_SymDCA/` | Symmetric DCA cuts | How does AEE magnitude grow as a function of cut strength? |
+| 3 | `3_BField/` | Magnetic field (DCA cuts only, pT = 0) | Does the asymmetry flip with B-field polarity and scale with strength? |
+| 4 | `4_LamPtMin/` | Lambda pT minimum | How does the combined fake signal depend on the Lambda pT regime? |
+| 5 | `5_DaughterPt/` | Daughter pT cuts | How does HEE isolate and grow with symmetric/asymmetric pT cuts? |
+| 6 | `6_EtaMax/` | Eta acceptance window | How does the fake signal magnitude change with detector acceptance? |
+| 7 | `7_Temperature/` | Boltzmann temperature | How does the Lambda pT spectrum shape affect the fake signal? |
+| 8 | `8_KinWindow/` | Ring kinematic windows | Where is the fake signal largest across successive pT windows? |
+| 9 | `9_RealisticAlice/` | Realistic ALICE cuts | Combined HEE+AEE estimate under experimental conditions. |
+| 10 | `10_BField/` | Magnetic field (with pT and DCA cuts) | Combined AEE+HEE field dependence with both cuts simultaneously active; sign flip and strength scan. |
+
+Families 1, 2, 3 are **AEE probes** (DCA cuts active, pT cuts = 0). Family 10
+re-runs the field scan from Family 3 but with pT cuts enabled, allowing the
+combined AEE+HEE dependence on field polarity and strength to be assessed.
+Families 5 and 6 are **HEE probes** (pT cuts active, DCA cuts = 0). Families
+4, 7, 8 and 9 use standard-ish ALICE cuts to study kinematic context and
+combined effects.
+
+#### Parallelism
+
+All jobs from all selected families are collected into a single queue and
+dispatched simultaneously up to `MAX_PARALLEL` concurrent processes. Two
+dispatch strategies are tried in order:
+
+1. **GNU parallel** (`parallel --jobs N`): preferred; handles job tracking,
+   per-job logging via `--joblog`, and clean failure reporting.
+2. **Pure bash background pool**: fallback if GNU parallel is not installed;
+   uses a lightweight semaphore.
+
+A job log file is written to `LOG_DIR/<run_name>.log` for each run (generator
+and plotter combined). If GNU parallel is used, a `parallel_joblog.tsv` timing
+file is also produced in `LOG_DIR/`.
+
+**Default output directory:** `/home/users/cicerodm/RingPol/HelicityToyModel/`  
 **Default log directory:** `/home/users/cicerodm/RingPol/HelicityToyModel/logs/`
 
-Both can be changed at the top of the script. The entire run generates approximately 500 MB of data in ROOT files (eyeballed!).
+Both can be changed at the top of the script. The entire scan generates
+approximately 600 MB of ROOT files (~59 runs × ~4–8 MB each; eyeballed).
 
 ---
 
@@ -210,5 +414,13 @@ same reconstruction algorithm used on data.
       is charge-conjugate and should behave identically by symmetry,
       but an explicit AntiLambda simulation would confirm this.
 - [ ] The ring observable proxy uses the beam direction (+z) as the jet
-      axis. A more realistic proxy would sample jet directions from a
-      measured or simulated jet spectrum with realistic eta/phi coverage.
+      axis for the z-hat proxy family, and a randomly drawn jet direction
+      for the jet proxy family. A more realistic proxy would sample jet
+      directions from a measured or simulated jet spectrum with realistic
+      eta/phi coverage.
+- [ ] The chunking error estimator (`kChunks = 200`) is designed to capture
+      phase-space covariance introduced by kinematic cuts, but the optimal
+      number of chunks and their relationship to the true covariance
+      structure has not been formally derived. Comparisons with the
+      TProfile SEM and per-event estimator (Fig 14) are the current
+      validation tool.
