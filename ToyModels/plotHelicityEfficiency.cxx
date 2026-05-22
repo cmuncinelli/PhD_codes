@@ -10,7 +10,7 @@
 // the input file.  No PDFs are produced.
 //
 // The macro processes both histogram families produced by the generator:
-//   WithEtaGate     -- daughter |eta| < etaMaxDetector required (consistent set)
+//   WithEtaGate     -- daughter etaMinDetector < eta < etaMaxDetector required (consistent set)
 //   WithoutEtaGate  -- no daughter eta requirement (kept for comparison)
 //
 // For each family the following figures are produced:
@@ -745,8 +745,9 @@ static void MakeFig4_RingProxy(TDirectory* famDir, TDirectory* famOut, const cha
         if (pPT) pPT->Draw("EP SAME");
         if (pDC) pDC->Draw("EP SAME");
         if (pBC) pBC->Draw("EP SAME");
+        double etaMin = pNC ? pNC->GetXaxis()->GetXmin() : -0.9;
         double etaMax = pNC ? pNC->GetXaxis()->GetXmax() : 0.9;
-        TLine* zl  = new TLine(-etaMax, 0., etaMax, 0.);
+        TLine* zl  = new TLine(etaMin, 0., etaMax, 0.);
         zl->SetLineColor(kGray + 2);   zl->SetLineStyle(2);  zl->Draw("SAME");
         TLine* eta0 = new TLine(0., -ymax, 0., ymax);
         eta0->SetLineColor(kGray + 1); eta0->SetLineStyle(3); eta0->Draw("SAME");
@@ -1789,8 +1790,9 @@ static void MakeFig13_RingProxyJet(TDirectory* famDir, TDirectory* famOut, const
         if (pPT) pPT->Draw("EP SAME");
         if (pDC) pDC->Draw("EP SAME");
         if (pBC) pBC->Draw("EP SAME");
+        double etaMin = pNC ? pNC->GetXaxis()->GetXmin() : -0.9;
         double etaMax = pNC ? pNC->GetXaxis()->GetXmax() : 0.9;
-        TLine* zl  = new TLine(-etaMax, 0., etaMax, 0.);
+        TLine* zl  = new TLine(etaMin, 0., etaMax, 0.);
         zl->SetLineColor(kGray + 2);   zl->SetLineStyle(2);  zl->Draw("SAME");
         TLine* eta0 = new TLine(0., -ymax, 0., ymax);
         eta0->SetLineColor(kGray + 1); eta0->SetLineStyle(3); eta0->Draw("SAME");
@@ -2330,7 +2332,7 @@ static void MakeFig17_PstarVsPhiLam(TDirectory* famDir, TDirectory* famOut,
             hFrame->GetYaxis()->SetRangeUser(-ymax, ymax);
             hFrame->Draw("AXIS");
 
-            TLine* zl = new TLine(-TMath::Pi(), 0., TMath::Pi(), 0.);
+            TLine* zl = new TLine(0, 0., 2*TMath::Pi(), 0.);
             zl->SetLineColor(kGray + 2);
             zl->SetLineStyle(2);
             zl->Draw("SAME");
@@ -2517,8 +2519,8 @@ static void MakeFig19_PstarVsEtaLam(TDirectory* famDir, TDirectory* famOut,
                                      const char* famLabel)
 {
     const char* profNames[3] = {"pPstarX_vsEtaLam",
-                                 "pPstarY_vsEtaLam",
-                                 "pPstarZ_vsEtaLam"};
+                                "pPstarY_vsEtaLam",
+                                "pPstarZ_vsEtaLam"};
     const char* compLabels[3]= {"<p*_{x}>", "<p*_{y}>", "<p*_{z}>"};
 
     TProfile* profs[4][3];
@@ -2551,6 +2553,10 @@ static void MakeFig19_PstarVsEtaLam(TDirectory* famDir, TDirectory* famOut,
         Form("c_%s_pstarEta", famLabel), "", 1400, 500);
     c->Divide(3, 1, 0.004, 0.002);
 
+    // Getting the minimum and maximum for the axes:
+    double etaMin = profs[0][0] ? profs[0][0]->GetXaxis()->GetXmin() : -0.9;
+    double etaMax = profs[0][0] ? profs[0][0]->GetXaxis()->GetXmax() :  0.9;
+
     for (int ic = 0; ic < 3; ++ic) {
         c->cd(ic + 1);
         gPad->SetLeftMargin(0.12);
@@ -2558,15 +2564,13 @@ static void MakeFig19_PstarVsEtaLam(TDirectory* famDir, TDirectory* famOut,
 
         TH1D* hFrame = new TH1D(
             Form("hEtaFrame_%s_%d", famLabel, ic),
-            Form("%s vs #eta_{#Lambda};#eta_{#Lambda};%s",
-                 compLabels[ic], compLabels[ic]),
-            1, -0.9, 0.9);   // etaMaxDetector = 0.9; adjust if needed
+            Form("%s vs #eta_{#Lambda};#eta_{#Lambda};%s", compLabels[ic], compLabels[ic]), 1, etaMin, etaMax);
         hFrame->SetDirectory(nullptr);
         hFrame->SetStats(0);
         hFrame->GetYaxis()->SetRangeUser(-ymax, ymax);
         hFrame->Draw("AXIS");
 
-        TLine* zl = new TLine(-0.9, 0., 0.9, 0.);
+        TLine* zl = new TLine(etaMin, 0., etaMax, 0.);
         zl->SetLineColor(kGray + 2);
         zl->SetLineStyle(2);
         zl->Draw("SAME");

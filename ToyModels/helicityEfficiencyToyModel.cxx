@@ -109,7 +109,7 @@
 //     DCACutOnly/  EtaPos/  EtaNeg/  All/
 //     BothCuts/    EtaPos/  EtaNeg/  All/
 //
-//   WithEtaGate/   (additionally requires |eta_daughter| < etaMaxDetector)
+//   WithEtaGate/   (additionally requires etaMinDetector < eta_daughter < etaMaxDetector)
 //     NoCuts/      EtaPos/  EtaNeg/  All/
 //     pTCutOnly/   EtaPos/  EtaNeg/  All/
 //     DCACutOnly/  EtaPos/  EtaNeg/  All/
@@ -469,7 +469,10 @@ struct KahanAccumulator {
 
         double mean = sum_y / (double)N;
             // Sample variance
-        double variance = (sum_y2 - (double)N * mean * mean) / (double)(N - 1);
+        double variance = (sum_y2 - (double)N * mean * mean) / (double)(N - 1); // No need to use the Welford algorithm here, by the way. We will not
+                                                                                // run into a massive cancelation here because the mean is small and the
+                                                                                // variance is VERY large! Mean is O(e-6), variance is O(1*nLambdas) for
+                                                                                // the ring observable! Thus, this is actually very safe.
             // Numerical safeguard against tiny negative roundoff artifacts
         if (variance < 0.0) variance = 0.0;
 
@@ -648,11 +651,12 @@ struct FamilyHistos {
  * so ROOT associates them with the correct directory.
  *
  * @param dir  Pointer to an existing TDirectory in which histograms are booked.
- * @param etaMaxDetector  Maximum acceptance allowed for Toy Model lambda daughters (and jets)
+ * @param etaMinDetector Minimum acceptance allowed for Toy Model lambda daughters (and jets)
+ * @param etaMaxDetector Maximum acceptance allowed for Toy Model lambda daughters (and jets)
  * @return     A filled ScenarioHistos struct with all histogram pointers set.
  */
 // ==========================================================================
-static ScenarioHistos BookScenario(TDirectory* dir, double etaMaxDetector)
+static ScenarioHistos BookScenario(TDirectory* dir, double etaMinDetector, double etaMaxDetector)
 {
     ScenarioHistos h;
 
@@ -673,14 +677,14 @@ static ScenarioHistos BookScenario(TDirectory* dir, double etaMaxDetector)
     double rmax = kPolPrefactor * 1.05; // Slight margin beyond max value
     h.h1d_ringProxy = new TH1D("h1d_ringProxy", "Ring observable proxy (z-hat as jet direction); R_{proxy};Counts", 120, -rmax, rmax);
     h.pRingProxy = new TProfile("pRingProxy", "Integrated <R_{proxy}> (single-bin TProfile); bin;<R_{proxy}>", 1, -0.5, 0.5);
-    h.pRingProxyVsEta = new TProfile("pRingProxyVsEta", "<R_{proxy}> vs #Lambda pseudorapidity; #eta_{#Lambda};<R_{proxy}>", 9, -etaMaxDetector, etaMaxDetector); // 18 bins, 0.1 wide each if etaMaxDetector = 0.9
+    h.pRingProxyVsEta = new TProfile("pRingProxyVsEta", "<R_{proxy}> vs #Lambda pseudorapidity; #eta_{#Lambda};<R_{proxy}>", 9, etaMinDetector, etaMaxDetector); // 18 bins, 0.1 wide each if etaMaxDetector = 0.9 and etaMinDetector = -0.9
     h.pRingProxyVsPt = new TProfile("pRingProxyVsPt", "<R_{proxy}> vs #Lambda p_{T}; p_{T}^{#Lambda} [GeV/c];<R_{proxy}>", 10, 0., 5.); // 20 bins of 0.25 GeV/c each
 
     // ---------- Ring observable proxy for randomly sampled jet direction ----------
     h.h1d_ringProxyJet = new TH1D("h1d_ringProxyJet", "Ring observable proxy (random jet direction); R_{proxyJet};Counts", 120, -rmax, rmax);
     h.pRingProxyJet = new TProfile("pRingProxyJet", "Integrated <R_{proxyJet}> (single-bin TProfile); bin;<R_{proxyJet}>", 1, -0.5, 0.5);
-    h.pRingProxyJetVsEta = new TProfile("pRingProxyJetVsEta", "<R_{proxyJet}> vs #Lambda pseudorapidity; #eta_{#Lambda};<R_{proxyJet}>", 9, -etaMaxDetector, etaMaxDetector);
-    h.pRingProxyJetVsEtaJet = new TProfile("pRingProxyJetVsEtaJet", "<R_{proxyJet}> vs Jet; #eta_{Jet};<R_{proxyJet}>", 9, -etaMaxDetector, etaMaxDetector);
+    h.pRingProxyJetVsEta = new TProfile("pRingProxyJetVsEta", "<R_{proxyJet}> vs #Lambda pseudorapidity; #eta_{#Lambda};<R_{proxyJet}>", 9, etaMinDetector, etaMaxDetector);
+    h.pRingProxyJetVsEtaJet = new TProfile("pRingProxyJetVsEtaJet", "<R_{proxyJet}> vs Jet; #eta_{Jet};<R_{proxyJet}>", 9, etaMinDetector, etaMaxDetector);
     h.pRingProxyJetVsPt = new TProfile("pRingProxyJetVsPt", "<R_{proxyJet}> vs #Lambda p_{T}; p_{T}^{#Lambda} [GeV/c];<R_{proxyJet}>", 10, 0., 5.); // 20 bins of 0.25 GeV/c each
 
         // Adding a study for the dependency with jet eta:
@@ -709,7 +713,7 @@ static ScenarioHistos BookScenario(TDirectory* dir, double etaMaxDetector)
     h.h1d_DCA_pion = new TH1D("h1d_DCA_pion", "Pion DCA_{xy} to primary vertex; DCA_{xy}^{#pi} [cm];Counts", 200, 0., 10.);
     // ---------- Lambda kinematics ----------
     h.h1d_pT_lambda = new TH1D("h1d_pT_lambda", "#Lambda p_{T}; p_{T}^{#Lambda} [GeV/c];Counts", 100, 0., 10.);
-    h.h1d_eta_lambda = new TH1D("h1d_eta_lambda", "#Lambda pseudorapidity; #eta_{#Lambda};Counts", 36, -etaMaxDetector, etaMaxDetector);
+    h.h1d_eta_lambda = new TH1D("h1d_eta_lambda", "#Lambda pseudorapidity; #eta_{#Lambda};Counts", 36, etaMinDetector, etaMaxDetector);
 
     // Vector field: average proton rest-frame direction in (px, py) space.
     // Range [-3, 3] GeV/c covers >95% of the thermal spectrum (T~0.3 GeV).
@@ -738,9 +742,9 @@ static ScenarioHistos BookScenario(TDirectory* dir, double etaMaxDetector)
     h.pPstarY_vsPzPx = new TProfile2D("pPstarY_vsPzPx", ";<p*_{y}> vs (p_{z}^{#Lambda}, p_{x}^{#Lambda});" "p_{z}^{#Lambda} [GeV/c];p_{x}^{#Lambda} [GeV/c];<p*_{y}>", pZXbin, -pZmax, pZmax, pZXbin, -pXmax, pXmax);
 
     // 1D eta profiles (18 bins, matching pRingProxyVsEta width)
-    h.pPstarX_vsEtaLam = new TProfile("pPstarX_vsEtaLam", "<p*_{x}> vs #eta_{#Lambda}; #eta_{#Lambda}; <p*_{x}>", 18, -etaMaxDetector, etaMaxDetector);
-    h.pPstarY_vsEtaLam = new TProfile("pPstarY_vsEtaLam", "<p*_{y}> vs #eta_{#Lambda}; #eta_{#Lambda}; <p*_{y}>", 18, -etaMaxDetector, etaMaxDetector);
-    h.pPstarZ_vsEtaLam = new TProfile("pPstarZ_vsEtaLam", "<p*_{z}> vs #eta_{#Lambda}; #eta_{#Lambda}; <p*_{z}>", 18, -etaMaxDetector, etaMaxDetector);
+    h.pPstarX_vsEtaLam = new TProfile("pPstarX_vsEtaLam", "<p*_{x}> vs #eta_{#Lambda}; #eta_{#Lambda}; <p*_{x}>", 18, etaMinDetector, etaMaxDetector);
+    h.pPstarY_vsEtaLam = new TProfile("pPstarY_vsEtaLam", "<p*_{y}> vs #eta_{#Lambda}; #eta_{#Lambda}; <p*_{y}>", 18, etaMinDetector, etaMaxDetector);
+    h.pPstarZ_vsEtaLam = new TProfile("pPstarZ_vsEtaLam", "<p*_{z}> vs #eta_{#Lambda}; #eta_{#Lambda}; <p*_{z}>", 18, etaMinDetector, etaMaxDetector);
 
     // Histograms to store the final Kahan accumulator results:
     h.hRingProxy_Kahan = new TH1D("hRingProxy_Kahan", "Integrated <R_{proxy}> (Kahan Acc.); bin;<R_{proxy}>", 1, -0.5, 0.5);
@@ -874,7 +878,8 @@ static void FillScenario(ScenarioHistos& h,
  * @param hPos          Output: ScenarioHistos booked for eta_Lambda >= 0.
  * @param hNeg          Output: ScenarioHistos booked for eta_Lambda < 0.
  * @param hAll          Output: ScenarioHistos booked for both eta halves combined.
- * @param etaMaxDetector  Maximum acceptance allowed for Toy Model lambda daughters (and jets)
+ * @param etaMinDetector Minimum acceptance allowed for Toy Model lambda daughters (and jets)
+ * @param etaMaxDetector Maximum acceptance allowed for Toy Model lambda daughters (and jets)
  */
 // ==========================================================================
 static void CreateSubdirs(TDirectory*        parent,
@@ -882,6 +887,7 @@ static void CreateSubdirs(TDirectory*        parent,
                            ScenarioHistos&    hPos,
                            ScenarioHistos&    hNeg,
                            ScenarioHistos&    hAll,
+                           double etaMinDetector,
                            double etaMaxDetector)
 {
     // Create the top-level scenario directory
@@ -893,9 +899,9 @@ static void CreateSubdirs(TDirectory*        parent,
     TDirectory* dirAll = dirScen->mkdir("All");
 
     // Book histograms inside each sub-directory
-    hPos = BookScenario(dirPos, etaMaxDetector);
-    hNeg = BookScenario(dirNeg, etaMaxDetector);
-    hAll = BookScenario(dirAll, etaMaxDetector);
+    hPos = BookScenario(dirPos, etaMinDetector, etaMaxDetector);
+    hNeg = BookScenario(dirNeg, etaMinDetector, etaMaxDetector);
+    hAll = BookScenario(dirAll, etaMinDetector, etaMaxDetector);
 
     // Return to parent directory so subsequent mkdir calls start from there
     parent->cd();
@@ -910,15 +916,16 @@ static void CreateSubdirs(TDirectory*        parent,
  *
  * @param parent  Pointer to the parent TDirectory (e.g. the WithEtaGate or WithoutEtaGate top-level directory).
  * @param f       Output: FamilyHistos struct whose 12 ScenarioHistos members will be populated.
- * @param etaMaxDetector  Maximum acceptance allowed for Toy Model lambda daughters (and jets)
+ * @param etaMinDetector Minimum acceptance allowed for Toy Model lambda daughters (and jets)
+ * @param etaMaxDetector Maximum acceptance allowed for Toy Model lambda daughters (and jets)
  */
 // ==========================================================================
-static void CreateFamily(TDirectory* parent, FamilyHistos& f, double etaMaxDetector)
+static void CreateFamily(TDirectory* parent, FamilyHistos& f, double etaMinDetector, double etaMaxDetector)
 {
-    CreateSubdirs(parent, "NoCuts",     f.NC_Pos, f.NC_Neg, f.NC_All, etaMaxDetector);
-    CreateSubdirs(parent, "pTCutOnly",  f.PT_Pos, f.PT_Neg, f.PT_All, etaMaxDetector);
-    CreateSubdirs(parent, "DCACutOnly", f.DC_Pos, f.DC_Neg, f.DC_All, etaMaxDetector);
-    CreateSubdirs(parent, "BothCuts",   f.BC_Pos, f.BC_Neg, f.BC_All, etaMaxDetector);
+    CreateSubdirs(parent, "NoCuts",     f.NC_Pos, f.NC_Neg, f.NC_All, etaMinDetector, etaMaxDetector);
+    CreateSubdirs(parent, "pTCutOnly",  f.PT_Pos, f.PT_Neg, f.PT_All, etaMinDetector, etaMaxDetector);
+    CreateSubdirs(parent, "DCACutOnly", f.DC_Pos, f.DC_Neg, f.DC_All, etaMinDetector, etaMaxDetector);
+    CreateSubdirs(parent, "BothCuts",   f.BC_Pos, f.BC_Neg, f.BC_All, etaMinDetector, etaMaxDetector);
 }
 
 
@@ -1211,9 +1218,9 @@ static void FlushKahanFamily(FamilyHistos& f) {
  *     the Lambdas themselves were only generated within acceptance (approximately!
  *     The Lambdas are generated in a rapidity cut, not pseudorapidity, but
  *     still, not applying a pseudorap cut would be inconsistent if they are
-       generated in a small region but may be detected in a large eta region).
- *   - WithEtaGate: additionally requires |eta_daughter| < etaMaxDetector for
- *     BOTH daughters before any other cut is applied.  This is the physically
+ *     generated in a small region but may be detected in a large eta region).
+ *   - WithEtaGate: additionally requires etaMinDetector < eta_daughter < etaMaxDetector
+ *     for BOTH daughters before any other cut is applied. This is the physically
  *     consistent set and should be used for all physics conclusions.
  *
  * Within each family, four cut scenarios are filled: NoCuts, pTCutOnly,
@@ -1229,12 +1236,15 @@ static void FlushKahanFamily(FamilyHistos& f) {
  * @param pTmax_Lambda   Maximum Lambda pT for generation [GeV/c] (default: 10.0).
  * @param rapMax_Lambda  Maximum |rapidity| for GENERATING Lambdas (default: 5.0).
  *                       Set wide enough to capture all Lambdas whose daughters
- *                       can fall inside |eta| < etaMaxDetector.
- * @param etaMaxDetector Maximum |eta| for daughter tracks (default: 0.9,
+ *                       can fall inside etaMinDetector < eta < etaMaxDetector.
+ * @param etaMinDetector Minimum eta for daughter tracks (default: -0.9,
  *                       matching the ALICE inner barrel). Applied as a gate
  *                       to select the WithEtaGate family; not applied to the
  *                       Lambda itself. Detectors only see charged particles,
  *                       and only within a select acceptance in |eta|.
+ * @param etaMaxDetector Maximum eta for daughter tracks (default: +0.9,
+ *                       matching the ALICE inner barrel). Same use as etaMinDetector,
+ *                       but delimiting the upper eta range.
  * @param T_thermal      Boltzmann temperature for the mT spectrum [GeV] (default: 0.3).
  * @param pTmin_proton   Minimum proton pT cut [GeV/c] (default: 0.0).
  * @param pTmin_pion     Minimum pion pT cut [GeV/c] (default: 0.0).
@@ -1250,6 +1260,7 @@ void helicityEfficiencyToyModel(
     double      pTmin_Lambda   = 0.0,
     double      pTmax_Lambda   = 10.0,
     double      rapMax_Lambda  = 5.0,
+    double      etaMinDetector = -0.9,
     double      etaMaxDetector = 0.9,
     double      T_thermal      = 0.300,
     double      pTmin_proton   = 0.0,
@@ -1270,7 +1281,8 @@ void helicityEfficiencyToyModel(
     printf("  Magnetic field Bz     : %.3f T\n",  Bz_Tesla);
     printf("  Lambda pT range       : [%.2f, %.2f] GeV/c\n", pTmin_Lambda, pTmax_Lambda);
     printf("  Lambda |rapidity| max : %.2f\n", rapMax_Lambda);
-    printf("  Detector |eta| max    : %.2f (daughter eta gate)\n", etaMaxDetector);
+    printf("  Detector eta min    : %.2f (daughter eta gate)\n", etaMinDetector);
+    printf("  Detector eta max    : %.2f (daughter eta gate)\n", etaMaxDetector);
     printf("  Thermal temperature T : %.3f GeV\n", T_thermal);
     printf("  Min proton pT cut     : %.3f GeV/c\n", pTmin_proton);
     printf("  Min pion pT cut       : %.3f GeV/c\n", pTmin_pion);
@@ -1292,7 +1304,7 @@ void helicityEfficiencyToyModel(
     // Two top-level directories, one per histogram family.
     // WithoutEtaGate: no daughter eta requirement (kept for comparison only;
     //                 see file header for the physics motivation).
-    // WithEtaGate:    requires |eta_daughter| < etaMaxDetector (consistent set).
+    // WithEtaGate:    requires etaMinDetector < eta_daughter < etaMaxDetector (consistent set).
     TDirectory* dirNG = outFile->mkdir("WithoutEtaGate");
     TDirectory* dirEG = outFile->mkdir("WithEtaGate");
 
@@ -1300,8 +1312,8 @@ void helicityEfficiencyToyModel(
     // all histograms.  CreateFamily calls CreateSubdirs four times internally.
     FamilyHistos famNG; // Without eta gate
     FamilyHistos famEG; // With eta gate
-    CreateFamily(dirNG, famNG, etaMaxDetector);
-    CreateFamily(dirEG, famEG, etaMaxDetector);
+    CreateFamily(dirNG, famNG, etaMinDetector, etaMaxDetector);
+    CreateFamily(dirEG, famEG, etaMinDetector, etaMaxDetector);
 
     // Extra kinematics directory: Lambda distribution BEFORE any decay cuts,
     // only subject to the generation acceptance (pT and rapidity windows).
@@ -1309,14 +1321,18 @@ void helicityEfficiencyToyModel(
     dirKin->cd();
     TH1D* hKin_pT_lambda  = new TH1D("hKin_pT_lambda", "Generated #Lambda p_{T};p_{T}^{#Lambda} [GeV/c];Counts", 100, 0., 10.);
     TH1D* hKin_rap_lambda = new TH1D("hKin_rap_lambda", "Generated #Lambda rapidity;y_{#Lambda};Counts", 36, -rapMax_Lambda, rapMax_Lambda);
-    TH1D* hKin_eta_lambda = new TH1D("hKin_eta_lambda", "Generated #Lambda pseudorapidity;#eta_{#Lambda};Counts", 36, -etaMaxDetector, etaMaxDetector);
+    TH1D* hKin_eta_lambda = new TH1D("hKin_eta_lambda", "Generated #Lambda pseudorapidity;#eta_{#Lambda};Counts", 36, -rapMax_Lambda, rapMax_Lambda); // Uses rapMax_Lambda as an estimate of pseudorapidity ranges.
+                                                                                                                                                      // Notice that this may be different from [etaMinDetector,etaMaxDetector]
+                                                                                                                                                      // because it corresponds to the *generated* distribution, not the
+                                                                                                                                                      // accepted distribution!
     TH1D* hKin_phi_lambda = new TH1D("hKin_phi_lambda", "Generated #Lambda azimuth;#phi_{#Lambda} [rad];Counts", 64, -Pi, Pi);
     TH1D* hKin_decayR     = new TH1D("hKin_decayR", "All transverse decay radii;r_{decay} [cm];Counts", 150, 0., 150.);
     TH1D* hKin_pT_proton  = new TH1D("hKin_pT_proton", "All proton p_{T} (pre-cut);p_{T}^{p} [GeV/c];Counts", 100, 0., 5.);
     TH1D* hKin_pT_pion    = new TH1D("hKin_pT_pion", "All pion p_{T} (pre-cut);p_{T}^{#pi} [GeV/c];Counts", 100, 0., 5.);
     TH1D* hKin_DCA_proton = new TH1D("hKin_DCA_proton", "All proton DCA_{xy} (pre-cut);DCA_{xy}^{p} [cm];Counts", 200, 0., 10.);
     TH1D* hKin_DCA_pion   = new TH1D("hKin_DCA_pion", "All pion DCA_{xy} (pre-cut);DCA_{xy}^{#pi} [cm];Counts", 200, 0., 10.);
-    TH1D* hKin_eta_jet    = new TH1D("hKin_eta_jet", "Jet pseudorapidity; #eta_{Jet};Counts", 36, -etaMaxDetector, etaMaxDetector);
+    TH1D* hKin_eta_jet    = new TH1D("hKin_eta_jet", "Jet pseudorapidity; #eta_{Jet};Counts", 36, -rapMax_Lambda, rapMax_Lambda); // This is only for accepted jets, yet it could be interesting to know the full range
+                                                                                                                                  // in a similar way as to what I did for the hKin_eta_lambda ranges.
     outFile->cd(); // Back to root of output file
 
     // -----------------------------------------------------------------------
@@ -1374,8 +1390,9 @@ void helicityEfficiencyToyModel(
     double sinPhiJet  = std::sin(randPhiJet);
     double cosPhiJet  = std::cos(randPhiJet);
     // Sampling cos(theta) only within the detector range, also for consistency:
+    double cosThetaMin = std::tanh(etaMinDetector);
     double cosThetaMax = std::tanh(etaMaxDetector);
-    double cosThetaJet = rng.Uniform(-cosThetaMax, cosThetaMax); // Uniformly sampled in solid angle, yet within the detectable region
+    double cosThetaJet = rng.Uniform(cosThetaMin, cosThetaMax); // Uniformly sampled in solid angle, yet within the detectable region
     double sinThetaJet = std::sqrt(1. - cosThetaJet * cosThetaJet);
     
     // Calculating the jet component directions (could use TVector3, but this formulation is a bit faster in the hot loop)
@@ -1517,7 +1534,7 @@ void helicityEfficiencyToyModel(
         // -- Daughter pseudorapidities (used for the eta gate below) --
         // Lambdas are generated over a wide rapidity window (rapMax_Lambda = 5.0
         // by default) so that ALL Lambdas whose daughters fall inside the inner
-        // barrel acceptance (|eta| < etaMaxDetector = 0.9) should have been included.
+        // barrel acceptance (-0.9 = etaMinDetector < eta < etaMaxDetector = 0.9) should have been included.
         // The WithEtaGate family requires BOTH daughters to satisfy this cut,
         // making the acceptance consistent with that of a real detector.
         // The WithoutEtaGate family does NOT apply this requirement and is
@@ -1582,7 +1599,7 @@ void helicityEfficiencyToyModel(
             // not be so far off. Probably would be interesting to know the correlation between N_Lambda and N_Jets
             // per event, to estimate this number a little bit better.
             randPhiJet = rng.Uniform(0., TwoPi);
-            cosThetaJet = rng.Uniform(-cosThetaMax, cosThetaMax);
+            cosThetaJet = rng.Uniform(cosThetaMin, cosThetaMax);
             sinPhiJet = std::sin(randPhiJet);
             cosPhiJet = std::cos(randPhiJet);
             sinThetaJet = std::sqrt(1. - cosThetaJet * cosThetaJet);
@@ -1627,10 +1644,10 @@ void helicityEfficiencyToyModel(
         // ==================================================================
         // -- Eta gate: both daughters must lie inside the detector acceptance --
         // This is the acceptance pre-condition for the WithEtaGate family.
-        bool passEtaGate = (std::fabs(eta_p)  < etaMaxDetector) && (std::fabs(eta_pi) < etaMaxDetector);
+        bool passEtaGate = ((eta_p > etaMinDetector) && (eta_p < etaMaxDetector)) && ((eta_pi > etaMinDetector) && (eta_pi < etaMaxDetector));
 
         // -- pT cut: both daughters must exceed minimum pT --
-        bool passPtCut = (pT_p  >= pTmin_proton) && (pT_pi >= pTmin_pion);
+        bool passPtCut = (pT_p >= pTmin_proton) && (pT_pi >= pTmin_pion);
 
         // -- DCA cut: both daughters must be sufficiently displaced from PV --
         // (This selects genuine secondary tracks in data, i.e. rejects primaries.
@@ -1812,6 +1829,7 @@ int main(int argc, char** argv) {
     double      pTmin_Lambda   = 0.0;
     double      pTmax_Lambda   = 10.0;
     double      rapMax_Lambda  = 5.0;
+    double      etaMinDetector = -0.9;
     double      etaMaxDetector = 0.9;
     double      T_thermal      = 0.300;
     double      pTmin_proton   = 0.0;
@@ -1828,13 +1846,14 @@ int main(int argc, char** argv) {
         if (argc > 4)  pTmin_Lambda   = std::stod(argv[4]);
         if (argc > 5)  pTmax_Lambda   = std::stod(argv[5]);
         if (argc > 6)  rapMax_Lambda  = std::stod(argv[6]);
-        if (argc > 7)  etaMaxDetector = std::stod(argv[7]);
-        if (argc > 8)  T_thermal      = std::stod(argv[8]);
-        if (argc > 9)  pTmin_proton   = std::stod(argv[9]);
-        if (argc > 10) pTmin_pion     = std::stod(argv[10]);
-        if (argc > 11) dcaMin_proton  = std::stod(argv[11]);
-        if (argc > 12) dcaMin_pion    = std::stod(argv[12]);
-        if (argc > 13) seed           = std::stoi(argv[13]);
+        if (argc > 7)  etaMinDetector = std::stod(argv[7]);
+        if (argc > 8)  etaMaxDetector = std::stod(argv[8]);
+        if (argc > 9)  T_thermal      = std::stod(argv[9]);
+        if (argc > 10) pTmin_proton   = std::stod(argv[10]);
+        if (argc > 11) pTmin_pion     = std::stod(argv[11]);
+        if (argc > 12) dcaMin_proton  = std::stod(argv[12]);
+        if (argc > 13) dcaMin_pion    = std::stod(argv[13]);
+        if (argc > 14) seed           = std::stoi(argv[14]);
     } 
     catch (const std::exception& e) {
         std::cerr << "\nERROR: Command-line argument conversion failed! " << e.what() << std::endl;
@@ -1845,7 +1864,7 @@ int main(int argc, char** argv) {
     // 3. Execute the native macro logic
     helicityEfficiencyToyModel(
         nLambdas, outputPath, Bz_Tesla, pTmin_Lambda, pTmax_Lambda,
-        rapMax_Lambda, etaMaxDetector, T_thermal, pTmin_proton,
+        rapMax_Lambda, etaMinDetector, etaMaxDetector, T_thermal, pTmin_proton,
         pTmin_pion, dcaMin_proton, dcaMin_pion, seed
     );
 
