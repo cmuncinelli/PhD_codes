@@ -73,7 +73,7 @@ root -l numericalAEEIntegration.cxx
 The core Monte Carlo generator. Produces Lambdas from a Boltzmann mT
 spectrum, propagates them to their decay vertex using the proper lifetime,
 decays them isotropically via `TGenPhaseSpace` (no polarization), and
-evaluates four cut scenarios:
+evaluates four cut scenarios. It mostly utilizes `ROOT::Math::PxPyPzEVector` and `ROOT::Math::XYZVector` for optimized kinematic calculations (even though TLorentzVector was kept to use the -- very -- convenient TGenPhaseSpace class), and features a native `main()` entrypoint allowing it to be compiled directly into a standalone C++ binary for performance gains.
 
 | Scenario     | Applied cuts                          |
 |--------------|---------------------------------------|
@@ -104,6 +104,7 @@ The main outputs per scenario directory are:
 - `pRingProxyVsEta` -- TProfile of `<R_proxy>` vs Lambda pseudorapidity.
 - `pRingProxyVsPt` -- TProfile of `<R_proxy>` vs Lambda pT.
 - `pRingProxyIntegrated` -- single-bin TProfile giving the integrated mean.
+- `hRingProxy_Kahan` -- 1-bin TH1D storing the high-precision integrated mean and its standard error, computed via a Kahan compensated accumulator to prevent floating-point precision degradation over massive event loops.
 
 **Ring proxy along a random jet direction:**
 - `h1d_ringProxyJet` -- per-Lambda distribution of the ring observable using
@@ -112,12 +113,10 @@ The main outputs per scenario directory are:
 - `pRingProxyJetVsEta` -- TProfile of `<R_proxyJet>` vs Lambda pseudorapidity.
 - `pRingProxyJetVsPt` -- TProfile of `<R_proxyJet>` vs Lambda pT.
 - `pRingProxyJet` -- single-bin TProfile giving the integrated mean.
-- 
-`pRingProxyJet_JetEtaPos` -- TProfile tracking integrated `<R_proxyJet>` for configurations where jet pseudorapidity `eta_jet >= 0` across all Lambda eta.
-- 
-`pRingProxyJet_JetEtaNeg` -- TProfile tracking integrated `<R_proxyJet>` for configurations where jet pseudorapidity `eta_jet < 0` across all Lambda eta.
-
-
+- `pRingProxyJet_JetEtaPos` -- TProfile tracking integrated `<R_proxyJet>` for configurations where jet pseudorapidity `eta_jet >= 0` across all Lambda eta.
+- `pRingProxyJet_JetEtaNeg` -- TProfile tracking integrated `<R_proxyJet>` for configurations where jet pseudorapidity `eta_jet < 0` across all Lambda eta.
+- `hRingProxyJet_Kahan` -- 1-bin TH1D storing the Kahan-compensated integrated mean.
+- `hRingProxyJet_JetEtaPos_Kahan`, `hRingProxyJet_JetEtaNeg_Kahan` -- Kahan-summed equivalents of the jet eta-split profiles.
 
 **Error estimation for the integrated jet ring proxy:**
 
@@ -127,11 +126,7 @@ statistical uncertainty, motivated by the observation that kinematic cuts
 introduce correlations between Lambdas and can cause the naive TProfile SEM to
 underestimate the true uncertainty:
 
-1. **TProfile SEM** (`pRingProxyJet`): the standard ROOT SEM, which assumes all
-   Lambda entries are statistically independent. Tends to underestimate the error,
-   specially once cuts are active because DCA and min pT cuts select preferential
-   regions of the Lambda phase space.
-
+1. **TProfile SEM / Kahan SEM** (`pRingProxyJet`, `hRingProxyJet_Kahan`): the standard SEM, which assumes all Lambda entries are statistically independent. Tends to underestimate the error, specially once cuts are active because DCA and min pT cuts select preferential regions of the Lambda phase space. The Kahan TH1D accumulator uses the exact same sample variance logic but cleanly prevents precision loss during summation.
 2. **Per-event mean accumulators** (`hEventMeanRingProxyJet`,
    `pEventMeanRingProxyJetIntegrated`): Lambdas that share the same randomly
    drawn jet direction are grouped into an implicit *event* (jet group). At each
@@ -141,7 +136,6 @@ underestimate the true uncertainty:
    `StdDev(R_e) / sqrt(N_events)`, which correctly accounts for intra-event
    correlations arising from all Lambdas in an event sharing the same jet
    direction. See `FlushEventMean()` and `FlushEventMeansFamily()`.
-
 3. **Data-chunking estimator** (`hChunkMeansRingProxyJet`,
    `pChunkMeansRingProxyJetIntegrated`): the full run is partitioned into
    `kChunks = 200` sequential chunks, with jet groups assigned round-robin
@@ -166,21 +160,25 @@ underestimate the true uncertainty:
   of the same three components vs the Lambda azimuthal angle `phi_Lambda`, in
   32 bins over `[-pi, pi]`. These directly show the sinusoidal modulation around
   the ring without requiring any vector-field rendering.
-
--  
-`pPstarX_vsPzPx`, `pPstarZ_vsPzPx`, `pPstarY_vsPzPx` -- TProfile2Ds displaying the proton rest-frame direction vector field mapped in the longitudinal-transverse ZX momentum plane against `(pz_lam, px_lam)`. Horizontal components display `<p*_z>`, vertical components display `<p*_x>`, and the out-of-plane background color map charts `<p*_y>`.
-
--  
-`pPstarX_vsEtaLam`, `pPstarY_vsEtaLam`, `pPstarZ_vsEtaLam` -- 1D compact TProfile projections tracking the individual `<p*>` components against Lambda pseudorapidity `eta_lam` to reveal longitudinal structures driven by kinematics.
-
-
+- `pPstarX_vsPzPx`, `pPstarZ_vsPzPx`, `pPstarY_vsPzPx` -- TProfile2Ds displaying the proton rest-frame direction vector field mapped in the longitudinal-transverse ZX momentum plane against `(pz_lam, px_lam)`. Horizontal components display `<p*_z>`, vertical components display `<p*_x>`, and the out-of-plane background color map charts `<p*_y>`.
+- `pPstarX_vsEtaLam`, `pPstarY_vsEtaLam`, `pPstarZ_vsEtaLam` -- 1D compact TProfile projections tracking the individual `<p*>` components against Lambda pseudorapidity `eta_lam` to reveal longitudinal structures driven by kinematics.
 
 **Daughter kinematics:**
 - `h1d_pT_proton`, `h1d_pT_pion` -- daughter pT distributions.
 - `h1d_DCA_proton`, `h1d_DCA_pion` -- daughter DCA_xy to PV distributions.
 - `h1d_decayR` -- transverse decay radius.
 
-**Run with ROOT:**
+**Run natively (compiled - recommended):**
+```bash
+# Compile natively with optimizations for best performance
+g++ -O3 -std=c++20 -march=native -flto -pipe helicityEfficiencyToyModel.cxx -o helicityToyModel $(root-config --cflags --libs)
+
+# Run the compiled binary (an example -- if you really want to use all the options I heavily recommend you stick to the shell coordinator script! It is much more organized!)
+./helicityToyModel 2000000 "output.root" 0.5
+
+```
+
+**Run via ROOT CLING (interpreted, or at least JIT-compiled):**
 
 ```bash
 # Default (all default parameters):
@@ -188,6 +186,7 @@ root -l -b -q 'helicityEfficiencyToyModel.cxx'
 
 # Custom parameters (see preamble in the file for full signature):
 root -l -b -q 'helicityEfficiencyToyModel.cxx(2000000,"output.root",0.5,...)'
+
 ```
 
 ---
@@ -205,8 +204,9 @@ ROOT file. The output structure per family is:
   EmissionAngles/    -- Figs 1–3
   RingZHat/          -- Figs 4–6
   Daughters/         -- Figs 7–8
-  RingJet/           -- Figs 10–15
+  RingJet/           -- Figs 10–15 (including Fig 12b split by jet eta)
   PolarizationVectorField/  -- Figs 16–19
+
 ```
 
 Fig 9 (eta asymmetry) is saved directly in the family root directory.
@@ -216,20 +216,20 @@ Fig 9 (eta asymmetry) is saved directly in the family root directory.
 **Figs 1–3 (EmissionAngles):** one canvas per eta selection (`EtaPos`, `EtaNeg`, `All`).
 
 - **Fig 1**: 2D `(cos theta*, phi*)` maps for each cut scenario. The primary
-  diagnostic for identifying which effect is active and the distortion it
-  introduces in the full decay angular distribution.
+diagnostic for identifying which effect is active and the distortion it
+introduces in the full decay angular distribution.
 - **Fig 2**: `cos(theta*)` projections for all four cut scenarios overlaid.
 - **Fig 3**: `phi*` projections with a `sin(phi*)` fit to the DCA-cut
-  distribution. Directly measures the left-right modulation amplitude.
+distribution. Directly measures the left-right modulation amplitude.
 
 **Figs 4–6 (RingZHat):** ring observable using the beam direction (+z) as
 the jet axis.
 
 - **Fig 4**: `<R_proxy>` vs Lambda pseudorapidity -- the **antisymmetric eta
-  dependence** is the clearest signature of the DCA-cut fake signal.
+dependence** is the clearest signature of the DCA-cut fake signal.
 - **Fig 5**: `<R_proxy>` vs Lambda pT for all cut scenarios.
 - **Fig 6**: Integrated `<R_proxy>` bar chart per cut scenario and eta
-  selection, using TProfile SEMs.
+selection, using TProfile SEMs. Overlaid with mathematically "lossless" (or at least much less loss-prone) Kahan sum values to evaluate if standard TProfile floating-point swamping occurred.
 
 **Figs 7–8 (Daughters):**
 
@@ -239,8 +239,8 @@ the jet axis.
 **Fig 9** (saved at the family directory level):
 
 - **Fig 9**: `(eta > 0) - (eta < 0)` difference plots of the 2D
-  `(cos theta*, phi*)` distributions. Isolates the antisymmetric fake component
-  that would appear as a non-zero ring observable in the data.
+`(cos theta*, phi*)` distributions. Isolates the antisymmetric fake component
+that would appear as a non-zero ring observable in the data.
 
 **Figs 10–15 (RingJet):** ring observable using a randomly drawn jet direction.
 
@@ -254,10 +254,7 @@ the jet axis.
     intra-event correlations.
 
 
-- 
-**Fig 12b**: Integrated `<R_proxyJet>` bar chart layout split into three distinct panels based on jet pseudorapidity selections (`eta_jet >= 0`, `eta_jet < 0`, and All `eta_jet`) to directly confirm spatial jet-axis dependence.
-
-
+- **Fig 12b**: Integrated `<R_proxyJet>` bar chart layout split into three distinct panels based on jet pseudorapidity selections (`eta_jet >= 0`, `eta_jet < 0`, and All `eta_jet`) to directly confirm spatial jet-axis dependence.
 - **Fig 13**: Left panel -- `R_proxyJet` per-Lambda distribution for all
   scenarios, normalised and overlaid. Right panel -- `<R_proxyJet>` vs
   Lambda pseudorapidity, all scenarios.
@@ -265,7 +262,7 @@ the jet axis.
   cut scenarios (and three eta selections) the figure overlays three
   estimators of the integrated mean: TProfile SEM (filled marker, shifted
   left), event-mean sigma (open marker, centred), and chunking sigma
-  (5-pointed star, shifted right). A ratio > 1 (event or chunk vs TProfile)
+  (5-pointed star, shifted right). Kahan comparisons are also tracked here. A ratio > 1 (event or chunk vs TProfile)
   means the TProfile was optimistic.
 - **Fig 15**: Distribution of per-event (per jet-group) means
   `R_e` for all four cut scenarios. Expected to be much narrower than the
@@ -273,7 +270,7 @@ the jet axis.
   Gaussian. Its standard deviation / sqrt(N_events) is the event-mean
   uncertainty plotted in Figs 12 and 14.
 
-**Figs 16–19 (PolarizationVectorField):** 
+**Figs 16–19 (PolarizationVectorField):**
 
 - **Fig 16** (main + supplemental): Spurious `<p*>` polarization vector field
   in the `(px_Lambda, py_Lambda)` plane. The colormap shows `<p*_z>` (scaled to
@@ -291,23 +288,15 @@ the jet axis.
   angle `phi_Lambda`, one panel per component and one curve per cut scenario.
   Directly shows the sinusoidal modulation that drives the ring-like structure
   in Fig 16.
-- 
-**Fig 18**: Main proton rest-frame polarization vector field rendered in the longitudinal-transverse ZX momentum plane `(pz_lam, px_lam)` for the "No Cuts" and "Both Cuts" conditions. The background diverging palette encodes the out-of-plane `<p*_y>` component, while overlaid block-averaged arrows map the mean 2D proton direction (`<p*_z>`, `<p*_x>`) to diagnose longitudinal structures.
-
-
-- 
-**Fig 18s**: Supplemental ZX-plane polarization vector field displaying the behavior of the two intermediate cut configurations (`pTCutOnly` and `DCACutOnly`).
-
-
-- 
-**Fig 19**: 1D projections showing `<p*_x>`, `<p*_y>`, and `<p*_z>` components vs. Lambda pseudorapidity `eta_lam` across all four cut scenarios, tracking beam-direction modulations or kinematic biases introduced by selection rules.
-
-
+- **Fig 18**: Main proton rest-frame polarization vector field rendered in the longitudinal-transverse ZX momentum plane `(pz_lam, px_lam)` for the "No Cuts" and "Both Cuts" conditions. The background diverging palette encodes the out-of-plane `<p*_y>` component, while overlaid block-averaged arrows map the mean 2D proton direction (`<p*_z>`, `<p*_x>`) to diagnose longitudinal structures.
+- **Fig 18s**: Supplemental ZX-plane polarization vector field displaying the behavior of the two intermediate cut configurations (`pTCutOnly` and `DCACutOnly`).
+- **Fig 19**: 1D projections showing `<p*_x>`, `<p*_y>`, and `<p*_z>` components vs. Lambda pseudorapidity `eta_lam` across all four cut scenarios, tracking beam-direction modulations or kinematic biases introduced by selection rules.
 
 **Run with ROOT:**
 
 ```bash
 root -l -b -q 'plotHelicityEfficiency.cxx("output.root","plots_dir")'
+
 ```
 
 ---
@@ -319,6 +308,9 @@ root -l -b -q 'plotHelicityEfficiency.cxx("output.root","plots_dir")'
 Runs the generator and plotter across eleven families (0–10) of parameter
 variations designed to isolate one effect by silencing the other. It organizes
 all output into a structured directory tree under a configurable base directory.
+
+Before dispatching the generator jobs, the script automatically pre-compiles `helicityEfficiencyToyModel.cxx` using `g++` with "aggressive" (but still, should by IEEE-standard safe) optimizations (`-O3`, `-march=native`, `-flto`, etc.). The parallel workers then execute this compiled binary rather than interpreting the script via ROOT, yielding significant speed improvements. The plotting step remains I/O bound and is still executed via ROOT CLING.
+
 Supports parallel execution (default `MAX_PARALLEL=64`) and produces one log
 file per run.
 
@@ -358,6 +350,7 @@ chmod +x runHelicityToyModel.sh
 
 # Skip data generation and re-run only the plotter:
 ./runHelicityToyModel.sh --plot
+
 ```
 
 When `--plot` is set, the generator step is skipped for every job; the plotter
@@ -395,9 +388,9 @@ dispatched simultaneously up to `MAX_PARALLEL` concurrent processes. Two
 dispatch strategies are tried in order:
 
 1. **GNU parallel** (`parallel --jobs N`): preferred; handles job tracking,
-   per-job logging via `--joblog`, and clean failure reporting.
+per-job logging via `--joblog`, and clean failure reporting.
 2. **Pure bash background pool**: fallback if GNU parallel is not installed;
-   uses a lightweight semaphore.
+uses a lightweight semaphore.
 
 A job log file is written to `LOG_DIR/<run_name>.log` for each run (generator
 and plotter combined). If GNU parallel is used, a `parallel_joblog.tsv` timing
