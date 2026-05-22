@@ -826,11 +826,13 @@ static void MakeFig5_RingVsPt(TDirectory* famDir, TDirectory* famOut, const char
 
 // ==========================================================================
 /**
- * @brief Fig 6 -- integrated <R_proxy> bar chart, one panel per eta selection.
+ * @brief Fig 6 -- integrated <R_proxy> for each scenario and eta selection.
  *
  * Three panels side by side: EtaPos | EtaNeg | All.  Each panel shows the
  * single-bin mean <R_proxy> from the pRingProxy TProfile for all four
  * scenarios, drawn as a central-value bar with error caps.
+ * Overlaid with the mathematically lossless Kahan sum value to check 
+ * if standard TProfile floating-point swamping occurred.
  *
  * @param famDir    Family directory in the input file.
  * @param famOut    Output sub-directory.
@@ -849,16 +851,19 @@ static void MakeFig6_IntegratedRing(TDirectory* famDir, TDirectory* famOut, cons
             TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
             if (!dir) continue;
             TProfile* p = static_cast<TProfile*>(SafeGet(dir, "pRingProxy"));
-            if (!p) continue;
-            double v = std::fabs(p->GetBinContent(1)) + p->GetBinError(1);
-            if (v > globalMax) globalMax = v;
+            TH1D* hK    = static_cast<TH1D*>    (SafeGet(dir, "hRingProxy_Kahan"));
+            if (p) {
+                double v = std::fabs(p->GetBinContent(1)) + p->GetBinError(1);
+                if (v > globalMax) globalMax = v;
+            }
+            if (hK) {
+                double v = std::fabs(hK->GetBinContent(1)) + hK->GetBinError(1);
+                if (v > globalMax) globalMax = v;
+            }
         }
     }
     
-    // // Enforce a hard minimum scale of 0.02 so we don't zoom in on microscopic 
-    // // statistical noise, and increase the margin multiplier to zoom out.
-    // globalMax = std::max(0.02, globalMax * 2.5);
-    globalMax = globalMax * 1.5;
+    globalMax = (globalMax < 1.e-8) ? 0.01 : globalMax * 1.6;
 
     TCanvas* c = new TCanvas(Form("c_%s_intRing", famLabel), "", 1050, 500);
     c->Divide(3, 1, 0.004, 0.002);
@@ -870,9 +875,7 @@ static void MakeFig6_IntegratedRing(TDirectory* famDir, TDirectory* famOut, cons
         TH1D* hBar = new TH1D(Form("hBar_%s_%s", famLabel, etaSels[ie]),
                                Form("<R_{proxy}> -- %s;Scenario;<R_{proxy}>", etaLabels[ie]),
                                4, 0., 4.);
-        hBar->SetDirectory(nullptr); // Critical to make the bars not be owned by the current TDirectory!
-                                     // Otherwise, they would dump into the output folder, even if they are
-                                     // just temporary histograms!
+        hBar->SetDirectory(nullptr);
         hBar->GetYaxis()->SetRangeUser(-globalMax, globalMax);
         hBar->SetStats(0);
         for (int is = 0; is < 4; ++is) hBar->GetXaxis()->SetBinLabel(is + 1, kScenLabels[is]);
@@ -886,22 +889,58 @@ static void MakeFig6_IntegratedRing(TDirectory* famDir, TDirectory* famOut, cons
             TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
             if (!dir) continue;
             TProfile* p = static_cast<TProfile*>(SafeGet(dir, "pRingProxy"));
-            if (!p) continue;
+            TH1D* hK    = static_cast<TH1D*>    (SafeGet(dir, "hRingProxy_Kahan"));
             
-            // Replaces manual lines: fill a single bin and use standard ROOT E1
-            TH1D* hPt = new TH1D(Form("hPt6_%s_%d_%d", famLabel, ie, is), "", 4, 0., 4.);
-            hPt->SetDirectory(nullptr); // Same fix as above
-            hPt->SetBinContent(is + 1, p->GetBinContent(1));
-            hPt->SetBinError(is + 1, p->GetBinError(1));
-            SetHistStyle(hPt, kScenColors[is], kScenMarkers[is]);
-            hPt->SetLineWidth(3);
-            hPt->Draw("E1 SAME");
+            double xCtr = is + 0.5;
+
+            // -- TProfile SEM: shifted left --
+            if (p) {
+                TGraphErrors* grS = new TGraphErrors(1);
+                grS->SetPoint    (0, xCtr - 0.1, p->GetBinContent(1));
+                grS->SetPointError(0, 0.,        p->GetBinError(1));
+                grS->SetMarkerStyle(kScenMarkers[is]);
+                grS->SetMarkerColor(kScenColors[is]);
+                grS->SetLineColor  (kScenColors[is]);
+                grS->SetLineWidth(2);
+                grS->SetMarkerSize(1.1);
+                grS->Draw("P SAME");
+            }
+
+            // -- Kahan SEM: diamond, shifted right --
+            if (hK) {
+                TGraphErrors* grK = new TGraphErrors(1);
+                grK->SetPoint    (0, xCtr + 0.1, hK->GetBinContent(1));
+                grK->SetPointError(0, 0.,        hK->GetBinError(1));
+                grK->SetMarkerStyle(33); 
+                grK->SetMarkerColor(kScenColors[is]);
+                grK->SetLineColor  (kScenColors[is]);
+                grK->SetLineWidth(2);
+                grK->SetMarkerSize(1.4);
+                grK->Draw("P SAME");
+            }
         }
         AddLabel(0.5, 0.96, etaLabels[ie], 0.045, 22);
+
+        if (ie == 2) {
+            TLegend* leg = MakeLegend(0.18, 0.70, 0.95, 0.88);
+            for (int is = 0; is < 4; ++is) {
+                TLine* dummy = new TLine();
+                dummy->SetLineColor(kScenColors[is]);  dummy->SetLineWidth(2);
+                leg->AddEntry(dummy, kScenLabels[is], "l");
+            }
+            TMarker* mFull = new TMarker(0., 0., 20);
+            mFull->SetMarkerColor(kBlack);  mFull->SetMarkerSize(1.1);
+            leg->AddEntry(mFull, "TProfile SEM (shifted left)", "p");
+
+            TMarker* mKahan = new TMarker(0., 0., 33);
+            mKahan->SetMarkerColor(kBlack); mKahan->SetMarkerSize(1.4);
+            leg->AddEntry(mKahan, "Kahan SEM (shifted right)", "p");
+            leg->Draw("SAME");
+        }
     }
 
     c->cd(0);
-    AddLabel(0.5, 0.995, Form("Integrated <R_{proxy}> per scenario -- %s", famLabel), 0.036, 22);
+    AddLabel(0.5, 0.995, Form("Integrated <R_{proxy}>: TProfile vs Kahan -- %s", famLabel), 0.036, 22);
     WriteCanvas(c, famOut);
     delete c;
 }
@@ -1340,6 +1379,7 @@ static void MakeFig11_ringJetVsPt(TDirectory* famDir, TDirectory* famOut, const 
  * Each panel displays a 1D chart of the integrated jet ring observable proxy 
  * (<R_proxy_jet>) extracted from the single-bin TProfiles for the four 
  * different cut scenarios.
+ * Plotted side-by-side: TProfile SEM vs Kahan SEM.
  *
  * @param famDir    Family directory in the input file.
  * @param famOut    Output sub-directory.
@@ -1351,23 +1391,26 @@ static void MakeFig12_IntegratedRingJet(TDirectory* famDir, TDirectory* famOut, 
     const char* etaSels[3]   = {"EtaPos", "EtaNeg", "All"};
     const char* etaLabels[3] = {"#eta_{#Lambda} > 0", "#eta_{#Lambda} < 0", "All #eta"};
 
-    // Find the global y range across all panels for consistent axes
+    // Find the global y range across all panels and both methods for consistent axes
     double globalMax = 0.;
     for (int ie = 0; ie < 3; ++ie) {
         for (int is = 0; is < 4; ++is) {
             TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
             if (!dir) continue;
             TProfile* p = static_cast<TProfile*>(SafeGet(dir, "pRingProxyJet"));
-            if (!p) continue;
-            double v = std::fabs(p->GetBinContent(1)) + p->GetBinError(1);
-            if (v > globalMax) globalMax = v;
+            TH1D* hK    = static_cast<TH1D*>    (SafeGet(dir, "hRingProxyJet_Kahan"));
+            if (p) {
+                double v = std::fabs(p->GetBinContent(1)) + p->GetBinError(1);
+                if (v > globalMax) globalMax = v;
+            }
+            if (hK) {
+                double v = std::fabs(hK->GetBinContent(1)) + hK->GetBinError(1);
+                if (v > globalMax) globalMax = v;
+            }
         }
     }
     
-    // // Enforce a hard minimum scale of 0.02 so we don't zoom in on microscopic 
-    // // statistical noise, and increase the margin multiplier to zoom out.
-    // globalMax = std::max(0.02, globalMax * 2.5);
-    globalMax = globalMax * 1.2;
+    globalMax = (globalMax < 1.e-8) ? 0.01 : globalMax * 1.6;
 
     TCanvas* c = new TCanvas(Form("c_%s_intRingJet", famLabel), "", 1050, 500);
     c->Divide(3, 1, 0.004, 0.002);
@@ -1384,7 +1427,7 @@ static void MakeFig12_IntegratedRingJet(TDirectory* famDir, TDirectory* famOut, 
         hBar->SetStats(0);
         for (int is = 0; is < 4; ++is) hBar->GetXaxis()->SetBinLabel(is + 1, kScenLabels[is]);
         hBar->GetXaxis()->SetLabelSize(0.055);
-        hBar->Draw("AXIS"); // Draw frame
+        hBar->Draw("AXIS");
 
         TLine* zl = new TLine(0., 0., 4., 0.);
         zl->SetLineColor(kGray + 2);  zl->SetLineStyle(2);  zl->SetLineWidth(2);  zl->Draw("SAME");
@@ -1393,21 +1436,55 @@ static void MakeFig12_IntegratedRingJet(TDirectory* famDir, TDirectory* famOut, 
             TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
             if (!dir) continue;
             TProfile* p = static_cast<TProfile*>(SafeGet(dir, "pRingProxyJet"));
-            if (!p) continue;
+            TH1D* hK    = static_cast<TH1D*>    (SafeGet(dir, "hRingProxyJet_Kahan"));
             
-            TH1D* hPt = new TH1D(Form("hPtJet12_%s_%d_%d", famLabel, ie, is), "", 4, 0., 4.);
-            hPt->SetDirectory(nullptr); 
-            hPt->SetBinContent(is + 1, p->GetBinContent(1));
-            hPt->SetBinError(is + 1, p->GetBinError(1));
-            SetHistStyle(hPt, kScenColors[is], kScenMarkers[is]);
-            hPt->SetLineWidth(3);
-            hPt->Draw("E1 SAME");
+            double xCtr = is + 0.5;
+
+            if (p) {
+                TGraphErrors* grS = new TGraphErrors(1);
+                grS->SetPoint    (0, xCtr - 0.1, p->GetBinContent(1));
+                grS->SetPointError(0, 0.,        p->GetBinError(1));
+                grS->SetMarkerStyle(kScenMarkers[is]);
+                grS->SetMarkerColor(kScenColors[is]);
+                grS->SetLineColor  (kScenColors[is]);
+                grS->SetLineWidth(2);
+                grS->SetMarkerSize(1.1);
+                grS->Draw("P SAME");
+            }
+            if (hK) {
+                TGraphErrors* grK = new TGraphErrors(1);
+                grK->SetPoint    (0, xCtr + 0.1, hK->GetBinContent(1));
+                grK->SetPointError(0, 0.,        hK->GetBinError(1));
+                grK->SetMarkerStyle(33);
+                grK->SetMarkerColor(kScenColors[is]);
+                grK->SetLineColor  (kScenColors[is]);
+                grK->SetLineWidth(2);
+                grK->SetMarkerSize(1.4);
+                grK->Draw("P SAME");
+            }
         }
         AddLabel(0.5, 0.96, etaLabels[ie], 0.045, 22);
+
+        if (ie == 2) {
+            TLegend* leg = MakeLegend(0.18, 0.70, 0.95, 0.88);
+            for (int is = 0; is < 4; ++is) {
+                TLine* dummy = new TLine();
+                dummy->SetLineColor(kScenColors[is]);  dummy->SetLineWidth(2);
+                leg->AddEntry(dummy, kScenLabels[is], "l");
+            }
+            TMarker* mFull = new TMarker(0., 0., 20);
+            mFull->SetMarkerColor(kBlack);  mFull->SetMarkerSize(1.1);
+            leg->AddEntry(mFull, "TProfile SEM (shifted left)", "p");
+
+            TMarker* mKahan = new TMarker(0., 0., 33);
+            mKahan->SetMarkerColor(kBlack); mKahan->SetMarkerSize(1.4);
+            leg->AddEntry(mKahan, "Kahan SEM (shifted right)", "p");
+            leg->Draw("SAME");
+        }
     }
 
     c->cd(0);
-    AddLabel(0.5, 0.995, Form("Integrated <R_{proxy}^{jet}> per scenario -- %s", famLabel), 0.036, 22);
+    AddLabel(0.5, 0.995, Form("Integrated <R_{proxy}^{jet}>: TProfile vs Kahan -- %s", famLabel), 0.036, 22);
     WriteCanvas(c, famOut);
     delete c;
 }
@@ -1507,36 +1584,36 @@ static void MakeFig12_IntegratedRingJetEvt(TDirectory* famDir, TDirectory* famOu
  * The "All" panel reads from pRingProxyJet (same as Fig 12); the JetEtaPos
  * and JetEtaNeg panels read from the dedicated conditional TProfiles
  * pRingProxyJet_JetEtaPos / pRingProxyJet_JetEtaNeg stored in each All
- * scenario directory.  No fancy error propagation is applied here: the plain
- * TProfile SEM is sufficient to establish whether the jet-eta dependence is
- * real and to compare qualitatively with the Lambda-eta split.
+ * scenario directory.
+ * Now also evaluates the jet-eta-split Kahan values alongside TProfile to ensure
+ * consistency in the sub-selections.
  *
  * @param famDir    Family directory in the input file.
  * @param famOut    Output sub-directory in the plots ROOT file.
  * @param famLabel  Short label used in canvas and object names.
  */
 // ==========================================================================
-static void MakeFig12_IntegratedRingJetByJetEta(TDirectory* famDir, TDirectory* famOut,
-                                                  const char* famLabel)
+static void MakeFig12_IntegratedRingJetByJetEta(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
 {
-    // Panel definitions: label, profile name to read from the "All" scenario dir
-    const char* panelLabels[3] = {"#eta_{jet} #geq 0",
-                                   "#eta_{jet} < 0",
-                                   "All #eta_{jet}"};
-    const char* profNames[3]   = {"pRingProxyJet_JetEtaPos",
-                                   "pRingProxyJet_JetEtaNeg",
-                                   "pRingProxyJet"};  // "All" reuses the main profile
+    const char* panelLabels[3] = {"#eta_{jet} #geq 0", "#eta_{jet} < 0", "All #eta_{jet}"};
+    const char* profNames[3]   = {"pRingProxyJet_JetEtaPos", "pRingProxyJet_JetEtaNeg", "pRingProxyJet"};
+    const char* kahanNames[3]  = {"hRingProxyJet_JetEtaPos_Kahan", "hRingProxyJet_JetEtaNeg_Kahan", "hRingProxyJet_Kahan"};
 
-    // Global y range across all panels
     double globalMax = 0.;
     for (int ip = 0; ip < 3; ++ip) {
         for (int is = 0; is < 4; ++is) {
             TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], "All");
             if (!dir) continue;
             TProfile* p = static_cast<TProfile*>(SafeGet(dir, profNames[ip]));
-            if (!p) continue;
-            double v = std::fabs(p->GetBinContent(1)) + p->GetBinError(1);
-            if (v > globalMax) globalMax = v;
+            TH1D* hK    = static_cast<TH1D*>    (SafeGet(dir, kahanNames[ip]));
+            if (p) {
+                double v = std::fabs(p->GetBinContent(1)) + p->GetBinError(1);
+                if (v > globalMax) globalMax = v;
+            }
+            if (hK) {
+                double v = std::fabs(hK->GetBinContent(1)) + hK->GetBinError(1);
+                if (v > globalMax) globalMax = v;
+            }
         }
     }
     globalMax = (globalMax < 1.e-8) ? 0.01 : globalMax * 1.6;
@@ -1546,45 +1623,71 @@ static void MakeFig12_IntegratedRingJetByJetEta(TDirectory* famDir, TDirectory* 
 
     for (int ip = 0; ip < 3; ++ip) {
         c->cd(ip + 1);
-        gPad->SetLeftMargin(0.12);
-        gPad->SetBottomMargin(0.10);
+        gPad->SetLeftMargin(0.12); gPad->SetBottomMargin(0.10);
 
         TH1D* hBar = new TH1D(Form("hBarJetEta_%s_%d", famLabel, ip), Form("<R_{proxy}^{jet}> (%s); ;<R_{proxy}^{jet}>", panelLabels[ip]), 4, 0., 4.);
         hBar->SetDirectory(nullptr);
         hBar->GetYaxis()->SetRangeUser(-globalMax, globalMax);
         hBar->SetStats(0);
-        for (int is = 0; is < 4; ++is)
-            hBar->GetXaxis()->SetBinLabel(is + 1, kScenLabels[is]);
+        for (int is = 0; is < 4; ++is) hBar->GetXaxis()->SetBinLabel(is + 1, kScenLabels[is]);
         hBar->GetXaxis()->SetLabelSize(0.055);
         hBar->Draw("AXIS");
 
         TLine* zl = new TLine(0., 0., 4., 0.);
-        zl->SetLineColor(kGray + 2);
-        zl->SetLineStyle(2);
-        zl->SetLineWidth(2);
-        zl->Draw("SAME");
+        zl->SetLineColor(kGray + 2); zl->SetLineStyle(2); zl->SetLineWidth(2); zl->Draw("SAME");
 
         for (int is = 0; is < 4; ++is) {
             TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], "All");
             if (!dir) continue;
             TProfile* p = static_cast<TProfile*>(SafeGet(dir, profNames[ip]));
-            if (!p) continue;
+            TH1D* hK    = static_cast<TH1D*>    (SafeGet(dir, kahanNames[ip]));
 
-            TH1D* hPt = new TH1D(Form("hPtJEta_%s_%d_%d", famLabel, ip, is), "", 4, 0., 4.);
-            hPt->SetDirectory(nullptr);
-            hPt->SetBinContent(is + 1, p->GetBinContent(1));
-            hPt->SetBinError  (is + 1, p->GetBinError(1));
-            SetHistStyle(hPt, kScenColors[is], kScenMarkers[is]);
-            hPt->SetLineWidth(3);
-            hPt->Draw("E1 SAME");
+            double xCtr = is + 0.5;
+
+            if (p) {
+                TGraphErrors* grS = new TGraphErrors(1);
+                grS->SetPoint    (0, xCtr - 0.1, p->GetBinContent(1));
+                grS->SetPointError(0, 0.,        p->GetBinError(1));
+                grS->SetMarkerStyle(kScenMarkers[is]);
+                grS->SetMarkerColor(kScenColors[is]);
+                grS->SetLineColor  (kScenColors[is]);
+                grS->SetLineWidth(2);
+                grS->SetMarkerSize(1.1);
+                grS->Draw("P SAME");
+            }
+            if (hK) {
+                TGraphErrors* grK = new TGraphErrors(1);
+                grK->SetPoint    (0, xCtr + 0.1, hK->GetBinContent(1));
+                grK->SetPointError(0, 0.,        hK->GetBinError(1));
+                grK->SetMarkerStyle(33);
+                grK->SetMarkerColor(kScenColors[is]);
+                grK->SetLineColor  (kScenColors[is]);
+                grK->SetLineWidth(2);
+                grK->SetMarkerSize(1.4);
+                grK->Draw("P SAME");
+            }
         }
-        AddLabel(0.5, 0.93, panelLabels[ip], 0.045, 22);
+        
+        if (ip == 2) {
+            TLegend* leg = MakeLegend(0.14, 0.70, 0.95, 0.88);
+            for (int is = 0; is < 4; ++is) {
+                TLine* dummy = new TLine();
+                dummy->SetLineColor(kScenColors[is]); dummy->SetLineWidth(2);
+                leg->AddEntry(dummy, kScenLabels[is], "l");
+            }
+            TMarker* mFull = new TMarker(0., 0., 20);
+            mFull->SetMarkerColor(kBlack); mFull->SetMarkerSize(1.1);
+            leg->AddEntry(mFull, "TProfile SEM", "p");
+
+            TMarker* mKahan = new TMarker(0., 0., 33);
+            mKahan->SetMarkerColor(kBlack); mKahan->SetMarkerSize(1.4);
+            leg->AddEntry(mKahan, "Kahan SEM", "p");
+            leg->Draw("SAME");
+        }
     }
 
     c->cd(0);
-    AddLabel(0.5, 0.97,
-        Form("Integrated <R_{proxy}^{jet}> by jet #eta  --  %s", famLabel),
-        0.036, 22);
+    AddLabel(0.5, 0.995, Form("Integrated <R_{proxy}^{jet}> split by Jet Eta -- %s", famLabel), 0.036, 22);
     WriteCanvas(c, famOut);
     delete c;
 }
@@ -1708,34 +1811,29 @@ static void MakeFig13_RingProxyJet(TDirectory* famDir, TDirectory* famOut, const
 
 // ==========================================================================
 /**
- * @brief Fig 14 -- three-way overlay comparison of TProfile SEM, event-mean
- *        uncertainty, and data-chunking uncertainty for the integrated
- *        <R_proxy_jet>, one panel per eta selection.
+ * @brief Fig 14 -- four-way overlay comparison of TProfile SEM, Kahan SEM, 
+ *       event-mean uncertainty, and data-chunking uncertainty for the integrated
+ *       <R_proxy_jet>, one panel per eta selection.
  *
  * @details
- * For each (scenario, eta) combination, three points are drawn at slightly
+ * For each (scenario, eta) combination, four points are drawn at slightly
  * offset x positions so all estimators are visible simultaneously:
  *
- *   Filled marker  (x - 0.18): naive TProfile SEM; assumes all N_Lambda entries
- *                               are independent -- underestimates if intra-event
- *                               correlations from the shared jet axis are present.
+ * Filled marker  (x - 0.24): naive TProfile SEM; assumes all N_Lambda entries
+ *      are independent -- underestimates if intra-event correlations from the
+ *      shared jet axis are present. Suffers from float swamping.
+ * Diamond marker (x - 0.08): Kahan SEM; mathematically identical to TProfile
+ *      but retains strict floating-point precision for tiny polarization signals
+ *      over 10^8+ additions.
+ * Open marker    (x + 0.08): event-mean estimator; sigma(R_e)/sqrt(N_events),
+ *      where R_e is the per-jet-group mean. Correctly treats the jet group as
+ *      the independent unit, but uses a weighted TH1D internally.
+ * Open star marker (x + 0.24): data-chunking estimator; stddev(mu_k)/sqrt(K_filled),
+ *      where mu_k = raw_sum_k / raw_count_k for each of the kChunks sequential chunks
+ *      of jet-group events. Entirely unweighted.
  *
- *   Open marker    (x + 0.00): event-mean estimator; sigma(R_e)/sqrt(N_events),
- *                               where R_e is the per-jet-group mean.  Correctly
- *                               treats the jet group as the independent unit, but
- *                               uses a weighted TH1D internally, which can still
- *                               carry a ROOT-level weighting artefact.
- *
- *   Star marker    (x + 0.18): data-chunking estimator; stddev(mu_k)/sqrt(K_filled),
- *                               where mu_k = raw_sum_k / raw_count_k for each of
- *                               the kChunks sequential chunks of jet-group events.
- *                               Entirely unweighted; immune to ROOT's effective-
- *                               degrees-of-freedom trap.
- *
- * Hierarchy of trust (highest to lowest): chunking > event-mean > TProfile SEM.
- * If all three agree, the intra-event correlation is negligible at the current
- * jet-group size.  If the chunking bar is taller than the TProfile bar, the SEM
- * was underestimating.
+ * If Kahan and TProfile disagree, TProfile/event-mean and data-chunking may have suffered from swamping.
+ * If all agree, the intra-event correlation is negligible and no swamping.
  *
  * @param famDir    Family directory in the input file.
  * @param famOut    Output sub-directory in the plots ROOT file.
@@ -1750,17 +1848,23 @@ static void MakeFig14_RingJetErrComparison(TDirectory* famDir, TDirectory* famOu
     // Open marker counterparts for kScenMarkers {20,21,22,23}
     static const int kOpenMarkers[4] = {24, 25, 26, 32};
 
-    // Global y range covering all three estimators
+    // Global y range covering all four estimators
     double globalMax = 0.;
     for (int ie = 0; ie < 3; ++ie) {
         for (int is = 0; is < 4; ++is) {
             TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
             if (!dir) continue;
             TProfile* p  = static_cast<TProfile*>(SafeGet(dir, "pRingProxyJet"));
+            TH1D*     hK = static_cast<TH1D*>(SafeGet(dir, "hRingProxyJet_Kahan"));
             TH1D*     he = static_cast<TH1D*>(SafeGet(dir, "hEventMeanRingProxyJet"));
             TH1D*     hc = static_cast<TH1D*>(SafeGet(dir, "hChunkMeansRingProxyJet"));
+            
             if (p) {
                 double v = std::fabs(p->GetBinContent(1)) + p->GetBinError(1);
+                if (v > globalMax) globalMax = v;
+            }
+            if (hK) {
+                double v = std::fabs(hK->GetBinContent(1)) + hK->GetBinError(1);
                 if (v > globalMax) globalMax = v;
             }
             if (he && he->GetEntries() > 0) {
@@ -1800,16 +1904,17 @@ static void MakeFig14_RingJetErrComparison(TDirectory* famDir, TDirectory* famOu
             TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
             if (!dir) continue;
             TProfile* p  = static_cast<TProfile*>(SafeGet(dir, "pRingProxyJet"));
+            TH1D*     hK = static_cast<TH1D*>(SafeGet(dir, "hRingProxyJet_Kahan"));
             TH1D*     he = static_cast<TH1D*>(SafeGet(dir, "hEventMeanRingProxyJet"));
             TH1D*     hc = static_cast<TH1D*>(SafeGet(dir, "hChunkMeansRingProxyJet"));
 
             // Bin centre for scenario 'is' in a 4-bin axis spanning [0,4]
             double xCtr = is + 0.5;
 
-            // -- TProfile SEM: filled marker, shifted left --
+            // -- TProfile SEM: filled marker, shifted far left --
             if (p) {
                 TGraphErrors* grS = new TGraphErrors(1);
-                grS->SetPoint    (0, xCtr - 0.18, p->GetBinContent(1));
+                grS->SetPoint     (0, xCtr - 0.24, p->GetBinContent(1));
                 grS->SetPointError(0, 0.,          p->GetBinError(1));
                 grS->SetMarkerStyle(kScenMarkers[is]);
                 grS->SetMarkerColor(kScenColors[is]);
@@ -1819,10 +1924,23 @@ static void MakeFig14_RingJetErrComparison(TDirectory* famDir, TDirectory* famOu
                 grS->Draw("P SAME");
             }
 
-            // -- Event-mean sigma: open marker, centred --
+            // -- Kahan SEM: diamond marker, shifted mid-left --
+            if (hK) {
+                TGraphErrors* grK = new TGraphErrors(1);
+                grK->SetPoint     (0, xCtr - 0.08, hK->GetBinContent(1));
+                grK->SetPointError(0, 0.,         hK->GetBinError(1));
+                grK->SetMarkerStyle(33); // full diamond
+                grK->SetMarkerColor(kScenColors[is]);
+                grK->SetLineColor  (kScenColors[is]);
+                grK->SetLineWidth(2);
+                grK->SetMarkerSize(1.4); // slightly larger to match visual weight
+                grK->Draw("P SAME");
+            }
+
+            // -- Event-mean sigma: open marker, shifted mid-right --
             if (he && he->GetEntries() > 0) {
                 TGraphErrors* grE = new TGraphErrors(1);
-                grE->SetPoint    (0, xCtr + 0.00, he->GetMean());
+                grE->SetPoint     (0, xCtr + 0.08, he->GetMean());
                 grE->SetPointError(0, 0.,          he->GetMeanError());
                 grE->SetMarkerStyle(kOpenMarkers[is]);
                 grE->SetMarkerColor(kScenColors[is]);
@@ -1832,16 +1950,16 @@ static void MakeFig14_RingJetErrComparison(TDirectory* famDir, TDirectory* famOu
                 grE->Draw("P SAME");
             }
 
-            // -- Chunking estimator: full-star marker, shifted right --
+            // -- Chunking estimator: open-star marker, shifted far right --
             if (hc && hc->GetEntries() > 0) {
                 TGraphErrors* grC = new TGraphErrors(1);
-                grC->SetPoint    (0, xCtr + 0.18, hc->GetMean());
+                grC->SetPoint     (0, xCtr + 0.24, hc->GetMean());
                 grC->SetPointError(0, 0.,          hc->GetMeanError());
-                grC->SetMarkerStyle(29); // full 5-pointed star -- visually distinct from filled/open sets
+                grC->SetMarkerStyle(30); // open 5-pointed star
                 grC->SetMarkerColor(kScenColors[is]);
                 grC->SetLineColor  (kScenColors[is]);
                 grC->SetLineWidth(2);
-                grC->SetMarkerSize(1.4); // stars look small at 1.1; bump up slightly
+                grC->SetMarkerSize(1.4); // bump up slightly for stars
                 grC->Draw("P SAME");
             }
         }
@@ -1857,19 +1975,26 @@ static void MakeFig14_RingJetErrComparison(TDirectory* famDir, TDirectory* famOu
             }
             TMarker* mFull = new TMarker(0., 0., 20);
             mFull->SetMarkerColor(kBlack);  mFull->SetMarkerSize(1.1);
-            leg->AddEntry(mFull, "TProfile SEM (filled, left)", "p");
+            leg->AddEntry(mFull, "TProfile SEM (filled, far-left)", "p");
+
+            TMarker* mKahan = new TMarker(0., 0., 33);
+            mKahan->SetMarkerColor(kBlack); mKahan->SetMarkerSize(1.4);
+            leg->AddEntry(mKahan, "Kahan SEM (diamond, mid-left)", "p");
+
             TMarker* mOpen = new TMarker(0., 0., 24);
             mOpen->SetMarkerColor(kBlack);  mOpen->SetMarkerSize(1.1);
-            leg->AddEntry(mOpen, "Event-mean #sigma (open, centre)", "p");
-            TMarker* mStar = new TMarker(0., 0., 29);
+            leg->AddEntry(mOpen, "Event-mean #sigma (open, mid-right)", "p");
+
+            TMarker* mStar = new TMarker(0., 0., 30);
             mStar->SetMarkerColor(kBlack);  mStar->SetMarkerSize(1.4);
-            leg->AddEntry(mStar, "Chunking #sigma (star, right)", "p");
+            leg->AddEntry(mStar, "Chunking #sigma (open star, far-right)", "p");
+            
             leg->Draw("SAME");
         }
     }
 
     c->cd(0);
-    AddLabel(0.5, 0.995, Form("SEM vs event-mean vs chunking uncertainty -- %s", famLabel), 0.036, 22);
+    AddLabel(0.5, 0.995, Form("SEM vs Kahan vs event-mean vs chunking -- %s", famLabel), 0.036, 22);
     WriteCanvas(c, famOut);
     delete c;
 }
@@ -2477,6 +2602,106 @@ static void MakeFig19_PstarVsEtaLam(TDirectory* famDir, TDirectory* famOut,
 
 // ==========================================================================
 /**
+ * @brief Fig 20 -- Float Swamping Diagnostic (Kahan SEM / TProfile SEM ratio).
+ *
+ * Plots the ratio of the Kahan SEM to the TProfile SEM for the <R_proxyJet> 
+ * observable across the 4 scenarios and 3 eta selections.
+ * A ratio > 1.0 indicates that the naive TProfile mathematically lost
+ * lower-order bits due to swamping (the denominator became artificially small).
+ *
+ * @param famDir    Family directory in the input file.
+ * @param famOut    Output sub-directory in the plots ROOT file.
+ * @param famLabel  Short label used in canvas and object names.
+ */
+// ==========================================================================
+static void MakeFig20_FloatSwamping(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
+{
+    const char* etaSels[3]   = {"EtaPos", "EtaNeg", "All"};
+    const char* etaLabels[3] = {"#eta_{#Lambda} > 0", "#eta_{#Lambda} < 0", "All #eta"};
+
+    // Auto-scale logic to capture severe swamping if it exists
+    double yMin = 0.95;
+    double yMax = 1.05; 
+
+    for (int ie = 0; ie < 3; ++ie) {
+        for (int is = 0; is < 4; ++is) {
+            TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
+            if (!dir) continue;
+            TProfile* p = static_cast<TProfile*>(SafeGet(dir, "pRingProxyJet"));
+            TH1D* hK    = static_cast<TH1D*>    (SafeGet(dir, "hRingProxyJet_Kahan"));
+            if (p && hK) {
+                double eProf = p->GetBinError(1);
+                double eKah  = hK->GetBinError(1);
+                if (eProf > 0.) {
+                    double ratio = eKah / eProf;
+                    if (ratio > yMax) yMax = ratio * 1.05;
+                    if (ratio < yMin) yMin = ratio * 0.95;
+                }
+            }
+        }
+    }
+
+    TCanvas* c = new TCanvas(Form("c_%s_floatSwamp", famLabel), "", 1050, 500);
+    c->Divide(3, 1, 0.004, 0.002);
+
+    for (int ie = 0; ie < 3; ++ie) {
+        c->cd(ie + 1);
+        gPad->SetLeftMargin(0.18);  gPad->SetBottomMargin(0.16);
+
+        TH1D* hBar = new TH1D(Form("hBarRatio_%s_%s", famLabel, etaSels[ie]),
+                               Form("Precision ratio -- %s;Scenario;SEM_{Kahan} / SEM_{TProfile}", etaLabels[ie]),
+                               4, 0., 4.);
+        hBar->SetDirectory(nullptr);
+        hBar->GetYaxis()->SetRangeUser(yMin, yMax);
+        hBar->SetStats(0);
+        for (int is = 0; is < 4; ++is) hBar->GetXaxis()->SetBinLabel(is + 1, kScenLabels[is]);
+        hBar->GetXaxis()->SetLabelSize(0.055);
+        hBar->Draw("AXIS");
+
+        // Reference line exactly at 1.0 (No precision loss)
+        TLine* zl = new TLine(0., 1.0, 4., 1.0);
+        zl->SetLineColor(kGray + 2);  zl->SetLineStyle(2);  zl->SetLineWidth(2);  zl->Draw("SAME");
+
+        for (int is = 0; is < 4; ++is) {
+            TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
+            if (!dir) continue;
+            TProfile* p = static_cast<TProfile*>(SafeGet(dir, "pRingProxyJet"));
+            TH1D* hK    = static_cast<TH1D*>    (SafeGet(dir, "hRingProxyJet_Kahan"));
+            
+            if (p && hK) {
+                double eProf = p->GetBinError(1);
+                double eKah  = hK->GetBinError(1);
+                if (eProf > 0.) {
+                    double ratio = eKah / eProf;
+                    
+                    TGraph* gr = new TGraph(1);
+                    gr->SetPoint(0, is + 0.5, ratio);
+                    gr->SetMarkerStyle(33); // Diamond
+                    gr->SetMarkerColor(kScenColors[is]);
+                    gr->SetMarkerSize(1.6);
+                    gr->Draw("P SAME");
+                }
+            }
+        }
+        AddLabel(0.5, 0.96, etaLabels[ie], 0.045, 22);
+
+        if (ie == 2) {
+            TLegend* leg = MakeLegend(0.18, 0.80, 0.95, 0.88);
+            TMarker* mKahan = new TMarker(0., 0., 33);
+            mKahan->SetMarkerColor(kBlack); mKahan->SetMarkerSize(1.6);
+            leg->AddEntry(mKahan, "Kahan / TProfile Ratio", "p");
+            leg->Draw("SAME");
+        }
+    }
+
+    c->cd(0);
+    AddLabel(0.5, 0.995, Form("Float Swamping Diagnostic: Error Ratio -- %s", famLabel), 0.036, 22);
+    WriteCanvas(c, famOut);
+    delete c;
+}
+
+// ==========================================================================
+/**
  * @brief Lambda kinematics figure -- drawn once, shared across families.
  *
  * Six panels (2 rows x 3 columns):
@@ -2621,6 +2846,7 @@ void plotHelicityEfficiency(const char* inputFile = "helicityEffOutput.root")
         MakeFig13_RingProxyJet        (famDir, outJet, famName);
         MakeFig14_RingJetErrComparison(famDir, outJet, famName);
         MakeFig15_EventMeanDist       (famDir, outJet, famName);
+        MakeFig20_FloatSwamping       (famDir, outJet, famName);
 
         // Figs 16-19: polarisation vector field
         MakeFig16_PstarVectorField    (famDir, outVF, famName);

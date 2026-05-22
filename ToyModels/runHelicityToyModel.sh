@@ -200,11 +200,9 @@ LOG_DIR="${BASE_DIR}/logs"
 MAX_PARALLEL=64
 
 # Default Lambda count per run.
-# At ~90 s per 10M Lambdas, 1B = ~900 s (~15 min) per run.
-# With ~59 runs in parallel on 192 cores, total wall time ~ 15 min.
-# DEFAULT_N=60000000000 # 10.000.000.000 Lambdas takes about 8 hours
-DEFAULT_N=10000000000
-# DEFAULT_N=10000000 # For testing only (~30 s per run)
+# DEFAULT_N=60000000000
+DEFAULT_N=10000000000 # 10.000.000.000 Lambdas takes about 15 hours on newer, heavier, code versions
+# DEFAULT_N=100000000 # For testing only (~40 s per run)
 
 # ROOT executable (set to full path if not in PATH, e.g. /opt/root/bin/root)
 ROOT_EXE="root"
@@ -301,6 +299,25 @@ if command -v parallel &>/dev/null; then
     USE_GNU_PARALLEL=1
 fi
 
+# =============================================================================
+# COMPILATION
+# =============================================================================
+EXE_BIN="${SCRIPT_DIR}/helicityEfficiencyToyModel.exe"
+export EXE_BIN # Export so subshells and GNU parallel can see it
+
+if [[ ${DRY_RUN} -eq 0 && ${LIST_ONLY} -eq 0 && ${PLOT_ONLY} -eq 0 ]]; then
+    echo "============================================================"
+    echo " Compiling generator with g++ (AOT (Ahead-Of-Time) optimization)..."
+    if g++ -O3 -std=c++20 -march=native -flto -pipe "${GEN_MACRO}" -o "${EXE_BIN}" $(root-config --cflags --libs); then
+        echo " Compilation successful: ${EXE_BIN}"
+    else
+        echo " ERROR: Compilation failed!" >&2
+        exit 1
+    fi
+    echo "============================================================"
+    echo ""
+fi
+
 
 # =============================================================================
 # JOB QUEUE
@@ -377,10 +394,11 @@ execute_job() {
 
     mkdir -p "${OUTDIR}"
 
-    # Build ROOT call strings.
-    # Single quotes around the macro path protect spaces; the inner double
-    # quotes around the ROOT file path protect spaces in BASE_DIR.
-    local GEN_CALL="${N},\"${ROOT_FILE}\",${BZ},${PTMIN_LAM},${PTMAX_LAM},${RAPMAX},${ETAMAX},${T},${PTMIN_P},${PTMIN_PI},${DCAMIN_P},${DCAMIN_PI},${SEED}"
+    # Build argument array for the compiled generator (safely handles spaces in ROOT_FILE)
+    # Notice this is different from before, where we parsed a giant string
+    local GEN_ARGS=("$N" "$ROOT_FILE" "$BZ" "$PTMIN_LAM" "$PTMAX_LAM" "$RAPMAX" "$ETAMAX" "$T" "$PTMIN_P" "$PTMIN_PI" "$DCAMIN_P" "$DCAMIN_PI" "$SEED")
+    
+    # Plotter still uses ROOT Cling (cheap, I/O bound, so no need to pre-compile this cxx)
     local PLT_CALL="\"${ROOT_FILE}\""
 
     # Write log header
@@ -388,7 +406,8 @@ execute_job() {
         echo "=== ${NAME} started at $(date '+%Y-%m-%d %H:%M:%S') ==="
         echo "Host      : $(hostname)"
         echo "PID       : $$"
-        echo "Generator : ${ROOT_EXE} -l -b -q '${GEN_MACRO}(${GEN_CALL})'"
+        # echo "Generator : ${ROOT_EXE} -l -b -q '${GEN_MACRO}(${GEN_CALL})'"
+        echo "Generator : ${EXE_BIN} ${GEN_ARGS[*]}"
         echo "Plotter   : ${ROOT_EXE} -l -b -q '${PLT_MACRO}(${PLT_CALL})'"
         echo ""
     } > "${LOG_FILE}"
@@ -398,8 +417,8 @@ execute_job() {
     # CONDITIONAL GENERATOR EXECUTION (if you only update the plotting function, then you may not want to re-generate the data)
     # -------------------------------------------------------------------------
     if [[ ${PLOT_ONLY} -eq 0 ]]; then
-        if eval "${ROOT_EXE} -l -b -q '${GEN_MACRO}(${GEN_CALL})'" \
-                >> "${LOG_FILE}" 2>&1; then
+        # Call the compiled binary instead of ROOT:
+        if "${EXE_BIN}" "${GEN_ARGS[@]}" >> "${LOG_FILE}" 2>&1; then
             local T1; T1=$(date +%s)
             echo "Generator OK  ($(( T1 - T0 )) s)" >> "${LOG_FILE}"
         else
@@ -438,7 +457,7 @@ execute_job() {
 # Export so GNU parallel can call it across forked subshells
 export -f execute_job
 # Also export the path variables that execute_job needs
-export BASE_DIR LOG_DIR ROOT_EXE GEN_MACRO PLT_MACRO PLOT_ONLY
+export BASE_DIR LOG_DIR ROOT_EXE EXE_BIN GEN_MACRO PLT_MACRO PLOT_ONLY
 
 
 # =============================================================================
@@ -892,8 +911,10 @@ if [[ ${USE_GNU_PARALLEL} -eq 1 ]]; then
         --env BASE_DIR \
         --env LOG_DIR \
         --env ROOT_EXE \
+        --env EXE_BIN \
         --env GEN_MACRO \
         --env PLT_MACRO \
+        --env PLOT_ONLY \
         execute_job {}
 
     DISPATCH_STATUS=$?
@@ -1014,5 +1035,14 @@ echo "    # Open a result in ROOT:"
 echo "    root -l ${BASE_DIR}/0_Baseline/baseline/helicity_baseline.root"
 echo "============================================================"
 echo ""
+
+# =============================================================================
+# CLEANUP -- Removing the .exe as it is no longer needed
+# =============================================================================
+if [[ ${PLOT_ONLY} -eq 0 && -f "${EXE_BIN:-}" ]]; then
+    rm -f "${EXE_BIN}"
+    echo ""
+    echo "  Cleaned up compiled executable."
+fi
 
 exit ${DISPATCH_STATUS}

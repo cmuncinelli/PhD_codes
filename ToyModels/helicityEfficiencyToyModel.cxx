@@ -150,13 +150,18 @@
 // ==========================================================================
 
 // --- Standard ROOT headers ---
+// (these are only needed when code is compiled via g++, actually)
 #include <TFile.h>
 #include <TDirectory.h>
 #include <TH1D.h>
 #include <TH2D.h>
 #include <TProfile.h>
-#include <TLorentzVector.h>
-#include <TVector3.h>
+#include <TProfile2D.h>
+#include <TLorentzVector.h> // Preserved solely for TGenPhaseSpace
+#include <Math/Vector4D.h>
+#include <Math/GenVector/VectorUtil.h>
+// #include <TVector3.h>
+#include <Math/Vector3D.h>
 #include <TGenPhaseSpace.h>
 #include <TRandom3.h>
 #include <TMath.h>
@@ -167,7 +172,12 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <string>
+#include <iostream>
+#include <exception>
 
+using ROOT::Math::PxPyPzEVector;
+using ROOT::Math::XYZVector; // From Vector3D
 
 // ==========================================================================
 // PHYSICS CONSTANTS
@@ -201,7 +211,7 @@ static const int kChargePion   = -1;
 
 // Guard threshold: skip Lambdas whose transverse momentum fraction
 // pT/|p| is smaller than this (Lambda nearly collinear with beam axis)
-static const double kMinSinTheta = 1.e-4;
+static const double kMinSinTheta = 1.e-5;
 
 // ==========================================================================
 // Mathematical constants and other useful constants for error bars:
@@ -379,6 +389,110 @@ inline double wrapToPiFast(double phi){
     return (phi < Pi) ? phi : (phi - TwoPi);
 }
 
+// ==========================================================================
+/**
+ * @brief High-precision accumulator for integrated observables using
+ *        compensated Kahan summation.
+ *
+ * This struct is designed as a lightweight, allocation-free replacement for
+ * single-bin ROOT TProfiles inside extremely large event loops
+ * (e.g. O(10^8) fills), where standard floating-point accumulation may lose
+ * precision for small signals (~10^-6).
+ *
+ * The accumulator tracks:
+ *   - N          : number of entries
+ *   - sum_y      : compensated sum of values
+ *   - sum_y2     : compensated sum of squared values
+ *
+ * Both sums use Kahan compensated summation to minimize catastrophic loss of
+ * significance during long accumulation chains.
+ *
+ * The resulting mean and Standard Error of the Mean (SEM) reproduce the
+ * statistical behavior of a 1-bin TProfile while avoiding:
+ *   - ROOT virtual-function overhead in the hot loop
+ *   - repeated histogram bin lookups
+ *   - floating-point precision degradation from naive summation
+ *
+ * Intended usage:
+ *   - Instantiate directly inside ScenarioHistos
+ *   - Call Add(value) inside the event loop
+ *   - Retrieve results via GetMean() and GetSEM()
+ *   - Optionally export to a 1-bin TH1D after processing for ROOT I/O
+ *
+ * All methods are inline to maximize compiler optimization and vectorization
+ * opportunities in performance-critical code paths.
+ */
+// ==========================================================================
+struct KahanAccumulator {
+    double sum_y  = 0.0;
+    double c_y    = 0.0; // Kahan compensation for sum_y
+    double sum_y2 = 0.0;
+    double c_y2   = 0.0; // Kahan compensation for sum_y2
+    long   N      = 0;
+
+    // Fast inline add, meant to be used inside the hot loop
+    inline void Add(double y) {
+        // Kahan sum for the values
+        double v_y = y - c_y;
+        double t_y = sum_y + v_y;
+        c_y = (t_y - sum_y) - v_y;
+        sum_y = t_y;
+
+        // Kahan sum for the squared values (for the SEM error bars)
+        double y2 = y * y;
+        double v_y2 = y2 - c_y2;
+        double t_y2 = sum_y2 + v_y2;
+        c_y2 = (t_y2 - sum_y2) - v_y2;
+        sum_y2 = t_y2;
+
+        N++;
+    }
+
+    /// @brief Returns the accumulated mean value.
+    inline double GetMean() const {
+        return (N > 0) ? (sum_y / (double)N) : 0.0;
+    }
+
+    /**
+     * @brief Returns the Standard Error of the Mean (SEM).
+     *
+     * Computed using the unbiased sample variance:
+     *   variance = (sum_y2 - N * mean^2) / (N - 1)
+     * and:
+     *   SEM = sqrt(variance / N)
+     *
+     * This implementation should match the statistical interpretation of a
+     * ROOT TProfile bin error for integrated observables.
+     */
+    inline double GetSEM() const {
+        if (N < 2) return 0.0;
+
+        double mean = sum_y / (double)N;
+            // Sample variance
+        double variance = (sum_y2 - (double)N * mean * mean) / (double)(N - 1);
+            // Numerical safeguard against tiny negative roundoff artifacts
+        if (variance < 0.0) variance = 0.0;
+
+        return std::sqrt(variance / (double)N);
+    }
+
+    /**
+     * @brief Exports the accumulated statistics into a 1-bin ROOT histogram.
+     *
+     * The histogram bin content is filled with the accumulated mean, while
+     * the bin error is set to the Standard Error of the Mean (SEM).
+     *
+     * @param h Pointer to the target histogram. If nullptr, the method
+     *          returns immediately without performing any operation.
+     */
+    inline void FlushToTH1(TH1* h) const { // The method is declared as a const because it doesn't change the state of the KahanAccumulator
+        if (!h) return; // Safety check
+        h->SetBinContent(1, GetMean());
+        h->SetBinError(1, GetSEM());
+        h->SetEntries(N);
+    }
+};
+
 
 // ==========================================================================
 /**
@@ -391,7 +505,6 @@ inline double wrapToPiFast(double phi){
  */
 // ==========================================================================
 struct ScenarioHistos {
-
     // -- Main diagnostic: proton emission angles in Lambda rest frame --
     // These are the primary plots requested in the analysis note.
     TH2D*    h2d_cosTheta_phi;   // 2D: cos(theta*) vs phi*
@@ -489,6 +602,22 @@ struct ScenarioHistos {
     TProfile*   pPstarX_vsEtaLam; // <p*_x> vs eta_lam
     TProfile*   pPstarY_vsEtaLam; // <p*_y> vs eta_lam
     TProfile*   pPstarZ_vsEtaLam; // <p*_z> vs eta_lam
+
+    // Manual accumulators (for Kahan sums):
+    KahanAccumulator kRingProxy;
+    KahanAccumulator kRingProxyJet;
+    KahanAccumulator kRingProxyJet_JetEtaPos;
+    KahanAccumulator kRingProxyJet_JetEtaNeg;
+
+    // Histograms to flush the Kahan sums after they have finished accumulating everything,
+    // just to store in the final .root. The "precision computation" part should already be
+    // dealt with at this point!
+    // I am using TH1Ds instead of, say, TProfiles, because TH1D are essentially a dumb visual container here.
+    // TProfile might want to do something else. I can fill them with a simple "FlushToTH1" call with 3 lines.
+    TH1D* hRingProxy_Kahan;
+    TH1D* hRingProxyJet_Kahan;
+    TH1D* hRingProxyJet_JetEtaPos_Kahan;
+    TH1D* hRingProxyJet_JetEtaNeg_Kahan;
 };
 
 
@@ -613,6 +742,12 @@ static ScenarioHistos BookScenario(TDirectory* dir, double etaMaxDetector)
     h.pPstarY_vsEtaLam = new TProfile("pPstarY_vsEtaLam", "<p*_{y}> vs #eta_{#Lambda}; #eta_{#Lambda}; <p*_{y}>", 18, -etaMaxDetector, etaMaxDetector);
     h.pPstarZ_vsEtaLam = new TProfile("pPstarZ_vsEtaLam", "<p*_{z}> vs #eta_{#Lambda}; #eta_{#Lambda}; <p*_{z}>", 18, -etaMaxDetector, etaMaxDetector);
 
+    // Histograms to store the final Kahan accumulator results:
+    h.hRingProxy_Kahan = new TH1D("hRingProxy_Kahan", "Integrated <R_{proxy}> (Kahan Acc.); bin;<R_{proxy}>", 1, -0.5, 0.5);
+    h.hRingProxyJet_Kahan = new TH1D("hRingProxyJet_Kahan", "Integrated <R_{proxyJet}> (Kahan Acc.); bin;<R_{proxyJet}>", 1, -0.5, 0.5);
+    h.hRingProxyJet_JetEtaPos_Kahan = new TH1D("hRingProxyJet_JetEtaPos_Kahan", "Integrated <R_{proxyJet}> (Kahan Acc.) for #eta_{jet} #geq 0; bin; <R_{proxyJet}>", 1, -0.5, 0.5);
+    h.hRingProxyJet_JetEtaNeg_Kahan = new TH1D("hRingProxyJet_JetEtaNeg_Kahan", "Integrated <R_{proxyJet}> (Kahan Acc.) for #eta_{jet} < 0; bin; <R_{proxyJet}>", 1, -0.5, 0.5);
+
     return h;
 }
 
@@ -668,17 +803,24 @@ static void FillScenario(ScenarioHistos& h,
     // Ring proxy
     h.h1d_ringProxy->Fill(ringProxy);
     h.pRingProxy->Fill(0., ringProxy); // integrated average
+    h.kRingProxy.Add(ringProxy); // Integrated average via Kahan summation
     h.pRingProxyVsEta->Fill(eta_lambda, ringProxy);
     h.pRingProxyVsPt->Fill(pT_lambda, ringProxy);
 
     h.h1d_ringProxyJet->Fill(ringProxyJet);
     h.pRingProxyJet->Fill(0., ringProxyJet); // integrated average
+    h.kRingProxyJet.Add(ringProxyJet); // Integrated average via Kahan summation
     h.pRingProxyJetVsEta->Fill(eta_lambda, ringProxyJet);
     h.pRingProxyJetVsEtaJet->Fill(eta_jet, ringProxyJet);
     h.pRingProxyJetVsPt->Fill(pT_lambda, ringProxyJet);
     // Jet-eta-split integrated profiles
-    if (eta_jet >= 0.) h.pRingProxyJet_JetEtaPos->Fill(0., ringProxyJet);
-    else h.pRingProxyJet_JetEtaNeg->Fill(0., ringProxyJet);
+    if (eta_jet >= 0.) {
+        h.pRingProxyJet_JetEtaPos->Fill(0., ringProxyJet);
+        h.kRingProxyJet_JetEtaPos.Add(ringProxyJet);
+    } else {
+        h.pRingProxyJet_JetEtaNeg->Fill(0., ringProxyJet);
+        h.kRingProxyJet_JetEtaNeg.Add(ringProxyJet);
+    }
 
     // Accumulate for the event-mean estimator; flush happens at jet reshuffle:
     h.evtSumRpj += ringProxyJet;
@@ -1021,6 +1163,40 @@ static void FinalizeChunksFamily(FamilyHistos& f) {
     FinalizeChunks(f.BC_Pos); FinalizeChunks(f.BC_Neg); FinalizeChunks(f.BC_All);
 }
 
+// ==========================================================================
+/**
+ * @brief Flushes the Kahan accumulators into their corresponding TH1D targets
+ * for a single ScenarioHistos.
+ *
+ * @param h  Reference to the ScenarioHistos containing the accumulators and TH1Ds.
+ */
+// ==========================================================================
+static void FlushKahan(ScenarioHistos& h) {
+    h.kRingProxy.FlushToTH1(h.hRingProxy_Kahan);
+    h.kRingProxyJet.FlushToTH1(h.hRingProxyJet_Kahan);
+    h.kRingProxyJet_JetEtaPos.FlushToTH1(h.hRingProxyJet_JetEtaPos_Kahan);
+    h.kRingProxyJet_JetEtaNeg.FlushToTH1(h.hRingProxyJet_JetEtaNeg_Kahan);
+}
+
+// ==========================================================================
+/**
+ * @brief Calls FlushKahan() on all twelve ScenarioHistos in a FamilyHistos.
+ *
+ * @details
+ * Must be called once, after the main event loop is completely finished,
+ * to lock the high-precision sums into the TH1D objects before writing 
+ * to the output ROOT file.
+ *
+ * @param f  Reference to the FamilyHistos to finalize.
+ */
+// ==========================================================================
+static void FlushKahanFamily(FamilyHistos& f) {
+    FlushKahan(f.NC_Pos); FlushKahan(f.NC_Neg); FlushKahan(f.NC_All);
+    FlushKahan(f.PT_Pos); FlushKahan(f.PT_Neg); FlushKahan(f.PT_All);
+    FlushKahan(f.DC_Pos); FlushKahan(f.DC_Neg); FlushKahan(f.DC_All);
+    FlushKahan(f.BC_Pos); FlushKahan(f.BC_Neg); FlushKahan(f.BC_All);
+}
+
 
 // ==========================================================================
 /**
@@ -1245,8 +1421,10 @@ void helicityEfficiencyToyModel(
         // Lambda pseudorapidity (for eta-split histograms)
         double eta_lam = std::asinh(pz_lam / pT_lam);
 
-        // Build TLorentzVector for Lambda (used by TGenPhaseSpace)
+        // Build TLorentzVector for Lambda (used by TGenPhaseSpace, so can't really swap this for Vector4D...)
         TLorentzVector lv_lam(px_lam, py_lam, pz_lam, E_lam);
+            // Converting the Lambda 4-vec to the latest structure (should yield faster computation still!):
+        PxPyPzEVector lambda4vec(px_lam, py_lam, pz_lam, E_lam);
 
         // Fill pre-cut kinematics
         hKin_pT_lambda->Fill(pT_lam);
@@ -1258,7 +1436,7 @@ void helicityEfficiencyToyModel(
         // 3.2  Build Lambda frame axes
         // ==================================================================
         // e1 = Lambda unit momentum vector (forward-backward axis)
-        TVector3 e1(px_lam / p_lam, py_lam / p_lam, pz_lam / p_lam);
+        XYZVector e1(px_lam / p_lam, py_lam / p_lam, pz_lam / p_lam);
 
         // e2 = (p_Lambda x z_hat) / |p_Lambda x z_hat| (transverse, left-right axis)
             // Explicitly:  e2 = (py, -px, 0) / pT
@@ -1267,11 +1445,11 @@ void helicityEfficiencyToyModel(
             ++nCollinear;
             continue;
         }
-        TVector3 e2(py_lam / pT_lam, -px_lam / pT_lam, 0.);
+        XYZVector e2(py_lam / pT_lam, -px_lam / pT_lam, 0.);
 
         // e3 = e1 x e2  (in-out axis)
         // Explicitly:  e3 = (pz*px, pz*py, -pT^2) / (|p|*pT)
-        TVector3 e3 = e1.Cross(e2);  // Unit by construction since e1, e2 are unit orthonormal
+        XYZVector e3 = e1.Cross(e2);  // Unit by construction since e1, e2 are unit orthonormal
 
         // ==================================================================
         // 3.3  Sample proper decay length and compute decay vertex
@@ -1309,17 +1487,28 @@ void helicityEfficiencyToyModel(
         decayGen.Generate();  // Isotropic, unpolarized decay
 
         // Retrieve daughter 4-vectors in the LAB frame
-        TLorentzVector lv_proton = *(decayGen.GetDecay(0));
-        TLorentzVector lv_pion   = *(decayGen.GetDecay(1));
+        // (TODO: could calculate this by hand, as done in PythiaGenMin's MC by the way! Much more efficient than TGenPhaseSpace, I guess...)
+        // (Just make sure to generate homogeneously in cosTheta instead of Theta, for proper 3D isotropic generation of protons and pions!)
+        TLorentzVector tlv_proton = *(decayGen.GetDecay(0));
+        TLorentzVector tlv_pion   = *(decayGen.GetDecay(1));
 
         // Lab-frame transverse momenta of daughters [GeV/c]
-        double px_p  = lv_proton.Px();
-        double py_p  = lv_proton.Py();
-        double pT_p  = lv_proton.Pt();
+        double px_p = tlv_proton.Px();
+        double py_p = tlv_proton.Py();
+        double pz_p = tlv_proton.Pz();
+        double E_p  = tlv_proton.E();
 
-        double px_pi = lv_pion.Px();
-        double py_pi = lv_pion.Py();
-        double pT_pi = lv_pion.Pt();
+        double px_pi = tlv_pion.Px();
+        double py_pi = tlv_pion.Py();
+        double pz_pi = tlv_pion.Pz();
+        double E_pi  = tlv_pion.E();
+
+        // Now convert to the most recent ROOT toolset, faster and optimization-friendly:
+        PxPyPzEVector proton4vec(px_p, py_p, pz_p, E_p);
+        PxPyPzEVector pion4vec(px_pi, py_pi, pz_pi, E_pi);
+
+        double pT_p  = proton4vec.Pt();
+        double pT_pi = pion4vec.Pt();
 
         // Fill pre-cut daughter kinematics
         hKin_pT_proton->Fill(pT_p);
@@ -1333,8 +1522,8 @@ void helicityEfficiencyToyModel(
         // making the acceptance consistent with that of a real detector.
         // The WithoutEtaGate family does NOT apply this requirement and is
         // kept only to demonstrate the inconsistency of omitting it.
-        double eta_p  = lv_proton.Eta();
-        double eta_pi = lv_pion.Eta();
+        double eta_p  = proton4vec.Eta();
+        double eta_pi = pion4vec.Eta();
 
         // ==================================================================
         // 3.5  Boost proton to Lambda rest frame
@@ -1342,11 +1531,16 @@ void helicityEfficiencyToyModel(
         // Boost the proton 4-vector from the lab frame into the Lambda rest frame.
         // In TLorentzVector, BoostVector() returns beta = p/E (rest --> lab).
         // To go from lab --> rest frame, we must use the opposite boost: -p/E.
-        TLorentzVector lv_proton_star = lv_proton;
-        lv_proton_star.Boost(-lv_lam.BoostVector());
+        // TLorentzVector lv_proton_star = lv_proton;
+        // lv_proton_star.Boost(-lv_lam.BoostVector());
 
+        // New boost style:
+        auto proton4vec_star = ROOT::Math::VectorUtil::boost(proton4vec, lambda4vec.BoostToCM()); // BoostToCM gives a trivector that goes from laboratory
+                                                                                                  // frame to Lambda's rest frame (convenient new function,
+                                                                                                  // different from TLorentzVector's BoostVector())
+                                                                                                  // This already contains the "minus sign" for the boost
         // Unit vector of proton momentum in Lambda rest frame
-        TVector3 p_star_unit = lv_proton_star.Vect().Unit();
+        XYZVector p_star_unit = proton4vec_star.Vect().Unit();
 
         // ==================================================================
         // 3.6  Compute the three key angular observables
@@ -1476,6 +1670,10 @@ void helicityEfficiencyToyModel(
     FinalizeChunksFamily(famNG);
     FinalizeChunksFamily(famEG);
 
+    // Flush Kahan accumulators to their TH1D containers:
+    FlushKahanFamily(famNG);
+    FlushKahanFamily(famEG);
+
     // -----------------------------------------------------------------------
     // 4) Print summary statistics
     // -----------------------------------------------------------------------
@@ -1523,6 +1721,17 @@ void helicityEfficiencyToyModel(
             double rNeg_prof = hN.pRingProxyJet->GetBinContent(1);
             double eNeg_prof = hN.pRingProxyJet->GetBinError(1);
 
+            // --- Kahan TH1D-flushed values (much more precise than simple TProfiles!) ---
+                // Could do this directly with the KahanAccumulator struct logic, but chose to standardize with the TH1 logic from above:
+            // double rAll_Kah = hA.kRingProxyJet.GetMean();
+            // double eAll_Kah = hA.kRingProxyJet.GetSEM();
+            double rAll_Kah  = hA.hRingProxyJet_Kahan->GetBinContent(1);
+            double eAll_Kah  = hA.hRingProxyJet_Kahan->GetBinError(1);
+            double rPos_Kah  = hP.hRingProxyJet_Kahan->GetBinContent(1);
+            double ePos_Kah  = hP.hRingProxyJet_Kahan->GetBinError(1);
+            double rNeg_Kah  = hN.hRingProxyJet_Kahan->GetBinContent(1);
+            double eNeg_Kah  = hN.hRingProxyJet_Kahan->GetBinError(1);
+
             // --- Event-mean estimator: sigma(R_e) / sqrt(N_events) ---
             double rAll_evt = hA.hEventMeanRingProxyJet->GetMean();
             double eAll_evt = hA.hEventMeanRingProxyJet->GetMeanError();
@@ -1551,6 +1760,8 @@ void helicityEfficiencyToyModel(
             printf("    %-12s\n", label);
             printf("      TProfile SEM    All: %+.4e +/- %.4e  EtaPos: %+.4e +/- %.4e  EtaNeg: %+.4e +/- %.4e\n",
                    rAll_prof, eAll_prof, rPos_prof, ePos_prof, rNeg_prof, eNeg_prof);
+            printf("      Kahan SEM    All: %+.4e +/- %.4e  EtaPos: %+.4e +/- %.4e  EtaNeg: %+.4e +/- %.4e\n",
+                   rAll_Kah, eAll_Kah, rPos_Kah, ePos_Kah, rNeg_Kah, eNeg_Kah);
             printf("      Event-mean      All: %+.4e +/- %.4e  EtaPos: %+.4e +/- %.4e  EtaNeg: %+.4e +/- %.4e\n",
                    rAll_evt,  eAll_evt,  rPos_evt,  ePos_evt,  rNeg_evt,  eNeg_evt);
             printf("      Chunking (%2.0f chk) All: %+.4e +/- %.4e  EtaPos: %+.4e +/- %.4e  EtaNeg: %+.4e +/- %.4e\n",
@@ -1560,8 +1771,9 @@ void helicityEfficiencyToyModel(
 
             double ratioAll_ec = (eAll_prof > 0.) ? eAll_evt / eAll_prof : 0.;
             double ratioAll_cc = (eAll_prof > 0.) ? eAll_chk / eAll_prof : 0.;
-            printf("      err ratio vs TProfile SEM -- evt/prof: %.3f   chk/prof: %.3f"
-                   "  (>1 => SEM underestimated)\n", ratioAll_ec, ratioAll_cc);
+            double ratioAll_kc = (eAll_prof > 0.) ? eAll_Kah / eAll_prof : 0.;
+            printf("      err ratio vs TProfile SEM -- evt/prof: %.3f   chk/prof: %.3f   kah/prof: %.3f"
+                   "  (>1 => SEM underestimated)\n", ratioAll_ec, ratioAll_cc, ratioAll_kc);
         };
 
         printf("  [%s] <R_proxyJet> summary -- TProfile SEM vs event-mean estimator:\n", familyLabel);
@@ -1578,10 +1790,70 @@ void helicityEfficiencyToyModel(
     // -----------------------------------------------------------------------
     // 5) Write all histograms to disk and close
     // -----------------------------------------------------------------------
-    outFile->Write("", TObject::kOverwrite);
+    outFile->Write("", TObject::kOverwrite); // This should write to all registered objects from memory.
+                                             // Much cleaner than what I used to do before of writing every single histogram explicitly!
     outFile->Close();
 
     printf("Output written to: %s\n", outputPath);
     printf("Done.\n\n");
 }
+
+
+// Defining a CLING block such that, even if we run outside of ROOT's "root -l -b -q helicityEfficiencyToyModel.cxx" syntax,
+// the program is able to be compiled via g++. Notice that ROOT expects to see a function with the name of helicityEfficiencyToyModel,
+// to match the file name and allow CLING to compile Just-In-Time (JIT), yet g++ expects to see a function named "main" for it to
+// properly compile. Thus, if we don't see CLING (which is the case of compiling via g++), then we define the "main" function below:
+#ifndef __CLING__
+int main(int argc, char** argv) {
+    // 1. Initialize default values identical to the function signature
+    long        nLambdas       = 10000000; // This can't go over much more than 2 billion Lambdas! Be careful!
+    const char* outputPath     = "helicityEffOutput.root";
+    double      Bz_Tesla       = 0.5;
+    double      pTmin_Lambda   = 0.0;
+    double      pTmax_Lambda   = 10.0;
+    double      rapMax_Lambda  = 5.0;
+    double      etaMaxDetector = 0.9;
+    double      T_thermal      = 0.300;
+    double      pTmin_proton   = 0.0;
+    double      pTmin_pion     = 0.0;
+    double      dcaMin_proton  = 0.00;
+    double      dcaMin_pion    = 0.00;
+    int         seed           = 0;
+
+    // 2. Safely parse command-line positional arguments sequentially
+    try {
+        if (argc > 1)  nLambdas       = std::stol(argv[1]); // If needed, go to stoll for string to long-long instead of just to long (stol)
+        if (argc > 2)  outputPath     = argv[2];
+        if (argc > 3)  Bz_Tesla       = std::stod(argv[3]);
+        if (argc > 4)  pTmin_Lambda   = std::stod(argv[4]);
+        if (argc > 5)  pTmax_Lambda   = std::stod(argv[5]);
+        if (argc > 6)  rapMax_Lambda  = std::stod(argv[6]);
+        if (argc > 7)  etaMaxDetector = std::stod(argv[7]);
+        if (argc > 8)  T_thermal      = std::stod(argv[8]);
+        if (argc > 9)  pTmin_proton   = std::stod(argv[9]);
+        if (argc > 10) pTmin_pion     = std::stod(argv[10]);
+        if (argc > 11) dcaMin_proton  = std::stod(argv[11]);
+        if (argc > 12) dcaMin_pion    = std::stod(argv[12]);
+        if (argc > 13) seed           = std::stoi(argv[13]);
+    } 
+    catch (const std::exception& e) {
+        std::cerr << "\nERROR: Command-line argument conversion failed! " << e.what() << std::endl;
+        std::cerr << "Usage: " << argv[0] << " [nLambdas] [outputPath] [Bz_Tesla] [pTmin_Lambda] ... [seed]\n" << std::endl;
+        return 1;
+    }
+
+    // 3. Execute the native macro logic
+    helicityEfficiencyToyModel(
+        nLambdas, outputPath, Bz_Tesla, pTmin_Lambda, pTmax_Lambda,
+        rapMax_Lambda, etaMaxDetector, T_thermal, pTmin_proton,
+        pTmin_pion, dcaMin_proton, dcaMin_pion, seed
+    );
+
+    return 0;
+}
+#endif
+
+
+
+
 // end of helicityEfficiencyToyModel.cxx

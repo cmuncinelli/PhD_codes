@@ -35,14 +35,14 @@
 #include "TLegend.h"
 #include "TMath.h"
 
-// 1. Parameterization for the Jet correlation Delta_phi distribution
-double weight_Delta_phi(double delta_phi) {
-    double base = 1.0;
-    double near_side = 2.0 * exp(-0.5 * pow(delta_phi / 0.4, 2));
-    double dphi_away = fabs(delta_phi) - M_PI;
-    double away_side = 1.0 * exp(-0.5 * pow(dphi_away / 0.6, 2));
-    return base + near_side + away_side;
-}
+// // 1. Parameterization for the Jet correlation Delta_phi distribution
+// double weight_Delta_phi(double delta_phi) { // No longer used!
+//     double base = 1.0;
+//     double near_side = 2.0 * exp(-0.5 * pow(delta_phi / 0.4, 2));
+//     double dphi_away = fabs(delta_phi) - M_PI;
+//     double away_side = 1.0 * exp(-0.5 * pow(dphi_away / 0.6, 2));
+//     return base + near_side + away_side;
+// }
 
 // 2. Parameterization for the eta_Lambda distribution
 double weight_eta_Lambda(double eta_L) {
