@@ -196,15 +196,15 @@ BASE_DIR="/home/users/cicerodm/RingPol/HelicityToyModel"
 LOG_DIR="${BASE_DIR}/logs"
 
 # Maximum concurrent ROOT processes.
-# Default: 64 (all jobs at once on a 192-core machine with ~63 total runs).
+# Default: 80 (all jobs at once on a 192-core machine).
 # Set to 0 to let GNU parallel use all available cores (parallel -j 0),
 # or to any positive integer to cap concurrency explicitly.
-MAX_PARALLEL=64
+MAX_PARALLEL=80
 
 # Default Lambda count per run.
 # DEFAULT_N=60000000000
-# DEFAULT_N=10000000000 # 10.000.000.000 Lambdas takes about 12 hours on newer, heavier, code versions
-DEFAULT_N=100000000 # For testing only (~5 minutes per run)
+DEFAULT_N=10000000000 # 10.000.000.000 Lambdas takes about 12 hours on newer, heavier, code versions
+# DEFAULT_N=100000000 # For testing only (~5 minutes per run)
 # DEFAULT_N=10000000 # For testing only (~40 s per run)
 
 # ROOT executable (set to full path if not in PATH, e.g. /opt/root/bin/root)
@@ -271,7 +271,7 @@ done
 
 # Default: run all families
 if [[ ${#FAMILIES_TO_RUN[@]} -eq 0 ]]; then
-    FAMILIES_TO_RUN=(0 1 2 3 4 5 6 7 8 9 10 11)
+    FAMILIES_TO_RUN=(0 1 2 3 4 5 6 7 8 9 10 11 12)
 fi
 
 
@@ -306,12 +306,16 @@ fi
 # COMPILATION
 # =============================================================================
 EXE_BIN="${SCRIPT_DIR}/helicityEfficiencyToyModel.exe"
+COMPILE_WARN_FLAGS="-Wall -Wextra -Wpedantic -Wshadow" # For bug catching
+ROOT_AWARE_FLAGS="-DNDEBUG" # Strips out all assert() checks. ROOT headers respect this flag!
+OPTIMIZATION_FLAGS="-O3 -march=native -fno-math-errno -flto" # Using the fno-math-errno to disable the errno verification of passing negative numbers to sqrts and the such.
+                                                             # My code should be safe, so this will never be used!
 export EXE_BIN # Export so subshells and GNU parallel can see it
 
 if [[ ${DRY_RUN} -eq 0 && ${LIST_ONLY} -eq 0 && ${PLOT_ONLY} -eq 0 ]]; then
     echo "============================================================"
     echo " Compiling generator with g++ (AOT (Ahead-Of-Time) optimization)..."
-    if g++ -O3 -std=c++20 -march=native -flto -pipe "${GEN_MACRO}" -o "${EXE_BIN}" $(root-config --cflags --libs); then
+    if g++ -std=c++20 -pipe ${COMPILE_WARN_FLAGS} ${ROOT_AWARE_FLAGS} ${OPTIMIZATION_FLAGS} "${GEN_MACRO}" -o "${EXE_BIN}" $(root-config --cflags --libs); then
         echo " Compilation successful: ${EXE_BIN}"
     else
         echo " ERROR: Compilation failed!" >&2
@@ -477,7 +481,7 @@ export BASE_DIR LOG_DIR ROOT_EXE EXE_BIN GEN_MACRO PLT_MACRO PLOT_ONLY
 #   Bz         = +0.5 T
 #   pTminLam   = 0.0 GeV/c
 #   pTmaxLam   = 10.0 GeV/c
-#   rapMax     = 5.0          (wide enough to include all daughters inside etaMax=3.0)
+#   rapMax     = 4.0          (wide enough to include all daughters inside etaMax=0.9)
 #   etaMin     = -0.9          (ALICE inner barrel)
 #   etaMax     = 0.9          (ALICE inner barrel)
 #   T          = 0.30 GeV
@@ -501,7 +505,7 @@ if family_in_scope 0; then
     run_family_header 0 "BASELINE (no cuts, all defaults)"
 
     #              NAME        SUBDIR                N              Bz    pTminL  pTmaxL  rap   etaMin   etaMax  T     pTp   pTpi  dcaP  dcaPi seed
-    register_job  "baseline"  "0_Baseline/baseline"  ${DEFAULT_N}   0.5   0.0     10.0    5.0   -0.9     0.9     0.30  0.0   0.0   0.0   0.0   0
+    register_job  "baseline"  "0_Baseline/baseline"  ${DEFAULT_N}   0.5   0.0     10.0    4.0   -0.9     0.9     0.30  0.0   0.0   0.0   0.0   0
 fi
 
 # -----------------------------------------------------------------------------
@@ -532,12 +536,12 @@ if family_in_scope 1; then
     run_family_header 1 "ASYMMETRIC DCA CUTS  [AEE: daughter-level asymmetry]"
 
     #               NAME                   SUBDIR                        N              Bz    pTminL  pTmaxL  rap   etaMin  etaMax  T     pTp   pTpi  dcaP   dcaPi  seed
-    register_job   "dca_p_only_005"       "1_AsymDCA/dca_p_only_005"     ${DEFAULT_N}   0.5   0.0     10.0    5.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.000  0
-    register_job   "dca_pi_only_005"      "1_AsymDCA/dca_pi_only_005"    ${DEFAULT_N}   0.5   0.0     10.0    5.0   -0.9    0.9     0.30  0.0   0.0   0.000  0.050  0
-    register_job   "dca_pi_only_010"      "1_AsymDCA/dca_pi_only_010"    ${DEFAULT_N}   0.5   0.0     10.0    5.0   -0.9    0.9     0.30  0.0   0.0   0.000  0.100  0
-    register_job   "dca_asym_std"         "1_AsymDCA/dca_asym_std"       ${DEFAULT_N}   0.5   0.0     10.0    5.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.100  0
-    register_job   "dca_asym_wide"        "1_AsymDCA/dca_asym_wide"      ${DEFAULT_N}   0.5   0.0     10.0    5.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.200  0
-    register_job   "dca_asym_rev"         "1_AsymDCA/dca_asym_rev"       ${DEFAULT_N}   0.5   0.0     10.0    5.0   -0.9    0.9     0.30  0.0   0.0   0.100  0.050  0
+    register_job   "dca_p_only_005"       "1_AsymDCA/dca_p_only_005"     ${DEFAULT_N}   0.5   0.0     10.0    4.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.000  0
+    register_job   "dca_pi_only_005"      "1_AsymDCA/dca_pi_only_005"    ${DEFAULT_N}   0.5   0.0     10.0    4.0   -0.9    0.9     0.30  0.0   0.0   0.000  0.050  0
+    register_job   "dca_pi_only_010"      "1_AsymDCA/dca_pi_only_010"    ${DEFAULT_N}   0.5   0.0     10.0    4.0   -0.9    0.9     0.30  0.0   0.0   0.000  0.100  0
+    register_job   "dca_asym_std"         "1_AsymDCA/dca_asym_std"       ${DEFAULT_N}   0.5   0.0     10.0    4.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.100  0
+    register_job   "dca_asym_wide"        "1_AsymDCA/dca_asym_wide"      ${DEFAULT_N}   0.5   0.0     10.0    4.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.200  0
+    register_job   "dca_asym_rev"         "1_AsymDCA/dca_asym_rev"       ${DEFAULT_N}   0.5   0.0     10.0    4.0   -0.9    0.9     0.30  0.0   0.0   0.100  0.050  0
 fi
 
 # -----------------------------------------------------------------------------
@@ -559,11 +563,11 @@ if family_in_scope 2; then
     run_family_header 2 "SYMMETRIC DCA CUTS  [AEE: cut strength scan]"
 
     #               NAME              SUBDIR                   N             Bz    pTminL  pTmaxL  rap   etaMin  etaMax  T     pTp   pTpi  dcaP   dcaPi  seed
-    register_job   "dca_sym_005"     "2_SymDCA/dca_sym_005"    ${DEFAULT_N}  0.5   0.0     10.0    5.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.050  0
-    register_job   "dca_sym_010"     "2_SymDCA/dca_sym_010"    ${DEFAULT_N}  0.5   0.0     10.0    5.0   -0.9    0.9     0.30  0.0   0.0   0.100  0.100  0
-    register_job   "dca_sym_015"     "2_SymDCA/dca_sym_015"    ${DEFAULT_N}  0.5   0.0     10.0    5.0   -0.9    0.9     0.30  0.0   0.0   0.150  0.150  0
-    register_job   "dca_sym_020"     "2_SymDCA/dca_sym_020"    ${DEFAULT_N}  0.5   0.0     10.0    5.0   -0.9    0.9     0.30  0.0   0.0   0.200  0.200  0
-    register_job   "dca_sym_030"     "2_SymDCA/dca_sym_030"    ${DEFAULT_N}  0.5   0.0     10.0    5.0   -0.9    0.9     0.30  0.0   0.0   0.300  0.300  0
+    register_job   "dca_sym_005"     "2_SymDCA/dca_sym_005"    ${DEFAULT_N}  0.5   0.0     10.0    4.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.050  0
+    register_job   "dca_sym_010"     "2_SymDCA/dca_sym_010"    ${DEFAULT_N}  0.5   0.0     10.0    4.0   -0.9    0.9     0.30  0.0   0.0   0.100  0.100  0
+    register_job   "dca_sym_015"     "2_SymDCA/dca_sym_015"    ${DEFAULT_N}  0.5   0.0     10.0    4.0   -0.9    0.9     0.30  0.0   0.0   0.150  0.150  0
+    register_job   "dca_sym_020"     "2_SymDCA/dca_sym_020"    ${DEFAULT_N}  0.5   0.0     10.0    4.0   -0.9    0.9     0.30  0.0   0.0   0.200  0.200  0
+    register_job   "dca_sym_030"     "2_SymDCA/dca_sym_030"    ${DEFAULT_N}  0.5   0.0     10.0    4.0   -0.9    0.9     0.30  0.0   0.0   0.300  0.300  0
 fi
 
 # -----------------------------------------------------------------------------
@@ -596,14 +600,14 @@ if family_in_scope 3; then
     run_family_header 3 "MAGNETIC FIELD  [AEE: field sign and strength]"
 
     #               NAME               SUBDIR                     N             Bz       pTminL  pTmaxL  rap   etaMin  etaMax  T     pTp   pTpi  dcaP   dcaPi  seed
-    register_job   "field_vlow"       "3_BField/field_vlow"       ${DEFAULT_N}  0.0001   0.0     10.0    5.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.050  0
-    register_job   "field_b010"       "3_BField/field_b010"       ${DEFAULT_N}  0.10     0.0     10.0    5.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.050  0
-    register_job   "field_b020"       "3_BField/field_b020"       ${DEFAULT_N}  0.20     0.0     10.0    5.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.050  0
-    register_job   "field_b030"       "3_BField/field_b030"       ${DEFAULT_N}  0.30     0.0     10.0    5.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.050  0
-    register_job   "field_b050"       "3_BField/field_b050"       ${DEFAULT_N}  0.50     0.0     10.0    5.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.050  0
-    register_job   "field_b075"       "3_BField/field_b075"       ${DEFAULT_N}  0.75     0.0     10.0    5.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.050  0
-    register_job   "field_b100"       "3_BField/field_b100"       ${DEFAULT_N}  1.00     0.0     10.0    5.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.050  0
-    register_job   "field_b050neg"    "3_BField/field_b050neg"    ${DEFAULT_N}  -0.50    0.0     10.0    5.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.050  0
+    register_job   "field_vlow"       "3_BField/field_vlow"       ${DEFAULT_N}  0.0001   0.0     10.0    4.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.050  0
+    register_job   "field_b010"       "3_BField/field_b010"       ${DEFAULT_N}  0.10     0.0     10.0    4.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.050  0
+    register_job   "field_b020"       "3_BField/field_b020"       ${DEFAULT_N}  0.20     0.0     10.0    4.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.050  0
+    register_job   "field_b030"       "3_BField/field_b030"       ${DEFAULT_N}  0.30     0.0     10.0    4.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.050  0
+    register_job   "field_b050"       "3_BField/field_b050"       ${DEFAULT_N}  0.50     0.0     10.0    4.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.050  0
+    register_job   "field_b075"       "3_BField/field_b075"       ${DEFAULT_N}  0.75     0.0     10.0    4.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.050  0
+    register_job   "field_b100"       "3_BField/field_b100"       ${DEFAULT_N}  1.00     0.0     10.0    4.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.050  0
+    register_job   "field_b050neg"    "3_BField/field_b050neg"    ${DEFAULT_N}  -0.50    0.0     10.0    4.0   -0.9    0.9     0.30  0.0   0.0   0.050  0.050  0
 fi
 
 # -----------------------------------------------------------------------------
@@ -636,12 +640,12 @@ if family_in_scope 4; then
     run_family_header 4 "LAMBDA GENERATOR PT MINIMUM  [kinematic context, standard ALICE cuts]"
 
     #               NAME                SUBDIR                       N             Bz   pTminL  pTmaxL  rap   etaMin   etaMax  T     pTp    pTpi   dcaP   dcaPi  seed
-    register_job   "lam_ptmin_000"     "4_LamPtMin/lam_ptmin_000"    ${DEFAULT_N}  0.5  0.000   10.0    5.0   -0.9     0.9     0.30  0.150  0.150  0.050  0.050  0
-    register_job   "lam_ptmin_030"     "4_LamPtMin/lam_ptmin_030"    ${DEFAULT_N}  0.5  0.300   10.0    5.0   -0.9     0.9     0.30  0.150  0.150  0.050  0.050  0
-    register_job   "lam_ptmin_050"     "4_LamPtMin/lam_ptmin_050"    ${DEFAULT_N}  0.5  0.500   10.0    5.0   -0.9     0.9     0.30  0.150  0.150  0.050  0.050  0
-    register_job   "lam_ptmin_100"     "4_LamPtMin/lam_ptmin_100"    ${DEFAULT_N}  0.5  1.000   10.0    5.0   -0.9     0.9     0.30  0.150  0.150  0.050  0.050  0
-    register_job   "lam_ptmin_150"     "4_LamPtMin/lam_ptmin_150"    ${DEFAULT_N}  0.5  1.500   10.0    5.0   -0.9     0.9     0.30  0.150  0.150  0.050  0.050  0
-    register_job   "lam_ptmin_200"     "4_LamPtMin/lam_ptmin_200"    ${DEFAULT_N}  0.5  2.000   10.0    5.0   -0.9     0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "lam_ptmin_000"     "4_LamPtMin/lam_ptmin_000"    ${DEFAULT_N}  0.5  0.000   10.0    4.0   -0.9     0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "lam_ptmin_030"     "4_LamPtMin/lam_ptmin_030"    ${DEFAULT_N}  0.5  0.300   10.0    4.0   -0.9     0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "lam_ptmin_050"     "4_LamPtMin/lam_ptmin_050"    ${DEFAULT_N}  0.5  0.500   10.0    4.0   -0.9     0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "lam_ptmin_100"     "4_LamPtMin/lam_ptmin_100"    ${DEFAULT_N}  0.5  1.000   10.0    4.0   -0.9     0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "lam_ptmin_150"     "4_LamPtMin/lam_ptmin_150"    ${DEFAULT_N}  0.5  1.500   10.0    4.0   -0.9     0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "lam_ptmin_200"     "4_LamPtMin/lam_ptmin_200"    ${DEFAULT_N}  0.5  2.000   10.0    4.0   -0.9     0.9     0.30  0.150  0.150  0.050  0.050  0
 fi
 
 # -----------------------------------------------------------------------------
@@ -672,17 +676,17 @@ if family_in_scope 5; then
 
     # -- Symmetric cuts --
     #               NAME              SUBDIR                      N             Bz   pTminL  pTmaxL  rap   etaMin  etaMax  T     pTp    pTpi   dcaP  dcaPi  seed
-    register_job   "pt_sym_005"      "5_DaughterPt/pt_sym_005"    ${DEFAULT_N}  0.5  0.0     10.0    5.0   -0.9    0.9     0.30  0.050  0.050  0.0   0.0   0
-    register_job   "pt_sym_010"      "5_DaughterPt/pt_sym_010"    ${DEFAULT_N}  0.5  0.0     10.0    5.0   -0.9    0.9     0.30  0.100  0.100  0.0   0.0   0
-    register_job   "pt_sym_150"      "5_DaughterPt/pt_sym_150"    ${DEFAULT_N}  0.5  0.0     10.0    5.0   -0.9    0.9     0.30  0.150  0.150  0.0   0.0   0
-    register_job   "pt_sym_200"      "5_DaughterPt/pt_sym_200"    ${DEFAULT_N}  0.5  0.0     10.0    5.0   -0.9    0.9     0.30  0.200  0.200  0.0   0.0   0
-    register_job   "pt_sym_300"      "5_DaughterPt/pt_sym_300"    ${DEFAULT_N}  0.5  0.0     10.0    5.0   -0.9    0.9     0.30  0.300  0.300  0.0   0.0   0
+    register_job   "pt_sym_005"      "5_DaughterPt/pt_sym_005"    ${DEFAULT_N}  0.5  0.0     10.0    4.0   -0.9    0.9     0.30  0.050  0.050  0.0   0.0   0
+    register_job   "pt_sym_010"      "5_DaughterPt/pt_sym_010"    ${DEFAULT_N}  0.5  0.0     10.0    4.0   -0.9    0.9     0.30  0.100  0.100  0.0   0.0   0
+    register_job   "pt_sym_150"      "5_DaughterPt/pt_sym_150"    ${DEFAULT_N}  0.5  0.0     10.0    4.0   -0.9    0.9     0.30  0.150  0.150  0.0   0.0   0
+    register_job   "pt_sym_200"      "5_DaughterPt/pt_sym_200"    ${DEFAULT_N}  0.5  0.0     10.0    4.0   -0.9    0.9     0.30  0.200  0.200  0.0   0.0   0
+    register_job   "pt_sym_300"      "5_DaughterPt/pt_sym_300"    ${DEFAULT_N}  0.5  0.0     10.0    4.0   -0.9    0.9     0.30  0.300  0.300  0.0   0.0   0
     # -- Pion-only cuts (purest HEE isolation) --
-    register_job   "pt_pi_010"       "5_DaughterPt/pt_pi_010"     ${DEFAULT_N}  0.5  0.0     10.0    5.0   -0.9    0.9     0.30  0.000  0.100  0.0   0.0   0
-    register_job   "pt_pi_150"       "5_DaughterPt/pt_pi_150"     ${DEFAULT_N}  0.5  0.0     10.0    5.0   -0.9    0.9     0.30  0.000  0.150  0.0   0.0   0
-    register_job   "pt_pi_200"       "5_DaughterPt/pt_pi_200"     ${DEFAULT_N}  0.5  0.0     10.0    5.0   -0.9    0.9     0.30  0.000  0.200  0.0   0.0   0
+    register_job   "pt_pi_010"       "5_DaughterPt/pt_pi_010"     ${DEFAULT_N}  0.5  0.0     10.0    4.0   -0.9    0.9     0.30  0.000  0.100  0.0   0.0   0
+    register_job   "pt_pi_150"       "5_DaughterPt/pt_pi_150"     ${DEFAULT_N}  0.5  0.0     10.0    4.0   -0.9    0.9     0.30  0.000  0.150  0.0   0.0   0
+    register_job   "pt_pi_200"       "5_DaughterPt/pt_pi_200"     ${DEFAULT_N}  0.5  0.0     10.0    4.0   -0.9    0.9     0.30  0.000  0.200  0.0   0.0   0
     # -- Proton-only cut (control: expect weaker HEE than pion-only) --
-    register_job   "pt_p_150"        "5_DaughterPt/pt_p_150"      ${DEFAULT_N}  0.5  0.0     10.0    5.0   -0.9    0.9     0.30  0.150  0.000  0.0   0.0   0
+    register_job   "pt_p_150"        "5_DaughterPt/pt_p_150"      ${DEFAULT_N}  0.5  0.0     10.0    4.0   -0.9    0.9     0.30  0.150  0.000  0.0   0.0   0
 fi
 
 # -----------------------------------------------------------------------------
@@ -707,13 +711,13 @@ if family_in_scope 6; then
     run_family_header 6 "ETA ACCEPTANCE WINDOW  [HEE+AEE vs detector acceptance, standard ALICE cuts]"
 
     #               NAME           SUBDIR               N              Bz    pTminL  pTmaxL  rap   etaMin   etaMax  T     pTp    pTpi   dcaP   dcaPi  seed
-    register_job   "eta_050"      "6_EtaSym/eta_050"    ${DEFAULT_N}   0.5   0.0     10.0    5.0   -0.50    0.50    0.30  0.150  0.150  0.050  0.050  0
-    register_job   "eta_070"      "6_EtaSym/eta_070"    ${DEFAULT_N}   0.5   0.0     10.0    5.0   -0.70    0.70    0.30  0.150  0.150  0.050  0.050  0
-    register_job   "eta_090"      "6_EtaSym/eta_090"    ${DEFAULT_N}   0.5   0.0     10.0    5.0   -0.90    0.90    0.30  0.150  0.150  0.050  0.050  0
-    register_job   "eta_120"      "6_EtaSym/eta_120"    ${DEFAULT_N}   0.5   0.0     10.0    5.0   -1.20    1.20    0.30  0.150  0.150  0.050  0.050  0
-    register_job   "eta_150"      "6_EtaSym/eta_150"    ${DEFAULT_N}   0.5   0.0     10.0    5.0   -1.50    1.50    0.30  0.150  0.150  0.050  0.050  0
-    register_job   "eta_200"      "6_EtaSym/eta_200"    ${DEFAULT_N}   0.5   0.0     10.0    5.0   -2.00    2.00    0.30  0.150  0.150  0.050  0.050  0
-    register_job   "eta_300"      "6_EtaSym/eta_300"    ${DEFAULT_N}   0.5   0.0     10.0    5.0   -3.00    3.00    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "eta_050"      "6_EtaSym/eta_050"    ${DEFAULT_N}   0.5   0.0     10.0    4.0   -0.50    0.50    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "eta_070"      "6_EtaSym/eta_070"    ${DEFAULT_N}   0.5   0.0     10.0    4.0   -0.70    0.70    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "eta_090"      "6_EtaSym/eta_090"    ${DEFAULT_N}   0.5   0.0     10.0    4.0   -0.90    0.90    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "eta_120"      "6_EtaSym/eta_120"    ${DEFAULT_N}   0.5   0.0     10.0    4.0   -1.20    1.20    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "eta_150"      "6_EtaSym/eta_150"    ${DEFAULT_N}   0.5   0.0     10.0    4.0   -1.50    1.50    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "eta_200"      "6_EtaSym/eta_200"    ${DEFAULT_N}   0.5   0.0     10.0    4.0   -2.00    2.00    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "eta_300"      "6_EtaSym/eta_300"    ${DEFAULT_N}   0.5   0.0     10.0    4.0   -3.00    3.00    0.30  0.150  0.150  0.050  0.050  0
 fi
 
 # -----------------------------------------------------------------------------
@@ -735,12 +739,12 @@ if family_in_scope 7; then
     run_family_header 7 "TEMPERATURE SCAN  [HEE+AEE vs Lambda pT spectrum, standard ALICE cuts]"
 
     #               NAME           SUBDIR                     N             Bz    pTminL  pTmaxL  rap   etaMin  etaMax  T     pTp    pTpi   dcaP   dcaPi  seed
-    register_job   "temp_020"     "7_Temperature/temp_020"    ${DEFAULT_N}  0.5   0.0     10.0    5.0   -0.9    0.9     0.20  0.150  0.150  0.050  0.050  0
-    register_job   "temp_025"     "7_Temperature/temp_025"    ${DEFAULT_N}  0.5   0.0     10.0    5.0   -0.9    0.9     0.25  0.150  0.150  0.050  0.050  0
-    register_job   "temp_030"     "7_Temperature/temp_030"    ${DEFAULT_N}  0.5   0.0     10.0    5.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
-    register_job   "temp_035"     "7_Temperature/temp_035"    ${DEFAULT_N}  0.5   0.0     10.0    5.0   -0.9    0.9     0.35  0.150  0.150  0.050  0.050  0
-    register_job   "temp_040"     "7_Temperature/temp_040"    ${DEFAULT_N}  0.5   0.0     10.0    5.0   -0.9    0.9     0.40  0.150  0.150  0.050  0.050  0
-    register_job   "temp_050"     "7_Temperature/temp_050"    ${DEFAULT_N}  0.5   0.0     10.0    5.0   -0.9    0.9     0.50  0.150  0.150  0.050  0.050  0
+    register_job   "temp_020"     "7_Temperature/temp_020"    ${DEFAULT_N}  0.5   0.0     10.0    4.0   -0.9    0.9     0.20  0.150  0.150  0.050  0.050  0
+    register_job   "temp_025"     "7_Temperature/temp_025"    ${DEFAULT_N}  0.5   0.0     10.0    4.0   -0.9    0.9     0.25  0.150  0.150  0.050  0.050  0
+    register_job   "temp_030"     "7_Temperature/temp_030"    ${DEFAULT_N}  0.5   0.0     10.0    4.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "temp_035"     "7_Temperature/temp_035"    ${DEFAULT_N}  0.5   0.0     10.0    4.0   -0.9    0.9     0.35  0.150  0.150  0.050  0.050  0
+    register_job   "temp_040"     "7_Temperature/temp_040"    ${DEFAULT_N}  0.5   0.0     10.0    4.0   -0.9    0.9     0.40  0.150  0.150  0.050  0.050  0
+    register_job   "temp_050"     "7_Temperature/temp_050"    ${DEFAULT_N}  0.5   0.0     10.0    4.0   -0.9    0.9     0.50  0.150  0.150  0.050  0.050  0
 fi
 
 # -----------------------------------------------------------------------------
@@ -766,13 +770,13 @@ if family_in_scope 8; then
     run_family_header 8 "RING KINEMATIC WINDOWS  [fake signal per Lambda pT band, standard ALICE cuts]"
 
     #               NAME                SUBDIR                      N             Bz   pTminL  pTmaxL  rap  etaMin  etaMax  T     pTp    pTpi   dcaP   dcaPi  seed
-    register_job   "win_inclusive"     "8_KinWindow/win_inclusive"  ${DEFAULT_N}  0.5  0.000   10.000  5.0  -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
-    register_job   "win_vsoft"         "8_KinWindow/win_vsoft"      ${DEFAULT_N}  0.5  0.000   0.500   5.0  -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
-    register_job   "win_soft"          "8_KinWindow/win_soft"       ${DEFAULT_N}  0.5  0.000   1.000   5.0  -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
-    register_job   "win_ring"          "8_KinWindow/win_ring"       ${DEFAULT_N}  0.5  0.500   1.500   5.0  -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
-    register_job   "win_mid"           "8_KinWindow/win_mid"        ${DEFAULT_N}  0.5  1.000   3.000   5.0  -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
-    register_job   "win_hard"          "8_KinWindow/win_hard"       ${DEFAULT_N}  0.5  1.500   4.000   5.0  -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
-    register_job   "win_vhard"         "8_KinWindow/win_vhard"      ${DEFAULT_N}  0.5  3.000   10.000  5.0  -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "win_inclusive"     "8_KinWindow/win_inclusive"  ${DEFAULT_N}  0.5  0.000   10.000  4.0  -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "win_vsoft"         "8_KinWindow/win_vsoft"      ${DEFAULT_N}  0.5  0.000   0.500   4.0  -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "win_soft"          "8_KinWindow/win_soft"       ${DEFAULT_N}  0.5  0.000   1.000   4.0  -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "win_ring"          "8_KinWindow/win_ring"       ${DEFAULT_N}  0.5  0.500   1.500   4.0  -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "win_mid"           "8_KinWindow/win_mid"        ${DEFAULT_N}  0.5  1.000   3.000   4.0  -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "win_hard"          "8_KinWindow/win_hard"       ${DEFAULT_N}  0.5  1.500   4.000   4.0  -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "win_vhard"         "8_KinWindow/win_vhard"      ${DEFAULT_N}  0.5  3.000   10.000  4.0  -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
 fi
 
 # -----------------------------------------------------------------------------
@@ -795,11 +799,11 @@ if family_in_scope 9; then
     run_family_header 9 "REALISTIC ALICE CUTS  [combined HEE+AEE estimate for data correction]"
 
     #               NAME                  SUBDIR                             N             Bz     pTminL  pTmaxL  rap   etaMin  etaMax  T     pTp    pTpi   dcaP   dcaPi  seed
-    register_job   "alice_loose"         "9_RealisticAlice/alice_loose"      ${DEFAULT_N}  0.50   0.000   10.000  5.0   -0.9    0.9     0.30  0.100  0.100  0.020  0.020  0
-    register_job   "alice_std"           "9_RealisticAlice/alice_std"        ${DEFAULT_N}  0.50   0.000   10.000  5.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
-    register_job   "alice_std_neg"       "9_RealisticAlice/alice_std_neg"    ${DEFAULT_N}  -0.50  0.000   10.000  5.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
-    register_job   "alice_tight"         "9_RealisticAlice/alice_tight"      ${DEFAULT_N}  0.50   0.000   10.000  5.0   -0.9    0.9     0.30  0.200  0.200  0.100  0.100  0
-    register_job   "alice_ring"          "9_RealisticAlice/alice_ring"       ${DEFAULT_N}  0.50   0.500   1.500   5.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "alice_loose"         "9_RealisticAlice/alice_loose"      ${DEFAULT_N}  0.50   0.000   10.000  4.0   -0.9    0.9     0.30  0.100  0.100  0.020  0.020  0
+    register_job   "alice_std"           "9_RealisticAlice/alice_std"        ${DEFAULT_N}  0.50   0.000   10.000  4.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "alice_std_neg"       "9_RealisticAlice/alice_std_neg"    ${DEFAULT_N}  -0.50  0.000   10.000  4.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "alice_tight"         "9_RealisticAlice/alice_tight"      ${DEFAULT_N}  0.50   0.000   10.000  4.0   -0.9    0.9     0.30  0.200  0.200  0.100  0.100  0
+    register_job   "alice_ring"          "9_RealisticAlice/alice_ring"       ${DEFAULT_N}  0.50   0.500   1.500   4.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
 fi
 
 # -----------------------------------------------------------------------------
@@ -810,10 +814,10 @@ if family_in_scope 10; then
     run_family_header 10 "MAGNETIC FIELD  [AEE: field sign and strength, with HEE tests using min pT cuts]"
 
     #               NAME               SUBDIR                          N             Bz      pTminL  pTmaxL  rap  etaMin  etaMax  T     pTp    pTpi   dcaP   dcaPi  seed
-    register_job   "field_vlow"       "10_BField/fieldCuts_vlow"       ${DEFAULT_N}  0.0001  0.0     10.0    5.0  -0.9    0.9     0.30  0.200  0.200  0.050  0.050  0
-    register_job   "field_b050"       "10_BField/fieldCuts_b050"       ${DEFAULT_N}  0.50    0.0     10.0    5.0  -0.9    0.9     0.30  0.200  0.200  0.050  0.050  0
-    register_job   "field_b100"       "10_BField/fieldCuts_b100"       ${DEFAULT_N}  1.00    0.0     10.0    5.0  -0.9    0.9     0.30  0.200  0.200  0.050  0.050  0
-    register_job   "field_b050neg"    "10_BField/fieldCuts_b050neg"    ${DEFAULT_N}  -0.50   0.0     10.0    5.0  -0.9    0.9     0.30  0.200  0.200  0.050  0.050  0
+    register_job   "field_vlow"       "10_BField/fieldCuts_vlow"       ${DEFAULT_N}  0.0001  0.0     10.0    4.0  -0.9    0.9     0.30  0.200  0.200  0.050  0.050  0
+    register_job   "field_b050"       "10_BField/fieldCuts_b050"       ${DEFAULT_N}  0.50    0.0     10.0    4.0  -0.9    0.9     0.30  0.200  0.200  0.050  0.050  0
+    register_job   "field_b100"       "10_BField/fieldCuts_b100"       ${DEFAULT_N}  1.00    0.0     10.0    4.0  -0.9    0.9     0.30  0.200  0.200  0.050  0.050  0
+    register_job   "field_b050neg"    "10_BField/fieldCuts_b050neg"    ${DEFAULT_N}  -0.50   0.0     10.0    4.0  -0.9    0.9     0.30  0.200  0.200  0.050  0.050  0
 fi
 
 # -----------------------------------------------------------------------------
@@ -829,14 +833,44 @@ if family_in_scope 11; then
     run_family_header 11 "ASYMMETRIC ETA"
 
     #               NAME                   SUBDIR                              N             Bz     pTminL  pTmaxL  rap  etaMin  etaMax  T     pTp    pTpi   dcaP   dcaPi  seed
-    register_job   "pos10cmZvtx"           "11_EtaAsym/pos10cmZvtx"            ${DEFAULT_N}  0.50   0.0     10.0    5.0  -0.85   0.91    0.30  0.150  0.150  0.050  0.050  0
-    register_job   "neg10cmZvtx"           "11_EtaAsym/neg10cmZvtx"            ${DEFAULT_N}  0.50   0.0     10.0    5.0  -0.91   0.85    0.30  0.150  0.150  0.050  0.050  0
-    register_job   "pos10cmZvtxNegField"   "11_EtaAsym/pos10cmZvtxNegField"    ${DEFAULT_N}  -0.50  0.0     10.0    5.0  -0.85   0.91    0.30  0.150  0.150  0.050  0.050  0
-    register_job   "EtaMin130etaMax090"    "11_EtaAsym/EtaMin130etaMax090"     ${DEFAULT_N}  0.50   0.0     10.0    5.0  -1.10   0.90    0.30  0.150  0.150  0.050  0.050  0
-    register_job   "EtaMin110etaMax090"    "11_EtaAsym/EtaMin110etaMax090"     ${DEFAULT_N}  0.50   0.0     10.0    5.0  -1.10   0.90    0.30  0.150  0.150  0.050  0.050  0
-    register_job   "EtaMin070etaMax090"    "11_EtaAsym/EtaMin070etaMax090"     ${DEFAULT_N}  0.50   0.0     10.0    5.0  -0.70   0.90    0.30  0.150  0.150  0.050  0.050  0
-    register_job   "EtaMin050etaMax090"    "11_EtaAsym/EtaMin050etaMax090"     ${DEFAULT_N}  0.50   0.0     10.0    5.0  -0.50   0.90    0.30  0.150  0.150  0.050  0.050  0
-    register_job   "EtaMin030etaMax090"    "11_EtaAsym/EtaMin030etaMax090"     ${DEFAULT_N}  0.50   0.0     10.0    5.0  -0.30   0.90    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "pos10cmZvtx"           "11_EtaAsym/pos10cmZvtx"            ${DEFAULT_N}  0.50   0.0     10.0    4.0  -0.85   0.91    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "neg10cmZvtx"           "11_EtaAsym/neg10cmZvtx"            ${DEFAULT_N}  0.50   0.0     10.0    4.0  -0.91   0.85    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "pos10cmZvtxNegField"   "11_EtaAsym/pos10cmZvtxNegField"    ${DEFAULT_N}  -0.50  0.0     10.0    4.0  -0.85   0.91    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "EtaMin130etaMax090"    "11_EtaAsym/EtaMin130etaMax090"     ${DEFAULT_N}  0.50   0.0     10.0    4.0  -1.10   0.90    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "EtaMin110etaMax090"    "11_EtaAsym/EtaMin110etaMax090"     ${DEFAULT_N}  0.50   0.0     10.0    4.0  -1.10   0.90    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "EtaMin070etaMax090"    "11_EtaAsym/EtaMin070etaMax090"     ${DEFAULT_N}  0.50   0.0     10.0    4.0  -0.70   0.90    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "EtaMin050etaMax090"    "11_EtaAsym/EtaMin050etaMax090"     ${DEFAULT_N}  0.50   0.0     10.0    4.0  -0.50   0.90    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "EtaMin030etaMax090"    "11_EtaAsym/EtaMin030etaMax090"     ${DEFAULT_N}  0.50   0.0     10.0    4.0  -0.30   0.90    0.30  0.150  0.150  0.050  0.050  0
+fi
+
+# -----------------------------------------------------------------------------
+# FAMILY 12: LAMBDA MAX RAPIDITY DEPENDENCE
+# The rapidity cut introduced when generating Lambdas is also, on itself, an
+# acceptance cut introduced in the generated sample. If we stick with rap = 5.0,
+# we are only ignoring 0.009% of Lambdas in cosTheta (for pTLam = 5 GeV/c).
+# But from those, only the Lambdas with rapidity |yLam| <= |max(etaMin, etaMax) + 0.67|
+# will pass the etaGate, and the rest will not contribute to the statistics! Therefore,
+# we must establish a sweet-spot that generates unbiased withoutEtaGate histograms that
+# don't have an implicit acceptance cut introduced at the yLambda sampling level, yet
+# a sweet-spot that also gives as much statistics as possible to the withEtaGate histograms.
+# This is also a way of measuring the strength of the polarization produced by this rapidity
+# cut at generator level, which acts as if an eta cut was applied to data.
+# - The first test will see if the safeguard that generates the tightest cut possible will work
+# - Then we progressively increase the range of the cut
+# - The last test should have absolutely no polarization at all in the withoutEtaGate-noCuts case.
+#   Anything that shows in the plot should be polarization induced by statistical fluctuation.
+# -----------------------------------------------------------------------------
+if family_in_scope 12; then
+    run_family_header 12 "LAMBDA RAPIDITY"
+
+    #               NAME              SUBDIR                          N             Bz     pTminL  pTmaxL  rap   etaMin  etaMax  T     pTp    pTpi   dcaP   dcaPi  seed
+    register_job   "yLam05GuardTest"  "12_LambdaRap/yLam0_5GuardTest" ${DEFAULT_N}  0.50   0.0     10.0    0.5   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "yLam2"            "12_LambdaRap/yLam2"            ${DEFAULT_N}  -0.50  0.0     10.0    2.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "yLam3"            "12_LambdaRap/yLam3"            ${DEFAULT_N}  0.50   0.0     10.0    3.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "yLam4"            "12_LambdaRap/yLam4"            ${DEFAULT_N}  0.50   0.0     10.0    4.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "yLam5"            "12_LambdaRap/yLam5"            ${DEFAULT_N}  0.50   0.0     10.0    5.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "yLam6"            "12_LambdaRap/yLam6"            ${DEFAULT_N}  0.50   0.0     10.0    6.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "yLam10"           "12_LambdaRap/yLam10"           ${DEFAULT_N}  0.50   0.0     10.0    10.0  -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
 fi
 
 

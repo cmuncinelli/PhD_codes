@@ -188,6 +188,10 @@ using ROOT::Math::XYZVector; // From Vector3D
 static const double kMassLambda = 1.115683;
 static const double kMassProton = 0.938272;
 static const double kMassPion   = 0.139570;
+// Calculated using the two-body decay momentum formula: p* = sqrt([M^2 - (m1 + m2)^2] * [M^2 - (m1 - m2)^2]) / (2*M)
+static const double pStarDaughters = std::sqrt(
+    (kMassLambda * kMassLambda - (kMassProton + kMassPion) * (kMassProton + kMassPion))
+  * (kMassLambda * kMassLambda - (kMassProton - kMassPion) * (kMassProton - kMassPion))) / (2.0 * kMassLambda);
 
 // Lambda mean proper decay length c*tau [cm]
 static const double kCTauLambda = 7.89;
@@ -1259,7 +1263,7 @@ void helicityEfficiencyToyModel(
     double      Bz_Tesla       = 0.5,
     double      pTmin_Lambda   = 0.0,
     double      pTmax_Lambda   = 10.0,
-    double      rapMax_Lambda  = 5.0,
+    double      rapMax_Lambda  = 4.0,
     double      etaMinDetector = -0.9,
     double      etaMaxDetector = 0.9,
     double      T_thermal      = 0.300,
@@ -1269,8 +1273,59 @@ void helicityEfficiencyToyModel(
     double      dcaMin_pion    = 0.00,
     int         seed           = 0)
 {
+    // Checking if the provided rapMax_Lambda window is at least as big as needed to not lose any Lambdas whose
+    // daughter particles could have a pseudorapidity within etaMinDetector and etaMaxDetector:
+        // - If we demand the daughter particles to be within |eta| < 0.9, we would only need to generate Lambdas
+        // within |y_Lambda| < 1.57 (approximately): no Lambda with pseudorapidity higher than that can have one of
+        // his daughters falling within |eta| < 0.9.
+        // - We do want to look at polarizatiosn that were uncut in eta, so we can't demand |y_Lambda| < 1.57: that would
+        // make it so the withEtaGate and withoutEtaGate variations would be the same. The Lambdas daughters would have been
+        // cut at generator level, not at post-processing level!
+        // - With that in mind, the user can supply a rapMax_Lambda parameter that specifies the supreme for the generated 
+        // Lambda rapidity (the smallest upper range for the rapidity distribution). If the user specifies |eta| < 0.9 for
+        // the daughters, but asks for a Lambda rapidity in [-1.5, 1.5], the code will still use the bare minimum for the
+        // withEtaGate plots to be correct, i.e., it will use y_Lambda in [-1.57, 1.57] (plus some 5% margin) to make sure
+        // we fully populate the |eta| < 0.9 region with all possibly valid daughters. This is just a safeguard, essentially.
+        // - The withoutEtaGate distribution will be essentially the same as the withEtaGate distribution (by construction),
+        // so you cannot trust that to be unbiased in this case!
+        // - The magic lies in the user choosing more than the bare minimum: for a Lambda with pT ~ 5 GeV/c, we can generate
+        // a rapidity in [-4, 4] and that would already cover 99.93% of all the possible values of cos(theta) for the Lambda!
+        // - For instance, generating in [-5, 5] would cover 99.991% of the cos(theta) distribution, so we would widen the distribution
+        // by 25% for a trade-off of 0.06% in angular coverage! 
+        // - Is 0.06% so much of a bias (we are, indeed, making an implicit acceptance cut in the Toy Model by doing so) that
+        // the fake polarization signal gets suddenly large? This needs to be tested on its own! And it will: how biased does the
+        // withoutEtaGate distribution get, or even how much does the value of the ring and of the polarization change because of
+        // this implicit eta cut?
+    // First, calculate the minimum eta needed, from the max rapidity from both the daughters (which is the pion rapidity):
+    const double yStarPion = std::atanh(pStarDaughters/std::sqrt(kMassPion*kMassPion + pStarDaughters*pStarDaughters)); // This is known at compile time, but is inexpensive to calculate
+    const double safeMargin = 0.1000;
+
+    // Find the absolute furthest edge of the provided eta acceptance interval:
+    double maxEta = std::max(std::abs(etaMinDetector), std::abs(etaMaxDetector));
+
+    // Set the generation boundary:
+    double yGenMinimalLimit = maxEta + yStarPion + safeMargin;
+    // Example: if [etaMinDetector, etaMaxDetector] = [-0.85, 0.91],
+    // then maxEta = 0.91 and yGenMinimalLimit ~ 0.91 + 0.6695 + 0.1 = 1.6795
+
+    // Now, compare if this is larger than the provided edges, or if they should be kept:
+    double yLambdaSafe = std::max(yGenMinimalLimit, rapMax_Lambda);
+
+    // Calculating the percentage of the whole (angular) phase space that can be covered by this selection:
+    // (see log 659 for more info)
+        // This considers a symmetric yLambda interval for the generator
+    double pTdummy = 5.;
+    double mTdummy = std::sqrt(pTdummy * pTdummy + kMassLambda * kMassLambda);
+
+    // Calculate A for upper and lower bounds
+    double A = (mTdummy / pTdummy) * std::sinh(yLambdaSafe);
+    double cosMax = A / std::sqrt(1.0 + A * A);
+    double phase_space_percent = 100.0 * cosMax; // The 100. factor is to convert to a percentage.
+                                                 // This is essentially (cosMax - cosMin)/(1 - (-1)), which calculates the fraction
+                                                 // of the full cosTheta \in [-1, 1] interval given the [cosMin, cosMax] values we will sample.
+
     // -----------------------------------------------------------------------
-    // 0) Print run parameters to stdout for a clear record in the log
+    // Print run parameters to stdout for a clear record in the log
     // -----------------------------------------------------------------------
     printf("\n");
     printf("========================================================\n");
@@ -1281,16 +1336,18 @@ void helicityEfficiencyToyModel(
     printf("  Magnetic field Bz     : %.3f T\n",  Bz_Tesla);
     printf("  Lambda pT range       : [%.2f, %.2f] GeV/c\n", pTmin_Lambda, pTmax_Lambda);
     printf("  Lambda |rapidity| max : %.2f\n", rapMax_Lambda);
-    printf("  Detector eta min    : %.2f (daughter eta gate)\n", etaMinDetector);
-    printf("  Detector eta max    : %.2f (daughter eta gate)\n", etaMaxDetector);
-    printf("  Thermal temperature T : %.3f GeV\n", T_thermal);
+    printf("  Detector eta min      : %.2f (daughter eta gate)\n", etaMinDetector);
+    printf("  Detector eta max      : %.2f (daughter eta gate)\n", etaMaxDetector);
+    printf("  Temperature T         : %.3f GeV\n", T_thermal);
     printf("  Min proton pT cut     : %.3f GeV/c\n", pTmin_proton);
     printf("  Min pion pT cut       : %.3f GeV/c\n", pTmin_pion);
     printf("  Min proton DCA_xy     : %.4f cm\n", dcaMin_proton);
     printf("  Min pion DCA_xy       : %.4f cm\n", dcaMin_pion);
     printf("  RNG seed              : %d\n",   seed);
+    printf("  --> Minimum Lambda |rapidity| possible to avoid particle loss when doing eta cuts on daughters: %.4f\n", yGenMinimalLimit);
+    printf("  --> Thus, selected rapidity was: std::max(yGenMinimalLimit, rapMax_Lambda) = %.4f\n", yLambdaSafe);
+    printf("  --> Percentage of possible cos(theta) values covered by this selected rapidity (phase space percentage for pT = 5): %.4f %%\n", phase_space_percent);
     printf("========================================================\n\n");
-
 
     // -----------------------------------------------------------------------
     // 1) Open output ROOT file and set up directory structure
@@ -1320,8 +1377,8 @@ void helicityEfficiencyToyModel(
     TDirectory* dirKin = outFile->mkdir("Kinematics");
     dirKin->cd();
     TH1D* hKin_pT_lambda  = new TH1D("hKin_pT_lambda", "Generated #Lambda p_{T};p_{T}^{#Lambda} [GeV/c];Counts", 100, 0., 10.);
-    TH1D* hKin_rap_lambda = new TH1D("hKin_rap_lambda", "Generated #Lambda rapidity;y_{#Lambda};Counts", 36, -rapMax_Lambda, rapMax_Lambda);
-    TH1D* hKin_eta_lambda = new TH1D("hKin_eta_lambda", "Generated #Lambda pseudorapidity;#eta_{#Lambda};Counts", 36, -rapMax_Lambda, rapMax_Lambda); // Uses rapMax_Lambda as an estimate of pseudorapidity ranges.
+    TH1D* hKin_rap_lambda = new TH1D("hKin_rap_lambda", "Generated #Lambda rapidity;y_{#Lambda};Counts", 60, -yLambdaSafe, yLambdaSafe);
+    TH1D* hKin_eta_lambda = new TH1D("hKin_eta_lambda", "Generated #Lambda pseudorapidity;#eta_{#Lambda};Counts", 60, -yLambdaSafe-0.5, yLambdaSafe+0.5); // Uses yLambdaSafe as an estimate of pseudorapidity ranges.
                                                                                                                                                       // Notice that this may be different from [etaMinDetector,etaMaxDetector]
                                                                                                                                                       // because it corresponds to the *generated* distribution, not the
                                                                                                                                                       // accepted distribution!
@@ -1331,8 +1388,7 @@ void helicityEfficiencyToyModel(
     TH1D* hKin_pT_pion    = new TH1D("hKin_pT_pion", "All pion p_{T} (pre-cut);p_{T}^{#pi} [GeV/c];Counts", 100, 0., 5.);
     TH1D* hKin_DCA_proton = new TH1D("hKin_DCA_proton", "All proton DCA_{xy} (pre-cut);DCA_{xy}^{p} [cm];Counts", 200, 0., 10.);
     TH1D* hKin_DCA_pion   = new TH1D("hKin_DCA_pion", "All pion DCA_{xy} (pre-cut);DCA_{xy}^{#pi} [cm];Counts", 200, 0., 10.);
-    TH1D* hKin_eta_jet    = new TH1D("hKin_eta_jet", "Jet pseudorapidity; #eta_{Jet};Counts", 36, -rapMax_Lambda, rapMax_Lambda); // This is only for accepted jets, yet it could be interesting to know the full range
-                                                                                                                                  // in a similar way as to what I did for the hKin_eta_lambda ranges.
+    TH1D* hKin_eta_jet    = new TH1D("hKin_eta_jet", "Jet pseudorapidity; #eta_{Jet};Counts", 36, etaMinDetector, etaMaxDetector); // By construction, this is the interval here
     outFile->cd(); // Back to root of output file
 
     // -----------------------------------------------------------------------
@@ -1420,7 +1476,7 @@ void helicityEfficiencyToyModel(
         // Sample Lambda rapidity uniformly in [-rapMax, +rapMax]
         // This makes the distribution NON UNIFORM in cos(theta) (i.e., a non-spherical distribution!)
         // The idea is to have something Lorentz-invariant, like what we see in HI collisions.
-        double rap_lam = rng.Uniform(-rapMax_Lambda, rapMax_Lambda);
+        double rap_lam = rng.Uniform(-yLambdaSafe, yLambdaSafe);
 
         // Construct the 4-momentum from (pT, phi, y):
         //   mT = sqrt(pT^2 + m^2)
@@ -1488,7 +1544,7 @@ void helicityEfficiencyToyModel(
         // -- Lab-frame decay vertex coordinates [cm] --
         double xv = (px_lam / kMassLambda) * l_proper;
         double yv = (py_lam / kMassLambda) * l_proper;
-        double zv = (pz_lam / kMassLambda) * l_proper;
+        // double zv = (pz_lam / kMassLambda) * l_proper;
 
         // -- Transverse decay radius [cm] --
         double decayR = std::sqrt(xv * xv + yv * yv);
