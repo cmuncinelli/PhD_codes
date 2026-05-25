@@ -1298,15 +1298,21 @@ void helicityEfficiencyToyModel(
         // this implicit eta cut?
     // First, calculate the minimum eta needed, from the max rapidity from both the daughters (which is the pion rapidity):
     const double yStarPion = std::atanh(pStarDaughters/std::sqrt(kMassPion*kMassPion + pStarDaughters*pStarDaughters)); // This is known at compile time, but is inexpensive to calculate
-    const double safeMargin = 0.1000;
+    // const double safeMargin = 0.1000;
 
     // Find the absolute furthest edge of the provided eta acceptance interval:
     double maxEta = std::max(std::abs(etaMinDetector), std::abs(etaMaxDetector));
 
     // Set the generation boundary:
-    double yGenMinimalLimit = maxEta + yStarPion + safeMargin;
+    // double yGenMinimalLimitRaw = maxEta + yStarPion + safeMargin;
+    // // Example: if [etaMinDetector, etaMaxDetector] = [-0.85, 0.91],
+    // // then maxEta = 0.91 and yGenMinimalLimit ~ 0.91 + 0.6695 + 0.1 = 1.6795
+        // Actually, if we are to generate the bare minimum rapidity interval, rounding (up, always) to the first decimal place is probably best:
+        // (this way, we can check if the withoutEtaGate is indeed matching the withEtaGate case!)
+    double yGenMinimalLimitRaw = maxEta + yStarPion;
+    double yGenMinimalLimit = std::ceil(yGenMinimalLimitRaw * 10.0) / 10.0;
     // Example: if [etaMinDetector, etaMaxDetector] = [-0.85, 0.91],
-    // then maxEta = 0.91 and yGenMinimalLimit ~ 0.91 + 0.6695 + 0.1 = 1.6795
+    // then maxEta = 0.91 and yGenMinimalLimit ~ ceil(0.91 + 0.6695, first place) = ceil(1.5795, first place) = 1.6
 
     // Now, compare if this is larger than the provided edges, or if they should be kept:
     double yLambdaSafe = std::max(yGenMinimalLimit, rapMax_Lambda);

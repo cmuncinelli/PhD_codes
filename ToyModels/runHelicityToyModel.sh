@@ -864,7 +864,7 @@ if family_in_scope 12; then
     run_family_header 12 "LAMBDA RAPIDITY"
 
     #               NAME              SUBDIR                          N             Bz     pTminL  pTmaxL  rap   etaMin  etaMax  T     pTp    pTpi   dcaP   dcaPi  seed
-    register_job   "yLam05GuardTest"  "12_LambdaRap/yLam0_5GuardTest" ${DEFAULT_N}  0.50   0.0     10.0    0.5   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "yLam0_5GuardTest" "12_LambdaRap/yLam0_5GuardTest" ${DEFAULT_N}  0.50   0.0     10.0    0.5   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
     register_job   "yLam2"            "12_LambdaRap/yLam2"            ${DEFAULT_N}  -0.50  0.0     10.0    2.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
     register_job   "yLam3"            "12_LambdaRap/yLam3"            ${DEFAULT_N}  0.50   0.0     10.0    3.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
     register_job   "yLam4"            "12_LambdaRap/yLam4"            ${DEFAULT_N}  0.50   0.0     10.0    4.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
