@@ -202,15 +202,17 @@ LOG_DIR="${BASE_DIR}/logs"
 MAX_PARALLEL=80
 
 # Default Lambda count per run.
-DEFAULT_N=180000000000 # 60.000.000.000 Lambdas takes ~3.5 days.
-# DEFAULT_N=10000000000 # 10.000.000.000 Lambdas takes about 12 hours on newer, heavier, code versions
-# DEFAULT_N=100000000 # For testing only (~5 minutes per run)
-# DEFAULT_N=10000000 # For testing only (~40 s per run)
+DEFAULT_N=360000000000 # Takes about 4 days after the optimized generator cxx, 11.5 days with the older code
+# DEFAULT_N=180000000000 # 180.000.000.000 Lambdas would take 10.5 days previously. With refactor it took 4.3 days!
+# DEFAULT_N=10000000000 # 10.000.000.000 Lambdas takes about 12 hours on newer, heavier, code versions (After PGO and refactoring, went down to 6 hours)
+# DEFAULT_N=100000000 # For testing only (Refactoring went from ~5 minutes per run to ~3.5 minutes. After PGO, this changed little)
+# DEFAULT_N=10000000 # For testing only (Refactoring went from ~40 s per run to ~25s per run)
 
 # ROOT executable (set to full path if not in PATH, e.g. /opt/root/bin/root)
 ROOT_EXE="root"
 
 # Generator macro and plotting macro (relative to SCRIPT_DIR)
+# GEN_MACRO="${SCRIPT_DIR}/helicityEfficiencyToyModel_OptimizationRefactor.cxx"
 GEN_MACRO="${SCRIPT_DIR}/helicityEfficiencyToyModel.cxx"
 PLT_MACRO="${SCRIPT_DIR}/plotHelicityEfficiency.cxx"
 
@@ -305,11 +307,14 @@ fi
 # =============================================================================
 # COMPILATION
 # =============================================================================
+# EXE_BIN="${SCRIPT_DIR}/helicityEfficiencyToyModel_OptimizationRefactor.exe"
 EXE_BIN="${SCRIPT_DIR}/helicityEfficiencyToyModel.exe"
 COMPILE_WARN_FLAGS="-Wall -Wextra -Wpedantic -Wshadow" # For bug catching
 ROOT_AWARE_FLAGS="-DNDEBUG" # Strips out all assert() checks. ROOT headers respect this flag!
-OPTIMIZATION_FLAGS="-O3 -march=native -fno-math-errno -flto" # Using the fno-math-errno to disable the errno verification of passing negative numbers to sqrts and the such.
-                                                             # My code should be safe, so this will never be used!
+OPTIMIZATION_FLAGS="-O3 -march=native -fno-math-errno -flto -fno-trapping-math" # Using the fno-math-errno to disable the errno verification of passing negative numbers to sqrts and the such.
+                                                                                # My code should be safe, so this will never be used!
+                                                                                # Also introduced -fno-trapping-math as there is no explicit usage of NaNs
+                                                                                # nor any expected unsafe divisions by zero appearing anywhere in the code!
 export EXE_BIN # Export so subshells and GNU parallel can see it
 
 if [[ ${DRY_RUN} -eq 0 && ${LIST_ONLY} -eq 0 && ${PLOT_ONLY} -eq 0 ]]; then
@@ -324,6 +329,57 @@ if [[ ${DRY_RUN} -eq 0 && ${LIST_ONLY} -eq 0 && ${PLOT_ONLY} -eq 0 ]]; then
     echo "============================================================"
     echo ""
 fi
+
+# Not using PGO -- Each Model Family has a very different profile of which ifs and elses it triggers, so PGO may actually worsen the binary performance:
+# # =============================================================================
+# # COMPILATION WITH PROFILE-GUIDED OPTIMIZATION (PGO)
+# # =============================================================================
+# EXE_BIN="${SCRIPT_DIR}/helicityEfficiencyToyModel_OptimizationRefactor.exe"
+# COMPILE_WARN_FLAGS="-Wall -Wextra -Wpedantic -Wshadow" # For bug catching
+# ROOT_AWARE_FLAGS="-DNDEBUG" # Strips out all assert() checks.
+# BASE_OPT_FLAGS="-O3 -march=native -fno-math-errno -flto -fno-trapping-math" 
+# export EXE_BIN # Export so subshells and GNU parallel can see it
+
+# if [[ ${DRY_RUN} -eq 0 && ${LIST_ONLY} -eq 0 && ${PLOT_ONLY} -eq 0 ]]; then
+#     echo "============================================================"
+#     echo " Compiling generator with g++ (Profile-Guided Optimization)..."
+    
+#     # PHASE 1: Build the instrumented executable
+#     echo " [1/3] Building instrumented binary for profiling..."
+#     if ! g++ -std=c++20 -pipe ${COMPILE_WARN_FLAGS} ${ROOT_AWARE_FLAGS} ${BASE_OPT_FLAGS} -fprofile-generate "${GEN_MACRO}" -o "${EXE_BIN}" $(root-config --cflags --libs); then
+#         echo " ERROR: PGO Instrumentation Compilation failed!" >&2
+#         exit 1
+#     fi
+    
+#     # PHASE 2: Run the training workload
+#     echo " [2/3] Running PGO training workload (baseline, 10M events)..."
+#     PGO_TEMP_ROOT="${SCRIPT_DIR}/pgo_training_temp.root"
+    
+#     # Passing 10M events and a dummy root file. 
+#     # Because my C++ argv parser cascades, the rest will naturally fall back to the baseline defaults.
+#     # if ! "${EXE_BIN}" 10000000 "${PGO_TEMP_ROOT}"; then
+#     if ! "${EXE_BIN}" 10000000 "${PGO_TEMP_ROOT}" > /dev/null; then
+#         echo " ERROR: PGO Training run failed!" >&2
+#         exit 1
+#     fi
+    
+#     # PHASE 3: Recompile using the generated profile data (.gcda files)
+#     echo " [3/3] Recompiling optimized binary using profile data..."
+#     # Note: -fprofile-correction is added to ensure smooth combination with LTO
+#     if ! g++ -std=c++20 -pipe ${COMPILE_WARN_FLAGS} ${ROOT_AWARE_FLAGS} ${BASE_OPT_FLAGS} -fprofile-use -fprofile-correction "${GEN_MACRO}" -o "${EXE_BIN}" $(root-config --cflags --libs); then
+#         echo " ERROR: PGO Optimized Compilation failed!" >&2
+#         exit 1
+#     fi
+    
+#     # CLEANUP: Remove the profiling artifacts and temporary ROOT file
+#     echo " Cleaning up PGO artifacts..."
+#     # The .gcda files are dumped in the working directory by GCC
+#     rm -f *.gcda "${PGO_TEMP_ROOT}"
+    
+#     echo " PGO Compilation successful: ${EXE_BIN}"
+#     echo "============================================================"
+#     echo ""
+# fi
 
 
 # =============================================================================

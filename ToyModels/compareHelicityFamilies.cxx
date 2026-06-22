@@ -199,7 +199,7 @@ static std::vector<FamilyInfo> BuildFamilies()
       F.push_back(std::move(f)); }
 
     // -- F1: Asymmetric DCA cuts [AEE daughter-level asymmetry] ---------------
-    // repIdx=3 → dca_asym_std: the standard ALICE-like (0.05/0.10 cm) asymmetric config
+    // repIdx=3 --> dca_asym_std: the standard ALICE-like (0.05/0.10 cm) asymmetric config
     { FamilyInfo f; f.num=1; f.repIdx=3;
       f.shortName="AsymDCA"; f.longName="Asymmetric DCA cuts [AEE probe]";
       f.cfgs={
@@ -213,7 +213,7 @@ static std::vector<FamilyInfo> BuildFamilies()
       F.push_back(std::move(f)); }
 
     // -- F2: Symmetric DCA cuts [AEE strength scan] ---------------------------
-    // repIdx=1 → dca_sym_010: a clean, single-parameter reference
+    // repIdx=1 --> dca_sym_010: a clean, single-parameter reference
     { FamilyInfo f; f.num=2; f.repIdx=1;
       f.shortName="SymDCA"; f.longName="Symmetric DCA cuts [AEE strength]";
       f.cfgs={
@@ -226,7 +226,7 @@ static std::vector<FamilyInfo> BuildFamilies()
       F.push_back(std::move(f)); }
 
     // -- F3: Magnetic field scan, DCA only [AEE field dependence] -------------
-    // repIdx=4 → field_b050: standard B = +0.5 T
+    // repIdx=4 --> field_b050: standard B = +0.5 T
     { FamilyInfo f; f.num=3; f.repIdx=4;
       f.shortName="BField"; f.longName="B-field scan (DCA only) [AEE field dep.]";
       f.cfgs={
@@ -242,7 +242,7 @@ static std::vector<FamilyInfo> BuildFamilies()
       F.push_back(std::move(f)); }
 
     // -- F4: Lambda pT minimum [kinematic context, standard ALICE cuts] --------
-    // repIdx=0 → lam_ptmin_000: fully inclusive spectrum
+    // repIdx=0 --> lam_ptmin_000: fully inclusive spectrum
     { FamilyInfo f; f.num=4; f.repIdx=0;
       f.shortName="LamPtMin"; f.longName="Lambda pT minimum [kinematic context]";
       f.cfgs={
@@ -256,7 +256,7 @@ static std::vector<FamilyInfo> BuildFamilies()
       F.push_back(std::move(f)); }
 
     // -- F5: Daughter pT cuts [HEE primary probe] ------------------------------
-    // repIdx=2 → pt_sym_150: the ALICE standard-ish symmetric cut
+    // repIdx=2 --> pt_sym_150: the ALICE standard-ish symmetric cut
     { FamilyInfo f; f.num=5; f.repIdx=2;
       f.shortName="DaughterPt"; f.longName="Daughter pT cuts [HEE probe]";
       f.cfgs={
@@ -273,7 +273,7 @@ static std::vector<FamilyInfo> BuildFamilies()
       F.push_back(std::move(f)); }
 
     // -- F6: Eta acceptance window [HEE+AEE vs detector acceptance] -----------
-    // repIdx=2 → eta_090: the ALICE inner barrel
+    // repIdx=2 --> eta_090: the ALICE inner barrel
     { FamilyInfo f; f.num=6; f.repIdx=2;
       f.shortName="EtaSym"; f.longName="Eta acceptance window [HEE+AEE vs acceptance]";
       f.cfgs={
@@ -288,7 +288,7 @@ static std::vector<FamilyInfo> BuildFamilies()
       F.push_back(std::move(f)); }
 
     // -- F7: Boltzmann temperature [spectrum shape] ---------------------------
-    // repIdx=2 → temp_030: T = 0.30 GeV, nominal LHC Lambda inverse slope
+    // repIdx=2 --> temp_030: T = 0.30 GeV, nominal LHC Lambda inverse slope
     { FamilyInfo f; f.num=7; f.repIdx=2;
       f.shortName="Temperature"; f.longName="Boltzmann temperature [spectrum shape]";
       f.cfgs={
@@ -302,7 +302,7 @@ static std::vector<FamilyInfo> BuildFamilies()
       F.push_back(std::move(f)); }
 
     // -- F8: Ring kinematic pT windows ----------------------------------------
-    // repIdx=3 → win_ring: the ring analysis window [0.5, 1.5] GeV/c
+    // repIdx=3 --> win_ring: the ring analysis window [0.5, 1.5] GeV/c
     { FamilyInfo f; f.num=8; f.repIdx=3;
       f.shortName="KinWindow"; f.longName="Lambda pT windows [fake signal per band]";
       f.cfgs={
@@ -317,7 +317,7 @@ static std::vector<FamilyInfo> BuildFamilies()
       F.push_back(std::move(f)); }
 
     // -- F9: Realistic ALICE cuts [combined HEE+AEE estimate] -----------------
-    // repIdx=1 → alice_std: the standard working point (the one most relevant to data)
+    // repIdx=1 --> alice_std: the standard working point (the one most relevant to data)
     { FamilyInfo f; f.num=9; f.repIdx=1;
       f.shortName="RealisticAlice"; f.longName="Realistic ALICE cuts [combined HEE+AEE]";
       f.cfgs={
@@ -330,7 +330,7 @@ static std::vector<FamilyInfo> BuildFamilies()
       F.push_back(std::move(f)); }
 
     // -- F10: B-field with pT+DCA cuts [combined AEE+HEE field dep.] ----------
-    // repIdx=1 → fieldCuts_b050: standard +0.5 T with both cut types active
+    // repIdx=1 --> fieldCuts_b050: standard +0.5 T with both cut types active
     { FamilyInfo f; f.num=10; f.repIdx=1;
       f.shortName="BFieldCuts"; f.longName="B-field scan (pT+DCA cuts) [AEE+HEE field dep.]";
       f.cfgs={
@@ -342,7 +342,7 @@ static std::vector<FamilyInfo> BuildFamilies()
       F.push_back(std::move(f)); }
 
     // -- F11: Asymmetric eta acceptance [Zvtx shift / asymmetric window] ------
-    // repIdx=0 → pos10cmZvtx: simplest emulated Zvtx shift; clear baseline
+    // repIdx=0 --> pos10cmZvtx: simplest emulated Zvtx shift; clear baseline
     { FamilyInfo f; f.num=11; f.repIdx=0;
       f.shortName="EtaAsym"; f.longName="Asymmetric eta acceptance [Zvtx shift]";
       f.cfgs={
@@ -358,7 +358,7 @@ static std::vector<FamilyInfo> BuildFamilies()
       F.push_back(std::move(f)); }
 
     // -- F12: Lambda max rapidity at generator level --------------------------
-    // repIdx=3 → yLam4: the standard rapidity range used throughout the study
+    // repIdx=3 --> yLam4: the standard rapidity range used throughout the study
     { FamilyInfo f; f.num=12; f.repIdx=3;
       f.shortName="LambdaRap"; f.longName="Lambda max rapidity [generator acceptance]";
       f.cfgs={
@@ -612,9 +612,10 @@ static TCanvas* MakeComparisonCanvas(
         vl->SetLineColor(kGray); vl->SetLineStyle(3); vl->SetLineWidth(1);
         vl->Draw("SAME");
         if (ib < (int)famLabels.size() && !famLabels[ib].empty()) {
-            TLatex* ann = new TLatex(xb + 0.15, yMax * 0.86, famLabels[ib].c_str());
+            TLatex* ann = new TLatex(xb + 1.3, yMax * 0.45, famLabels[ib].c_str());
             ann->SetTextSize((N > 40) ? 0.018 : 0.024);
             ann->SetTextAlign(12);
+            ann->SetTextAngle(90); // Rotate 90 degrees counterclockwise to make the new version of famLabels fit with the shortName string attached
             ann->Draw();
         }
     }
@@ -670,11 +671,10 @@ static TCanvas* MakeComparisonCanvas(
     // Canvas title
     AddLabel(0.5, 0.955, title, 0.028, 22);
 
-    // Legend -- placed in bottom-right or upper-right depending on N
-    bool legendTop = (N > 20);
-    double ly1 = legendTop ? 0.64 : 0.56;
-    double ly2 = legendTop ? 0.87 : 0.90;
-    TLegend* leg = MakeLeg(0.68, ly1, 0.98, ly2);
+    // Legend -- placed in bottom-left
+    double ly1 = 0.33;
+    double ly2 = 0.48;
+    TLegend* leg = MakeLeg(0.13, ly1, 0.43, ly2);
     for (int is = 0; is < 4; ++is) {
         if (!(scenMask & (1 << is))) continue;
         TLine* dl = new TLine(); dl->SetLineColor(kScenCols[is]); dl->SetLineWidth(kLineW);
@@ -848,7 +848,7 @@ static void MakeBruteForcePlots(
         double startX = (double)bfPtrs.size();
         if (if_ > 0) {
             bfBdries.push_back(startX);
-            bfFamLbls.push_back(Form("F%d", f.num));
+            bfFamLbls.push_back(Form("F%d (%s)", f.num, f.shortName.c_str()));
         }
 
         for (int ic = 0; ic < nCfg; ++ic) {

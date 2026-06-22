@@ -13,16 +13,16 @@
 //       decay configuration where the pion was emitted BACKWARD in the
 //       Lambda rest frame. In that configuration the pion is soft in the lab;
 //       the proton well-reconstructed in both geometries, but the soft pion
-//       is not.  As a result, the isotropic decay angular distribution develops
+//       is not. As a result, the isotropic decay angular distribution develops
 //       a fake asymmetry in cos(theta*), where theta* is the angle between the proton
 //       emission direction in the Lambda rest frame and the Lambda lab
-//       momentum direction.  This is the "negative helicity" effect.
+//       momentum direction. This is the "negative helicity" effect.
 //
 //   (2) THE DCA-INDUCED LEFT-RIGHT ASYMMETRY (phi* asymmetry):
 //       A minimum-DCA cut requires each daughter track to be displaced from
-//       the primary vertex (PV).  Because the proton and the pion carry
+//       the primary vertex (PV). Because the proton and the pion carry
 //       opposite charges, they curve in opposite directions in the magnetic
-//       field.  Depending on the azimuthal angle phi* of the proton emission
+//       field. Depending on the azimuthal angle phi* of the proton emission
 //       direction around the Lambda axis, one of the two daughters may curve
 //       TOWARD the PV (failing the DCA cut) while the other curves away.
 //       This geometrical preference creates a fake asymmetry in phi*, the
@@ -79,11 +79,11 @@
 //
 // EXPECTED RESULTS
 // ----------------
-//   No cuts  (bug-check):  (cos theta*, phi*) uniform.  R_proxy ~ 0.
+//   No cuts  (bug-check):  (cos theta*, phi*) uniform. R_proxy ~ 0.
 //   pT cut only:           cos(theta*) suppressed at positive values.
-//                          phi* still flat.  R_proxy ~ 0.
+//                          phi* still flat. R_proxy ~ 0.
 //   DCA cut only:          phi* shows a sin-like modulation.
-//                          R_proxy != 0.  Sign FLIPS eta>0 vs eta<0.
+//                          R_proxy != 0. Sign FLIPS eta>0 vs eta<0.
 //   Both cuts:             Both asymmetries superimposed.
 //
 // USAGE
@@ -119,7 +119,7 @@
 //     (Lambda pT spectrum, rapidity, decay radius, daughter pT before any cut)
 //
 // WithoutEtaGate is kept to demonstrate why omitting the daughter eta
-// acceptance gate makes the physics cuts inconsistent.  WithEtaGate is
+// acceptance gate makes the physics cuts inconsistent. WithEtaGate is
 // the physically correct set and should be used for all conclusions.
 //
 // EtaPos / EtaNeg correspond to eta_Lambda >= 0 / < 0.
@@ -147,6 +147,66 @@
 //   h1d_eta_lambda    -- Lambda eta
 //
 //   Reference analysis code: lambdaJetPolarizationIonsDerived.cxx (O2Physics)
+//
+// ==========================================================================
+// PERFORMANCE ARCHITECTURE (refactored version)
+// ==========================================================================
+//
+// The original code had three main performance bottlenecks:
+//
+//   (a) TGenPhaseSpace::Generate() --- an un-inlinable virtual call with its
+//       own opaque RNG state, preventing auto-vectorization of the decay step.
+//
+//   (b) TProfile2D::Fill() --- each of the six 40x40 TProfile2D vector-field
+//       fills triggers a runtime vtable lookup, a binary search in TAxis for
+//       the x and y bins, and a heap write scattered across ROOT's fragmented
+//       object graph; multiplied by 16 active scenarios per Lambda this was
+//       the dominant computational cost.
+//       Essentially, we removed the cost of doing a search in the range to fill, and
+//       avoided calling Fill() due to the methods called by ROOT's (very!) large objects.
+//
+//   (c) ROOT vector wrappers (XYZVector, PxPyPzEVector) in the hot loop ---
+//       their member functions are non-trivially inlined, preventing the
+//       compiler from fusing the arithmetic into SIMD sequences.
+//
+// The refactored version addresses all three:
+//
+//   (a) TGenPhaseSpace is replaced by a closed-form analytical two-body decay.
+//       The rest-frame momentum magnitude p* = pStarDaughters is a known
+//       physical invariant (compile-time constant). cos(theta*) and phi* are
+//       sampled directly from TRandom3, bypassing all virtual dispatch. This
+//       also makes the simulation fully reproducible: the seed parameter now
+//       fixes every random number, including the decay angles, whilst the TGenPhaseSpace
+//       had an internal TRandom3 state.
+//       It was just a nice way of avoiding extra work, but it impacted performance, so now we do it by hand.
+//
+//   (b) TProfile2D objects are replaced during the event loop by custom
+//       cache-aligned flat accumulators (FlatPstar2D, FlatPstar1D, FlatRing1D).
+//       Each accumulator packs all channels (X, Y, Z for vector fields) into
+//       a single 56-byte Cell so a fill is one cache-line access instead of
+//       six separate vtable-dispatched heap writes. Single-pass bin lookup
+//       via BinParams reuses the same (bx, by) index for all three channels.
+//       The "All" sub-directory is never filled during the hot loop; it is
+//       reconstructed post-loop as All = EtaPos + EtaNeg. Cheaper!
+//
+//   (c) All hot-path kinematics use plain double arithmetic. The Lorentz
+//       boost, frame-axis construction, and ring-proxy computation are
+//       expressed as scalar expressions over pre-divided quantities
+//       (inv_p_lam, inv_pT_lam, etc.), giving the compiler maximum freedom
+//       to schedule and vectorize. The ring proxy with respect to the z-hat
+//       jet proxy further collapses to R_proxy = -(3/alpha) * sin(theta*) * cos(phi*)
+//       requiring no dot-product evaluation at all.
+//
+// NOTE ON FULL SIMD CHUNKING:
+//   There is an alternative three-phase SoA batch approach proposed in one of
+//   my internal scribble PDFs (scalar generate --> SIMD compute --> scalar accumulate).
+//   This was intentionally not implemented here because: (i) the random-access
+//   scatter writes in the accumulate phase do not benefit from SIMD batching;
+//   (ii) the rejection-sampling pT loop has variable yield and does not
+//   fill aligned arrays at a predictable rate; (iii) the code would grow
+//   substantially less readable. The optimizations above remove the dominant
+//   bottlenecks (we already got a > 2x improvement in speed!); the compiler 
+//   auto-vectorizes the remaining scalar arithmetic with -O3 -march=native.
 // ==========================================================================
 
 // --- Standard ROOT headers ---
@@ -157,12 +217,12 @@
 #include <TH2D.h>
 #include <TProfile.h>
 #include <TProfile2D.h>
-#include <TLorentzVector.h> // Preserved solely for TGenPhaseSpace
-#include <Math/Vector4D.h>
-#include <Math/GenVector/VectorUtil.h>
-// #include <TVector3.h>
-#include <Math/Vector3D.h>
-#include <TGenPhaseSpace.h>
+// #include <TLorentzVector.h> // Preserved solely for TGenPhaseSpace
+// #include <Math/Vector4D.h>
+// #include <Math/GenVector/VectorUtil.h>
+// // #include <TVector3.h>
+// #include <Math/Vector3D.h>
+// #include <TGenPhaseSpace.h>
 #include <TRandom3.h>
 #include <TMath.h>
 #include <TString.h>
@@ -174,10 +234,11 @@
 #include <cstring>
 #include <string>
 #include <iostream>
+#include <memory>
 #include <exception>
 
-using ROOT::Math::PxPyPzEVector;
-using ROOT::Math::XYZVector; // From Vector3D
+// using ROOT::Math::PxPyPzEVector;
+// using ROOT::Math::XYZVector; // From Vector3D
 
 // ==========================================================================
 // PHYSICS CONSTANTS
@@ -188,10 +249,22 @@ using ROOT::Math::XYZVector; // From Vector3D
 static const double kMassLambda = 1.115683;
 static const double kMassProton = 0.938272;
 static const double kMassPion   = 0.139570;
+
 // Calculated using the two-body decay momentum formula: p* = sqrt([M^2 - (m1 + m2)^2] * [M^2 - (m1 - m2)^2]) / (2*M)
 static const double pStarDaughters = std::sqrt(
     (kMassLambda * kMassLambda - (kMassProton + kMassPion) * (kMassProton + kMassPion))
-  * (kMassLambda * kMassLambda - (kMassProton - kMassPion) * (kMassProton - kMassPion))) / (2.0 * kMassLambda);
+  * (kMassLambda * kMassLambda - (kMassProton - kMassPion) * (kMassProton - kMassPion)))
+    / (2.0 * kMassLambda);
+
+// Rest-frame energies of the daughters (compile-time constants, avoids
+// recomputing E* = sqrt(p*^2 + m^2) inside the hot loop):
+//   kEStarProton = sqrt(pStarDaughters^2 + kMassProton^2)
+//   kEStarPion   = sqrt(pStarDaughters^2 + kMassPion^2)
+// These enter the analytical Lorentz boost that replaces TGenPhaseSpace.
+static const double kEStarProton = std::sqrt(pStarDaughters * pStarDaughters
+                                             + kMassProton   * kMassProton);
+static const double kEStarPion   = std::sqrt(pStarDaughters * pStarDaughters
+                                             + kMassPion     * kMassPion);
 
 // Lambda mean proper decay length c*tau [cm]
 static const double kCTauLambda = 7.89;
@@ -328,7 +401,7 @@ static double SampleLambdaPt(TRandom3 &rng, double T, double pTmin, double pTmax
  *
  * A charged particle in a uniform field Bz [T] along +z, starting at
  * (xv, yv) [cm] with transverse momentum (px, py) [GeV/c], traces a circle
- * in the x-y plane.  The signed helix radius is:
+ * in the x-y plane. The signed helix radius is:
  *   r_signed = pT / (q * kBConv * Bz)   [cm]
  * (q = +1 for proton, -1 for pion; Bz can be positive or negative)
  *
@@ -385,13 +458,217 @@ static double ComputeDCAxy(double xv,  double yv,
  * @brief Wraps an angle (in radians) into the interval [-pi, pi).
  * @note  Input is assumed to lie within [0, 2*pi); this allows a single
  *        conditional subtraction instead of a full fmod call.
+ *
+ * Re-implemented as an algebraically branchless expression:
+ *   phi_wrapped = phi - (phi >= Pi) * TwoPi
+ * Modern compilers (GCC, Clang with -O3 -march=native) lower this to a
+ * conditional-move or masked-subtract instruction, eliminating branch
+ * misprediction penalties inside tight loops while remaining strictly
+ * IEEE-754 compliant (no reassociation or value-safety relaxations).
+ *
  * @param phi  Input angle in radians, assumed in [0, 2*pi).
  * @return     Equivalent angle in [-pi, pi).
  */
 // ==========================================================================
-inline double wrapToPiFast(double phi){
-    return (phi < Pi) ? phi : (phi - TwoPi);
+[[nodiscard]] inline double wrapToPiFast(double phi) noexcept {
+    // return (phi < Pi) ? phi : (phi - TwoPi);
+    return phi - static_cast<double>(phi >= Pi) * TwoPi;
 }
+
+
+// ==========================================================================
+/**
+ * @brief Lightweight bin-finding helper for uniformly spaced axes.
+ *
+ * Returns the ROOT-convention bin index (1-based, with 0 = underflow and
+ * n+1 = overflow) for a value @p val on an axis with @p n bins covering
+ * [@p lo, @p hi).
+ *
+ * This is a cache-friendly replacement for TAxis::FindBin (which performs
+ * a binary search even for uniform axes). The inverse-width is pre-stored
+ * so no division occurs inside the hot event loop.
+ *
+ * Usage:
+ *   BinParams bpEta(etaMin, etaMax, 9);  // defined once, outside hot loop
+ *   int b = bpEta.of(eta_lambda);        // called per Lambda
+ */
+// ==========================================================================
+struct BinParams {
+    double lo;
+    double hi;
+    double inv_width; // = n / (hi - lo), precomputed to avoid hot-loop division
+    int    n;
+
+    BinParams(double lo_, double hi_, int n_) noexcept
+        : lo(lo_), hi(hi_),
+          inv_width(static_cast<double>(n_) / (hi_ - lo_)),
+          n(n_) {}
+
+    [[nodiscard]] [[gnu::always_inline]]
+    inline int of(double val) const noexcept {
+        if (val < lo)  return 0;
+        if (val >= hi) return n + 1;
+        return 1 + static_cast<int>((val - lo) * inv_width);
+    }
+};
+
+
+// ==========================================================================
+/**
+ * @brief Cache-aligned flat accumulator replacing three parallel TProfile2D
+ *        objects for the pPstar*_vsPxPy and pPstar*_vsPzPx vector fields.
+ *
+ * The three observable components (x = pstar_x, y = pstar_y, z = pstar_z)
+ * for a given 2D bin are packed into one 56-byte Cell so that every Accum()
+ * call touches exactly one cache line. This is the Array-of-Structures (AoS)
+ * layout: for the fill operation (hot path), AoS is strongly preferred over
+ * Structure-of-Arrays (SoA) because all seven writes go to the same cache
+ * line rather than to seven distinct, widely-separated memory locations.
+ *
+ * Memory footprint (NX=NY=40):  42 * 42 * 56 = 98784 bytes ≈ 96 KB per instance.
+ *
+ * After the main event loop, the accumulated sums are flushed to the ROOT
+ * TProfile2D objects via SyncPstar2DToROOT().
+ *
+ * @tparam NX  Number of bins on the X axis (excluding overflow/underflow).
+ * @tparam NY  Number of bins on the Y axis (excluding overflow/underflow).
+ */
+// ==========================================================================
+template<int NX, int NY>
+struct alignas(64) FlatPstar2D { // Using alignas to further optimize the cached memory for this struct
+    // All 7 quantities for a given (bx, by) bin in one struct = one cache line
+    struct Cell {
+        double sw;         // sum of weights (same for x, y, z channels since fills are unit-weight)
+        double x, y, z;    // sum(pstar_x/y/z)
+        double x2, y2, z2; // sum(pstar_x^2/y^2/z^2)
+    };
+    // [NX+2][NY+2] includes underflow (index 0) and overflow (index N+1)
+    Cell cells[NX + 2][NY + 2] = {};
+
+    /**
+     * @brief Accumulate one unit-weight entry into bin (bx, by).
+     * @param bx, by  Bin indices in [0, NX+1] / [0, NY+1].
+     * @param px, py, pz  The three vector-field components.
+     */
+    [[gnu::always_inline]]
+    inline void Accum(int bx, int by, double px, double py, double pz) noexcept {
+        Cell& c = cells[bx][by];
+        c.sw += 1.0;
+        c.x  += px;      c.y  += py;      c.z  += pz;
+        c.x2 += px * px; c.y2 += py * py; c.z2 += pz * pz;
+    }
+
+    /**
+     * @brief Merge another FlatPstar2D into this one (element-wise addition).
+     * Used to build the "All" accumulator as All = EtaPos + EtaNeg post-loop.
+     */
+    inline void AddFrom(const FlatPstar2D& src) noexcept {
+        for (int bx = 0; bx < NX + 2; ++bx) {
+            for (int by = 0; by < NY + 2; ++by) {
+                Cell&       d = cells[bx][by];
+                const Cell& s = src.cells[bx][by];
+                d.sw += s.sw;
+                d.x  += s.x;  d.y  += s.y;  d.z  += s.z;
+                d.x2 += s.x2; d.y2 += s.y2; d.z2 += s.z2;
+            }
+        }
+    }
+
+    /** @brief Zero all cells (used to reset "All" before AddFrom). */
+    inline void Reset() noexcept {
+        std::memset(cells, 0, sizeof(cells));
+    }
+};
+
+
+// ==========================================================================
+/**
+ * @brief Cache-aligned flat accumulator replacing three parallel TProfile
+ *        objects for the pPstar*_vsPhiLam and pPstar*_vsEtaLam profiles.
+ *
+ * Identical in principle to FlatPstar2D but 1-dimensional. AoS cell layout
+ * ensures all three component sums for a given bin are in the same cache line.
+ *
+ * @tparam N  Number of bins (excluding overflow/underflow).
+ */
+// ==========================================================================
+template<int N>
+struct alignas(64) FlatPstar1D {
+    struct Cell {
+        double sw;
+        double x, y, z;
+        double x2, y2, z2;
+    };
+    Cell cells[N + 2] = {};
+
+    [[gnu::always_inline]]
+    inline void Accum(int b, double px, double py, double pz) noexcept {
+        Cell& c = cells[b];
+        c.sw += 1.0;
+        c.x  += px;       c.y  += py;       c.z  += pz;
+        c.x2 += px * px;  c.y2 += py * py;  c.z2 += pz * pz;
+    }
+
+    inline void AddFrom(const FlatPstar1D& src) noexcept {
+        for (int b = 0; b < N + 2; ++b) {
+            Cell&       d = cells[b];
+            const Cell& s = src.cells[b];
+            d.sw += s.sw;
+            d.x  += s.x;  d.y  += s.y;  d.z  += s.z;
+            d.x2 += s.x2; d.y2 += s.y2; d.z2 += s.z2;
+        }
+    }
+
+    inline void Reset() noexcept {
+        std::memset(cells, 0, sizeof(cells));
+    }
+};
+
+
+// ==========================================================================
+/**
+ * @brief Cache-aligned flat accumulator replacing a pair of TProfile objects
+ *        for the ring-proxy observables (R_proxy and R_proxyJet) vs a single
+ *        kinematic variable (eta or pT).
+ *
+ * Packs both channels (ring, ringJet) into one Cell for a single cache-line
+ * access per fill.
+ *
+ * @tparam N  Number of bins (excluding overflow/underflow).
+ */
+// ==========================================================================
+template<int N>
+struct alignas(64) FlatRing1D {
+    struct Cell {
+        double sw;        // shared weight sum
+        double r, rjet;   // sum(ringProxy), sum(ringProxyJet)
+        double r2, rjet2; // sum(ringProxy^2), sum(ringProxyJet^2)
+    };
+    Cell cells[N + 2] = {};
+
+    [[gnu::always_inline]]
+    inline void Accum(int b, double rp, double rpj) noexcept {
+        Cell& c = cells[b];
+        c.sw   += 1.0;
+        c.r    += rp;       c.rjet  += rpj;
+        c.r2   += rp * rp;  c.rjet2 += rpj * rpj;
+    }
+
+    inline void AddFrom(const FlatRing1D& src) noexcept {
+        for (int b = 0; b < N + 2; ++b) {
+            Cell&       d = cells[b];
+            const Cell& s = src.cells[b];
+            d.sw    += s.sw;
+            d.r     += s.r;     d.rjet  += s.rjet;
+            d.r2    += s.r2;    d.rjet2 += s.rjet2;
+        }
+    }
+
+    inline void Reset() noexcept {
+        std::memset(cells, 0, sizeof(cells));
+    }
+};
+
 
 // ==========================================================================
 /**
@@ -504,11 +781,24 @@ struct KahanAccumulator {
 // ==========================================================================
 /**
  * @brief Holds all ROOT histogram and TProfile pointers for one combination
- *        of (cut scenario, eta half).
+ *        of (cut scenario, eta half), plus the flat accumulators that replace
+ *        the TProfile and TProfile2D fills during the hot event loop.
  *
  * Populated by BookScenario() and filled by FillScenario().
  * ROOT owns all objects once they are associated with a TDirectory via cd(),
  * so no manual deletion is required.
+ *
+ * FLAT ACCUMULATOR STRATEGY:
+ *   All TProfile2D and TProfile objects whose Fill() was in the hot loop are
+ *   replaced by flat accumulator members (flatXY, flatZX, flatPhi, flatEta,
+ *   flatRingVsEta, flatRingVsPt, flatRingJetVsEtaJet).
+ *   These are synced to their corresponding ROOT objects after the event loop
+ *   by SyncScenarioFlatToROOT().
+ *
+ *   The "All" sub-directory (combining EtaPos and EtaNeg) is NOT filled
+ *   during the hot loop. Its flat accumulators are populated post-loop by
+ *   RebuildAllScenario() as All = EtaPos + EtaNeg. The ROOT histogram
+ *   objects in All are likewise reconstructed via TH1::Add.
  */
 // ==========================================================================
 struct ScenarioHistos {
@@ -604,11 +894,44 @@ struct ScenarioHistos {
     TProfile2D* pPstarZ_vsPzPx;   // <p*_z> vs (pz_lam, px_lam)
     TProfile2D* pPstarY_vsPzPx;   // <p*_y> vs (pz_lam, px_lam)  [colormap]
 
-    // 1D compact version vs Lambda pseudorapidity (natural 1D variable for ZX,
-    // since pz = pT * sinh(eta) and the pattern is driven by longitudinal kinematics).
+    // 1D eta profiles (18 bins, matching pRingProxyVsEta width)
+    // (1D compact version vs Lambda pseudorapidity (natural 1D variable for ZX,
+    // since pz = pT * sinh(eta) and the pattern is driven by longitudinal kinematics)).
     TProfile*   pPstarX_vsEtaLam; // <p*_x> vs eta_lam
     TProfile*   pPstarY_vsEtaLam; // <p*_y> vs eta_lam
     TProfile*   pPstarZ_vsEtaLam; // <p*_z> vs eta_lam
+
+    // -- Flat accumulators (hot-path replacements for ROOT TProfile fills) --
+    //
+    // These are the primary optimization in the refactored code. All TProfile2D
+    // and TProfile fills that were on the critical per-Lambda path are now directed
+    // here; the ROOT objects above are only written post-loop via SyncScenarioFlatToROOT().
+    //
+    // Memory note: each FlatPstar2D<40,40> is ~96 KB; two per ScenarioHistos makes
+    // the struct ~200 KB + overhead. FamilyHistos (12 ScenarioHistos) is ~2.4 MB
+    // per family and must be heap-allocated (see main()).
+
+    // 2D vector field accumulators (replace pPstarX/Y/Z_vsPxPy):
+    // CAREFUL HERE! If you ever change binning, you WILL need to change these as well.
+    // TODO: Think of a better way of doing this, that does not need a hardcoded size.
+    FlatPstar2D<40, 40> flatXY;
+    // 2D vector field accumulators -- ZX plane (replace pPstarX/Z/Y_vsPzPx):
+    FlatPstar2D<40, 40> flatZX;
+
+    // 1D phi profiles (replace pPstarX/Y/Z_vsPhiLam; 32 bins in [0, 2π)):
+    FlatPstar1D<32> flatPhi;
+    // 1D eta profiles (replace pPstarX/Y/Z_vsEtaLam; 18 bins in [etaMin, etaMax]):
+    FlatPstar1D<18> flatEtaPstar;
+
+    // Ring proxy profiles vs Lambda eta (9 bins) and pT (10 bins).
+    // Packs R_proxy (z-hat) and R_proxyJet into one Cell.
+    // Replaces: pRingProxyVsEta, pRingProxyJetVsEta.
+    FlatRing1D<9> flatRingVsEta;
+    // Replaces: pRingProxyVsPt, pRingProxyJetVsPt.
+    FlatRing1D<10> flatRingVsPt;
+    // Replaces: pRingProxyJetVsEtaJet (jet eta, 9 bins).
+    // Note: only the rjet channel is meaningful here (z-hat ring has no jet eta dependence).
+    FlatRing1D<9> flatRingJetVsEtaJet;
 
     // Manual accumulators (for Kahan sums):
     KahanAccumulator kRingProxy;
@@ -637,6 +960,10 @@ struct ScenarioHistos {
  * Two instances of this struct are used in the main function: one for the
  * WithoutEtaGate family and one for the WithEtaGate family.
  * Populated by CreateFamily() and filled by FillFamily().
+ *
+ * NOTE: Due to the large FlatPstar2D members in each ScenarioHistos, this
+ * struct is ~2.4 MB. It MUST be heap-allocated (see main()) to avoid
+ * exceeding typical default stack limits (~8 MB on Linux).
  */
 // ==========================================================================
 struct FamilyHistos {
@@ -651,7 +978,7 @@ struct FamilyHistos {
 /**
  * @brief Allocates and initialises all histograms inside the given TDirectory.
  *
- * The directory must already exist.  Calls dir->cd() before creating objects
+ * The directory must already exist. Calls dir->cd() before creating objects
  * so ROOT associates them with the correct directory.
  *
  * @param dir  Pointer to an existing TDirectory in which histograms are booked.
@@ -763,15 +1090,34 @@ static ScenarioHistos BookScenario(TDirectory* dir, double etaMinDetector, doubl
 // ==========================================================================
 /**
  * @brief Fills all histograms in a ScenarioHistos struct for one Lambda
- *        candidate.  Called once per Lambda per cut scenario (up to 4 times).
+ *        candidate. Called once per Lambda per cut scenario (up to 4 times
+ *        for EtaPos/EtaNeg sub-directories; "All" is reconstructed post-loop).
  *
- * All arguments are computed in the main event loop; see variable names there.
+ * IMPLEMENTATION NOTES ON FLAT ACCUMULATORS:
+ *   The six TProfile2D fills (pPstar*_vsPxPy, pPstar*_vsPzPx) and the six
+ *   1D TProfile fills (pPstar*_vsPhiLam, pPstar*_vsEtaLam) have been replaced
+ *   by single-call updates to the corresponding FlatPstar2D/FlatPstar1D members.
+ *   The ring-proxy vs-eta and vs-pT TProfiles are replaced by FlatRing1D.
+ *   Bin indices are computed once via BinParams and reused across channels.
  *
- * @param h           Reference to the ScenarioHistos struct to fill.
+ *   The five ROOT TProfile objects that were single-bin integrations (pRingProxy,
+ *   pRingProxyJet, pRingProxyJet_JetEtaPos/Neg, pEventMeanRingProxyJetIntegrated)
+ *   are kept as-is in this function because they are 1-bin lookups (essentially
+ *   O(1) and incur no bin-search overhead).
+ *
+ * @param h              Reference to the ScenarioHistos struct to fill.
+ * @param bpEtaRing      BinParams for 9-bin eta axis (ring proxy profiles).
+ * @param bpEtaPstar     BinParams for 18-bin eta axis (pPstar profiles).
+ * @param bpPt           BinParams for 10-bin pT axis.
+ * @param bpPhi          BinParams for 32-bin phi_lam axis ([0, 2π)).
+ * @param bpXY           BinParams for 40-bin XY axis (symmetric, [-3,3]).
+ * @param bpZX_z         BinParams for 40-bin pz axis (ZX plane, [-4,4]).
+ * @param bpZX_x         BinParams for 40-bin px axis (ZX plane, [-3,3]).
+ * @param bpEtaJet       BinParams for 9-bin jet-eta axis.
  * @param cosTheta    cos(theta*) = p*_proton_unit . e1.
- * @param phi         phi* = atan2(p*_proton.e3, p*_proton.e2) [rad].
- * @param ringProxy   R_proxy = (3/alpha) * p*_D . (z x lambda_unit)/||z x lambda_unit|| .
- * @param ringProxyJet Same as R_proxy, but the jet direction takes the place of the z axis
+ * @param phi         phi* in [-pi, pi) (wrapped from the generated angle). // Was previously phi* = atan2(p*_proton.e3, p*_proton.e2) [rad].
+ * @param ringProxy   R_proxy = -(3/alpha) * sin(theta*) * cos(phi*). // Was previously R_proxy = (3/alpha) * p*_D . (z x lambda_unit)/||z x lambda_unit||.
+ * @param ringProxyJet R_proxy computed with a random jet direction instead of Z.
  * @param decayR      Transverse decay vertex radius [cm].
  * @param pT_proton   Proton pT in the lab frame [GeV/c].
  * @param pT_pion     Pion pT in the lab frame [GeV/c].
@@ -779,10 +1125,18 @@ static ScenarioHistos BookScenario(TDirectory* dir, double etaMinDetector, doubl
  * @param dca_pion    Pion DCA_xy to PV [cm].
  * @param pT_lambda   Lambda pT [GeV/c].
  * @param eta_lambda  Lambda pseudorapidity.
- * @param eta_jet      Randomly sampled jet's pseudorapidity.
+ * @param eta_jet     Randomly sampled jet's pseudorapidity.
  */
 // ==========================================================================
 static void FillScenario(ScenarioHistos& h,
+                          const BinParams& bpEtaRing,
+                          const BinParams& bpEtaPstar,
+                          const BinParams& bpPt,
+                          const BinParams& bpPhi,
+                          const BinParams& bpXY,
+                          const BinParams& bpZX_z,
+                          const BinParams& bpZX_x,
+                          const BinParams& bpEtaJet,
                           double cosTheta,
                           double phi,
                           double ringProxy,
@@ -808,20 +1162,27 @@ static void FillScenario(ScenarioHistos& h,
     h.h1d_cosTheta->Fill(cosTheta);
     h.h1d_phi->Fill(phi);
 
-    // Ring proxy
+    // Ring proxy (single-bin TProfiles: no bin-search overhead, kept as ROOT)
     h.h1d_ringProxy->Fill(ringProxy);
     h.pRingProxy->Fill(0., ringProxy); // integrated average
     h.kRingProxy.Add(ringProxy); // Integrated average via Kahan summation
-    h.pRingProxyVsEta->Fill(eta_lambda, ringProxy);
-    h.pRingProxyVsPt->Fill(pT_lambda, ringProxy);
+
+    // Ring proxy vs Lambda kinematics (flat accumulators; shared bin per Lambda)
+    {
+        int bEta = bpEtaRing.of(eta_lambda);
+        int bPt  = bpPt.of(pT_lambda);
+        h.flatRingVsEta.Accum(bEta, ringProxy, ringProxyJet);
+        h.flatRingVsPt.Accum(bPt,  ringProxy, ringProxyJet);
+    }
 
     h.h1d_ringProxyJet->Fill(ringProxyJet);
     h.pRingProxyJet->Fill(0., ringProxyJet); // integrated average
     h.kRingProxyJet.Add(ringProxyJet); // Integrated average via Kahan summation
-    h.pRingProxyJetVsEta->Fill(eta_lambda, ringProxyJet);
-    h.pRingProxyJetVsEtaJet->Fill(eta_jet, ringProxyJet);
-    h.pRingProxyJetVsPt->Fill(pT_lambda, ringProxyJet);
-    // Jet-eta-split integrated profiles
+
+    // Ring proxy jet vs jet eta (flat accumulator)
+    h.flatRingJetVsEtaJet.Accum(bpEtaJet.of(eta_jet), ringProxy, ringProxyJet);
+
+    // Jet-eta-split integrated profiles (single-bin TProfiles, kept as ROOT)
     if (eta_jet >= 0.) {
         h.pRingProxyJet_JetEtaPos->Fill(0., ringProxyJet);
         h.kRingProxyJet_JetEtaPos.Add(ringProxyJet);
@@ -843,21 +1204,47 @@ static void FillScenario(ScenarioHistos& h,
     h.h1d_pT_lambda->Fill(pT_lambda);
     h.h1d_eta_lambda->Fill(eta_lambda);
 
-    // Vector field fills
-    h.pPstarX_vsPxPy->Fill(px_lam, py_lam, pstar_x);
-    h.pPstarY_vsPxPy->Fill(px_lam, py_lam, pstar_y);
-    h.pPstarZ_vsPxPy->Fill(px_lam, py_lam, pstar_z);
-    h.pPstarX_vsPhiLam->Fill(phi_lam, pstar_x);
-    h.pPstarY_vsPhiLam->Fill(phi_lam, pstar_y);
-    h.pPstarZ_vsPhiLam->Fill(phi_lam, pstar_z);
+    // Vector field: 2D XY and ZX fills.
+    // Compute bin indices once; reuse for all three pstar components.
+    {
+        int bx = bpXY.of(px_lam);
+        int by = bpXY.of(py_lam);
+        h.flatXY.Accum(bx, by, pstar_x, pstar_y, pstar_z);
 
-    // ZX vector field fills
-    h.pPstarX_vsPzPx->Fill(pz_lam, px_lam, pstar_x);
-    h.pPstarZ_vsPzPx->Fill(pz_lam, px_lam, pstar_z);
-    h.pPstarY_vsPzPx->Fill(pz_lam, px_lam, pstar_y);
-    h.pPstarX_vsEtaLam->Fill(eta_lambda, pstar_x);
-    h.pPstarY_vsEtaLam->Fill(eta_lambda, pstar_y);
-    h.pPstarZ_vsEtaLam->Fill(eta_lambda, pstar_z);
+        int bz = bpZX_z.of(pz_lam);
+        int bxzx = bpZX_x.of(px_lam);
+        // Note ZX axis convention: first axis = pz (horizontal), second = px (vertical).
+        // flatZX stores (x, z, y) to match the (pPstarX_vsPzPx, pPstarZ_vsPzPx, pPstarY_vsPzPx) ordering:
+        h.flatZX.Accum(bz, bxzx, pstar_x, pstar_z, pstar_y);
+    }
+
+    // 1D phi and eta profiles for pPstar components (flat accumulators)
+    h.flatPhi.Accum(bpPhi.of(phi_lam),       pstar_x, pstar_y, pstar_z);
+    h.flatEtaPstar.Accum(bpEtaPstar.of(eta_lambda), pstar_x, pstar_y, pstar_z);
+}
+
+
+// ==========================================================================
+/**
+ * @brief Lightweight per-Lambda update for the "All" sub-directory.
+ *
+ * The "All" sub-directory is NOT filled via FillScenario in the hot loop.
+ * Instead, ROOT histograms and flat accumulators for "All" are reconstructed
+ * post-loop as All = EtaPos + EtaNeg (see RebuildAllScenario).
+ *
+ * The ONLY quantity in the "All" ScenarioHistos that MUST be updated per
+ * Lambda is the event-mean ring-proxy accumulator (evtSumRpj / evtCntRpj).
+ * FlushEventMean() reads these to fill hEventMeanRingProxyJet and the chunk
+ * arrays, neither of which can be reconstructed by simple addition of EtaPos
+ * and EtaNeg (because they measure correlations within the same event).
+ *
+ * @param h             Reference to the "All" ScenarioHistos to update.
+ * @param ringProxyJet  Value to accumulate into the event sum.
+ */
+// ==========================================================================
+static void AccumEventRpj(ScenarioHistos& h, double ringProxyJet) {
+    h.evtSumRpj += ringProxyJet;
+    h.evtCntRpj++;
 }
 
 
@@ -938,18 +1325,30 @@ static void CreateFamily(TDirectory* parent, FamilyHistos& f, double etaMinDetec
  * @brief Fills all cut scenarios in a FamilyHistos struct for one Lambda
  *        candidate, applying the four cut combinations consistently.
  *
- * NoCuts is always filled.  The remaining three scenarios are gated on the
- * corresponding cut booleans.  Within each scenario the correct eta half
- * (EtaPos or EtaNeg) and the combined All directory are both filled.
+ * NoCuts is always filled. The remaining three scenarios are gated on the
+ * corresponding cut booleans. Within each scenario:
+ *   - FillScenario() is called once for the appropriate eta half (EtaPos or EtaNeg).
+ *   - AccumEventRpj() is called for the "All" sub-directory to maintain the
+ *     event-mean ring-proxy accumulators for the chunking error estimator.
+ *   - "All" ROOT histograms and flat accumulators are NOT filled here;
+ *     they are reconstructed post-loop by RebuildAllFamily().
  *
  * @param f            Reference to the FamilyHistos struct to fill.
  * @param passPt       True if both daughters pass the minimum-pT cut.
  * @param passDca      True if both daughters pass the minimum-DCA cut.
  * @param etaPos       True if eta_Lambda >= 0 (routes fill to EtaPos vs EtaNeg).
+ * @param bpEtaRing    BinParams for 9-bin ring-proxy eta axis.
+ * @param bpEtaPstar   BinParams for 18-bin pPstar eta axis.
+ * @param bpPt         BinParams for 10-bin pT axis.
+ * @param bpPhi        BinParams for 32-bin phi_lam axis.
+ * @param bpXY         BinParams for 40-bin XY axis.
+ * @param bpZX_z       BinParams for 40-bin pz (ZX plane) axis.
+ * @param bpZX_x       BinParams for 40-bin px (ZX plane) axis.
+ * @param bpEtaJet     BinParams for 9-bin jet-eta axis.
  * @param cosTheta     cos(theta*) = p*_proton_unit . e1.
- * @param phi_star     phi* = atan2(p*_proton.e3, p*_proton.e2) [rad].
- * @param ringProxy    R_proxy = (3/alpha) * p*_D . (z x lambda_unit)/|...| .
- * @param ringProxyJet Same as R_proxy, but the jet direction takes the place of the z axis
+ * @param phi_star     phi* in [-pi, pi).
+ * @param ringProxy    R_proxy = -(3/alpha) * sin(theta*) * cos(phi*).
+ * @param ringProxyJet R_proxy computed with random jet direction.
  * @param decayR       Transverse decay vertex radius [cm].
  * @param pT_p         Proton pT in the lab frame [GeV/c].
  * @param pT_pi        Pion pT in the lab frame [GeV/c].
@@ -964,6 +1363,14 @@ static void FillFamily(FamilyHistos& f,
                         bool   passPt,
                         bool   passDca,
                         bool   etaPos,
+                        const BinParams& bpEtaRing,
+                        const BinParams& bpEtaPstar,
+                        const BinParams& bpPt,
+                        const BinParams& bpPhi,
+                        const BinParams& bpXY,
+                        const BinParams& bpZX_z,
+                        const BinParams& bpZX_x,
+                        const BinParams& bpEtaJet,
                         double cosTheta,
                         double phi_star,
                         double ringProxy,
@@ -984,13 +1391,20 @@ static void FillFamily(FamilyHistos& f,
                         double phi_lam,
                         double pz_lam)
 {
-    // Local lambda that fills one scenario's eta-half and All subdirectory.
-    // Captures all per-event quantities by reference so we only pass the
-    // three ScenarioHistos pointers that change between scenarios.
-    auto fill = [&](ScenarioHistos& hPos, ScenarioHistos& hNeg, ScenarioHistos& hAll) {
-        ScenarioHistos& hEta = etaPos ? hPos : hNeg;
-        FillScenario(hEta,  cosTheta, phi_star, ringProxy, ringProxyJet, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet, pstar_x, pstar_y, pstar_z, px_lam, py_lam, phi_lam, pz_lam);
-        FillScenario(hAll,  cosTheta, phi_star, ringProxy, ringProxyJet, decayR, pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet, pstar_x, pstar_y, pstar_z, px_lam, py_lam, phi_lam, pz_lam);
+    // Local lambda that fills the appropriate eta half with FillScenario() and
+    // does a lightweight AccumEventRpj() for the "All" sub-directory.
+    // Captures all per-event quantities by reference.
+    // The "All" ROOT histograms are NOT filled here; they are rebuilt post-loop.
+    auto fill = [&](ScenarioHistos& hEtaPos, ScenarioHistos& hEtaNeg, ScenarioHistos& hAll) {
+        ScenarioHistos& hEta = etaPos ? hEtaPos : hEtaNeg;
+        FillScenario(hEta,
+                     bpEtaRing, bpEtaPstar, bpPt, bpPhi, bpXY, bpZX_z, bpZX_x, bpEtaJet,
+                     cosTheta, phi_star, ringProxy, ringProxyJet, decayR,
+                     pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet,
+                     pstar_x, pstar_y, pstar_z, px_lam, py_lam, phi_lam, pz_lam);
+        // Maintain event-mean accumulators for "All" without a full scenario fill.
+        // These feed FlushEventMean() which correctly handles the "All" chunk estimator.
+        AccumEventRpj(hAll, ringProxyJet);
     };
 
     // Scenario 1: No cuts (always filled -- serves as a flat-distribution
@@ -1018,13 +1432,13 @@ static void FillFamily(FamilyHistos& f,
  * @details
  * Lambdas are grouped into implicit "events" by the jet-reshuffle logic in
  * the main loop: all Lambdas that share the same random jet direction belong
- * to the same event.  While those Lambdas are being processed, their
+ * to the same event. While those Lambdas are being processed, their
  * ringProxyJet values are accumulated in @p h.evtSumRpj / @p h.evtCntRpj
  * rather than being flushed immediately.
  *
  * When the jet direction is about to change (or after the main loop ends),
  * this function computes the event mean R_e = evtSumRpj / evtCntRpj and
- * fills it into hEventMeanRingProxyJet.  The accumulators are then zeroed
+ * fills it into hEventMeanRingProxyJet. The accumulators are then zeroed
  * so the next event starts clean.
  *
  * The spread of hEventMeanRingProxyJet across many events provides an
@@ -1100,7 +1514,7 @@ static void FlushEventMean(ScenarioHistos& h) {
  *
  * @details
  * Calls FlushEventMean() on every (cut scenario) x (eta half) combination
- * held by @p f.  This covers the full 4 x 3 = 12 ScenarioHistos members:
+ * held by @p f. This covers the full 4 x 3 = 12 ScenarioHistos members:
  *
  *   NoCuts     x { EtaPos, EtaNeg, All }
  *   pTCutOnly  x { EtaPos, EtaNeg, All }
@@ -1211,12 +1625,387 @@ static void FlushKahanFamily(FamilyHistos& f) {
 
 // ==========================================================================
 /**
+ * @brief Reconstruct the "All" ScenarioHistos from the completed EtaPos and
+ *        EtaNeg ScenarioHistos after the main event loop.
+ *
+ * @details
+ * The "All" sub-directory was NOT filled during the hot loop (to eliminate
+ * one-third of per-Lambda fills). This function performs the post-loop
+ * reconstruction in three steps:
+ *
+ *   1. ROOT histograms (TH1D, TH2D, TProfile): TH1::Add() combines Pos and Neg
+ *      bin-by-bin with unit coefficients.
+ *   2. Flat accumulators (FlatPstar2D, FlatPstar1D, FlatRing1D): element-wise
+ *      addition via their AddFrom() methods.
+ *   3. Kahan accumulators: the compensated sums are combined by direct
+ *      addition (precise since both Pos and Neg completed their sums before
+ *      this function is called).
+ *
+ * The event-mean and chunk-based estimators in "All" are NOT rebuilt here
+ * because they were populated during the hot loop via AccumEventRpj() -->
+ * FlushEventMean(). FinalizeChunks() and FlushKahan() are still needed
+ * after this call to finalize those paths.
+ *
+ * @param hAll   Reference to the "All" ScenarioHistos to populate.
+ * @param hPos   Const reference to the completed EtaPos ScenarioHistos.
+ * @param hNeg   Const reference to the completed EtaNeg ScenarioHistos.
+ */
+// ==========================================================================
+static void RebuildAllScenario(ScenarioHistos& hAll,
+                                const ScenarioHistos& hPos,
+                                const ScenarioHistos& hNeg)
+{
+    // ---- 1. ROOT TH1D / TH2D / TProfile: use TH1::Add (handles bin entries correctly) ----
+    hAll.h2d_cosTheta_phi->Add(hPos.h2d_cosTheta_phi, hNeg.h2d_cosTheta_phi);
+    hAll.h1d_cosTheta->Add(hPos.h1d_cosTheta, hNeg.h1d_cosTheta);
+    hAll.h1d_phi->Add(hPos.h1d_phi, hNeg.h1d_phi);
+    hAll.h1d_ringProxy->Add(hPos.h1d_ringProxy, hNeg.h1d_ringProxy);
+    hAll.h1d_ringProxyJet->Add(hPos.h1d_ringProxyJet, hNeg.h1d_ringProxyJet);
+    hAll.h1d_decayRadius->Add(hPos.h1d_decayRadius, hNeg.h1d_decayRadius);
+    hAll.h1d_pT_proton->Add(hPos.h1d_pT_proton, hNeg.h1d_pT_proton);
+    hAll.h1d_pT_pion->Add(hPos.h1d_pT_pion, hNeg.h1d_pT_pion);
+    hAll.h1d_DCA_proton->Add(hPos.h1d_DCA_proton, hNeg.h1d_DCA_proton);
+    hAll.h1d_DCA_pion->Add(hPos.h1d_DCA_pion, hNeg.h1d_DCA_pion);
+    hAll.h1d_pT_lambda->Add(hPos.h1d_pT_lambda, hNeg.h1d_pT_lambda);
+    hAll.h1d_eta_lambda->Add(hPos.h1d_eta_lambda, hNeg.h1d_eta_lambda);
+
+    // Single-bin TProfiles: TH1::Add works for TProfile as well
+    hAll.pRingProxy->Add(hPos.pRingProxy, hNeg.pRingProxy);
+    hAll.pRingProxyJet->Add(hPos.pRingProxyJet, hNeg.pRingProxyJet);
+    hAll.pRingProxyJet_JetEtaPos->Add(hPos.pRingProxyJet_JetEtaPos, hNeg.pRingProxyJet_JetEtaPos);
+    hAll.pRingProxyJet_JetEtaNeg->Add(hPos.pRingProxyJet_JetEtaNeg, hNeg.pRingProxyJet_JetEtaNeg);
+
+    // ---- 2. Flat accumulators: element-wise addition ----
+    hAll.flatXY.Reset();
+    hAll.flatXY.AddFrom(hPos.flatXY);
+    hAll.flatXY.AddFrom(hNeg.flatXY);
+
+    hAll.flatZX.Reset();
+    hAll.flatZX.AddFrom(hPos.flatZX);
+    hAll.flatZX.AddFrom(hNeg.flatZX);
+
+    hAll.flatPhi.Reset();
+    hAll.flatPhi.AddFrom(hPos.flatPhi);
+    hAll.flatPhi.AddFrom(hNeg.flatPhi);
+
+    hAll.flatEtaPstar.Reset();
+    hAll.flatEtaPstar.AddFrom(hPos.flatEtaPstar);
+    hAll.flatEtaPstar.AddFrom(hNeg.flatEtaPstar);
+
+    hAll.flatRingVsEta.Reset();
+    hAll.flatRingVsEta.AddFrom(hPos.flatRingVsEta);
+    hAll.flatRingVsEta.AddFrom(hNeg.flatRingVsEta);
+
+    hAll.flatRingVsPt.Reset();
+    hAll.flatRingVsPt.AddFrom(hPos.flatRingVsPt);
+    hAll.flatRingVsPt.AddFrom(hNeg.flatRingVsPt);
+
+    hAll.flatRingJetVsEtaJet.Reset();
+    hAll.flatRingJetVsEtaJet.AddFrom(hPos.flatRingJetVsEtaJet);
+    hAll.flatRingJetVsEtaJet.AddFrom(hNeg.flatRingJetVsEtaJet);
+
+    // ---- 3. Kahan accumulators: combine compensated sums ----
+    // Since both Pos and Neg have finished accumulating, simple addition gives
+    // the correct combined sum. The compensation terms (c_y, c_y2) are combined
+    // additively, which is equivalent to re-running the compensated sum from scratch.
+    hAll.kRingProxy.sum_y  = hPos.kRingProxy.sum_y  + hNeg.kRingProxy.sum_y;
+    hAll.kRingProxy.c_y    = hPos.kRingProxy.c_y    + hNeg.kRingProxy.c_y;
+    hAll.kRingProxy.sum_y2 = hPos.kRingProxy.sum_y2 + hNeg.kRingProxy.sum_y2;
+    hAll.kRingProxy.c_y2   = hPos.kRingProxy.c_y2   + hNeg.kRingProxy.c_y2;
+    hAll.kRingProxy.N      = hPos.kRingProxy.N      + hNeg.kRingProxy.N;
+
+    hAll.kRingProxyJet.sum_y  = hPos.kRingProxyJet.sum_y  + hNeg.kRingProxyJet.sum_y;
+    hAll.kRingProxyJet.c_y    = hPos.kRingProxyJet.c_y    + hNeg.kRingProxyJet.c_y;
+    hAll.kRingProxyJet.sum_y2 = hPos.kRingProxyJet.sum_y2 + hNeg.kRingProxyJet.sum_y2;
+    hAll.kRingProxyJet.c_y2   = hPos.kRingProxyJet.c_y2   + hNeg.kRingProxyJet.c_y2;
+    hAll.kRingProxyJet.N      = hPos.kRingProxyJet.N      + hNeg.kRingProxyJet.N;
+
+    hAll.kRingProxyJet_JetEtaPos.sum_y  = hPos.kRingProxyJet_JetEtaPos.sum_y  + hNeg.kRingProxyJet_JetEtaPos.sum_y;
+    hAll.kRingProxyJet_JetEtaPos.c_y    = hPos.kRingProxyJet_JetEtaPos.c_y    + hNeg.kRingProxyJet_JetEtaPos.c_y;
+    hAll.kRingProxyJet_JetEtaPos.sum_y2 = hPos.kRingProxyJet_JetEtaPos.sum_y2 + hNeg.kRingProxyJet_JetEtaPos.sum_y2;
+    hAll.kRingProxyJet_JetEtaPos.c_y2   = hPos.kRingProxyJet_JetEtaPos.c_y2   + hNeg.kRingProxyJet_JetEtaPos.c_y2;
+    hAll.kRingProxyJet_JetEtaPos.N      = hPos.kRingProxyJet_JetEtaPos.N      + hNeg.kRingProxyJet_JetEtaPos.N;
+
+    hAll.kRingProxyJet_JetEtaNeg.sum_y  = hPos.kRingProxyJet_JetEtaNeg.sum_y  + hNeg.kRingProxyJet_JetEtaNeg.sum_y;
+    hAll.kRingProxyJet_JetEtaNeg.c_y    = hPos.kRingProxyJet_JetEtaNeg.c_y    + hNeg.kRingProxyJet_JetEtaNeg.c_y;
+    hAll.kRingProxyJet_JetEtaNeg.sum_y2 = hPos.kRingProxyJet_JetEtaNeg.sum_y2 + hNeg.kRingProxyJet_JetEtaNeg.sum_y2;
+    hAll.kRingProxyJet_JetEtaNeg.c_y2   = hPos.kRingProxyJet_JetEtaNeg.c_y2   + hNeg.kRingProxyJet_JetEtaNeg.c_y2;
+    hAll.kRingProxyJet_JetEtaNeg.N      = hPos.kRingProxyJet_JetEtaNeg.N      + hNeg.kRingProxyJet_JetEtaNeg.N;
+}
+
+
+// ==========================================================================
+/**
+ * @brief Calls RebuildAllScenario() for all four cut scenarios in a FamilyHistos.
+ *
+ * @param f  Reference to the FamilyHistos to rebuild.
+ */
+// ==========================================================================
+static void RebuildAllFamily(FamilyHistos& f) {
+    RebuildAllScenario(f.NC_All, f.NC_Pos, f.NC_Neg);
+    RebuildAllScenario(f.PT_All, f.PT_Pos, f.PT_Neg);
+    RebuildAllScenario(f.DC_All, f.DC_Pos, f.DC_Neg);
+    RebuildAllScenario(f.BC_All, f.BC_Pos, f.BC_Neg);
+}
+
+
+// ==========================================================================
+/**
+ * @brief Sync a FlatPstar2D accumulator to the three corresponding TProfile2D
+ *        ROOT objects (one for the x, y, and z vector-field components).
+ *
+ * @details
+ * Sets bin-by-bin the ROOT TProfile2D internal arrays from the flat accumulator:
+ *   fArray[bin]        = sum_wy   (SetBinContent)
+ *   fBinEntries[bin]   = sum_w    (SetBinEntries)
+ *   fSumw2[bin]        = sum_wy2  (direct write via GetSumw2())
+ *
+ * This allows GetBinContent() to return the correct mean (sum_wy / sum_w)
+ * and GetBinError() to return the correct SEM, exactly as if the TProfile2D
+ * had been filled directly.
+ *
+ * CONVENTION NOTE: the "y" (value) argument for each TProfile2D channel
+ * differs between destX, destY, destZ (they store pstar_x, pstar_y, pstar_z
+ * respectively) but they all share the same weight/entry arrays since fills
+ * are unit-weight and always happen in triplets at the same (bx, by) bin.
+ * The flatAcc encodes this with one shared sw array and three separate x/y/z
+ * sum arrays.
+ *
+ * The flatAcc "y" channel mapping depends on how flatZX was filled:
+ *   flatZX.Accum(bz, bxzx, pstar_x, pstar_z, pstar_y)  ← (x, z, y) order
+ * so when syncing flatZX:  destX ← x-channel, destZ ← y-channel, destY ← z-channel.
+ * This is handled by the caller (SyncScenarioFlatToROOT) by passing the
+ * profiles in the right order.
+ *
+ * @param flatAcc     The flat accumulator to read from.
+ * @param destX       TProfile2D for the first  component (Cell.x / Cell.x2).
+ * @param destY       TProfile2D for the second component (Cell.y / Cell.y2).
+ * @param destZ       TProfile2D for the third  component (Cell.z / Cell.z2).
+ */
+// ==========================================================================
+template<int NX, int NY>
+static void SyncPstar2DToROOT(const FlatPstar2D<NX, NY>& flatAcc,
+                               TProfile2D* destX,
+                               TProfile2D* destY,
+                               TProfile2D* destZ)
+{
+    if (!destX || !destY || !destZ) return;
+
+    double totalW = 0.;
+
+    for (int bx = 0; bx <= NX + 1; ++bx) {
+        for (int by = 0; by <= NY + 1; ++by) {
+            const auto& c = flatAcc.cells[bx][by];
+            totalW += c.sw;
+
+            // ROOT bin index (row-major: by * (NX+2) + bx for TProfile2D)
+            int rootBin = destX->GetBin(bx, by);
+
+            // -- X component --
+            // SetBinContent(bin, sum_wy): TProfile2D::SetBinContent calls
+            // TH1::SetBinContent which stores the value directly in fArray[bin].
+            // (It also sets fBinEntries[bin] = max(1, existing) as a guard;
+            // we override that immediately with SetBinEntries below.)
+            destX->SetBinContent(rootBin, c.x);
+            destX->SetBinEntries(rootBin, c.sw);
+            if (destX->GetSumw2N() > 0)
+                (*destX->GetSumw2())[rootBin] = c.x2;
+
+            // -- Y component (same sw, same rootBin -- TProfile2Ds are co-axial) --
+            destY->SetBinContent(rootBin, c.y);
+            destY->SetBinEntries(rootBin, c.sw);
+            if (destY->GetSumw2N() > 0)
+                (*destY->GetSumw2())[rootBin] = c.y2;
+
+            // -- Z component --
+            destZ->SetBinContent(rootBin, c.z);
+            destZ->SetBinEntries(rootBin, c.sw);
+            if (destZ->GetSumw2N() > 0)
+                (*destZ->GetSumw2())[rootBin] = c.z2;
+        }
+    }
+
+    destX->SetEntries(totalW);
+    destY->SetEntries(totalW);
+    destZ->SetEntries(totalW);
+}
+
+
+// ==========================================================================
+/**
+ * @brief Sync a FlatPstar1D accumulator to the three corresponding TProfile
+ *        ROOT objects.
+ *
+ * Same logic as SyncPstar2DToROOT but for 1D profiles. Used for both the
+ * phi and eta pPstar profiles.
+ *
+ * @param flatAcc  The 1D flat accumulator to read from.
+ * @param destX    TProfile for the x component.
+ * @param destY    TProfile for the y component.
+ * @param destZ    TProfile for the z component.
+ */
+// ==========================================================================
+template<int N>
+static void SyncPstar1DToROOT(const FlatPstar1D<N>& flatAcc,
+                               TProfile* destX,
+                               TProfile* destY,
+                               TProfile* destZ)
+{
+    if (!destX || !destY || !destZ) return;
+
+    double totalW = 0.;
+
+    for (int b = 0; b <= N + 1; ++b) {
+        const auto& c = flatAcc.cells[b];
+        totalW += c.sw;
+
+        // For TProfile: bin index maps 1-to-1 (b is already the ROOT convention bin)
+        destX->SetBinContent(b, c.x);
+        destX->SetBinEntries(b, c.sw);
+        if (destX->GetSumw2N() > 0)
+            (*destX->GetSumw2())[b] = c.x2;
+
+        destY->SetBinContent(b, c.y);
+        destY->SetBinEntries(b, c.sw);
+        if (destY->GetSumw2N() > 0)
+            (*destY->GetSumw2())[b] = c.y2;
+
+        destZ->SetBinContent(b, c.z);
+        destZ->SetBinEntries(b, c.sw);
+        if (destZ->GetSumw2N() > 0)
+            (*destZ->GetSumw2())[b] = c.z2;
+    }
+
+    destX->SetEntries(totalW);
+    destY->SetEntries(totalW);
+    destZ->SetEntries(totalW);
+}
+
+
+// ==========================================================================
+/**
+ * @brief Sync a FlatRing1D accumulator to the two corresponding TProfile
+ *        ROOT objects (ring proxy and ring proxy jet).
+ *
+ * @param flatAcc  The flat ring accumulator to read from.
+ * @param destR    TProfile for <R_proxy> vs the kinematic variable.
+ * @param destRJet TProfile for <R_proxyJet> vs the kinematic variable.
+ */
+// ==========================================================================
+template<int N>
+static void SyncRing1DToROOT(const FlatRing1D<N>& flatAcc,
+                               TProfile* destR,
+                               TProfile* destRJet)
+{
+    // destR may be nullptr for the jet-only accumulator (flatRingJetVsEtaJet
+    // stores ringProxy in the r channel but only ringProxyJet is meaningful there)
+    double totalW = 0.;
+
+    for (int b = 0; b <= N + 1; ++b) {
+        const auto& c = flatAcc.cells[b];
+        totalW += c.sw;
+
+        if (destR) {
+            destR->SetBinContent(b, c.r);
+            destR->SetBinEntries(b, c.sw);
+            if (destR->GetSumw2N() > 0)
+                (*destR->GetSumw2())[b] = c.r2;
+        }
+
+        if (destRJet) {
+            destRJet->SetBinContent(b, c.rjet);
+            destRJet->SetBinEntries(b, c.sw);
+            if (destRJet->GetSumw2N() > 0)
+                (*destRJet->GetSumw2())[b] = c.rjet2;
+        }
+    }
+
+    if (destR)    destR->SetEntries(totalW);
+    if (destRJet) destRJet->SetEntries(totalW);
+}
+
+
+// ==========================================================================
+/**
+ * @brief Sync all flat accumulators in one ScenarioHistos to their ROOT objects.
+ *
+ * Must be called AFTER RebuildAllScenario() for "All" scenarios, and after
+ * the main loop for EtaPos/EtaNeg scenarios.
+ *
+ * @param h  Reference to the ScenarioHistos to sync.
+ */
+// ==========================================================================
+static void SyncScenarioFlatToROOT(ScenarioHistos& h)
+{
+    // 2D XY vector field: channels x-->pPstarX, y-->pPstarY, z-->pPstarZ
+    SyncPstar2DToROOT(h.flatXY,
+                      h.pPstarX_vsPxPy,
+                      h.pPstarY_vsPxPy,
+                      h.pPstarZ_vsPxPy);
+
+    // 2D ZX vector field.
+    // Convention: flatZX was filled as Accum(bz, bxzx, pstar_x, pstar_z, pstar_y),
+    // so Cell.x = pstar_x, Cell.y = pstar_z, Cell.z = pstar_y.
+    // Map accordingly: x-channel --> pPstarX_vsPzPx, y-channel --> pPstarZ_vsPzPx, z-channel --> pPstarY_vsPzPx
+    SyncPstar2DToROOT(h.flatZX,
+                      h.pPstarX_vsPzPx,
+                      h.pPstarZ_vsPzPx,
+                      h.pPstarY_vsPzPx);
+
+    // 1D phi profiles
+    SyncPstar1DToROOT(h.flatPhi,
+                      h.pPstarX_vsPhiLam,
+                      h.pPstarY_vsPhiLam,
+                      h.pPstarZ_vsPhiLam);
+
+    // 1D eta profiles
+    SyncPstar1DToROOT(h.flatEtaPstar,
+                      h.pPstarX_vsEtaLam,
+                      h.pPstarY_vsEtaLam,
+                      h.pPstarZ_vsEtaLam);
+
+    // Ring proxy vs Lambda eta: r-channel --> pRingProxyVsEta, rjet-channel --> pRingProxyJetVsEta
+    SyncRing1DToROOT(h.flatRingVsEta,
+                     h.pRingProxyVsEta,
+                     h.pRingProxyJetVsEta);
+
+    // Ring proxy vs Lambda pT: r-channel --> pRingProxyVsPt, rjet-channel --> pRingProxyJetVsPt
+    SyncRing1DToROOT(h.flatRingVsPt,
+                     h.pRingProxyVsPt,
+                     h.pRingProxyJetVsPt);
+
+    // Ring proxy jet vs jet eta: only rjet-channel is meaningful
+    SyncRing1DToROOT(h.flatRingJetVsEtaJet,
+                     nullptr,                   // r-channel not used for this profile
+                     h.pRingProxyJetVsEtaJet);
+}
+
+
+// ==========================================================================
+/**
+ * @brief Calls SyncScenarioFlatToROOT() for all twelve ScenarioHistos in a
+ *        FamilyHistos, then immediately zeros the flat arrays to free effective
+ *        working memory.
+ *
+ * @param f  Reference to the FamilyHistos to sync.
+ */
+// ==========================================================================
+static void SyncFamilyFlatToROOT(FamilyHistos& f) {
+    SyncScenarioFlatToROOT(f.NC_Pos); SyncScenarioFlatToROOT(f.NC_Neg); SyncScenarioFlatToROOT(f.NC_All);
+    SyncScenarioFlatToROOT(f.PT_Pos); SyncScenarioFlatToROOT(f.PT_Neg); SyncScenarioFlatToROOT(f.PT_All);
+    SyncScenarioFlatToROOT(f.DC_Pos); SyncScenarioFlatToROOT(f.DC_Neg); SyncScenarioFlatToROOT(f.DC_All);
+    SyncScenarioFlatToROOT(f.BC_Pos); SyncScenarioFlatToROOT(f.BC_Neg); SyncScenarioFlatToROOT(f.BC_All);
+}
+
+
+// ==========================================================================
+/**
  * @brief Generates unpolarized Lambda decays and studies acceptance-induced
  *        fake-polarization effects by varying kinematic and topological cuts.
  *
  * @details
  * Histograms are stored in two parallel families:
- *   - WithoutEtaGate: no requirement on daughter pseudorapidity.  Kept as a
+ *   - WithoutEtaGate: no requirement on daughter pseudorapidity. Kept as a
  *     reference to study the inconsistency that arises when Lambdas
  *     whose daughters fall outside the detector acceptance are included when
  *     the Lambdas themselves were only generated within acceptance (approximately!
@@ -1228,9 +2017,21 @@ static void FlushKahanFamily(FamilyHistos& f) {
  *     consistent set and should be used for all physics conclusions.
  *
  * Within each family, four cut scenarios are filled: NoCuts, pTCutOnly,
- * DCACutOnly, and BothCuts.  Within each scenario, histograms are split into
+ * DCACutOnly, and BothCuts. Within each scenario, histograms are split into
  * EtaPos (eta_Lambda >= 0), EtaNeg (eta_Lambda < 0), and All sub-directories
  * (see file header for the full output structure).
+ *
+ * DECAY GENERATION (refactored):
+ *   TGenPhaseSpace has been replaced by a closed-form analytical two-body
+ *   decay. The rest-frame momentum magnitude p* = pStarDaughters is a
+ *   known constant. Two uniform random numbers give the isotropic emission
+ *   angles (cosTheta*, phiDecay); from these, the full rest-frame proton
+ *   direction and the lab-frame daughter 4-momenta are computed via the
+ *   explicit Lorentz boost formulas.
+ *
+ *   A secondary benefit: the decay angles are now drawn from the same TRandom3
+ *   instance (rng) as all other random quantities, so a fixed seed fully
+ *   determines every event in the simulation.
  *
  * @param nLambdas       Number of Lambdas to simulate (default: 10,000,000).
  * @param outputPath     Output ROOT file path (default: helicityEffOutput.root).
@@ -1372,9 +2173,17 @@ void helicityEfficiencyToyModel(
     TDirectory* dirEG = outFile->mkdir("WithEtaGate");
 
     // Create the four cut-scenario sub-directories in each family and book
-    // all histograms.  CreateFamily calls CreateSubdirs four times internally.
-    FamilyHistos famNG; // Without eta gate
-    FamilyHistos famEG; // With eta gate
+    // all histograms. CreateFamily calls CreateSubdirs four times internally.
+    //
+    // IMPORTANT: FamilyHistos is heap-allocated because the FlatPstar2D
+    // members in ScenarioHistos make each FamilyHistos ~2.4 MB. Allocating
+    // two of them on the stack (total ~5 MB) would risk a stack overflow on
+    // systems with the default 8 MB stack limit.
+    auto famNG_uptr = std::make_unique<FamilyHistos>(); // Without eta gate
+    auto famEG_uptr = std::make_unique<FamilyHistos>(); // With eta gate
+    FamilyHistos& famNG = *famNG_uptr;
+    FamilyHistos& famEG = *famEG_uptr;
+
     CreateFamily(dirNG, famNG, etaMinDetector, etaMaxDetector);
     CreateFamily(dirEG, famEG, etaMinDetector, etaMaxDetector);
 
@@ -1398,21 +2207,28 @@ void helicityEfficiencyToyModel(
     outFile->cd(); // Back to root of output file
 
     // -----------------------------------------------------------------------
-    // 2) Initialise the random number generator and phase-space decay engine
+    // 2) Initialise the random number generator
     // -----------------------------------------------------------------------
     TRandom3 rng(seed);
-
-    // TGenPhaseSpace: decays a parent 4-vector into N daughters according to
-    // Lorentz-invariant phase space (flat in LIPS = unpolarized).
-    TGenPhaseSpace decayGen; // Its gRandom should be zero-initialized so uses a random seed.
-                             // This means the "seed" parameter does not exactly fix all outputs,
-                             // but it fixes jet direction sampling.
-
-    // Daughter masses array for Lambda -> p + pi-
-    Double_t daughterMasses[2] = { kMassProton, kMassPion };
+    // TGenPhaseSpace has been removed. The analytical decay implementation below
+    // uses rng for all random quantities, giving fully reproducible results for any seed.
 
     // -----------------------------------------------------------------------
-    // 3) Main event loop
+    // 3) Precompute BinParams for flat accumulator bin-finding.
+    //    All BinParams are constructed once here and passed by const-ref into
+    //    FillScenario; this avoids recomputing (hi-lo) and its inverse every fill.
+    // -----------------------------------------------------------------------
+    const BinParams bpXY   (-3., 3., 40);   // (px_lam, py_lam) for flatXY
+    const BinParams bpZX_z (-4., 4., 40);   // pz_lam for flatZX (first axis)
+    const BinParams bpZX_x (-3., 3., 40);   // px_lam for flatZX (second axis)
+    const BinParams bpPhi  (0., TwoPi, 32); // phi_lam for flatPhi
+    const BinParams bpEtaPstar(etaMinDetector, etaMaxDetector, 18); // eta_lam for flatEtaPstar
+    const BinParams bpEtaRing (etaMinDetector, etaMaxDetector,  9); // eta_lam for flatRingVsEta
+    const BinParams bpPt      (0., 5., 10); // pT_lam for flatRingVsPt
+    const BinParams bpEtaJet  (etaMinDetector, etaMaxDetector,  9); // eta_jet for flatRingJetVsEtaJet
+
+    // -----------------------------------------------------------------------
+    // 4) Main event loop
     // -----------------------------------------------------------------------
     printf("Starting generation of %ld Lambdas...\n", nLambdas);
 
@@ -1457,13 +2273,13 @@ void helicityEfficiencyToyModel(
     double cosThetaJet = rng.Uniform(cosThetaMin, cosThetaMax); // Uniformly sampled in solid angle, yet within the detectable region
     double sinThetaJet = std::sqrt(1. - cosThetaJet * cosThetaJet);
     
-    // Calculating the jet component directions (could use TVector3, but this formulation is a bit faster in the hot loop)
+    // Calculating the jet component directions (avoiding TVector3 overhead in the hot loop)
     // TVector3 jetProxyDirection(sinThetaJet * cosPhiJet, sinThetaJet * sinPhiJet, cosThetaJet);
     double jx = sinThetaJet * cosPhiJet;
     double jy = sinThetaJet * sinPhiJet;
     double jz = cosThetaJet;
     double eta_jet = std::atanh(cosThetaJet);
-    hKin_eta_jet->Fill(eta_jet); // Colecting the kinematics of the first sampled jet as well
+    hKin_eta_jet->Fill(eta_jet); // Collecting the kinematics of the first sampled jet as well
 
     for (long iLam = 0; iLam < nLambdas; ++iLam) {
         // ---- Progress printout ----
@@ -1471,7 +2287,7 @@ void helicityEfficiencyToyModel(
             std::cout << "  " << (iLam + 1) << " / " << nLambdas << " (" << 100. * (iLam + 1) / nLambdas << "%)" << std::endl;
 
         // ==================================================================
-        // 3.1  Generate Lambda 4-momentum
+        // 4.1  Generate Lambda 4-momentum
         // ==================================================================
         // Sample pT from thermal mT spectrum [GeV/c]
         double pT_lam = SampleLambdaPt(rng, T_thermal, pTmin_Lambda, pTmax_Lambda, fmax);
@@ -1490,20 +2306,15 @@ void helicityEfficiencyToyModel(
         //   pz = mT * sinh(y)
         //   px = pT * cos(phi)
         //   py = pT * sin(phi)
-        double mT_lam  = std::sqrt(pT_lam * pT_lam + kMassLambda * kMassLambda);
-        double E_lam   = mT_lam * std::cosh(rap_lam);
-        double pz_lam  = mT_lam * std::sinh(rap_lam);
-        double px_lam  = pT_lam * std::cos(phi_lam);
-        double py_lam  = pT_lam * std::sin(phi_lam);
-        double p_lam = std::sqrt(pT_lam*pT_lam + pz_lam*pz_lam);
+        double mT_lam = std::sqrt(pT_lam * pT_lam + kMassLambda * kMassLambda);
+        double E_lam  = mT_lam * std::cosh(rap_lam);
+        double pz_lam = mT_lam * std::sinh(rap_lam);
+        double px_lam = pT_lam * std::cos(phi_lam);
+        double py_lam = pT_lam * std::sin(phi_lam);
+        double p_lam  = std::sqrt(pT_lam * pT_lam + pz_lam * pz_lam); // |p_Lambda|
 
         // Lambda pseudorapidity (for eta-split histograms)
         double eta_lam = std::asinh(pz_lam / pT_lam);
-
-        // Build TLorentzVector for Lambda (used by TGenPhaseSpace, so can't really swap this for Vector4D...)
-        TLorentzVector lv_lam(px_lam, py_lam, pz_lam, E_lam);
-            // Converting the Lambda 4-vec to the latest structure (should yield faster computation still!):
-        PxPyPzEVector lambda4vec(px_lam, py_lam, pz_lam, E_lam);
 
         // Fill pre-cut kinematics
         hKin_pT_lambda->Fill(pT_lam);
@@ -1512,26 +2323,45 @@ void helicityEfficiencyToyModel(
         hKin_phi_lambda->Fill(wrapToPiFast(phi_lam));
 
         // ==================================================================
-        // 3.2  Build Lambda frame axes
+        // 4.2  Build Lambda frame axes (plain double arithmetic, no ROOT vectors)
         // ==================================================================
         // e1 = Lambda unit momentum vector (forward-backward axis)
-        XYZVector e1(px_lam / p_lam, py_lam / p_lam, pz_lam / p_lam);
-
         // e2 = (p_Lambda x z_hat) / |p_Lambda x z_hat| (transverse, left-right axis)
-            // Explicitly:  e2 = (py, -px, 0) / pT
+        //    = (py, -px, 0) / pT
+        // e3 = e1 x e2  (in-out axis)
+        //    = (pz*px, pz*py, -pT^2) / (|p|*pT)
+
         // Reject nearly beam-collinear Lambdas (pT/|p| is too small):
         if (pT_lam / p_lam < kMinSinTheta) {
             ++nCollinear;
             continue;
         }
-        XYZVector e2(py_lam / pT_lam, -px_lam / pT_lam, 0.);
+
+        // Precomputed reciprocals to avoid divisions inside the boost and observable computations
+        double inv_p_lam  = 1.0 / p_lam;
+        double inv_pT_lam = 1.0 / pT_lam;
+        double inv_E_lam  = 1.0 / E_lam;
+
+        // e1 components (Lambda unit momentum)
+        double e1x = px_lam * inv_p_lam;
+        double e1y = py_lam * inv_p_lam;
+        double e1z = pz_lam * inv_p_lam;
+
+        // e2 components (left-right axis; by definition contains no z component)
+        double e2x =  py_lam * inv_pT_lam;
+        double e2y = -px_lam * inv_pT_lam;
+        // e2z = 0  (implicit)
 
         // e3 = e1 x e2  (in-out axis)
-        // Explicitly:  e3 = (pz*px, pz*py, -pT^2) / (|p|*pT)
-        XYZVector e3 = e1.Cross(e2);  // Unit by construction since e1, e2 are unit orthonormal
+        // Explicitly: e3 = e1 x e2:  e3 = (pz*px, pz*py, -pT^2) / (|p|*pT)
+        // Using the explicit formula (avoids a Cross() virtual call):
+        double inv_p_lam_pT = inv_p_lam * inv_pT_lam;
+        double e3x = pz_lam * px_lam * inv_p_lam_pT;
+        double e3y = pz_lam * py_lam * inv_p_lam_pT;
+        double e3z = -(pT_lam * pT_lam) * inv_p_lam_pT; // = -pT / |p|
 
         // ==================================================================
-        // 3.3  Sample proper decay length and compute decay vertex
+        // 4.3  Sample proper decay length and compute decay vertex
         // ==================================================================
         // Sample proper decay length from exponential distribution:
         //   l_proper = -ctau * ln(U),  U ~ Uniform(0,1)
@@ -1550,44 +2380,106 @@ void helicityEfficiencyToyModel(
         // -- Lab-frame decay vertex coordinates [cm] --
         double xv = (px_lam / kMassLambda) * l_proper;
         double yv = (py_lam / kMassLambda) * l_proper;
-        // double zv = (pz_lam / kMassLambda) * l_proper;
+        // double zv = (pz_lam / kMassLambda) * l_proper; // not needed for DCA-XY computation, but useful to keep in hand
 
         // -- Transverse decay radius [cm] --
         double decayR = std::sqrt(xv * xv + yv * yv);
         hKin_decayR->Fill(decayR);
 
         // ==================================================================
-        // 3.4  Generate unpolarized Lambda decay via TGenPhaseSpace
+        // 4.4  Analytical two-body decay (replaces TGenPhaseSpace::Generate())
         // ==================================================================
-        // TGenPhaseSpace::SetDecay() sets up the kinematics.
-        // TGenPhaseSpace::Generate() produces one random phase-space point.
-        // Daughters are indexed as: 0 = proton, 1 = pion.
-        decayGen.SetDecay(lv_lam, 2, daughterMasses);
-        decayGen.Generate();  // Isotropic, unpolarized decay
+        // For an unpolarized Lambda -> p + pi- decay, the proton emission is
+        // isotropic in the Lambda rest frame. In the original code this was
+        // handled by TGenPhaseSpace::Generate(), which is an un-inlinable
+        // virtual call with its own (opaque!) random-number state.
+        //
+        // Here we generate the decay analytically:
+        //   1. Sample cos(theta*) uniformly in [-1, 1] (isotropic solid angle)
+        //   2. Sample phi_decay uniformly in [0, 2pi)
+        //   3. Express the proton rest-frame direction in lab coordinates via
+        //      the (e1, e2, e3) frame defined in Section 4.2
+        //   4. Apply the explicit Lorentz boost to obtain lab-frame 4-momenta
+        //
+        // cos(theta*) and phi* are the physical observables -- no separate
+        // atan2 or dot-product evaluation is needed to recover them.
+        // -- cos(theta*): proton emission vs Lambda momentum direction (e1) --
+        // This is the forward-backward angle.
+        // -- phi*: proton azimuth around the Lambda axis --
+        // phi* = 0 is in the "left" direction (e2 = p_Lambda x z_hat).
+        // phi* = pi/2 is in the "in-out" direction (e3 = e1 x e2).
+        //
+        // The rest-frame energy kEStarProton = sqrt(p*^2 + m_p^2) is a
+        // compile-time constant; it appears in the boost coefficient below.
 
-        // Retrieve daughter 4-vectors in the LAB frame
-        // (TODO: could calculate this by hand, as done in PythiaGenMin's MC by the way! Much more efficient than TGenPhaseSpace, I guess...)
-        // (Just make sure to generate homogeneously in cosTheta instead of Theta, for proper 3D isotropic generation of protons and pions!)
-        TLorentzVector tlv_proton = *(decayGen.GetDecay(0));
-        TLorentzVector tlv_pion   = *(decayGen.GetDecay(1));
+        double cosTheta  = rng.Uniform(-1., 1.); // cos(theta*) = proton emission angle w.r.t. Lambda direction
+        double phiDecay  = rng.Uniform(0., TwoPi); // azimuthal decay angle
+        double sinTheta  = std::sqrt(1.0 - cosTheta * cosTheta);
+        double cosPhi    = std::cos(phiDecay);
+        double sinPhi    = std::sin(phiDecay);
 
-        // Lab-frame transverse momenta of daughters [GeV/c]
-        double px_p = tlv_proton.Px();
-        double py_p = tlv_proton.Py();
-        double pz_p = tlv_proton.Pz();
-        double E_p  = tlv_proton.E();
+        // phi* for histograms: wrap phiDecay (which is in [0, 2pi)) to [-pi, pi)
+        double phi_star = wrapToPiFast(phiDecay);
 
-        double px_pi = tlv_pion.Px();
-        double py_pi = tlv_pion.Py();
-        double pz_pi = tlv_pion.Pz();
-        double E_pi  = tlv_pion.E();
+        // Proton rest-frame unit vector expressed in lab coordinates:
+        //   p*_unit = cosTheta * e1 + sinTheta * cosPhi * e2 + sinTheta * sinPhi * e3
+        // (by construction, this is the proton direction w.r.t. the Lambda axis)
+        double pstar_ux = cosTheta * e1x + sinTheta * cosPhi * e2x + sinTheta * sinPhi * e3x;
+        double pstar_uy = cosTheta * e1y + sinTheta * cosPhi * e2y + sinTheta * sinPhi * e3y;
+        double pstar_uz = cosTheta * e1z + /* cosPhi*e2z=0 */ sinTheta * sinPhi * e3z;
 
-        // Now convert to the most recent ROOT toolset, faster and optimization-friendly:
-        PxPyPzEVector proton4vec(px_p, py_p, pz_p, E_p);
-        PxPyPzEVector pion4vec(px_pi, py_pi, pz_pi, E_pi);
+        // ==================================================================
+        // 4.5  Lorentz boost: rest-frame -> lab-frame daughter 4-momenta
+        // ==================================================================
+        // For a Lambda with 4-momentum (E, p_vec):
+        //   gamma = E / M
+        //   beta  = |p| / E
+        //   boost direction = e1 = p_vec/|p|
+        //
+        // The lab-frame proton momentum is:
+        //   p_lab = p* + beta_vec * [ (gamma-1)/beta^2 * (beta_vec . p*) + gamma * E*_p ]
+        //
+        // Since beta_vec = p_lam_vec / E_lam and beta_vec . p* = p_lam . p*_unit / E_lam:
+        //   beta_vec . p* = |p| * p* * cosTheta / E_lam  (because e1 . p*_unit = cosTheta)
+        //
+        // And:
+        //   (gamma-1)/beta^2 = (gamma-1) * E^2 / |p|^2
+        //
+        // The boost coefficient simplifies to:
+        //   a_p  = (gamma-1)*E/|p| * p* * cosTheta + gamma * E*_p
+        //   a_pi = (gamma-1)*E/|p| * p* * (-cosTheta) + gamma * E*_pi
+        //
+        // The rest-frame proton 3-momentum (in lab coords) is p*_unit * pStarDaughters.
+        // The pion carries the opposite rest-frame momentum: -p*_unit * pStarDaughters.
+        //
+        double gam_lam = E_lam / kMassLambda;   // Lorentz gamma factor
+        // (gamma-1) * E / |p|  -- prefactor for the boost coefficient
+        double g1_E_inv_p  = (gam_lam - 1.0) * E_lam * inv_p_lam;
 
-        double pT_p  = proton4vec.Pt();
-        double pT_pi = pion4vec.Pt();
+        // Boost coefficients for proton and pion
+        double a_proton = g1_E_inv_p * pStarDaughters * cosTheta + gam_lam * kEStarProton;
+        double a_pion   = g1_E_inv_p * pStarDaughters * (-cosTheta) + gam_lam * kEStarPion;
+
+        // Rest-frame proton 3-momentum components (in lab frame coordinates)
+        double psx = pStarDaughters * pstar_ux;
+        double psy = pStarDaughters * pstar_uy;
+        double psz = pStarDaughters * pstar_uz;
+
+        // Proton lab-frame 3-momentum:
+        //   p_lab = p* + (p_Lambda / E_Lambda) * a_proton
+        double px_p = psx + px_lam * inv_E_lam * a_proton;
+        double py_p = psy + py_lam * inv_E_lam * a_proton;
+        double pz_p = psz + pz_lam * inv_E_lam * a_proton;
+
+        // Pion lab-frame 3-momentum (rest-frame momentum is opposite to proton):
+        //   p_pi = -p* + (p_Lambda / E_Lambda) * a_pion
+        double px_pi = -psx + px_lam * inv_E_lam * a_pion;
+        double py_pi = -psy + py_lam * inv_E_lam * a_pion;
+        double pz_pi = -psz + pz_lam * inv_E_lam * a_pion;
+
+        // Lab-frame transverse momenta [GeV/c]
+        double pT_p  = std::sqrt(px_p  * px_p  + py_p  * py_p);
+        double pT_pi = std::sqrt(px_pi * px_pi + py_pi * py_pi);
 
         // Fill pre-cut daughter kinematics
         hKin_pT_proton->Fill(pT_p);
@@ -1601,52 +2493,30 @@ void helicityEfficiencyToyModel(
         // making the acceptance consistent with that of a real detector.
         // The WithoutEtaGate family does NOT apply this requirement and is
         // kept only to demonstrate the inconsistency of omitting it.
-        double eta_p  = proton4vec.Eta();
-        double eta_pi = pion4vec.Eta();
+        double eta_p  = std::asinh(pz_p  / pT_p);
+        double eta_pi = std::asinh(pz_pi / pT_pi);
 
         // ==================================================================
-        // 3.5  Boost proton to Lambda rest frame
-        // ==================================================================
-        // Boost the proton 4-vector from the lab frame into the Lambda rest frame.
-        // In TLorentzVector, BoostVector() returns beta = p/E (rest --> lab).
-        // To go from lab --> rest frame, we must use the opposite boost: -p/E.
-        // TLorentzVector lv_proton_star = lv_proton;
-        // lv_proton_star.Boost(-lv_lam.BoostVector());
-
-        // New boost style:
-        auto proton4vec_star = ROOT::Math::VectorUtil::boost(proton4vec, lambda4vec.BoostToCM()); // BoostToCM gives a trivector that goes from laboratory
-                                                                                                  // frame to Lambda's rest frame (convenient new function,
-                                                                                                  // different from TLorentzVector's BoostVector())
-                                                                                                  // This already contains the "minus sign" for the boost
-        // Unit vector of proton momentum in Lambda rest frame
-        XYZVector p_star_unit = proton4vec_star.Vect().Unit();
-
-        // ==================================================================
-        // 3.6  Compute the three key angular observables
-        // ==================================================================
-        // -- cos(theta*): proton emission vs Lambda momentum direction (e1) --
-        // This is the forward-backward angle.
-        double cosTheta = p_star_unit.Dot(e1);
-
-        // -- phi*: proton azimuth around the Lambda axis --
-        // phi* = 0 is in the "left" direction (e2 = p_Lambda x z_hat).
-        // phi* = pi/2 is in the "in-out" direction (e3 = e1 x e2).
-        double phi_star = std::atan2(p_star_unit.Dot(e3), p_star_unit.Dot(e2));
-
-        // ==================================================================
-        // 3.7  Compute the ring observable proxy (z_hat as if jet direction)
-        // ==================================================================
-        // t_hat = z_hat = (0, 0, 1)
-        // t_hat x lambda_momentum = z_hat x (lx, ly, lz) = (-ly, lx, 0)
-        // |z_hat x lambda_momentum| = sqrt(lx^2 + ly^2) = pT / |p| = sinTheta_lam
+        // 4.6  cos(theta*) and phi* are already available from the generation
+        //      step (Section 4.4): cosTheta = cosTheta*, phi_star = phiDecay
+        //      wrapped to [-pi, pi).
+        // The ring observable proxy reduces algebraically to (with t_hat = z_hat):
+        //   ring_proxy = (3/alpha) * p*_unit . (z_hat x lambda_unit) / |z_hat x lambda_unit|
+        //             = -(3/alpha) * p*_unit . e2
+        //             = -(3/alpha) * sinTheta * cosPhi
         //
-        // Normalized cross product = (-ly, lx, 0) / sinTheta_lam
-        //                          = (-py, px, 0) / pT (after scaling)
-        // ring_proxy = (3/alpha) * p_star_unit . (-py, px, 0) / pT
-        double ringProxy = kPolPrefactor * (-p_star_unit.X() * py_lam + p_star_unit.Y() * px_lam) / pT_lam;
+        // Derivation: p*_unit . e2 = cosTheta*(e1.e2) + sinTheta*cosPhi*(e2.e2) + sinTheta*sinPhi*(e3.e2)
+        //             The orthonormality of (e1,e2,e3) gives e1.e2=0, e2.e2=1, e3.e2=0,
+        //             so p*_unit . e2 = sinTheta * cosPhi.
+        //             And z_hat x lambda_unit / |...| = -e2 (from the cross-product definition),
+        //             so the sign flips.
+        // This algebraic form avoids the triple dot-product evaluation that was
+        // previously needed.
+        // ==================================================================
+        double ringProxy = -kPolPrefactor * sinTheta * cosPhi; // Compute the ring observable proxy (z_hat as if jet direction)
 
         // ==================================================================
-        // 3.7.1  Compute the ring observable proxy using randomly sampled jet
+        // 4.7  Ring observable proxy using a randomly sampled jet direction
         // ==================================================================
         if (nLambdasSinceJetShuffle == 3){
             // Close the current event before drawing a new jet:
@@ -1687,10 +2557,10 @@ void helicityEfficiencyToyModel(
         double inv_c_norm = 1.0 / std::sqrt(cx * cx + cy * cy + cz * cz);
 
         // 3) Dot product with p_star_unit
-        double ringProxyJet = kPolPrefactor * (p_star_unit.X() * cx + p_star_unit.Y() * cy + p_star_unit.Z() * cz) * inv_c_norm;
+        double ringProxyJet = kPolPrefactor * (pstar_ux * cx + pstar_uy * cy + pstar_uz * cz) * inv_c_norm;
 
         // ==================================================================
-        // 3.8  Compute DCA_xy of each daughter to the primary vertex
+        // 4.8  Compute DCA_xy of each daughter to the primary vertex
         // ==================================================================
         // The daughter tracks originate at the decay vertex (xv, yv).
         // We compute the analytical transverse DCA using the helix formula.
@@ -1702,7 +2572,7 @@ void helicityEfficiencyToyModel(
         hKin_DCA_pion->Fill(dca_pion);
 
         // ==================================================================
-        // 3.9  Apply selection cuts
+        // 4.9  Apply selection cuts
         // ==================================================================
         // -- Eta gate: both daughters must lie inside the detector acceptance --
         // This is the acceptance pre-condition for the WithEtaGate family.
@@ -1720,22 +2590,24 @@ void helicityEfficiencyToyModel(
         bool etaPos = (eta_lam >= 0.);
 
         // ==================================================================
-        // 3.10  Fill histogram families
+        // 4.10  Fill histogram families
         // ==================================================================
         // WithoutEtaGate: fill for all events regardless of daughter eta.
         // Kept as a comparison to show the inconsistency of omitting the gate.
         FillFamily(famNG, passPtCut, passDcaCut, etaPos,
+                   bpEtaRing, bpEtaPstar, bpPt, bpPhi, bpXY, bpZX_z, bpZX_x, bpEtaJet,
                    cosTheta, phi_star, ringProxy, ringProxyJet, decayR,
                    pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet,
-                   p_star_unit.X(), p_star_unit.Y(), p_star_unit.Z(), px_lam, py_lam, phi_lam, pz_lam);
+                   pstar_ux, pstar_uy, pstar_uz, px_lam, py_lam, phi_lam, pz_lam);
 
         // WithEtaGate: only fill when both daughters are inside the acceptance.
         // This is the physically consistent set.
         if (passEtaGate)
             FillFamily(famEG, passPtCut, passDcaCut, etaPos,
+                       bpEtaRing, bpEtaPstar, bpPt, bpPhi, bpXY, bpZX_z, bpZX_x, bpEtaJet,
                        cosTheta, phi_star, ringProxy, ringProxyJet, decayR,
                        pT_p, pT_pi, dca_proton, dca_pion, pT_lam, eta_lam, eta_jet,
-                       p_star_unit.X(), p_star_unit.Y(), p_star_unit.Z(), px_lam, py_lam, phi_lam, pz_lam);
+                       pstar_ux, pstar_uy, pstar_uz, px_lam, py_lam, phi_lam, pz_lam);
 
         ++nGenerated;
 
@@ -1745,16 +2617,35 @@ void helicityEfficiencyToyModel(
     FlushEventMeansFamily(famNG);
     FlushEventMeansFamily(famEG);
 
-    // Compute chunk means now that all events have been flushed:
+    // -----------------------------------------------------------------------
+    // 5) Post-loop processing
+    // -----------------------------------------------------------------------
+    // Step 5a: Reconstruct "All" sub-directories from EtaPos + EtaNeg.
+    //   (ROOT histograms, flat accumulators, and Kahan sums)
+    //   The event-mean and chunk accumulators in "All" were populated during
+    //   the loop by AccumEventRpj() -> FlushEventMean(); no rebuild needed there.
+    RebuildAllFamily(famNG);
+    RebuildAllFamily(famEG);
+
+    // Step 5b: Compute chunk means now that all events have been flushed and
+    //   "All" chunk arrays are populated:
     FinalizeChunksFamily(famNG);
     FinalizeChunksFamily(famEG);
 
-    // Flush Kahan accumulators to their TH1D containers:
+    // Step 5c: Flush Kahan accumulators to their TH1D containers:
     FlushKahanFamily(famNG);
     FlushKahanFamily(famEG);
 
+    // Step 5d: Sync flat accumulators to ROOT TProfile/TProfile2D objects.
+    //   This is the final step before writing: all FlatPstar2D and FlatRing1D
+    //   data are injected into their corresponding ROOT objects so that a
+    //   downstream analysis reading the file sees identical results to the
+    //   original code (same histogram names, same binning, same error conventions).
+    SyncFamilyFlatToROOT(famNG);
+    SyncFamilyFlatToROOT(famEG);
+
     // -----------------------------------------------------------------------
-    // 4) Print summary statistics
+    // 6) Print summary statistics
     // -----------------------------------------------------------------------
     printf("\n");
     printf("========================================================\n");
@@ -1867,7 +2758,7 @@ void helicityEfficiencyToyModel(
     PrintRingJetFamily("WithEtaGate",    famEG);
 
     // -----------------------------------------------------------------------
-    // 5) Write all histograms to disk and close
+    // 7) Write all histograms to disk and close
     // -----------------------------------------------------------------------
     outFile->Write("", TObject::kOverwrite); // This should write to all registered objects from memory.
                                              // Much cleaner than what I used to do before of writing every single histogram explicitly!
@@ -1935,7 +2826,6 @@ int main(int argc, char** argv) {
     return 0;
 }
 #endif
-
 
 
 
