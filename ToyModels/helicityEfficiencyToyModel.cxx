@@ -2740,6 +2740,24 @@ void helicityEfficiencyToyModel(
                                const ScenarioHistos& hA,
                                const ScenarioHistos& hP,
                                const ScenarioHistos& hN) {
+            // Small helper: format one value +/- error into a fixed buffer.
+            auto fmt_pm = [](char* buf, int n, double v, double e) {
+                std::snprintf(buf, n, "%+.4e +/- %.4e", v, e);
+            };
+
+            // Small helper: print one aligned row.
+            auto print_row = [&](const char* method,
+                                 double rAll, double eAll,
+                                 double rPos, double ePos,
+                                 double rNeg, double eNeg) {
+                char allBuf[48], posBuf[48], negBuf[48];
+                fmt_pm(allBuf, sizeof(allBuf), rAll, eAll);
+                fmt_pm(posBuf, sizeof(posBuf), rPos, ePos);
+                fmt_pm(negBuf, sizeof(negBuf), rNeg, eNeg);
+
+                printf("      %-18s All: %-25s  EtaPos: %-25s  EtaNeg: %-25s\n",
+                    method, allBuf, posBuf, negBuf);
+            };
 
             // --- TProfile SEM (assumes independent entries) ---
             double rAll_prof = hA.pRingProxyJet->GetBinContent(1);
@@ -2786,16 +2804,16 @@ void helicityEfficiencyToyModel(
             double nChkNeg = (double)hN.hChunkMeansRingProxyJet->GetEntries();
 
             printf("    %-12s\n", label);
-            printf("      TProfile SEM    All: %+.4e +/- %.4e  EtaPos: %+.4e +/- %.4e  EtaNeg: %+.4e +/- %.4e\n",
-                   rAll_prof, eAll_prof, rPos_prof, ePos_prof, rNeg_prof, eNeg_prof);
-            printf("      Kahan SEM    All: %+.4e +/- %.4e  EtaPos: %+.4e +/- %.4e  EtaNeg: %+.4e +/- %.4e\n",
-                   rAll_Kah, eAll_Kah, rPos_Kah, ePos_Kah, rNeg_Kah, eNeg_Kah);
-            printf("      Event-mean      All: %+.4e +/- %.4e  EtaPos: %+.4e +/- %.4e  EtaNeg: %+.4e +/- %.4e\n",
-                   rAll_evt,  eAll_evt,  rPos_evt,  ePos_evt,  rNeg_evt,  eNeg_evt);
-            printf("      Chunking (%2.0f chk) All: %+.4e +/- %.4e  EtaPos: %+.4e +/- %.4e  EtaNeg: %+.4e +/- %.4e\n",
-                   nChkAll, rAll_chk, eAll_chk, rPos_chk, ePos_chk, rNeg_chk, eNeg_chk);
-            printf("      N_events   All: %.0f (evt) / %.0f (chk)   EtaPos: %.0f / %.0f   EtaNeg: %.0f / %.0f\n",
-                   nEvtAll, nChkAll, nEvtPos, nChkPos, nEvtNeg, nChkNeg);
+            print_row("TProfile SEM", rAll_prof, eAll_prof, rPos_prof, ePos_prof, rNeg_prof, eNeg_prof);
+            print_row("Kahan SEM",    rAll_Kah,  eAll_Kah,  rPos_Kah,  ePos_Kah,  rNeg_Kah,  eNeg_Kah);
+            print_row("Event-mean",   rAll_evt,  eAll_evt,  rPos_evt,  ePos_evt,  rNeg_evt,  eNeg_evt);
+
+            char chunkLabel[32];
+            std::snprintf(chunkLabel, sizeof(chunkLabel), "Chunking (%.0f chk)", nChkAll);
+            print_row(chunkLabel, rAll_chk, eAll_chk, rPos_chk, ePos_chk, rNeg_chk, eNeg_chk);
+
+            printf("      %-18s All: %.0f (evt) / %.0f (chk)   EtaPos: %.0f / %.0f   EtaNeg: %.0f / %.0f\n",
+                "N_events", nEvtAll, nChkAll, nEvtPos, nChkPos, nEvtNeg, nChkNeg);
 
             double ratioAll_ec = (eAll_prof > 0.) ? eAll_evt / eAll_prof : 0.;
             double ratioAll_cc = (eAll_prof > 0.) ? eAll_chk / eAll_prof : 0.;
