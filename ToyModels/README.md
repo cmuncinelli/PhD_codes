@@ -301,6 +301,101 @@ root -l -b -q 'plotHelicityEfficiency.cxx("output.root","plots_dir")'
 
 ---
 
+### `compareHelicityFamilies.cxx`
+
+**Run this file after all generator families have finished executing.**
+
+Reads every ROOT file produced by the generator across all families and
+produces a single `compare_families.root` file containing systematic comparison
+canvases. Missing files are silently skipped, so partial family runs (e.g.
+`--family 9`) are safe.
+
+Three comparison types are produced, all using the SEM error estimator
+(TProfile SEM as filled markers; Kahan SEM as diamond overlays for
+cross-checking):
+
+| Comparison | x-axis | What is compared |
+|------------|--------|-----------------|
+| **Within-family** | Generator configurations in registration order (typically increasing cut value) | How `<R_proxy_jet>` evolves as the varied parameter changes; 4 cut-scenario series |
+| **Cross-family (representatives)** | One representative per family | Typical working-point comparison across all physics questions; also a BothCuts-only version |
+| **Brute-force** | Every configuration from every family in order | Condensed all-in-one overview; family boundaries marked with vertical lines; also BothCuts-only |
+
+Each comparison type also includes a **NetEffect** subfolder:
+`(scenario) − NoCuts` per x-bin, directly showing the fake polarization
+shift attributable to the selection cuts.
+
+#### Output directory structure inside `compare_families.root`
+
+```
+compare_families.root
+  Family_00_Baseline/
+  Family_01_AsymDCA/
+  ...
+  Family_12_LambdaRap/
+    WithEtaGate/    WithoutEtaGate/
+      EtaLambda/    EtaJet/        <-- within-family, all 4 scenarios
+      NetEffect/
+        EtaLambda/  EtaJet/        <-- (scenario − NoCuts)
+  CrossFamily/
+    WithEtaGate/    WithoutEtaGate/
+      EtaLambda/    EtaJet/        <-- representatives, all 4 scenarios
+      BothCutsOnly/
+        EtaLambda/  EtaJet/        <-- BothCuts only, cleaner view
+      NetEffect/
+        EtaLambda/  EtaJet/
+  BruteForce/
+    WithEtaGate/    WithoutEtaGate/
+      EtaLambda/    EtaJet/        <-- all configs, all families in order
+      BothCutsOnly/
+        EtaLambda/  EtaJet/
+      NetEffect/
+        EtaLambda/  EtaJet/
+```
+
+Each canvas within `EtaLambda/` or `EtaJet/` corresponds to one of five
+selections:
+
+| Subfolder | Canvas | Histogram read | Notes |
+|-----------|--------|----------------|-------|
+| `EtaLambda/` | `EtaPos` | `pRingProxyJet` from `EtaPos/` dir | |
+| `EtaLambda/` | `EtaNeg` | `pRingProxyJet` from `EtaNeg/` dir | |
+| `EtaLambda/` | `All` | `pRingProxyJet` from `All/` dir | |
+| `EtaJet/` | `JetEtaPos` | `pRingProxyJet_JetEtaPos` from `All/` dir | conditional on jet |
+| `EtaJet/` | `JetEtaNeg` | `pRingProxyJet_JetEtaNeg` from `All/` dir | conditional on jet |
+
+#### Representative configurations (cross-family canvas)
+
+| Family | Representative | Rationale |
+|--------|---------------|-----------|
+| 0 | `baseline` | only config |
+| 1 | `dca_asym_std` | ALICE-like 0.05/0.10 cm asymmetric reference |
+| 2 | `dca_sym_010` | clean single-parameter reference with visible AEE |
+| 3 | `field_b050` | standard B = +0.5 T |
+| 4 | `lam_ptmin_000` | fully inclusive Lambda pT spectrum |
+| 5 | `pt_sym_150` | ALICE standard-ish symmetric pT cut |
+| 6 | `eta_090` | ALICE inner barrel acceptance |
+| 7 | `temp_030` | nominal LHC Lambda inverse slope T = 0.30 GeV |
+| 8 | `win_ring` | the ring analysis window [0.5, 1.5] GeV/c |
+| 9 | `alice_std` | standard ALICE V0 working point |
+| 10 | `fieldCuts_b050` | standard B = +0.5 T with both cut types active |
+| 11 | `pos10cmZvtx` | simplest asymmetric eta scenario (+10 cm Zvtx shift) |
+| 12 | `yLam4` | rapidity range used throughout the rest of the study |
+
+#### Automatic invocation
+
+When `compareHelicityFamilies.cxx` is present alongside `runHelicityToyModel.sh`,
+the coordinator calls it automatically after all per-run jobs finish.
+The comparison log is written to `logs/compareHelicityFamilies.log`.
+
+**Run manually:**
+```bash
+root -l -b -q 'compareHelicityFamilies.cxx("/path/to/BaseDir")'
+# Custom output file:
+root -l -b -q 'compareHelicityFamilies.cxx("/path/to/BaseDir","my_compare.root")'
+```
+
+---
+
 ## `runHelicityToyModel.sh`
 
 **The coordinator script -- start here for a full parameter scan.**
@@ -348,13 +443,13 @@ chmod +x runHelicityToyModel.sh
 # List all registered jobs and their parameters, then exit:
 ./runHelicityToyModel.sh --list
 
-# Skip data generation and re-run only the plotter:
+# Skip data generation and re-run only the plotters (both compareHelicityFamilies.cxx and plotHelicityEfficiency.cxx):
 ./runHelicityToyModel.sh --plot
 
 ```
 
-When `--plot` is set, the generator step is skipped for every job; the plotter
-always runs regardless (it is fast). This is exported as `PLOT_ONLY` so that
+When `--plot` is set, the generator step is skipped for every job; the plotters
+always run regardless (they are fast). This is exported as `PLOT_ONLY` so that
 all subshells dispatched via GNU parallel or the bash background pool see the
 same flag.
 
@@ -373,10 +468,18 @@ same flag.
 | 8 | `8_KinWindow/` | Ring kinematic windows | Where is the fake signal largest across successive pT windows? |
 | 9 | `9_RealisticAlice/` | Realistic ALICE cuts | Combined HEE+AEE estimate under experimental conditions. |
 | 10 | `10_BField/` | Magnetic field (with pT and DCA cuts) | Combined AEE+HEE field dependence with both cuts simultaneously active; sign flip and strength scan. |
+| 11 | `11_EtaAsym/` | Asymmetric eta acceptance | How does a non-symmetric eta gate (emulated Zvtx shift or partial forward/backward acceptance) generate or modify fake signals? Does the AEE sign flip with the Zvtx sign? |
+| 12 | `12_LambdaRap/` | Lambda max rapidity at generator level | What is the optimal rapidity range for Lambda generation? Does the rapidity cut itself introduce an acceptance-induced fake signal in the WithoutEtaGate histograms, and at what rapidity does it become negligible? |
 
 Families 1, 2, 3 are **AEE probes** (DCA cuts active, pT cuts = 0). Family 10
 re-runs the field scan from Family 3 but with pT cuts enabled, allowing the
 combined AEE+HEE dependence on field polarity and strength to be assessed.
+Family 11 probes the effect of asymmetric eta windows (emulating non-zero Zvtx
+or partial forward/backward acceptance) and checks whether the AEE sign flips
+with the direction of the asymmetry and the B-field polarity.
+Family 12 characterises the generator-level rapidity cut: above a certain
+rapidity range the cut itself introduces an implicit acceptance bias visible in
+the WithoutEtaGate histograms; the family identifies the safe operating range.
 Families 5 and 6 are **HEE probes** (pT cuts active, DCA cuts = 0). Families
 4, 7, 8 and 9 use standard-ish ALICE cuts to study kinematic context and
 combined effects.
@@ -400,7 +503,10 @@ file is also produced in `LOG_DIR/`.
 **Default log directory:** `/home/users/cicerodm/RingPol/HelicityToyModel/logs/`
 
 Both can be changed at the top of the script. The entire scan generates
-approximately 600 MB of ROOT files (~59 runs × ~4–8 MB each; eyeballed).
+approximately 600 MB of ROOT files (~80 runs across 13 families × ~4–8 MB
+each; eyeballed). After all jobs complete, `compareHelicityFamilies.cxx`
+is invoked automatically and produces `compare_families.root` (~5–20 MB
+depending on family coverage).
 
 ---
 

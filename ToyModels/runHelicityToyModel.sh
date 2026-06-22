@@ -865,7 +865,7 @@ if family_in_scope 12; then
 
     #               NAME              SUBDIR                          N             Bz     pTminL  pTmaxL  rap   etaMin  etaMax  T     pTp    pTpi   dcaP   dcaPi  seed
     register_job   "yLam0_5GuardTest" "12_LambdaRap/yLam0_5GuardTest" ${DEFAULT_N}  0.50   0.0     10.0    0.5   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
-    register_job   "yLam2"            "12_LambdaRap/yLam2"            ${DEFAULT_N}  -0.50  0.0     10.0    2.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "yLam2"            "12_LambdaRap/yLam2"            ${DEFAULT_N}  0.50   0.0     10.0    2.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
     register_job   "yLam3"            "12_LambdaRap/yLam3"            ${DEFAULT_N}  0.50   0.0     10.0    3.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
     register_job   "yLam4"            "12_LambdaRap/yLam4"            ${DEFAULT_N}  0.50   0.0     10.0    4.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
     register_job   "yLam5"            "12_LambdaRap/yLam5"            ${DEFAULT_N}  0.50   0.0     10.0    5.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
@@ -1098,6 +1098,60 @@ echo "    # Open a result in ROOT:"
 echo "    root -l ${BASE_DIR}/0_Baseline/baseline/helicity_baseline.root"
 echo "============================================================"
 echo ""
+
+# =============================================================================
+# CROSS-FAMILY COMPARISON
+# Runs compareHelicityFamilies.cxx after all per-run generator + plotter jobs
+# finish.  Produces compare_families.root in BASE_DIR with within-family,
+# cross-family, and brute-force comparison canvases.
+#
+# Missing generator ROOT files are silently skipped inside the macro, so
+# this is safe to call even after a partial family run (--family N).
+# The comparison always runs regardless of DISPATCH_STATUS so that partial
+# results (from successfully completed jobs) are still captured.
+# --> This also works if you use --plot to avoid regenerating!
+# =============================================================================
+
+CMP_MACRO="${SCRIPT_DIR}/compareHelicityFamilies.cxx"
+CMP_ROOT="${BASE_DIR}/compare_families.root"
+CMP_LOG="${LOG_DIR}/compareHelicityFamilies.log"
+
+if [[ -f "${CMP_MACRO}" ]]; then
+    echo ""
+    echo "============================================================"
+    echo "  Cross-family comparison"
+    echo "  Macro   : ${CMP_MACRO}"
+    echo "  Output  : ${CMP_ROOT}"
+    echo "  Log     : ${CMP_LOG}"
+    echo "============================================================"
+
+    {
+        echo "=== compareHelicityFamilies started at $(date '+%Y-%m-%d %H:%M:%S') ==="
+        echo "Host    : $(hostname)"
+        echo "BaseDir : ${BASE_DIR}"
+        echo ""
+    } > "${CMP_LOG}"
+
+    T_CMP0=$(date +%s)
+    if eval "${ROOT_EXE} -l -b -q '${CMP_MACRO}(\"${BASE_DIR}\")'" \
+            >> "${CMP_LOG}" 2>&1; then
+        T_CMP1=$(date +%s)
+        echo "  [DONE] compareHelicityFamilies  ($(( T_CMP1 - T_CMP0 )) s)"
+        echo ""
+        echo "  Browse results:"
+        echo "    root -l '${CMP_ROOT}'"
+    else
+        CMP_EXIT=$?
+        echo "  [WARN] compareHelicityFamilies failed (exit ${CMP_EXIT})."
+        echo "         See log: ${CMP_LOG}"
+    fi
+else
+    echo ""
+    echo "  [SKIP] compareHelicityFamilies.cxx not found at:"
+    echo "         ${CMP_MACRO}"
+    echo "         Place it alongside runHelicityToyModel.sh to enable"
+    echo "         automatic cross-family comparison."
+fi
 
 # =============================================================================
 # CLEANUP -- Removing the .exe as it is no longer needed
