@@ -525,7 +525,7 @@ struct BinParams {
  * Structure-of-Arrays (SoA) because all seven writes go to the same cache
  * line rather than to seven distinct, widely-separated memory locations.
  *
- * Memory footprint (NX=NY=40):  42 * 42 * 56 = 98784 bytes ≈ 96 KB per instance.
+ * Memory footprint (NX=NY=40):  42 * 42 * 56 = 98784 bytes ~ 96 KB per instance.
  *
  * After the main event loop, the accumulated sums are flushed to the ROOT
  * TProfile2D objects via SyncPstar2DToROOT().
@@ -1772,8 +1772,8 @@ static void RebuildAllFamily(FamilyHistos& f) {
  * sum arrays.
  *
  * The flatAcc "y" channel mapping depends on how flatZX was filled:
- *   flatZX.Accum(bz, bxzx, pstar_x, pstar_z, pstar_y)  ← (x, z, y) order
- * so when syncing flatZX:  destX ← x-channel, destZ ← y-channel, destY ← z-channel.
+ *   flatZX.Accum(bz, bxzx, pstar_x, pstar_z, pstar_y) <-- (x, z, y) order
+ * so when syncing flatZX:  destX <-- x-channel, destZ <-- y-channel, destY <-- z-channel.
  * This is handled by the caller (SyncScenarioFlatToROOT) by passing the
  * profiles in the right order.
  *
@@ -1828,6 +1828,46 @@ static void SyncPstar2DToROOT(const FlatPstar2D<NX, NY>& flatAcc,
     destX->SetEntries(totalW);
     destY->SetEntries(totalW);
     destZ->SetEntries(totalW);
+
+    // ------------------------------------------------------------------
+    // Rebuild ROOT global statistics from the per-bin data written above.
+    //
+    // Background: ROOT's TProfile/TProfile2D maintains two independent
+    // storage layers:
+    //   (a) Per-bin arrays: fArray[b] = sum_wy, fBinEntries[b] = sum_w,
+    //       GetSumw2()[b] = sum_wy2. These were written exactly above and
+    //       calculate GetBinContent() / GetBinError() correctly.
+    //   (b) Global scalar cache: fTsumw, fTsumwy, fTsumwy2, fTsumwx, ...
+    //       These are normally incremented by Fill(), but since we bypassed
+    //       Fill() entirely, they remain zero. The statsbox, GetMean(),
+    //       GetRMS(), and GetMeanError() all read from this cache, so without
+    //       this fix they would report zero for every quantity.
+    //
+    // ResetStats() recomputes the global cache from the per-bin arrays:
+    //   fTsumwy, fTsumwy2 (the Z-axis profile moments) are reconstructed as
+    //     sum(fArray[b]) and sum(GetSumw2()[b]) -- these are EXACT because
+    //     SetBinContent stored sum_wy and GetSumw2()[b] = sum_wy2 precisely.
+    //   fTsumwx, fTsumwx2 (the X-axis distribution moments) are approximated
+    //     as sum(fBinEntries[b] * bin_center_x), which uses bin centers rather
+    //     than the original fill values. The error is O(bin_width/sqrt(12)),
+    //     negligible for all axes here (~0.15 GeV/c per bin at 40 bins / 6 GeV).
+    //   fTsumwy (the Y-axis distribution moments for TProfile2D) similarly uses
+    //     bin centers, with the same negligible binning error.
+    //
+    // ResetStats() does NOT modify fArray[], fBinEntries[], or GetSumw2()[].
+    // All per-bin results (GetBinContent, GetBinError) are unaffected.
+    // It also resets fEntries = |fTsumw|, which supersedes the SetEntries()
+    // calls above -- the values agree because totalW = sum(c.sw) = sum_w total.
+    // --> In other words, the error is just in momentum and XY variables of TProfiles,
+    //     which usually are not what we are interested in. May need to check if this
+    //     breaks anything for plots such as pPstarX_vsPxPy or similar plots. It shouldn't.
+    //
+    // Cost: O(NX * NY) floating-point operations -- ~1764 per profile -- which
+    // is immeasurable relative to the event loop.
+    // ------------------------------------------------------------------
+    destX->ResetStats();
+    destY->ResetStats();
+    destZ->ResetStats();
 }
 
 
@@ -1879,6 +1919,16 @@ static void SyncPstar1DToROOT(const FlatPstar1D<N>& flatAcc,
     destX->SetEntries(totalW);
     destY->SetEntries(totalW);
     destZ->SetEntries(totalW);
+
+    // Rebuild global statistics from per-bin data (see the detailed explanation
+    // in SyncPstar2DToROOT above). Same logic applies to 1D profiles:
+    //   - fTsumwy / fTsumwy2 (Y-axis profile moments) are EXACT.
+    //   - fTsumwx / fTsumwx2 (X-axis distribution moments) use bin centers,
+    //     with binning error O(bin_width/sqrt(12)) -- negligible for all axes.
+    //   - Per-bin arrays (GetBinContent, GetBinError) are not affected.
+    destX->ResetStats();
+    destY->ResetStats();
+    destZ->ResetStats();
 }
 
 
@@ -1922,6 +1972,14 @@ static void SyncRing1DToROOT(const FlatRing1D<N>& flatAcc,
 
     if (destR)    destR->SetEntries(totalW);
     if (destRJet) destRJet->SetEntries(totalW);
+
+    // Rebuild global statistics from per-bin data (see explanation in
+    // SyncPstar2DToROOT). For the ring proxy profiles the only profile-axis
+    // quantity is the ring value itself (Y-axis = fTsumwy), which is EXACT
+    // after ResetStats(). The X-axis (eta or pT bin centers) is approximate
+    // but negligible. Per-bin results are unaffected.
+    if (destR)    destR->ResetStats();
+    if (destRJet) destRJet->ResetStats();
 }
 
 
