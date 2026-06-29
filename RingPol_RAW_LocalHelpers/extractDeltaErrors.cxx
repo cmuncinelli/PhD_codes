@@ -97,11 +97,14 @@ TH1D* Process2DTo1D(TH2D* h2d, const std::string& newName) {
 // -----------------------------------------------------------------------------
 // Main Macro
 // -----------------------------------------------------------------------------
-// -----------------------------------------------------------------------------
-// Main Macro
-// -----------------------------------------------------------------------------
-void extractDeltaErrors(const char* inFileStr) 
-{
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " <inputFilePath>\n";
+        return 1;
+    }
+    
+    const char* inFileStr = argv[1];
+
     // --- Dynamic Output Filename Generation ---
     std::string inPath(inFileStr);
     std::string directory = "";
@@ -136,7 +139,7 @@ void extractDeltaErrors(const char* inFileStr)
     TFile* inFile = TFile::Open(inPath.c_str(), "READ");
     if (!inFile || inFile->IsZombie()) {
         std::cerr << "Error: Could not open input file " << inPath << std::endl;
-        return;
+        return 1;
     }
 
     TFile* outFile = TFile::Open(outFileStr.c_str(), "RECREATE");
@@ -280,4 +283,6 @@ void extractDeltaErrors(const char* inFileStr)
 
     outFile->Close();
     inFile->Close();
+
+    return 0;
 }

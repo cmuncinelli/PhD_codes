@@ -65,6 +65,11 @@ DEFAULT_REGISTRY="${FRAMEWORK_DIR}/train_registry.conf"
 # Can be overridden by passing a path as $2.
 DEFAULT_CONFIGS_DIR="/home/users/cicerodm/RingPol/consumer_configs"
 
+# Set executable paths
+EXTRACT_DELTA_EXE="${REPO_DIR}/RingPol_RAW_LocalHelpers/extractDeltaErrors.exe"
+SIGNAL_EXTRACT_EXE="${REPO_DIR}/RingPol_RAW_LocalHelpers/signalExtractionRing.exe"
+CUMUL_DCA_EXE="${REPO_DIR}/RingPol_RAW_LocalHelpers/makeCumulativeDCAdauProfile.exe"
+
 # ==============================================================================
 # ARGUMENT PARSING
 # ==============================================================================
@@ -140,6 +145,12 @@ handle_interrupt() {
   exit 130
 }
 
+cleanup() {
+  # Removing the compiled binaries after usage:
+  rm -f "$EXTRACT_DELTA_EXE" "$SIGNAL_EXTRACT_EXE" "$CUMUL_DCA_EXE"
+}
+
+trap cleanup EXIT
 trap handle_interrupt INT TERM
 
 # ==============================================================================
@@ -180,6 +191,28 @@ if [ ${#WAGON_LINES[@]} -eq 0 ]; then
   echo "Error: no wagons found in registry: ${REGISTRY}"
   exit 1
 fi
+
+# ==============================================================================
+# Compile Analysis Executables AoT
+# ==============================================================================
+echo "Compiling ROOT macros into native executables..."
+
+COMPILE_WARN_FLAGS="-Wall -Wextra -Wpedantic -Wshadow" # For bug catching (TODO: check some unused variables that were revealed! May be buggy code!)
+# COMPILE_WARN_FLAGS="" # For quick compiling without warnings (do NOT use me without care!)
+ROOT_AWARE_FLAGS="-DNDEBUG $(root-config --cflags)" # Strips out all assert() checks. ROOT headers respect this flag!
+OPTIMIZATION_FLAGS="-O3 -march=native -fno-math-errno -flto -fno-trapping-math" # Using the fno-math-errno to disable the errno verification of passing negative numbers to sqrts and the such.
+                                                                                # My code should be safe, so this will never be used!
+                                                                                # Also introduced -fno-trapping-math as there is no explicit usage of NaNs
+                                                                                # nor any expected unsafe divisions by zero appearing anywhere in the code!
+ROOT_LIBS="$(root-config --glibs)"
+
+# Compile Step (Stops script if compilation fails)
+g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$EXTRACT_DELTA_EXE" "$EXTRACT_DELTA_MACRO" $ROOT_LIBS || exit 1
+g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$SIGNAL_EXTRACT_EXE" "$SIGNAL_EXTRACT_MACRO" $ROOT_LIBS || exit 1
+g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$CUMUL_DCA_EXE" "$CUMUL_DCA_MACRO" $ROOT_LIBS || exit 1
+
+echo "Compilation successful!"
+echo ""
 
 # ==============================================================================
 # SUMMARY HEADER
@@ -268,9 +301,7 @@ for LINE in "${WAGON_LINES[@]}"; do
     # Step 2: extractDeltaErrors
     # ------------------------------------------------------------------
     echo -n "  [2/4] extractDeltaErr : ${CONS_SUFFIX}"
-    root -l -b -q \
-      "${EXTRACT_DELTA_MACRO}(\"${CONSUMER_RESULT}\")" \
-      > "$DELTA_LOG" 2>&1
+    "$EXTRACT_DELTA_EXE" "${CONSUMER_RESULT}" > "$DELTA_LOG" 2>&1
     DELTA_EXIT=$?
 
     if [ $DELTA_EXIT -ne 0 ]; then
@@ -284,9 +315,7 @@ for LINE in "${WAGON_LINES[@]}"; do
     # Step 3: signalExtractionRing
     # ------------------------------------------------------------------
     echo -n "  [3/4] sigExtract      : ${CONS_SUFFIX}"
-    root -l -b -q \
-      "${SIGNAL_EXTRACT_MACRO}(\"${CONSUMER_RESULT}\", \"${SIGNAL_EXTRACT_DIR}/\")" \
-      > "$SIG_LOG" 2>&1
+    "$SIGNAL_EXTRACT_EXE" "${CONSUMER_RESULT}" "${SIGNAL_EXTRACT_DIR}/" > "$SIG_LOG" 2>&1
     SIG_EXIT=$?
 
     if [ $SIG_EXIT -ne 0 ]; then
@@ -300,9 +329,7 @@ for LINE in "${WAGON_LINES[@]}"; do
     # Step 4: makeCumulativeDCAdauProfile
     # ------------------------------------------------------------------
     echo -n "  [4/4] cumulDCA        : ${CONS_SUFFIX}"
-    root -l -b -q \
-      "${CUMUL_DCA_MACRO}(\"${CONSUMER_RESULT}\")" \
-      > "$CUMUL_LOG" 2>&1
+    "$CUMUL_DCA_EXE" "${CONSUMER_RESULT}" > "$CUMUL_LOG" 2>&1
     CUMUL_EXIT=$?
 
     if [ $CUMUL_EXIT -ne 0 ]; then

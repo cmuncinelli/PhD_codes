@@ -62,6 +62,10 @@
 #include <TProfile2D.h>
 #include <TProfile3D.h>
 
+#include <TBox.h>
+#include <TLine.h>
+#include <TLegend.h>
+
 // Extra includes for simultaneous signal extraction fit to Ring Observable numerator and Counts denominator:
 #include "Math/Minimizer.h"
 #include "Math/Factory.h"
@@ -2012,7 +2016,15 @@ void PerformDenominatorQA(TH1D* hMassSigExtract, TDirectory* outDir,
 // ------------------------------------------------------------------------------------------------
 // Main Macro
 // ------------------------------------------------------------------------------------------------
-void signalExtractionRing(const std::string& inputFilePath, const std::string& outputFolderPath){
+int main(int argc, char** argv) {
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0] << " <inputFilePath> <outputFolderPath>\n";
+        return 1;
+    }
+    
+    std::string inputFilePath = argv[1];
+    std::string outputFolderPath = argv[2];
+
     std::cout << "\n========================================================================" << std::endl;
     std::cout << " Starting Signal Extraction for the Ring Observable" << std::endl;
     std::cout << "========================================================================\n" << std::endl;
@@ -2046,7 +2058,7 @@ void signalExtractionRing(const std::string& inputFilePath, const std::string& o
     try {fs::create_directories(outputFolderPath);} 
     catch (const fs::filesystem_error& e) {
         std::cerr << "Error creating output directory: " << e.what() << std::endl;
-        return;
+        return 1;
     }
 
     std::string outFileName = outputFolderPath + "signalExtractionRing_" + suffix + ".root";
@@ -2057,7 +2069,7 @@ void signalExtractionRing(const std::string& inputFilePath, const std::string& o
     TFile* inFile = TFile::Open(inputFilePath.c_str(), "READ");
     if (!inFile || inFile->IsZombie()){
         std::cerr << "  Error: Could not open input file!" << std::endl;
-        return;
+        return 1;
     }
 
     // Create output file (Recreate to avoid appending to old runs)
@@ -2065,7 +2077,7 @@ void signalExtractionRing(const std::string& inputFilePath, const std::string& o
     if (!outFile || outFile->IsZombie()){
         std::cerr << "  Error: Could not create output file!" << std::endl;
         if(inFile) inFile->Close();
-        return;
+        return 1;
     }
 
     // =========================================================================================
@@ -2390,4 +2402,5 @@ void signalExtractionRing(const std::string& inputFilePath, const std::string& o
     std::cout << " Signal Extraction Complete. File saved as: " << outFileName << std::endl;
     std::cout << "========================================================================\n" << std::endl;
     
+    return 0; // Exit successfully
 }

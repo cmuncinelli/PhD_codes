@@ -207,8 +207,14 @@ void ProcessProfile3D(TProfile3D* p3D, TDirectory* dir2D, TDirectory* dir1D, con
 // ---------------------------------------------------------
 // Main Function
 // ---------------------------------------------------------
-void makeCumulativeDCAdauProfile(const char* inFileStr)
-{
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " <inputFilePath>\n";
+        return 1;
+    }
+    
+    const char* inFileStr = argv[1];
+
     // --- Dynamic Output Filename ---
     std::string inPath(inFileStr);
     std::string directory = "";
@@ -240,7 +246,7 @@ void makeCumulativeDCAdauProfile(const char* inFileStr)
     TFile* fIn = TFile::Open(inPath.c_str(), "READ");
     if (!fIn || fIn->IsZombie()) {
         std::cerr << " ERROR: cannot open " << inPath << std::endl;
-        return;
+        return 1;
     }
 
     TFile* fOut = TFile::Open(outFileStr.c_str(), "RECREATE");
@@ -330,4 +336,6 @@ void makeCumulativeDCAdauProfile(const char* inFileStr)
 
     delete fOut;
     delete fIn;
+
+    return 0;
 }
