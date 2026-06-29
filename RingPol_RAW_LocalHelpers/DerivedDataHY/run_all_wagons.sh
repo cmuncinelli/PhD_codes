@@ -14,12 +14,18 @@
 #     1. Run runDerivedDataConsumer_HY.sh   -> ConsumerResults_<SUFFIX>.root
 #     2. Run extractDeltaErrors.cxx (ROOT)  -> delta/error plots
 #     3. Run signalExtractionRing.cxx (ROOT)-> results_SigExtract/
+#     4. Run makeCumulativeDCAdauProfile.cxx (ROOT)-> CumulativeProfiles_<SUFFIX>.root
 #
-#   Steps 2 and 3 are skipped for a given pair if step 1 fails.
-#   All failures are collected and printed as a summary table at the end.
+#   Steps 2, 3 and 4 are skipped for a given pair if step 1 fails or if the 
+#   ConsumerResults file is missing.
 #
 # Usage:
-#   ./run_all_wagons.sh [REGISTRY] [CONSUMER_CONFIGS_DIR]
+#   ./run_all_wagons.sh [OPTIONS] [REGISTRY] [CONSUMER_CONFIGS_DIR]
+#
+# Options:
+#   -h, --help                 Show this help message.
+#   -p, --post-process-only    Skip Step 1 (consumer) and run only the ROOT
+#                              macros (Steps 2, 3, 4) on existing output.
 #
 # Arguments:
 #   REGISTRY (optional):
@@ -55,16 +61,49 @@ CUMUL_DCA_MACRO="${REPO_DIR}/RingPol_RAW_LocalHelpers/makeCumulativeDCAdauProfil
 FRAMEWORK_DIR="${REPO_DIR}/RingPol_RAW_LocalHelpers/DerivedDataHY"
 CONSUMER_SCRIPT="${FRAMEWORK_DIR}/runDerivedDataConsumer_HY.sh"
 DEFAULT_REGISTRY="${FRAMEWORK_DIR}/train_registry.conf"
+# Directory containing dpl-config-DerivedConsumer-*.json files.
+# Can be overridden by passing a path as $2.
+DEFAULT_CONFIGS_DIR="/home/users/cicerodm/RingPol/consumer_configs"
+
+# ==============================================================================
+# ARGUMENT PARSING
+# ==============================================================================
+POST_PROCESS_ONLY=0
+REGISTRY_ARG=""
+CONFIGS_DIR_ARG=""
+
+print_help() {
+    awk '/^# Usage:/,/^#+$/' "$0" | head -n -1 | sed 's/^#//'
+    exit 0
+}
+
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --help|-h)
+            print_help
+            ;;
+        --post-process-only|-p)
+            POST_PROCESS_ONLY=1
+            shift
+            ;;
+        -*)
+            echo "Unknown option: $1. Use --help for usage." >&2
+            exit 1
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
 
 # Use the first argument if provided, otherwise fall back to the legacy default
 # (this is meant essentially to be able to choose a .conf file for the locally
 #  produced derived data instead of the HY produced datasets)
 REGISTRY="${1:-$DEFAULT_REGISTRY}"
-
-# Directory containing dpl-config-DerivedConsumer-*.json files.
-# Can be overridden by passing a path as $2.
-DEFAULT_CONFIGS_DIR="/home/users/cicerodm/RingPol/consumer_configs"
-CONSUMER_CONFIGS_DIR="${2:-$DEFAULT_CONFIGS_DIR}"
+REGISTRY="${POSITIONAL_ARGS[0]:-$DEFAULT_REGISTRY}"
+CONSUMER_CONFIGS_DIR="${POSITIONAL_ARGS[1]:-$DEFAULT_CONFIGS_DIR}"
 
 # ==============================================================================
 # SIGNAL HANDLING
@@ -85,16 +124,16 @@ handle_interrupt() {
   if [ ${#FAILURES[@]} -eq 0 ]; then
     echo "  No failures recorded before interrupt."
   else
-    printf "  %-45s  %-40s  %-20s
-" "WAGON" "CONFIG" "FAILED STEP"
-    printf "  %-45s  %-40s  %-20s
-"       "---------------------------------------------"       "----------------------------------------"       "--------------------"
+    printf "  %-45s  %-40s  %-20s\n" "WAGON" "CONFIG" "FAILED STEP"
+    printf "  %-45s  %-40s  %-20s\n" \
+      "---------------------------------------------" \
+      "----------------------------------------" \
+      "--------------------"
     for ENTRY in "${FAILURES[@]}"; do
       WAGON_COL=$(echo "$ENTRY" | awk -F'|' '{gsub(/^ +| +$/,"",$1); print $1}')
       CONF_COL=$(  echo "$ENTRY" | awk -F'|' '{gsub(/^ +| +$/,"",$2); print $2}')
       STEP_COL=$(  echo "$ENTRY" | awk -F'|' '{gsub(/^ +| +$/,"",$3); print $3}')
-      printf "  %-45s  %-40s  %-20s
-" "$WAGON_COL" "$CONF_COL" "$STEP_COL"
+      printf "  %-45s  %-40s  %-20s\n" "$WAGON_COL" "$CONF_COL" "$STEP_COL"
     done
   fi
   echo "========================================================"
@@ -147,9 +186,10 @@ fi
 # ==============================================================================
 echo "========================================================"
 echo "  run_all_wagons.sh"
-echo "  Wagons    : ${#WAGON_LINES[@]}"
-echo "  Configs   : ${#CONFIG_FILES[@]}"
-echo "  Configs   : ${CONSUMER_CONFIGS_DIR}"
+echo "  Wagons       : ${#WAGON_LINES[@]}"
+echo "  Configs      : ${#CONFIG_FILES[@]}"
+echo "  Configs Dir  : ${CONSUMER_CONFIGS_DIR}"
+echo "  Mode         : $( [ $POST_PROCESS_ONLY -eq 1 ] && echo 'POST-PROCESS ONLY' || echo 'FULL CHAIN' )"
 echo "========================================================"
 echo ""
 
@@ -178,39 +218,63 @@ for LINE in "${WAGON_LINES[@]}"; do
 
     CONSUMER_RESULT="${WORK_DIR}/results_consumer/ConsumerResults_${CONS_SUFFIX}.root"
     SIGNAL_EXTRACT_DIR="${WORK_DIR}/results_SigExtract"
-    WRAPPER_LOG="${WORK_DIR}/results_consumer/logs/wrapper_${CONS_SUFFIX}.log"
-    mkdir -p "${WORK_DIR}/results_consumer/logs"
+    
+    # Logging Setup
+    LOG_DIR="${WORK_DIR}/results_consumer/logs"
+    mkdir -p "${LOG_DIR}"
+      # Creating smaller log folders to keep everything tidy (it was getting really messy!)
+    mkdir -p "${LOG_DIR}/wrappers/"
+    mkdir -p "${LOG_DIR}/batches/"
+    mkdir -p "${LOG_DIR}/deltaErr/"
+    mkdir -p "${LOG_DIR}/sigExtract/"
+    mkdir -p "${LOG_DIR}/cumulHist/"
+    WRAPPER_LOG="${LOG_DIR}/wrappers/wrapper_${CONS_SUFFIX}.log"
+    DELTA_LOG="${LOG_DIR}/deltaErr/extractDeltaErr_${CONS_SUFFIX}.log"
+    SIG_LOG="${LOG_DIR}/sigExtract/sigExtract_${CONS_SUFFIX}.log"
+    CUMUL_LOG="${LOG_DIR}/cumulHist/cumulDCA_${CONS_SUFFIX}.log"
 
     # ------------------------------------------------------------------
-    # Step 1: run consumer
+    # Step 1: consumer
     # ------------------------------------------------------------------
-    echo -n "  [1/4] consumer        : ${CONS_SUFFIX}"
-    # Consumer output goes to a per-config log file so failures are inspectable.
-    if [ -d /sys/devices/system/node/node1 ]; then
-      # Binding consumer to the NUMA node1 (just convenience: producers are running in node 0 on jarvis15 right now)
-        numactl --cpunodebind=1 --preferred=1  "$CONSUMER_SCRIPT" "$WORK_DIR" "$CONFIG_FILE" > "$WRAPPER_LOG" 2>&1
-    else # If does not have more than one node, just revert to usual behavior!
-        "$CONSUMER_SCRIPT" "$WORK_DIR" "$CONFIG_FILE" > "$WRAPPER_LOG" 2>&1
-    fi
-    CONSUMER_EXIT=$?
+    if [ $POST_PROCESS_ONLY -eq 0 ]; then
+      echo -n "  [1/4] consumer        : ${CONS_SUFFIX}"
+      # Consumer output goes to a per-config log file so failures are inspectable.
+      if [ -d /sys/devices/system/node/node1 ]; then
+        # Binding consumer to the NUMA node1 (just convenience: producers are running in node 0 on jarvis15 right now)
+          numactl --cpunodebind=1 --preferred=1  "$CONSUMER_SCRIPT" "$WORK_DIR" "$CONFIG_FILE" > "$WRAPPER_LOG" 2>&1
+      else # If does not have more than one node, just revert to usual behavior!
+          "$CONSUMER_SCRIPT" "$WORK_DIR" "$CONFIG_FILE" > "$WRAPPER_LOG" 2>&1
+      fi
+      CONSUMER_EXIT=$?
 
-    if [ $CONSUMER_EXIT -ne 0 ] || [ ! -f "$CONSUMER_RESULT" ]; then
-      echo "  -> FAILED  (log: ${WRAPPER_LOG})"
-      FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | consumer")
-      continue
+      if [ $CONSUMER_EXIT -ne 0 ] || [ ! -f "$CONSUMER_RESULT" ]; then
+        echo "  -> FAILED  (log: ${WRAPPER_LOG})"
+        FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | consumer")
+        continue
+      fi
+      echo "  -> OK"
+    else
+      # Post-process only mode: verify file exists
+      echo -n "  [1/4] consumer        : ${CONS_SUFFIX} (SKIPPED)"
+      if [ ! -f "$CONSUMER_RESULT" ]; then
+        echo "  -> FAILED  (File missing)"
+        FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | missing_consumer_result")
+        continue
+      fi
+      echo "  -> OK (Found file)"
     fi
-    echo "  -> OK"
+
     # ------------------------------------------------------------------
     # Step 2: extractDeltaErrors
     # ------------------------------------------------------------------
     echo -n "  [2/4] extractDeltaErr : ${CONS_SUFFIX}"
     root -l -b -q \
       "${EXTRACT_DELTA_MACRO}(\"${CONSUMER_RESULT}\")" \
-      > /dev/null 2>&1
+      > "$DELTA_LOG" 2>&1
     DELTA_EXIT=$?
 
     if [ $DELTA_EXIT -ne 0 ]; then
-      echo "  -> FAILED"
+      echo "  -> FAILED  (log: ${DELTA_LOG})"
       FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | extractDeltaErrors")
     else
       echo "  -> OK"
@@ -222,11 +286,11 @@ for LINE in "${WAGON_LINES[@]}"; do
     echo -n "  [3/4] sigExtract      : ${CONS_SUFFIX}"
     root -l -b -q \
       "${SIGNAL_EXTRACT_MACRO}(\"${CONSUMER_RESULT}\", \"${SIGNAL_EXTRACT_DIR}/\")" \
-      > /dev/null 2>&1
+      > "$SIG_LOG" 2>&1
     SIG_EXIT=$?
 
     if [ $SIG_EXIT -ne 0 ]; then
-      echo "  -> FAILED"
+      echo "  -> FAILED  (log: ${SIG_LOG})"
       FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | signalExtractionRing")
     else
       echo "  -> OK"
@@ -238,11 +302,11 @@ for LINE in "${WAGON_LINES[@]}"; do
     echo -n "  [4/4] cumulDCA        : ${CONS_SUFFIX}"
     root -l -b -q \
       "${CUMUL_DCA_MACRO}(\"${CONSUMER_RESULT}\")" \
-      > /dev/null 2>&1
+      > "$CUMUL_LOG" 2>&1
     CUMUL_EXIT=$?
 
     if [ $CUMUL_EXIT -ne 0 ]; then
-      echo "  -> FAILED"
+      echo "  -> FAILED  (log: ${CUMUL_LOG})"
       FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | makeCumulDCA")
     else
       echo "  -> OK"
@@ -277,5 +341,6 @@ else
     STEP_COL=$(  echo "$ENTRY" | awk -F'|' '{gsub(/^ +| +$/,"",$3); print $3}')
     printf "  %-45s  %-40s  %-20s\n" "$WAGON_COL" "$CONF_COL" "$STEP_COL"
   done
+  echo "  (Check the 'results_consumer/logs' folder for the respective wagon)"
 fi
 echo "========================================================"

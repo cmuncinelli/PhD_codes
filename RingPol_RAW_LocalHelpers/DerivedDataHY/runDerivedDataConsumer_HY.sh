@@ -97,7 +97,7 @@ CONS_SUFFIX="${CONS_BASENAME#dpl-config-DerivedConsumer-}"
 # 3. DIRECTORY SETUP
 # ==============================================================================
 CONSUMER_RESULTS="${WORK_DIR}/results_consumer"
-CONSUMER_LOGS="${CONSUMER_RESULTS}/logs"
+CONSUMER_LOGS="${CONSUMER_RESULTS}/logs/batches" # Now organizing into small subfolders to keep everything tidy
 CONSUMER_CONFIGS="${CONSUMER_RESULTS}/used_configs"
 CONSUMER_TEMP="${WORK_DIR}/temp_consumer_stage"
 
