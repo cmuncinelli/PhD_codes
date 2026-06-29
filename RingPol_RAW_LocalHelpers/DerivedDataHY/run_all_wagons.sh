@@ -49,6 +49,7 @@ REPO_DIR="/home/users/cicerodm/PhD_codes"
 # Absolute paths to the ROOT macros used in the post-processing steps.
 EXTRACT_DELTA_MACRO="${REPO_DIR}/RingPol_RAW_LocalHelpers/extractDeltaErrors.cxx"
 SIGNAL_EXTRACT_MACRO="${REPO_DIR}/RingPol_RAW_LocalHelpers/signalExtractionRing.cxx"
+CUMUL_DCA_MACRO="${REPO_DIR}/RingPol_RAW_LocalHelpers/makeCumulativeDCAdauProfile.cxx"
 
 # Absolute path to the consumer launcher script.
 FRAMEWORK_DIR="${REPO_DIR}/RingPol_RAW_LocalHelpers/DerivedDataHY"
@@ -106,7 +107,7 @@ trap handle_interrupt INT TERM
 # PRE-FLIGHT CHECKS
 # ==============================================================================
 for REQUIRED in "$REGISTRY" "$CONSUMER_SCRIPT" \
-                "$EXTRACT_DELTA_MACRO" "$SIGNAL_EXTRACT_MACRO"; do
+                "$EXTRACT_DELTA_MACRO" "$SIGNAL_EXTRACT_MACRO" "$CUMUL_DCA_MACRO"; do
   if [ ! -f "$REQUIRED" ]; then
     echo "Error: required file not found: ${REQUIRED}"
     exit 1
@@ -183,7 +184,7 @@ for LINE in "${WAGON_LINES[@]}"; do
     # ------------------------------------------------------------------
     # Step 1: run consumer
     # ------------------------------------------------------------------
-    echo -n "  [1/3] consumer        : ${CONS_SUFFIX}"
+    echo -n "  [1/4] consumer        : ${CONS_SUFFIX}"
     # Consumer output goes to a per-config log file so failures are inspectable.
     if [ -d /sys/devices/system/node/node1 ]; then
       # Binding consumer to the NUMA node1 (just convenience: producers are running in node 0 on jarvis15 right now)
@@ -202,7 +203,7 @@ for LINE in "${WAGON_LINES[@]}"; do
     # ------------------------------------------------------------------
     # Step 2: extractDeltaErrors
     # ------------------------------------------------------------------
-    echo -n "  [2/3] extractDeltaErr : ${CONS_SUFFIX}"
+    echo -n "  [2/4] extractDeltaErr : ${CONS_SUFFIX}"
     root -l -b -q \
       "${EXTRACT_DELTA_MACRO}(\"${CONSUMER_RESULT}\")" \
       > /dev/null 2>&1
@@ -218,7 +219,7 @@ for LINE in "${WAGON_LINES[@]}"; do
     # ------------------------------------------------------------------
     # Step 3: signalExtractionRing
     # ------------------------------------------------------------------
-    echo -n "  [3/3] sigExtract      : ${CONS_SUFFIX}"
+    echo -n "  [3/4] sigExtract      : ${CONS_SUFFIX}"
     root -l -b -q \
       "${SIGNAL_EXTRACT_MACRO}(\"${CONSUMER_RESULT}\", \"${SIGNAL_EXTRACT_DIR}/\")" \
       > /dev/null 2>&1
@@ -227,6 +228,22 @@ for LINE in "${WAGON_LINES[@]}"; do
     if [ $SIG_EXIT -ne 0 ]; then
       echo "  -> FAILED"
       FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | signalExtractionRing")
+    else
+      echo "  -> OK"
+    fi
+
+    # ------------------------------------------------------------------
+    # Step 4: makeCumulativeDCAdauProfile
+    # ------------------------------------------------------------------
+    echo -n "  [4/4] cumulDCA        : ${CONS_SUFFIX}"
+    root -l -b -q \
+      "${CUMUL_DCA_MACRO}(\"${CONSUMER_RESULT}\")" \
+      > /dev/null 2>&1
+    CUMUL_EXIT=$?
+
+    if [ $CUMUL_EXIT -ne 0 ]; then
+      echo "  -> FAILED"
+      FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | makeCumulDCA")
     else
       echo "  -> OK"
     fi
