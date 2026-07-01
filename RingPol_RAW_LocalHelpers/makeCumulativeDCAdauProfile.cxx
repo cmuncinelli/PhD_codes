@@ -24,6 +24,8 @@
 #include "TH2D.h"
 #include "TH1F.h"
 #include "TString.h"
+#include "TCanvas.h"
+#include "TLegend.h"
 
 // Declaring helper functions to process all TProfiles and THDs that could benefit from accumulation to draw minDCAcut plots:
 
@@ -31,11 +33,20 @@
 // Helper 1: Core TProfile2D Processing (Outputs 2D)
 // ---------------------------------------------------------
 TH2F* MakeCumulativeProfile2D(TProfile2D* pDiff, const char* outName, const char* outTitle) {
+    // Create a cleaned version of the outName without the "pFakePolSignalJet_" string cluttering it
+    std::string cleanName = outName;
+    std::string pattern = "pFakePolSignalJet_";
+    size_t pos = cleanName.find(pattern);
+    if (pos != std::string::npos) {
+        // Replaces "pFakePolSignalJet_" with "pSignal_" right where it found it
+        cleanName.replace(pos, pattern.length(), "pSignal_");
+    }
+    
     int nPhi = pDiff->GetNbinsX();
     int nDCA = pDiff->GetNbinsY();
 
     // Transpose the output: X-axis becomes DCA (from input Y), Y-axis becomes phi* (from input X)
-    TH2F* hCumul = new TH2F(outName, outTitle,
+    TH2F* hCumul = new TH2F(cleanName.c_str(), outTitle,
         nDCA, pDiff->GetYaxis()->GetXmin(), pDiff->GetYaxis()->GetXmax(),
         nPhi, pDiff->GetXaxis()->GetXmin(), pDiff->GetXaxis()->GetXmax());
 
@@ -160,6 +171,14 @@ TH2D* MakeCumulativeTH2D(TH2D* hDiff, const char* outName, const char* outTitle)
 // Bin 1 is -0.9 to 0 (Negative Eta), Bin 2 is 0 to 0.9 (Positive Eta)
 // Extracts All, Positive, and Negative Eta variations and generates both 2D and 1D cumulatives
 void ProcessProfile3D(TProfile3D* p3D, TDirectory* dir2D, TDirectory* dir1D, const std::string& baseName) {
+    // Create a cleaned version of the baseName without the "pFakePolSignalJet_" string cluttering it
+    std::string cleanName = baseName;
+    std::string pattern = "pFakePolSignalJet_";
+    size_t pos = cleanName.find(pattern);
+    if (pos != std::string::npos) {
+        // Replaces "pFakePolSignalJet_" with "pSignal_" right where it found it
+        cleanName.replace(pos, pattern.length(), "pSignal_");
+    }
     
     // Pass "yx" so the 2D projection maintains native mapping (X = phi*, Y = DCA)
     // We assign names manually afterward.
@@ -167,33 +186,33 @@ void ProcessProfile3D(TProfile3D* p3D, TDirectory* dir2D, TDirectory* dir1D, con
     // 1. All Eta (Project across all Z bins)
     p3D->GetZaxis()->SetRange(1, p3D->GetNbinsZ());
     TProfile2D* p2D_all = p3D->Project3DProfile("yx");
-    p2D_all->SetName(Form("%s_xy_all", baseName.c_str()));
+    p2D_all->SetName(Form("%s_xy_all", cleanName.c_str()));
     
     // 2. Negative Eta (Z bin 1: -0.9 to 0)
     p3D->GetZaxis()->SetRange(1, 1);
     TProfile2D* p2D_neg = p3D->Project3DProfile("yx");
-    p2D_neg->SetName(Form("%s_xy_neg", baseName.c_str()));
+    p2D_neg->SetName(Form("%s_xy_neg", cleanName.c_str()));
     
     // 3. Positive Eta (Z bin 2: 0 to 0.9)
     p3D->GetZaxis()->SetRange(2, 2);
     TProfile2D* p2D_pos = p3D->Project3DProfile("yx");
-    p2D_pos->SetName(Form("%s_xy_pos", baseName.c_str()));
+    p2D_pos->SetName(Form("%s_xy_pos", cleanName.c_str()));
 
     // Resolve Precise DCA Label
     std::string dcaLabel = "min DCA";
-    if (baseName.find("DCAdau") != std::string::npos) dcaLabel = "min DCA_{V0 Daughters}";
-    else if (baseName.find("DCAProLike") != std::string::npos) dcaLabel = "min DCA_{PosPV}";
-    else if (baseName.find("DCAPiLike") != std::string::npos) dcaLabel = "min DCA_{NegPV}";
+    if (cleanName.find("DCAdau") != std::string::npos) dcaLabel = "min DCA_{V0 Daughters}";
+    else if (cleanName.find("DCAProLike") != std::string::npos) dcaLabel = "min DCA_{PosPV}";
+    else if (cleanName.find("DCAPiLike") != std::string::npos) dcaLabel = "min DCA_{NegPV}";
 
     // Generate 2D Cumulatives (Transposed now: X = min DCA, Y = phi*)
-    TH2F* hCumul2D_all = MakeCumulativeProfile2D(p2D_all, Form("hCumul2D_%s_AllEta", baseName.c_str()), Form("Cumul. %s (All Eta); %s; #phi^{*}", baseName.c_str(), dcaLabel.c_str()));
-    TH2F* hCumul2D_neg = MakeCumulativeProfile2D(p2D_neg, Form("hCumul2D_%s_NegEta", baseName.c_str()), Form("Cumul. %s (Eta < 0); %s; #phi^{*}", baseName.c_str(), dcaLabel.c_str()));
-    TH2F* hCumul2D_pos = MakeCumulativeProfile2D(p2D_pos, Form("hCumul2D_%s_PosEta", baseName.c_str()), Form("Cumul. %s (Eta > 0); %s; #phi^{*}", baseName.c_str(), dcaLabel.c_str()));
+    TH2F* hCumul2D_all = MakeCumulativeProfile2D(p2D_all, Form("hCumul2D_%s_AllEta", cleanName.c_str()), Form("Cumul. %s (All Eta); %s; #phi^{*}", cleanName.c_str(), dcaLabel.c_str()));
+    TH2F* hCumul2D_neg = MakeCumulativeProfile2D(p2D_neg, Form("hCumul2D_%s_NegEta", cleanName.c_str()), Form("Cumul. %s (Eta < 0); %s; #phi^{*}", cleanName.c_str(), dcaLabel.c_str()));
+    TH2F* hCumul2D_pos = MakeCumulativeProfile2D(p2D_pos, Form("hCumul2D_%s_PosEta", cleanName.c_str()), Form("Cumul. %s (Eta > 0); %s; #phi^{*}", cleanName.c_str(), dcaLabel.c_str()));
 
     // Generate 1D Integrated Cumulatives
-    TH1F* hCumul1D_all = MakeCumulativeProfile1D(p2D_all, Form("hCumul1D_%s_AllEta", baseName.c_str()), Form("Integrated Cumul. %s (All Eta); %s; Integrated <R>", baseName.c_str(), dcaLabel.c_str()));
-    TH1F* hCumul1D_neg = MakeCumulativeProfile1D(p2D_neg, Form("hCumul1D_%s_NegEta", baseName.c_str()), Form("Integrated Cumul. %s (Eta < 0); %s; Integrated <R>", baseName.c_str(), dcaLabel.c_str()));
-    TH1F* hCumul1D_pos = MakeCumulativeProfile1D(p2D_pos, Form("hCumul1D_%s_PosEta", baseName.c_str()), Form("Integrated Cumul. %s (Eta > 0); %s; Integrated <R>", baseName.c_str(), dcaLabel.c_str()));
+    TH1F* hCumul1D_all = MakeCumulativeProfile1D(p2D_all, Form("hCumul1D_%s_AllEta", cleanName.c_str()), Form("Integrated Cumul. %s (All Eta); %s; Integrated <R>", cleanName.c_str(), dcaLabel.c_str()));
+    TH1F* hCumul1D_neg = MakeCumulativeProfile1D(p2D_neg, Form("hCumul1D_%s_NegEta", cleanName.c_str()), Form("Integrated Cumul. %s (Eta < 0); %s; Integrated <R>", cleanName.c_str(), dcaLabel.c_str()));
+    TH1F* hCumul1D_pos = MakeCumulativeProfile1D(p2D_pos, Form("hCumul1D_%s_PosEta", cleanName.c_str()), Form("Integrated Cumul. %s (Eta > 0); %s; Integrated <R>", cleanName.c_str(), dcaLabel.c_str()));
 
     if (dir2D) { dir2D->cd(); hCumul2D_all->Write(); hCumul2D_neg->Write(); hCumul2D_pos->Write(); }
     if (dir1D) { dir1D->cd(); hCumul1D_all->Write(); hCumul1D_neg->Write(); hCumul1D_pos->Write(); }
@@ -201,6 +220,182 @@ void ProcessProfile3D(TProfile3D* p3D, TDirectory* dir2D, TDirectory* dir1D, con
     delete p2D_all; delete p2D_neg; delete p2D_pos;
     delete hCumul2D_all; delete hCumul2D_neg; delete hCumul2D_pos;
     delete hCumul1D_all; delete hCumul1D_neg; delete hCumul1D_pos;
+}
+
+
+// ---------------------------------------------------------
+// Helper 5: Draw comparison TCanvases from stored 1D cumulatives
+// ---------------------------------------------------------
+// Produces 11 canvases in total, saved to dirCanvases:
+//   A (1): phi*-integrated, all three DCA types overlaid
+//   B (3): jet eta splits (All/Neg/Pos), one canvas per DCA type
+//   C (3): Lambda eta splits (All/Neg/Pos), one canvas per DCA type
+//   D (4): fixed eta hemisphere (EtaJet/EtaLambda x Pos/Neg), all three DCAs overlaid
+void DrawComparisonCanvases(TDirectory* dir1D, TDirectory* dirCanvases) {
+
+    // Retrieve a 1D cumulative from dir1D by name; warn if absent.
+    auto Get1D = [&](const std::string& name) -> TH1F* {
+        TH1F* h = (TH1F*)dir1D->Get(name.c_str());
+        if (!h) std::cerr << "    [Warning] Canvas: missing " << name << "\n";
+        return h;
+    };
+
+    // Apply line/marker style to a histogram
+    auto Style = [](TH1F* h, int color, int marker) {
+        if (!h) return;
+        h->SetLineColor(color); h->SetMarkerColor(color);
+        h->SetMarkerStyle(marker); h->SetMarkerSize(0.9);
+    };
+
+    // Draw a set of 1D histograms onto one canvas and write it to dirCanvases.
+    // Automatically scales the Y-axis with a 15% margin around the global min/max.
+    auto WriteCanvas = [&](const char* cName, const char* frameTitle,
+                           const std::vector<TH1F*>& hv,
+                           const std::vector<const char*>& lv) {
+        TCanvas* c = new TCanvas(cName, cName, 800, 600);
+        c->SetLeftMargin(0.14); c->SetBottomMargin(0.13);
+
+        TLegend* leg = new TLegend(0.55, 0.70, 0.88, 0.88);
+        leg->SetBorderSize(0); leg->SetFillStyle(0); leg->SetTextSize(0.034);
+
+        // 1. Find the global minimum and maximum (including error bars!)
+        double yMin = 1e9;
+        double yMax = -1e9;
+        TH1F* firstValidHist = nullptr;
+
+        for (size_t k = 0; k < hv.size(); k++) {
+            TH1F* h = hv[k];
+            if (!h) continue;
+            
+            // Keep track of the first valid histogram to use as our frame setter
+            if (!firstValidHist) firstValidHist = h;
+            leg->AddEntry(h, lv[k], "lp");
+
+            // Scan bins to find the true min and max
+            for (int bin = 1; bin <= h->GetNbinsX(); ++bin) {
+                double val = h->GetBinContent(bin);
+                double err = h->GetBinError(bin);
+                
+                // Optional: skip completely empty bins if they distort the scaling
+                if (val == 0 && err == 0) continue; 
+                
+                if (val + err > yMax) yMax = val + err;
+                if (val - err < yMin) yMin = val - err;
+            }
+        }
+
+        // 2. Apply the dynamic limits if we found valid data
+        if (firstValidHist) {
+            double range = yMax - yMin;
+            if (range == 0) range = 1.0; // Fallback in case of flat lines
+            
+            // Add a 15% margin to top and bottom
+            double margin = range * 0.15; 
+            firstValidHist->GetYaxis()->SetRangeUser(yMin - margin, yMax + margin);
+            firstValidHist->SetTitle(frameTitle);
+
+            // 3. Draw everything
+            bool firstDrawn = false;
+            for (TH1F* h : hv) {
+                if (!h) continue;
+                if (!firstDrawn) { 
+                    h->Draw("E1"); 
+                    firstDrawn = true; 
+                } else {
+                    h->Draw("E1 SAME");
+                }
+            }
+            leg->Draw();
+        }
+
+        dirCanvases->cd(); 
+        c->Write();
+        delete leg; 
+        delete c;
+    };
+
+    // Color/marker scheme: DCA type (Canvases A and D)
+    const int kColDau = kRed+1,   kMkrDau = 20;
+    const int kColPro = kAzure+2, kMkrPro = 21;
+    const int kColPi  = kGreen+2, kMkrPi  = 22;
+    // Color/marker scheme: eta slice (Canvases B and C)
+    const int kColAll = kBlack,   kMkrAll = 20;
+    const int kColNeg = kRed+1,   kMkrNeg = 25;
+    const int kColPos = kAzure+2, kMkrPos = 24;
+
+    // A. phi*-integrated, all three DCA types overlaid
+    {
+        TH1F* hDau = Get1D("hCumul1D_pFakePolSignalJet_PhiStarVsDCAdau");
+        TH1F* hPro = Get1D("hCumul1D_pFakePolSignalJet_PhiStarVsDCAProLike");
+        TH1F* hPi  = Get1D("hCumul1D_pFakePolSignalJet_PhiStarVsDCAPiLike");
+        Style(hDau, kColDau, kMkrDau); Style(hPro, kColPro, kMkrPro); Style(hPi, kColPi, kMkrPi);
+        WriteCanvas("cComp_AllDCA_IntegratedEta",
+                    "Integrated <R> vs min DCA (#phi^{*}-integrated, all #eta); min DCA cut (cm); <R>",
+                    { hDau, hPro, hPi },
+                    { "DCA_{V0 daughters}", "DCA_{pro-like, PV}", "DCA_{#pi-like, PV}" });
+    }
+
+    // B/C. Eta-slice variations per DCA type (2 eta classifiers x 3 DCA types = 6 canvases)
+    struct DCASpec { std::string tag; const char* xTitle; };
+    const std::vector<DCASpec> dcaSpecs = {
+        { "DCAdau",     "min DCA_{V0 daughters} (cm)" },
+        { "DCAProLike", "min DCA_{pro-like, PV} (cm)" },
+        { "DCAPiLike",  "min DCA_{#pi-like, PV} (cm)" }
+    };
+
+    struct EtaConfig { std::string infix; const char* cSuffix; const char* titleEtaType;
+                       const char* legAll; const char* legNeg; const char* legPos; };
+    const std::vector<EtaConfig> etaCfgs = {
+        { "VsEtaJet",    "EtaJetSplit",    "jet #eta",
+          "All jet #eta", "Jet #eta < 0", "Jet #eta > 0" },
+        { "VsEtaLambda", "EtaLambdaSplit", "#Lambda #eta",
+          "All #Lambda #eta", "#Lambda #eta < 0", "#Lambda #eta > 0" }
+    };
+
+    for (const auto& d : dcaSpecs) {
+        for (const auto& e : etaCfgs) {
+            std::string base = "hCumul1D_pFakePolSignalJet_PhiStarVs" + d.tag + e.infix;
+            TH1F* hAll = Get1D(base + "_AllEta");
+            TH1F* hNeg = Get1D(base + "_NegEta");
+            TH1F* hPos = Get1D(base + "_PosEta");
+            Style(hAll, kColAll, kMkrAll); Style(hNeg, kColNeg, kMkrNeg); Style(hPos, kColPos, kMkrPos);
+
+            std::string cName  = "cComp_" + d.tag + "_" + e.cSuffix;
+            std::string cTitle = std::string("<R> vs ") + d.xTitle + " (" + e.titleEtaType
+                                 + " splits); " + d.xTitle + "; <R>";
+            WriteCanvas(cName.c_str(), cTitle.c_str(),
+                        { hAll, hNeg, hPos },
+                        { e.legAll, e.legNeg, e.legPos });
+        }
+    }
+
+    // D. Fixed eta hemisphere, all three DCA types overlaid (4 canvases)
+    // Isolates which DCA type is responsible for the AEE signal in each eta hemisphere.
+    struct EtaSlice { const char* infix; const char* suffix; const char* cTag; const char* titleEta; };
+    const std::vector<EtaSlice> slices = {
+        { "VsEtaJet",    "_PosEta", "EtaJet_Pos",    "jet #eta > 0"     },
+        { "VsEtaJet",    "_NegEta", "EtaJet_Neg",    "jet #eta < 0"     },
+        { "VsEtaLambda", "_PosEta", "EtaLambda_Pos", "#Lambda #eta > 0" },
+        { "VsEtaLambda", "_NegEta", "EtaLambda_Neg", "#Lambda #eta < 0" }
+    };
+
+    for (const auto& sl : slices) {
+        auto get = [&](const char* dcaTag) {
+            return std::string("hCumul1D_pFakePolSignalJet_PhiStarVs")
+                   + dcaTag + sl.infix + sl.suffix;
+        };
+        TH1F* hDau = Get1D(get("DCAdau"));
+        TH1F* hPro = Get1D(get("DCAProLike"));
+        TH1F* hPi  = Get1D(get("DCAPiLike"));
+        Style(hDau, kColDau, kMkrDau); Style(hPro, kColPro, kMkrPro); Style(hPi, kColPi, kMkrPi);
+
+        std::string cName  = std::string("cComp_AllDCA_") + sl.cTag;
+        std::string cTitle = std::string("Integrated <R> vs min DCA cut (") + sl.titleEta
+                             + "); min DCA cut (cm); <R>";
+        WriteCanvas(cName.c_str(), cTitle.c_str(),
+                    { hDau, hPro, hPi },
+                    { "DCA_{V0 daughters}", "DCA_{pro-like, PV}", "DCA_{#pi-like, PV}" });
+    }
 }
 
 
@@ -252,9 +447,10 @@ int main(int argc, char** argv) {
     TFile* fOut = TFile::Open(outFileStr.c_str(), "RECREATE");
     
     // --- Create Organized Subfolders ---
-    TDirectory* dirCounts = fOut->mkdir("Cumulative_Counts");
-    TDirectory* dir2D = fOut->mkdir("Cumulative_2D");
-    TDirectory* dir1D = fOut->mkdir("Cumulative_1D");
+    TDirectory* dirCounts   = fOut->mkdir("Cumulative_Counts");
+    TDirectory* dir2D       = fOut->mkdir("Cumulative_2D");
+    TDirectory* dir1D       = fOut->mkdir("Cumulative_1D");
+    TDirectory* dirCanvases = fOut->mkdir("Comparison_Canvases");
 
     std::string baseDir = "lambdajetpolarizationionsderived/HelicityEfficiencyQA/";
 
@@ -326,10 +522,14 @@ int main(int argc, char** argv) {
         }
     }
 
+    // 4. Draw comparison canvases from the stored 1D cumulatives
+    std::cout << " -> Drawing comparison canvases...\n";
+    DrawComparisonCanvases(dir1D, dirCanvases);
+
     std::cout << " Successfully generated and saved all cumulative profiles.\n Thank you for waiting!\n";
     std::cout << "=======================================================\n\n";
 
-    fOut->Write();
+    fOut->Write("", TObject::kOverwrite); // Just to make sure we wrote everything in memory, and overwriting whatever was already written
     fOut->Close();
 
     fIn->Close();

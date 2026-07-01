@@ -892,7 +892,7 @@ if family_in_scope 11; then
     register_job   "pos10cmZvtx"           "11_EtaAsym/pos10cmZvtx"            ${DEFAULT_N}  0.50   0.0     10.0    4.0  -0.85   0.91    0.30  0.150  0.150  0.050  0.050  0
     register_job   "neg10cmZvtx"           "11_EtaAsym/neg10cmZvtx"            ${DEFAULT_N}  0.50   0.0     10.0    4.0  -0.91   0.85    0.30  0.150  0.150  0.050  0.050  0
     register_job   "pos10cmZvtxNegField"   "11_EtaAsym/pos10cmZvtxNegField"    ${DEFAULT_N}  -0.50  0.0     10.0    4.0  -0.85   0.91    0.30  0.150  0.150  0.050  0.050  0
-    register_job   "EtaMin130etaMax090"    "11_EtaAsym/EtaMin130etaMax090"     ${DEFAULT_N}  0.50   0.0     10.0    4.0  -1.10   0.90    0.30  0.150  0.150  0.050  0.050  0
+    register_job   "EtaMin130etaMax090"    "11_EtaAsym/EtaMin130etaMax090"     ${DEFAULT_N}  0.50   0.0     10.0    4.0  -1.30   0.90    0.30  0.150  0.150  0.050  0.050  0
     register_job   "EtaMin110etaMax090"    "11_EtaAsym/EtaMin110etaMax090"     ${DEFAULT_N}  0.50   0.0     10.0    4.0  -1.10   0.90    0.30  0.150  0.150  0.050  0.050  0
     register_job   "EtaMin070etaMax090"    "11_EtaAsym/EtaMin070etaMax090"     ${DEFAULT_N}  0.50   0.0     10.0    4.0  -0.70   0.90    0.30  0.150  0.150  0.050  0.050  0
     register_job   "EtaMin050etaMax090"    "11_EtaAsym/EtaMin050etaMax090"     ${DEFAULT_N}  0.50   0.0     10.0    4.0  -0.50   0.90    0.30  0.150  0.150  0.050  0.050  0
