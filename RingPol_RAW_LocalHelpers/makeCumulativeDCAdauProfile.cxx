@@ -18,6 +18,7 @@
 #include <cmath>
 
 #include "TFile.h"
+#include "TH1.h"
 #include "TProfile.h"
 #include "TProfile2D.h"
 #include "TProfile3D.h"
@@ -32,7 +33,7 @@
 // ---------------------------------------------------------
 // Helper 1: Core TProfile2D Processing (Outputs 2D)
 // ---------------------------------------------------------
-TProfile2D* MakeCumulativeProfile2D(TProfile2D* pDiff, const char* outName, const char* outTitle) {
+TProfile2D* MakeCumulativeProfile2D(TProfile2D* pDiff, const char* outName, const char* outTitle) {  
     // Create a cleaned version of the outName without the "pFakePolSignalJet_" string cluttering it
     std::string cleanName = outName;
     std::string pattern = "pFakePolSignalJet_";
@@ -94,13 +95,23 @@ TProfile2D* MakeCumulativeProfile2D(TProfile2D* pDiff, const char* outName, cons
 // Helper 2: Core TProfile2D Processing to 1D (Integrated over phi*)
 // ---------------------------------------------------------
 TProfile* MakeCumulativeProfile1D(TProfile2D* pDiff, const char* outName, const char* outTitle) {
+    // Create a cleaned version of the outName without the "pFakePolSignalJet_" string cluttering it
+    // (mirrors MakeCumulativeProfile2D, so 1D and 2D outputs share the same naming convention
+    // regardless of whether the caller already pre-cleaned the name it passed in)
+    std::string cleanName = outName;
+    std::string pattern = "pFakePolSignalJet_";
+    size_t pos = cleanName.find(pattern);
+    if (pos != std::string::npos) {
+        cleanName.replace(pos, pattern.length(), "pSignal_");
+    }
+
     int nPhi = pDiff->GetNbinsX();
     int nDCA = pDiff->GetNbinsY();
 
     // The X-axis of this 1D histogram corresponds to the Y-axis (DCA) of the 2D profile
     // Kept as a TProfile (not a TH1F) for the same reason as MakeCumulativeProfile2D:
     // preserving entries/sum/sum-of-squares per bin allows correct TBrowser rebinning.
-    TProfile* hCumul1D = new TProfile(outName, outTitle,
+    TProfile* hCumul1D = new TProfile(cleanName.c_str(), outTitle,
         nDCA, pDiff->GetYaxis()->GetXmin(), pDiff->GetYaxis()->GetXmax());
     
     hCumul1D->GetXaxis()->SetTitle("min DCA cut");
@@ -290,13 +301,21 @@ void DrawComparisonCanvases(TDirectory* dir1D, TDirectory* dirCanvases) {
 
         // 2. Apply the dynamic limits if we found valid data
         if (firstValidHist) {
-            double range = yMax - yMin;
-            if (range == 0) range = 1.0; // Fallback in case of flat lines
-            
-            // Add a 15% margin to top and bottom
-            double margin = range * 0.15; 
-            firstValidHist->GetYaxis()->SetRangeUser(yMin - margin, yMax + margin);
             firstValidHist->SetTitle(frameTitle);
+
+            // yMin/yMax only get updated inside the scan above if at least one
+            // bin had nonzero content or error; if every histogram was empty,
+            // they are still at their +-1e9 sentinel values (yMax < yMin), and
+            // SetRangeUser with an inverted range would silently render nothing.
+            // In that case, skip it and let ROOT fall back to its own auto-range.
+            if (yMax > yMin) {
+                double range = yMax - yMin;
+                if (range == 0) range = 1.0; // Fallback in case of flat lines
+
+                // Add a 15% margin to top and bottom
+                double margin = range * 0.15;
+                firstValidHist->GetYaxis()->SetRangeUser(yMin - margin, yMax + margin);
+            }
 
             // 3. Draw everything
             bool firstDrawn = false;
@@ -329,9 +348,9 @@ void DrawComparisonCanvases(TDirectory* dir1D, TDirectory* dirCanvases) {
 
     // A. phi*-integrated, all three DCA types overlaid
     {
-        TProfile* hDau = Get1D("hCumul1D_pFakePolSignalJet_PhiStarVsDCAdau");
-        TProfile* hPro = Get1D("hCumul1D_pFakePolSignalJet_PhiStarVsDCAProLike");
-        TProfile* hPi  = Get1D("hCumul1D_pFakePolSignalJet_PhiStarVsDCAPiLike");
+        TProfile* hDau = Get1D("hCumul1D_pSignal_PhiStarVsDCAdau"); // Now cleaned these titles to match cleanName string structure
+        TProfile* hPro = Get1D("hCumul1D_pSignal_PhiStarVsDCAProLike");
+        TProfile* hPi  = Get1D("hCumul1D_pSignal_PhiStarVsDCAPiLike");
         Style(hDau, kColDau, kMkrDau); Style(hPro, kColPro, kMkrPro); Style(hPi, kColPi, kMkrPi);
         WriteCanvas("cComp_AllDCA_IntegratedEta",
                     "Integrated <R> vs min DCA (#phi^{*}-integrated, all #eta); min DCA cut (cm); <R>",
@@ -358,7 +377,7 @@ void DrawComparisonCanvases(TDirectory* dir1D, TDirectory* dirCanvases) {
 
     for (const auto& d : dcaSpecs) {
         for (const auto& e : etaCfgs) {
-            std::string base = "hCumul1D_pFakePolSignalJet_PhiStarVs" + d.tag + e.infix;
+            std::string base = "hCumul1D_pSignal_PhiStarVs" + d.tag + e.infix; // Also cleaned to use cleanName
             TProfile* hAll = Get1D(base + "_AllEta");
             TProfile* hNeg = Get1D(base + "_NegEta");
             TProfile* hPos = Get1D(base + "_PosEta");
@@ -385,7 +404,7 @@ void DrawComparisonCanvases(TDirectory* dir1D, TDirectory* dirCanvases) {
 
     for (const auto& sl : slices) {
         auto get = [&](const char* dcaTag) {
-            return std::string("hCumul1D_pFakePolSignalJet_PhiStarVs")
+            return std::string("hCumul1D_pSignal_PhiStarVs") // Also uses cleanName
                    + dcaTag + sl.infix + sl.suffix;
         };
         TProfile* hDau = Get1D(get("DCAdau"));
