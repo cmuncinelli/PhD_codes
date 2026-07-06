@@ -18,11 +18,11 @@
 #include <cmath>
 
 #include "TFile.h"
+#include "TProfile.h"
 #include "TProfile2D.h"
 #include "TProfile3D.h"
-#include "TH2F.h"
 #include "TH2D.h"
-#include "TH1F.h"
+#include "TArrayD.h"
 #include "TString.h"
 #include "TCanvas.h"
 #include "TLegend.h"
@@ -32,7 +32,7 @@
 // ---------------------------------------------------------
 // Helper 1: Core TProfile2D Processing (Outputs 2D)
 // ---------------------------------------------------------
-TH2F* MakeCumulativeProfile2D(TProfile2D* pDiff, const char* outName, const char* outTitle) {
+TProfile2D* MakeCumulativeProfile2D(TProfile2D* pDiff, const char* outName, const char* outTitle) {
     // Create a cleaned version of the outName without the "pFakePolSignalJet_" string cluttering it
     std::string cleanName = outName;
     std::string pattern = "pFakePolSignalJet_";
@@ -41,12 +41,14 @@ TH2F* MakeCumulativeProfile2D(TProfile2D* pDiff, const char* outName, const char
         // Replaces "pFakePolSignalJet_" with "pSignal_" right where it found it
         cleanName.replace(pos, pattern.length(), "pSignal_");
     }
-    
+
     int nPhi = pDiff->GetNbinsX();
     int nDCA = pDiff->GetNbinsY();
 
     // Transpose the output: X-axis becomes DCA (from input Y), Y-axis becomes phi* (from input X)
-    TH2F* hCumul = new TH2F(cleanName.c_str(), outTitle,
+    // Kept as a TProfile2D (not a TH2F) so the per-bin sum/entries/sum-of-squares survive,
+    // which is what lets TBrowser rebin this histogram correctly on the fly.
+    TProfile2D* hCumul = new TProfile2D(cleanName.c_str(), outTitle,
         nDCA, pDiff->GetYaxis()->GetXmin(), pDiff->GetYaxis()->GetXmax(),
         nPhi, pDiff->GetXaxis()->GetXmin(), pDiff->GetXaxis()->GetXmax());
 
@@ -55,31 +57,33 @@ TH2F* MakeCumulativeProfile2D(TProfile2D* pDiff, const char* outName, const char
     // bin (i, j) to the running sum. The result at (i, j) represents
     // <R> for all candidates with DCA > lower_edge(bin j).
     for (int i = 1; i <= nPhi; i++) {
-        // Some accumulators for error propagation:
-        double sum_N   = 0.0; // Running total: sum of entry counts
-        double sum_NR  = 0.0; // Running total: sum of n_{ik} * mean_R_{ik}
-        double sum_Nv  = 0.0; // Running total: sum of n_{ik}^2 * SEM_{ik}^2
+        // Accumulators for error propagation now hold the RAW profile statistics (entries, sum of Y,
+        // sum of Y^2) rather than a precomputed mean/error, so they can be
+        // written straight into the TProfile2D's own per-bin storage below:
+        double sum_N  = 0.0; // Running total: sum of entry counts         -> bin entries
+        double sum_Y  = 0.0; // Running total: sum of n_{ik} * mean_R_{ik} -> bin content (raw sum of Y)
+        double sum_Y2 = 0.0; // Running total: sum of Y^2 across bins      -> bin sum-of-squares
 
         for (int j = nDCA; j >= 1; j--) {
             // Get the global bin index first!
             int global_bin = pDiff->GetBin(i, j);
 
-            double n_ij = pDiff->GetBinEntries(global_bin);
-            double R_ij = pDiff->GetBinContent(global_bin);
-            double sem_ij = pDiff->GetBinError(global_bin);
+            double n_ij  = pDiff->GetBinEntries(global_bin);
+            double R_ij  = pDiff->GetBinContent(global_bin);
+            double Y2_ij = pDiff->GetSumw2()->At(global_bin); // exact sum(Y^2) stored by the source profile
 
             sum_N  += n_ij;
-            sum_NR += n_ij * R_ij;
-            // Variance of cumulative mean contribution from this bin:
-            sum_Nv += n_ij * n_ij * sem_ij * sem_ij;
+            sum_Y  += n_ij * R_ij;
+            sum_Y2 += Y2_ij;
 
             if (sum_N > 0.0) {
-                double cumul_mean = sum_NR / sum_N;
-                double cumul_err  = std::sqrt(sum_Nv) / sum_N;
-
                 // SetBinContent(X, Y) -> We put DCA (j) on X and phi* (i) on Y
-                hCumul->SetBinContent(j, i, cumul_mean);
-                hCumul->SetBinError(j, i, cumul_err);
+                // Write the raw statistics (NOT the mean/error!) - TProfile2D
+                // derives <R> and its error from these automatically.
+                int dest_bin = hCumul->GetBin(j, i);
+                hCumul->SetBinEntries(dest_bin, sum_N);
+                hCumul->SetBinContent(dest_bin, sum_Y);
+                hCumul->GetSumw2()->SetAt(sum_Y2, dest_bin);
             }
         }
     }
@@ -89,21 +93,23 @@ TH2F* MakeCumulativeProfile2D(TProfile2D* pDiff, const char* outName, const char
 // ---------------------------------------------------------
 // Helper 2: Core TProfile2D Processing to 1D (Integrated over phi*)
 // ---------------------------------------------------------
-TH1F* MakeCumulativeProfile1D(TProfile2D* pDiff, const char* outName, const char* outTitle) {
+TProfile* MakeCumulativeProfile1D(TProfile2D* pDiff, const char* outName, const char* outTitle) {
     int nPhi = pDiff->GetNbinsX();
     int nDCA = pDiff->GetNbinsY();
 
     // The X-axis of this 1D histogram corresponds to the Y-axis (DCA) of the 2D profile
-    TH1F* hCumul1D = new TH1F(outName, outTitle,
+    // Kept as a TProfile (not a TH1F) for the same reason as MakeCumulativeProfile2D:
+    // preserving entries/sum/sum-of-squares per bin allows correct TBrowser rebinning.
+    TProfile* hCumul1D = new TProfile(outName, outTitle,
         nDCA, pDiff->GetYaxis()->GetXmin(), pDiff->GetYaxis()->GetXmax());
     
     hCumul1D->GetXaxis()->SetTitle("min DCA cut");
     hCumul1D->GetYaxis()->SetTitle("Integrated <R>");
 
-    // Accumulators spanning across ALL phi* bins
-    double total_sum_N  = 0.0; 
-    double total_sum_NR = 0.0; 
-    double total_sum_Nv = 0.0; 
+    // Accumulators spanning across ALL phi* bins, holding RAW profile statistics
+    double total_sum_N  = 0.0; // -> bin entries
+    double total_sum_Y  = 0.0; // -> bin content (raw sum of Y)
+    double total_sum_Y2 = 0.0; // -> bin sum-of-squares
 
     // Build cumulative from high DCA downward
     for (int j = nDCA; j >= 1; j--) {
@@ -112,22 +118,20 @@ TH1F* MakeCumulativeProfile1D(TProfile2D* pDiff, const char* outName, const char
             // Get the global bin index first!
             int global_bin = pDiff->GetBin(i, j);
             
-            double n_ij = pDiff->GetBinEntries(global_bin);
-            double R_ij = pDiff->GetBinContent(global_bin);
-            double sem_ij = pDiff->GetBinError(global_bin);
+            double n_ij  = pDiff->GetBinEntries(global_bin);
+            double R_ij  = pDiff->GetBinContent(global_bin);
+            double Y2_ij = pDiff->GetSumw2()->At(global_bin); // exact sum(Y^2) stored by the source profile
 
             total_sum_N  += n_ij;
-            total_sum_NR += n_ij * R_ij;
-            total_sum_Nv += n_ij * n_ij * sem_ij * sem_ij;
+            total_sum_Y  += n_ij * R_ij;
+            total_sum_Y2 += Y2_ij;
         }
 
-        // Calculate and set the integrated bin content for this min DCA cut
+        // Write the raw statistics (NOT the mean/error!) for this min DCA cut
         if (total_sum_N > 0.0) {
-            double cumul_mean = total_sum_NR / total_sum_N;
-            double cumul_err  = std::sqrt(total_sum_Nv) / total_sum_N;
-
-            hCumul1D->SetBinContent(j, cumul_mean);
-            hCumul1D->SetBinError(j, cumul_err);
+            hCumul1D->SetBinEntries(j, total_sum_N);
+            hCumul1D->SetBinContent(j, total_sum_Y);
+            hCumul1D->GetSumw2()->SetAt(total_sum_Y2, j);
         }
     }
     return hCumul1D;
@@ -179,7 +183,7 @@ void ProcessProfile3D(TProfile3D* p3D, TDirectory* dir2D, TDirectory* dir1D, con
         // Replaces "pFakePolSignalJet_" with "pSignal_" right where it found it
         cleanName.replace(pos, pattern.length(), "pSignal_");
     }
-    
+
     // Pass "yx" so the 2D projection maintains native mapping (X = phi*, Y = DCA)
     // We assign names manually afterward.
     
@@ -205,14 +209,14 @@ void ProcessProfile3D(TProfile3D* p3D, TDirectory* dir2D, TDirectory* dir1D, con
     else if (cleanName.find("DCAPiLike") != std::string::npos) dcaLabel = "min DCA_{NegPV}";
 
     // Generate 2D Cumulatives (Transposed now: X = min DCA, Y = phi*)
-    TH2F* hCumul2D_all = MakeCumulativeProfile2D(p2D_all, Form("hCumul2D_%s_AllEta", cleanName.c_str()), Form("Cumul. %s (All Eta); %s; #phi^{*}", cleanName.c_str(), dcaLabel.c_str()));
-    TH2F* hCumul2D_neg = MakeCumulativeProfile2D(p2D_neg, Form("hCumul2D_%s_NegEta", cleanName.c_str()), Form("Cumul. %s (Eta < 0); %s; #phi^{*}", cleanName.c_str(), dcaLabel.c_str()));
-    TH2F* hCumul2D_pos = MakeCumulativeProfile2D(p2D_pos, Form("hCumul2D_%s_PosEta", cleanName.c_str()), Form("Cumul. %s (Eta > 0); %s; #phi^{*}", cleanName.c_str(), dcaLabel.c_str()));
+    TProfile2D* hCumul2D_all = MakeCumulativeProfile2D(p2D_all, Form("hCumul2D_%s_AllEta", cleanName.c_str()), Form("Cumul. %s (All Eta); %s; #phi^{*}", cleanName.c_str(), dcaLabel.c_str()));
+    TProfile2D* hCumul2D_neg = MakeCumulativeProfile2D(p2D_neg, Form("hCumul2D_%s_NegEta", cleanName.c_str()), Form("Cumul. %s (Eta < 0); %s; #phi^{*}", cleanName.c_str(), dcaLabel.c_str()));
+    TProfile2D* hCumul2D_pos = MakeCumulativeProfile2D(p2D_pos, Form("hCumul2D_%s_PosEta", cleanName.c_str()), Form("Cumul. %s (Eta > 0); %s; #phi^{*}", cleanName.c_str(), dcaLabel.c_str()));
 
     // Generate 1D Integrated Cumulatives
-    TH1F* hCumul1D_all = MakeCumulativeProfile1D(p2D_all, Form("hCumul1D_%s_AllEta", cleanName.c_str()), Form("Integrated Cumul. %s (All Eta); %s; Integrated <R>", cleanName.c_str(), dcaLabel.c_str()));
-    TH1F* hCumul1D_neg = MakeCumulativeProfile1D(p2D_neg, Form("hCumul1D_%s_NegEta", cleanName.c_str()), Form("Integrated Cumul. %s (Eta < 0); %s; Integrated <R>", cleanName.c_str(), dcaLabel.c_str()));
-    TH1F* hCumul1D_pos = MakeCumulativeProfile1D(p2D_pos, Form("hCumul1D_%s_PosEta", cleanName.c_str()), Form("Integrated Cumul. %s (Eta > 0); %s; Integrated <R>", cleanName.c_str(), dcaLabel.c_str()));
+    TProfile* hCumul1D_all = MakeCumulativeProfile1D(p2D_all, Form("hCumul1D_%s_AllEta", cleanName.c_str()), Form("Integrated Cumul. %s (All Eta); %s; Integrated <R>", cleanName.c_str(), dcaLabel.c_str()));
+    TProfile* hCumul1D_neg = MakeCumulativeProfile1D(p2D_neg, Form("hCumul1D_%s_NegEta", cleanName.c_str()), Form("Integrated Cumul. %s (Eta < 0); %s; Integrated <R>", cleanName.c_str(), dcaLabel.c_str()));
+    TProfile* hCumul1D_pos = MakeCumulativeProfile1D(p2D_pos, Form("hCumul1D_%s_PosEta", cleanName.c_str()), Form("Integrated Cumul. %s (Eta > 0); %s; Integrated <R>", cleanName.c_str(), dcaLabel.c_str()));
 
     if (dir2D) { dir2D->cd(); hCumul2D_all->Write(); hCumul2D_neg->Write(); hCumul2D_pos->Write(); }
     if (dir1D) { dir1D->cd(); hCumul1D_all->Write(); hCumul1D_neg->Write(); hCumul1D_pos->Write(); }
@@ -234,14 +238,14 @@ void ProcessProfile3D(TProfile3D* p3D, TDirectory* dir2D, TDirectory* dir1D, con
 void DrawComparisonCanvases(TDirectory* dir1D, TDirectory* dirCanvases) {
 
     // Retrieve a 1D cumulative from dir1D by name; warn if absent.
-    auto Get1D = [&](const std::string& name) -> TH1F* {
-        TH1F* h = (TH1F*)dir1D->Get(name.c_str());
+    auto Get1D = [&](const std::string& name) -> TProfile* {
+        TProfile* h = (TProfile*)dir1D->Get(name.c_str());
         if (!h) std::cerr << "    [Warning] Canvas: missing " << name << "\n";
         return h;
     };
 
     // Apply line/marker style to a histogram
-    auto Style = [](TH1F* h, int color, int marker) {
+    auto Style = [](TProfile* h, int color, int marker) {
         if (!h) return;
         h->SetLineColor(color); h->SetMarkerColor(color);
         h->SetMarkerStyle(marker); h->SetMarkerSize(0.9);
@@ -250,7 +254,7 @@ void DrawComparisonCanvases(TDirectory* dir1D, TDirectory* dirCanvases) {
     // Draw a set of 1D histograms onto one canvas and write it to dirCanvases.
     // Automatically scales the Y-axis with a 15% margin around the global min/max.
     auto WriteCanvas = [&](const char* cName, const char* frameTitle,
-                           const std::vector<TH1F*>& hv,
+                           const std::vector<TProfile*>& hv,
                            const std::vector<const char*>& lv) {
         TCanvas* c = new TCanvas(cName, cName, 800, 600);
         c->SetLeftMargin(0.14); c->SetBottomMargin(0.13);
@@ -261,10 +265,10 @@ void DrawComparisonCanvases(TDirectory* dir1D, TDirectory* dirCanvases) {
         // 1. Find the global minimum and maximum (including error bars!)
         double yMin = 1e9;
         double yMax = -1e9;
-        TH1F* firstValidHist = nullptr;
+        TProfile* firstValidHist = nullptr;
 
         for (size_t k = 0; k < hv.size(); k++) {
-            TH1F* h = hv[k];
+            TProfile* h = hv[k];
             if (!h) continue;
             
             // Keep track of the first valid histogram to use as our frame setter
@@ -296,7 +300,7 @@ void DrawComparisonCanvases(TDirectory* dir1D, TDirectory* dirCanvases) {
 
             // 3. Draw everything
             bool firstDrawn = false;
-            for (TH1F* h : hv) {
+            for (TProfile* h : hv) {
                 if (!h) continue;
                 if (!firstDrawn) { 
                     h->Draw("E1"); 
@@ -325,9 +329,9 @@ void DrawComparisonCanvases(TDirectory* dir1D, TDirectory* dirCanvases) {
 
     // A. phi*-integrated, all three DCA types overlaid
     {
-        TH1F* hDau = Get1D("hCumul1D_pFakePolSignalJet_PhiStarVsDCAdau");
-        TH1F* hPro = Get1D("hCumul1D_pFakePolSignalJet_PhiStarVsDCAProLike");
-        TH1F* hPi  = Get1D("hCumul1D_pFakePolSignalJet_PhiStarVsDCAPiLike");
+        TProfile* hDau = Get1D("hCumul1D_pFakePolSignalJet_PhiStarVsDCAdau");
+        TProfile* hPro = Get1D("hCumul1D_pFakePolSignalJet_PhiStarVsDCAProLike");
+        TProfile* hPi  = Get1D("hCumul1D_pFakePolSignalJet_PhiStarVsDCAPiLike");
         Style(hDau, kColDau, kMkrDau); Style(hPro, kColPro, kMkrPro); Style(hPi, kColPi, kMkrPi);
         WriteCanvas("cComp_AllDCA_IntegratedEta",
                     "Integrated <R> vs min DCA (#phi^{*}-integrated, all #eta); min DCA cut (cm); <R>",
@@ -355,9 +359,9 @@ void DrawComparisonCanvases(TDirectory* dir1D, TDirectory* dirCanvases) {
     for (const auto& d : dcaSpecs) {
         for (const auto& e : etaCfgs) {
             std::string base = "hCumul1D_pFakePolSignalJet_PhiStarVs" + d.tag + e.infix;
-            TH1F* hAll = Get1D(base + "_AllEta");
-            TH1F* hNeg = Get1D(base + "_NegEta");
-            TH1F* hPos = Get1D(base + "_PosEta");
+            TProfile* hAll = Get1D(base + "_AllEta");
+            TProfile* hNeg = Get1D(base + "_NegEta");
+            TProfile* hPos = Get1D(base + "_PosEta");
             Style(hAll, kColAll, kMkrAll); Style(hNeg, kColNeg, kMkrNeg); Style(hPos, kColPos, kMkrPos);
 
             std::string cName  = "cComp_" + d.tag + "_" + e.cSuffix;
@@ -384,9 +388,9 @@ void DrawComparisonCanvases(TDirectory* dir1D, TDirectory* dirCanvases) {
             return std::string("hCumul1D_pFakePolSignalJet_PhiStarVs")
                    + dcaTag + sl.infix + sl.suffix;
         };
-        TH1F* hDau = Get1D(get("DCAdau"));
-        TH1F* hPro = Get1D(get("DCAProLike"));
-        TH1F* hPi  = Get1D(get("DCAPiLike"));
+        TProfile* hDau = Get1D(get("DCAdau"));
+        TProfile* hPro = Get1D(get("DCAProLike"));
+        TProfile* hPi  = Get1D(get("DCAPiLike"));
         Style(hDau, kColDau, kMkrDau); Style(hPro, kColPro, kMkrPro); Style(hPi, kColPi, kMkrPi);
 
         std::string cName  = std::string("cComp_AllDCA_") + sl.cTag;
@@ -489,10 +493,10 @@ int main(int argc, char** argv) {
             else if (name.find("DCAProLike") != std::string::npos) dcaLabel = "min DCA_{PosPV}";
             else if (name.find("DCAPiLike") != std::string::npos) dcaLabel = "min DCA_{NegPV}";
 
-            TH2F* pCumul2D = MakeCumulativeProfile2D(pIn, ("hCumul2D_" + name).c_str(), ("Cumul. " + name + "; " + dcaLabel + "; #phi^{*}").c_str());
+            TProfile2D* pCumul2D = MakeCumulativeProfile2D(pIn, ("hCumul2D_" + name).c_str(), ("Cumul. " + name + "; " + dcaLabel + "; #phi^{*}").c_str());
             dir2D->cd(); pCumul2D->Write();
 
-            TH1F* pCumul1D = MakeCumulativeProfile1D(pIn, ("hCumul1D_" + name).c_str(), ("Integrated Cumul. " + name + "; " + dcaLabel + "; Integrated <R>").c_str());
+            TProfile* pCumul1D = MakeCumulativeProfile1D(pIn, ("hCumul1D_" + name).c_str(), ("Integrated Cumul. " + name + "; " + dcaLabel + "; Integrated <R>").c_str());
             dir1D->cd(); pCumul1D->Write();
 
             // Deleting to avoid leaks:
