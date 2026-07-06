@@ -923,15 +923,15 @@ struct ScenarioHistos {
     // 1D eta profiles (replace pPstarX/Y/Z_vsEtaLam; 18 bins in [etaMin, etaMax]):
     FlatPstar1D<18> flatEtaPstar;
 
-    // Ring proxy profiles vs Lambda eta (9 bins) and pT (10 bins).
+    // Ring proxy profiles vs Lambda eta (50 bins) and pT (10 bins).
     // Packs R_proxy (z-hat) and R_proxyJet into one Cell.
     // Replaces: pRingProxyVsEta, pRingProxyJetVsEta.
-    FlatRing1D<9> flatRingVsEta;
+    FlatRing1D<50> flatRingVsEta;
     // Replaces: pRingProxyVsPt, pRingProxyJetVsPt.
     FlatRing1D<10> flatRingVsPt;
-    // Replaces: pRingProxyJetVsEtaJet (jet eta, 9 bins).
+    // Replaces: pRingProxyJetVsEtaJet (jet eta, 50 bins).
     // Note: only the rjet channel is meaningful here (z-hat ring has no jet eta dependence).
-    FlatRing1D<9> flatRingJetVsEtaJet;
+    FlatRing1D<50> flatRingJetVsEtaJet;
 
     // Manual accumulators (for Kahan sums):
     KahanAccumulator kRingProxy;
@@ -1008,14 +1008,14 @@ static ScenarioHistos BookScenario(TDirectory* dir, double etaMinDetector, doubl
     double rmax = kPolPrefactor * 1.05; // Slight margin beyond max value
     h.h1d_ringProxy = new TH1D("h1d_ringProxy", "Ring observable proxy (z-hat as jet direction); R_{proxy};Counts", 120, -rmax, rmax);
     h.pRingProxy = new TProfile("pRingProxy", "Integrated <R_{proxy}> (single-bin TProfile); bin;<R_{proxy}>", 1, -0.5, 0.5);
-    h.pRingProxyVsEta = new TProfile("pRingProxyVsEta", "<R_{proxy}> vs #Lambda pseudorapidity; #eta_{#Lambda};<R_{proxy}>", 9, etaMinDetector, etaMaxDetector); // 18 bins, 0.1 wide each if etaMaxDetector = 0.9 and etaMinDetector = -0.9
+    h.pRingProxyVsEta = new TProfile("pRingProxyVsEta", "<R_{proxy}> vs #Lambda pseudorapidity; #eta_{#Lambda};<R_{proxy}>", 50, etaMinDetector, etaMaxDetector); // Was 18 bins, 0.1 wide each if etaMaxDetector = 0.9 and etaMinDetector = -0.9
     h.pRingProxyVsPt = new TProfile("pRingProxyVsPt", "<R_{proxy}> vs #Lambda p_{T}; p_{T}^{#Lambda} [GeV/c];<R_{proxy}>", 10, 0., 5.); // 20 bins of 0.25 GeV/c each
 
     // ---------- Ring observable proxy for randomly sampled jet direction ----------
     h.h1d_ringProxyJet = new TH1D("h1d_ringProxyJet", "Ring observable proxy (random jet direction); R_{proxyJet};Counts", 120, -rmax, rmax);
     h.pRingProxyJet = new TProfile("pRingProxyJet", "Integrated <R_{proxyJet}> (single-bin TProfile); bin;<R_{proxyJet}>", 1, -0.5, 0.5);
-    h.pRingProxyJetVsEta = new TProfile("pRingProxyJetVsEta", "<R_{proxyJet}> vs #Lambda pseudorapidity; #eta_{#Lambda};<R_{proxyJet}>", 9, etaMinDetector, etaMaxDetector);
-    h.pRingProxyJetVsEtaJet = new TProfile("pRingProxyJetVsEtaJet", "<R_{proxyJet}> vs Jet; #eta_{Jet};<R_{proxyJet}>", 9, etaMinDetector, etaMaxDetector);
+    h.pRingProxyJetVsEta = new TProfile("pRingProxyJetVsEta", "<R_{proxyJet}> vs #Lambda pseudorapidity; #eta_{#Lambda};<R_{proxyJet}>", 50, etaMinDetector, etaMaxDetector);
+    h.pRingProxyJetVsEtaJet = new TProfile("pRingProxyJetVsEtaJet", "<R_{proxyJet}> vs Jet; #eta_{Jet};<R_{proxyJet}>", 50, etaMinDetector, etaMaxDetector);
     h.pRingProxyJetVsPt = new TProfile("pRingProxyJetVsPt", "<R_{proxyJet}> vs #Lambda p_{T}; p_{T}^{#Lambda} [GeV/c];<R_{proxyJet}>", 10, 0., 5.); // 20 bins of 0.25 GeV/c each
 
         // Adding a study for the dependency with jet eta:
@@ -1072,7 +1072,7 @@ static ScenarioHistos BookScenario(TDirectory* dir, double etaMinDetector, doubl
     h.pPstarZ_vsPzPx = new TProfile2D("pPstarZ_vsPzPx", ";<p*_{z}> vs (p_{z}^{#Lambda}, p_{x}^{#Lambda});" "p_{z}^{#Lambda} [GeV/c];p_{x}^{#Lambda} [GeV/c];<p*_{z}>", pZXbin, -pZmax, pZmax, pZXbin, -pXmax, pXmax);
     h.pPstarY_vsPzPx = new TProfile2D("pPstarY_vsPzPx", ";<p*_{y}> vs (p_{z}^{#Lambda}, p_{x}^{#Lambda});" "p_{z}^{#Lambda} [GeV/c];p_{x}^{#Lambda} [GeV/c];<p*_{y}>", pZXbin, -pZmax, pZmax, pZXbin, -pXmax, pXmax);
 
-    // 1D eta profiles (18 bins, matching pRingProxyVsEta width)
+    // 1D eta profiles (18 bins, matching previous pRingProxyVsEta's width)
     h.pPstarX_vsEtaLam = new TProfile("pPstarX_vsEtaLam", "<p*_{x}> vs #eta_{#Lambda}; #eta_{#Lambda}; <p*_{x}>", 18, etaMinDetector, etaMaxDetector);
     h.pPstarY_vsEtaLam = new TProfile("pPstarY_vsEtaLam", "<p*_{y}> vs #eta_{#Lambda}; #eta_{#Lambda}; <p*_{y}>", 18, etaMinDetector, etaMaxDetector);
     h.pPstarZ_vsEtaLam = new TProfile("pPstarZ_vsEtaLam", "<p*_{z}> vs #eta_{#Lambda}; #eta_{#Lambda}; <p*_{z}>", 18, etaMinDetector, etaMaxDetector);
@@ -2261,7 +2261,7 @@ void helicityEfficiencyToyModel(
     TH1D* hKin_pT_pion    = new TH1D("hKin_pT_pion", "All pion p_{T} (pre-cut);p_{T}^{#pi} [GeV/c];Counts", 100, 0., 5.);
     TH1D* hKin_DCA_proton = new TH1D("hKin_DCA_proton", "All proton DCA_{xy} (pre-cut);DCA_{xy}^{p} [cm];Counts", 200, 0., 10.);
     TH1D* hKin_DCA_pion   = new TH1D("hKin_DCA_pion", "All pion DCA_{xy} (pre-cut);DCA_{xy}^{#pi} [cm];Counts", 200, 0., 10.);
-    TH1D* hKin_eta_jet    = new TH1D("hKin_eta_jet", "Jet pseudorapidity; #eta_{Jet};Counts", 36, etaMinDetector, etaMaxDetector); // By construction, this is the interval here
+    TH1D* hKin_eta_jet    = new TH1D("hKin_eta_jet", "Jet pseudorapidity; #eta_{Jet};Counts", 50, etaMinDetector, etaMaxDetector); // By construction, this is the interval here
     outFile->cd(); // Back to root of output file
 
     // -----------------------------------------------------------------------
@@ -2281,9 +2281,9 @@ void helicityEfficiencyToyModel(
     const BinParams bpZX_x (-3., 3., 40);   // px_lam for flatZX (second axis)
     const BinParams bpPhi  (0., TwoPi, 32); // phi_lam for flatPhi
     const BinParams bpEtaPstar(etaMinDetector, etaMaxDetector, 18); // eta_lam for flatEtaPstar
-    const BinParams bpEtaRing (etaMinDetector, etaMaxDetector,  9); // eta_lam for flatRingVsEta
+    const BinParams bpEtaRing (etaMinDetector, etaMaxDetector, 50); // eta_lam for flatRingVsEta
     const BinParams bpPt      (0., 5., 10); // pT_lam for flatRingVsPt
-    const BinParams bpEtaJet  (etaMinDetector, etaMaxDetector,  9); // eta_jet for flatRingJetVsEtaJet
+    const BinParams bpEtaJet  (etaMinDetector, etaMaxDetector, 50); // eta_jet for flatRingJetVsEtaJet
 
     // -----------------------------------------------------------------------
     // 4) Main event loop
