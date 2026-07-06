@@ -7,12 +7,12 @@ This folder lives inside the git repository at:
 PhD_codes/RingPol_RAW_LocalHelpers/DerivedDataHY/
 ```
 It contains every script needed to go from a finished Hyperloop train run all the
-way to a `ConsumerResults_*.root` file ready for plotting — plus a manual registry
+way to a `ConsumerResults_*.root` file ready for plotting -- plus a manual registry
 that gives each train run a human-readable name and a stable storage path.
 
 ---
 
-## Prerequisites — O2 environment
+## Prerequisites -- O2 environment
 
 All scripts that communicate with the ALICE grid (`alien_ls`, `alien_cp`) and
 the merger tool (`hadd`) are provided by the O2/O2Physics software environment.
@@ -37,7 +37,7 @@ which hadd
 
 If `alien_ls` or `alien_cp` are missing, the download steps will fail
 immediately. If `hadd` is missing, the merge step will fail after all files
-have already been downloaded — so it is worth checking upfront.
+have already been downloaded -- so it is worth checking upfront.
 
 > **Tip:** if you open a new terminal mid-workflow (e.g. after a download
 > finishes overnight), remember to re-enter the alienv before running
@@ -50,8 +50,8 @@ have already been downloaded — so it is worth checking upfront.
 1. [Repository layout](#1-repository-layout)
 2. [Storage layout (outside this repo)](#2-storage-layout-outside-this-repo)
 3. [Scripts at a glance](#3-scripts-at-a-glance)
-4. [Workflow A — Starting a new wagon analysis from scratch](#4-workflow-a--starting-a-new-wagon-analysis-from-scratch)
-5. [Workflow B — Appending or updating an existing analysis](#5-workflow-b--appending-or-updating-an-existing-analysis)
+4. [Workflow A -- Starting a new wagon analysis from scratch](#4-workflow-a--starting-a-new-wagon-analysis-from-scratch)
+5. [Workflow B -- Appending or updating an existing analysis](#5-workflow-b--appending-or-updating-an-existing-analysis)
 6. [Script reference](#6-script-reference)
 
 ---
@@ -125,13 +125,13 @@ the registry: one folder per dataset, one subfolder per wagon configuration.
 
 ---
 
-## 4. Workflow A — Starting a new wagon analysis from scratch
+## 4. Workflow A -- Starting a new wagon analysis from scratch
 
 Follow these steps **in order** every time you register a brand-new train run.
 
 ---
 
-### Step 1 — Register the train run
+### Step 1 -- Register the train run
 
 Open [`train_registry.conf`](train_registry.conf) and add one line:
 
@@ -146,7 +146,7 @@ Choose a `WAGON_SHORTNAME` that is short and unambiguous
 
 ---
 
-### Step 2 — Scaffold the folder structure
+### Step 2 -- Scaffold the folder structure
 
 ```bash
 ./init_wagon_structure.sh
@@ -154,11 +154,11 @@ Choose a `WAGON_SHORTNAME` that is short and unambiguous
 
 Reads the registry and creates every required subdirectory for **all**
 registered runs. Also creates a blank `alien_paths.txt` in each new wagon
-folder. Safe to re-run — existing folders and files are never overwritten.
+folder. Safe to re-run -- existing folders and files are never overwritten.
 
 ---
 
-### Step 3 — Fill in `alien_paths.txt`
+### Step 3 -- Fill in `alien_paths.txt`
 
 In the Hyperloop interface, go to the train run page, find the output path
 list, and copy the comma-separated AliEN directory paths. Paste them
@@ -168,7 +168,7 @@ as-is into the wagon's `alien_paths.txt`:
 /alice/cern.ch/user/a/alihyperloop/jobs/0438/hy_4388842,/alice/cern.ch/user/a/alihyperloop/jobs/0438/hy_4388841,...
 ```
 
-One path per line, comma-separated on one line, or any mix — the script
+One path per line, comma-separated on one line, or any mix -- the script
 handles all formats.
 
 > There is no script for this step. The path list must be copied manually
@@ -176,7 +176,7 @@ handles all formats.
 
 ---
 
-### Step 4 — Download everything
+### Step 4 -- Download everything
 
 > **Requires the O2 environment.** Make sure `alienv enter O2Physics/latest`
 > has been run in the current terminal before proceeding.
@@ -187,18 +187,18 @@ handles all formats.
 
 This calls the helper scripts in sequence:
 
-1. [`convert_alien_paths.sh`](convert_alien_paths.sh) — `alien_ls` each path → builds `DownloadListFromAlien.txt` and `DownloadListAnalysisResults.txt`
-2. [`download_files_without_timeout.sh`](download_files_without_timeout.sh) — downloads `AO2D_*.root` into `AO2Ds/`
-3. [`download_files_without_timeout.sh`](download_files_without_timeout.sh) — downloads `AnalysisResults_*.root` into `temp_analysis_results/`
-4. [`gen_input_paths.sh`](gen_input_paths.sh) — writes `input_data_storage.txt`
-5. [`merge_analysis_results.sh`](merge_analysis_results.sh) — `hadd`s all `AnalysisResults_*.root` → `AnalysisResults_merged.root`; deletes `temp_analysis_results/`
+1. [`convert_alien_paths.sh`](convert_alien_paths.sh) -- `alien_ls` each path → builds `DownloadListFromAlien.txt` and `DownloadListAnalysisResults.txt`
+2. [`download_files_without_timeout.sh`](download_files_without_timeout.sh) -- downloads `AO2D_*.root` into `AO2Ds/`
+3. [`download_files_without_timeout.sh`](download_files_without_timeout.sh) -- downloads `AnalysisResults_*.root` into `temp_analysis_results/`
+4. [`gen_input_paths.sh`](gen_input_paths.sh) -- writes `input_data_storage.txt`
+5. [`merge_analysis_results.sh`](merge_analysis_results.sh) -- `hadd`s all `AnalysisResults_*.root` → `AnalysisResults_merged.root`; deletes `temp_analysis_results/`
 
 Files already present in `AO2Ds/` are automatically skipped, so interrupted
 downloads can be safely resumed by re-running the same command.
 
 ---
 
-### Step 5 — Place your dpl-config JSON files
+### Step 5 -- Place your dpl-config JSON files
 
 Copy the consumer configuration(s) you want to run into the wagon folder:
 
@@ -209,7 +209,7 @@ cp dpl-config-DerivedConsumer-JustLambda.json \
 
 ---
 
-### Step 6 — Run the consumer
+### Step 6 -- Run the consumer
 
 > **Requires the O2 environment.** If you opened a new terminal since
 > the download finished, re-enter alienv before running this step.
@@ -234,7 +234,7 @@ lands in:
 
 ---
 
-### Step 7 — (Optional) Run the full chain for all wagons at once
+### Step 7 -- (Optional) Run the full chain for all wagons at once
 
 If you want to process every registered wagon against every consumer config
 in a single unattended run, use:
@@ -274,9 +274,9 @@ See [Workflow B3](#b3--running-the-full-chain-unattended) and the
 
 ---
 
-## 5. Workflow B — Appending or updating an existing analysis
+## 5. Workflow B -- Appending or updating an existing analysis
 
-### B1 — New train run on an already-known dataset
+### B1 -- New train run on an already-known dataset
 
 The most common case: a new HY train run exists for a dataset you already
 have a folder for.
@@ -287,7 +287,7 @@ have a folder for.
 
 ---
 
-### B2 — Re-running the consumer with a different dpl-config
+### B2 -- Re-running the consumer with a different dpl-config
 
 You already have the AODs downloaded and just want to try a different
 analysis configuration.
@@ -304,7 +304,7 @@ coexist in `results_consumer/` without overwriting each other.
 
 ---
 
-### B3 — Downloading additional files for an existing wagon
+### B3 -- Downloading additional files for an existing wagon
 
 If the HY train run was extended and new output directories are available:
 
@@ -318,7 +318,7 @@ reflect the complete updated set.
 
 ---
 
-### B3 — Running the full chain unattended
+### B3 -- Running the full chain unattended
 
 Once all wagons are downloaded and configs are in place, `run_all_wagons.sh`
 iterates over every registry entry and every config file automatically:
@@ -347,7 +347,7 @@ To use a non-default config directory:
 ./run_all_wagons.sh /home/users/cicerodm/RingPol/my_other_configs
 ```
 
-### B4 — Updating FRAMEWORK_DIR after a repo move
+### B4 -- Updating FRAMEWORK_DIR after a repo move
 
 The only hardcoded absolute path in this framework is the `FRAMEWORK_DIR`
 variable at the top of [`download_hyperloop.sh`](download_hyperloop.sh) and
@@ -417,8 +417,8 @@ Called automatically by the orchestrator. Reads `<WORK_DIR>/alien_paths.txt`
 (comma-separated, one-per-line, or mixed), runs `alien_ls` on each path to
 enumerate one-level-deep subdirectories, and writes:
 
-- `DownloadListFromAlien.txt` — one `AO2D.root` LFN per line
-- `DownloadListAnalysisResults.txt` — one `AnalysisResults.root` LFN per line
+- `DownloadListFromAlien.txt` -- one `AO2D.root` LFN per line
+- `DownloadListAnalysisResults.txt` -- one `AnalysisResults.root` LFN per line
 
 Expected grid structure (confirmed, one level deep):
 ```
@@ -436,7 +436,7 @@ Expected grid structure (confirmed, one level deep):
 ./download_files_without_timeout.sh <LIST_FILE> <OUTPUT_DIR> <FILE_PREFIX>
 ```
 
-Called twice by the orchestrator — once for AO2Ds and once for
+Called twice by the orchestrator -- once for AO2Ds and once for
 AnalysisResults. Downloads every LFN in `LIST_FILE` into `OUTPUT_DIR`,
 naming files `<FILE_PREFIX>_1.root`, `<FILE_PREFIX>_2.root`, etc.
 Already-present files are skipped. Timeout is disabled; `alien_cp`
@@ -521,27 +521,31 @@ and cleaned up automatically on exit.
 ./run_all_wagons.sh [CONSUMER_CONFIGS_DIR]
 ```
 
-Optional end-to-end wrapper. Reads `train_registry.conf` to enumerate all
+The master script for full local chain execution. Reads `train_registry.conf` to enumerate all
 wagons, then for every `dpl-config-DerivedConsumer-*.json` found in
 `CONSUMER_CONFIGS_DIR` (default: `/home/users/cicerodm/RingPol/consumer_configs`)
-runs the following three steps:
+runs the following steps:
 
-1. `runDerivedDataConsumer_HY.sh` — produces `ConsumerResults_<SUFFIX>.root`
-2. `extractDeltaErrors.cxx` (ROOT) — delta/error plots from the consumer output
-3. `signalExtractionRing.cxx` (ROOT) — signal extraction, output in `results_SigExtract/`
+1. `runDerivedDataConsumer_HY.sh` -- produces `ConsumerResults_<SUFFIX>.root`
+2. `extractDeltaErrors.cxx` (ROOT) -- delta/error plots from the consumer output
+3. `signalExtractionRing.cxx` (ROOT) -- signal extraction, output in `results_SigExtract/`
+4. `makeCumulativeDCAdauProfile.cxx` (ROOT) -- cumulative DCA profiles QA
+5. `auxiliaryPlots.cxx` (ROOT) -- (Run once per wagon) Cross-config aggregation plotting for systematic comparisons, outputting to `AuxiliaryPlots.root`.
 
-Steps 2 and 3 are skipped if step 1 failed. All macro paths are derived from
-`REPO_DIR` at the top of the script — the only variable to update if the
-repository moves.
+Steps 2, 3, and 4 are skipped if step 1 failed for a specific config. Step 5 aggregates all successful configs for a given wagon at the very end.
 
-The two ROOT macro paths it uses:
+All macros are compiled Ahead-of-Time (AoT) into native executables for performance and stability. All macro paths are derived from `REPO_DIR` at the top of the script -- the only variable to update if the repository moves.
+
+The ROOT macro paths it uses:
 
 | Variable | Default |
-|---|---|
+| --- | --- |
 | `EXTRACT_DELTA_MACRO` | `$REPO_DIR/RingPol_RAW_LocalHelpers/extractDeltaErrors.cxx` |
 | `SIGNAL_EXTRACT_MACRO` | `$REPO_DIR/RingPol_RAW_LocalHelpers/signalExtractionRing.cxx` |
+| `CUMUL_DCA_MACRO` | `$REPO_DIR/RingPol_RAW_LocalHelpers/makeCumulativeDCAdauProfile.cxx` |
+| `AUXILIARY_PLOTS_MACRO` | `$REPO_DIR/RingPol_RAW_LocalHelpers/auxiliaryPlots.cxx` |
 
-All stdout from child processes is suppressed to keep the terminal readable.
+All stdout from child processes is suppressed to keep the terminal readable, routing logs to `results_consumer/logs/` categorized by each step of the coordinator bash.
 A failure summary table is printed at the end of the run.
 
 ---

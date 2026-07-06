@@ -27,6 +27,7 @@ mode, Lambda-only, AntiLambda-only, and full QA with permissive pT cuts.
 | `signalExtractionRingTest.cxx` | Test and development version of the signal extraction code. |
 | `extractDeltaErrors.cxx` | Extracts and propagates statistical uncertainties using the Delta Method, which more accurately preserves the covariance terms to avoid SEM mathematical pitfalls. (Did not improve by much though) |
 | `makeCumulativeDCAdauProfile.cxx` | Evaluates the robustness of the ring observable against varying Distance of Closest Approach (DCA) cuts, specially the DCA of the daughter particles wrt the PV. Condenses 2D/3D differential QA profiles into unified cumulative distributions. |
+| `auxiliaryPlots.cxx` | Cross-configuration aggregation macro. Combines baseline, MC reference, and systematic variations (e.g., Data-like Jet, Rand Jet) of ring observables into appropriately scaled, unified canvases for easy comparison. |
 | `testVersionOfHeaders.h` | Development version of shared header definitions. |
 
 ## Utilities
