@@ -4,7 +4,7 @@
 * Extracts and compares various 1D TProfiles (e.g., Ring Observable 
 * vs Eta of different reference particles) across multiple Consumer 
 * configuration outputs within a single wagon's working directory.
-* * Generates combined canvases for different analysis families 
+*   Generates combined canvases for different analysis families 
 * (Lambda, AntiLambda, BothHyperons) and their respective systematic 
 * variations (Data-like Jet, Rand Jet, etc.), appropriately scaled.
 *
@@ -33,12 +33,12 @@
 
 // Holds styling and file suffix for a single systematic variation
 struct VariationConfig {
-    std::string suffix;       // e.g., "JustLambda_forceDatalikeJet"
-    std::string legendLabel;  // e.g., "Data-like Jet"
+    std::string suffix;      // e.g., "JustLambda_forceDatalikeJet"
+    std::string legendLabel; // e.g., "Data-like Jet"
     int color;
     int lineStyle;
     int markerStyle;
-    bool isBase;              // Flag to indicate if this is the main, thick black line
+    bool isBase;             // Flag to indicate if this is the main, thick black line
 };
 
 // Represents a full family (Lambda, AntiLambda, Both) and its associated variations
@@ -89,12 +89,60 @@ TProfile* GetProfile(const std::string& filePath, const std::string& profileName
 }
 
 // ---------------------------------------------------------
+// Helper 1.5: Fold Profile (Sum Positive and Negative Eta)
+// ---------------------------------------------------------
+TH1D* FoldProfile(TProfile* pIn, const std::string& newName) {
+    if (!pIn) return nullptr;
+    
+    TAxis* ax = pIn->GetXaxis();
+    int nBins = ax->GetNbins();
+    
+    // Dynamically build the positive side bin edges
+    std::vector<double> posEdges;
+    posEdges.push_back(0.0);
+    for(int i = 1; i <= nBins; ++i) {
+        if (ax->GetBinLowEdge(i) >= -1e-7) { // Identify bins that start at or above 0
+            posEdges.push_back(ax->GetBinUpEdge(i));
+        }
+    }
+    
+    TH1D* hFolded = new TH1D(newName.c_str(), pIn->GetTitle(), posEdges.size() - 1, posEdges.data());
+    
+    // Map and sum the corresponding bins
+    for (int i = 1; i <= hFolded->GetNbinsX(); ++i) {
+        double center = hFolded->GetBinCenter(i);
+        int binPos = pIn->FindBin(center);
+        int binNeg = pIn->FindBin(-center);
+
+        double val = 0, err2 = 0;
+        
+        if (binPos >= 1 && binPos <= nBins) {
+            val += pIn->GetBinContent(binPos);
+            err2 += std::pow(pIn->GetBinError(binPos), 2);
+        }
+        
+        // If the central bin spans exactly zero, binPos == binNeg, so we only add it once.
+        // Otherwise, add the negative counterpart.
+        if (binNeg >= 1 && binNeg <= nBins && binNeg != binPos) {
+            val += pIn->GetBinContent(binNeg);
+            err2 += std::pow(pIn->GetBinError(binNeg), 2);
+        }
+        
+        hFolded->SetBinContent(i, val);
+        hFolded->SetBinError(i, std::sqrt(err2));
+    }
+    
+    hFolded->SetDirectory(nullptr); // Protect memory
+    return hFolded;
+}
+
+// ---------------------------------------------------------
 // Helper 2: Draw Comparison Canvas
 // ---------------------------------------------------------
 
-// A temporary struct to bundle a fetched profile with its styling instructions
+// A temporary struct to bundle a fetched profile/histogram with its styling instructions
 struct ProfileBundle {
-    TProfile* profile;
+    TH1* profile; // Converted to TH1* which is also the parent type of TProfile* in order to add the R(eta_pos) + R(eta_pos) plots into this structure
     VariationConfig config;
 };
 
@@ -102,7 +150,8 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
                           const std::string& canvasName,
                           const std::string& canvasTitle,
                           TDirectory* outDir,
-                          const ProfileConfig& profConfig) {
+                          const ProfileConfig& profConfig,
+                          const std::string& customXTitle = "") {
     
     if (bundles.empty()) return;
 
@@ -115,10 +164,21 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
     double xMax = bundles[0].profile->GetXaxis()->GetXmax();
 
     for (const auto& bundle : bundles) {
-        TProfile* p = bundle.profile;
+        TH1* p = bundle.profile;
         for (int i = 1; i <= p->GetNbinsX(); ++i) {
-            // Only consider bins that actually have data
-            if (p->GetBinEntries(i) > 0) { 
+            
+            // Check if bin has data (TProfile tracks entries, TH1D we just proxy via error/content)
+            // Only consider bins that actually have data - Could probably think of a more ROOT-esque
+            // way of doing this using some get min-max, but in this way I guarantee the error bars are
+            // also considered in the interval for the Y axis limits
+            bool hasData = false;
+            if (auto prof = dynamic_cast<TProfile*>(p)) {
+                hasData = (prof->GetBinEntries(i) > 0);
+            } else {
+                hasData = (p->GetBinError(i) > 1e-9 || std::abs(p->GetBinContent(i)) > 1e-9);
+            }
+
+            if (hasData) { 
                 double val = p->GetBinContent(i);
                 double err = p->GetBinError(i);
                 if (val - err < globalMin) globalMin = val - err;
@@ -129,28 +189,31 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
 
     // Apply 5% margin (with a fallback if the curve is perfectly flat)
     double margin = (globalMax - globalMin) * 0.05;
-    if (margin == 0) margin = 0.05; 
+    if (margin < 1e-12) margin = 0.05; 
     double yMin = globalMin - margin;
     double yMax = globalMax + margin;
 
     // 2. Setup Canvas and Legend
     TCanvas* c = new TCanvas(canvasName.c_str(), canvasTitle.c_str(), 800, 600);
-    c->SetLeftMargin(0.12);
+    c->SetLeftMargin(0.12); // todo: could probably mess with these margins a little after the macro finishes running
     c->SetBottomMargin(0.12);
     c->SetGridx();
     c->SetGridy();
 
-    // Adjust legend coordinates based on how many items we have to keep it tidy
+    // Adjust legend coordinates based on how many items we have, to keep it tidy
     double legBottom = 0.88 - (bundles.size() * 0.04);
-    TLegend* leg = new TLegend(0.15, legBottom, 0.45, 0.88);
+    TLegend* leg = new TLegend(0.15, legBottom, 0.45, 0.88); // eyeballed some sizes! Verify this later on!
     leg->SetBorderSize(0);
     leg->SetFillStyle(0);
     leg->SetTextSize(0.035);
 
-    // 3. Draw an empty frame to guarantee perfect axes scaling
+    // Determine the X-Axis title
+    std::string xTitle = customXTitle.empty() ? profConfig.xAxisTitle : customXTitle;
+
+    // 3. Draw an empty frame to guarantee proper axes scaling
     TH1* frame = c->DrawFrame(xMin, yMin, xMax, yMax);
     frame->SetTitle(canvasTitle.c_str());
-    frame->GetXaxis()->SetTitle(profConfig.xAxisTitle.c_str());
+    frame->GetXaxis()->SetTitle(xTitle.c_str());
     frame->GetYaxis()->SetTitle(profConfig.yAxisTitle.c_str());
     frame->GetXaxis()->SetTitleSize(0.045);
     frame->GetYaxis()->SetTitleSize(0.045);
@@ -160,7 +223,7 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
     bool hasBase = false;
 
     for (auto& bundle : bundles) {
-        TProfile* p = bundle.profile;
+        TH1* p = bundle.profile;
         
         p->SetLineColor(bundle.config.color);
         p->SetMarkerColor(bundle.config.color);
@@ -186,7 +249,7 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
         }
     }
     
-    if (hasBase) {
+    if (hasBase) { // Drawing the baseline after all others
         baseBundle.profile->Draw("PE SAME");
     }
 
@@ -196,7 +259,7 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
     outDir->cd();
     c->Write();
     
-    // Clean up to prevent memory leaks during the loop
+    // Clean up to prevent memory leaks during the loop (object should already have been written)
     delete leg;
     delete c; 
 }
@@ -208,7 +271,7 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
 void auxiliaryPlots(const std::string& wagonDir, const std::string& mcRefDir = "") {
     
     // 1. Define Systematic Variations
-    // The base config (empty suffix) is handled separately in the logic to ensure it's first
+    // The base config (empty suffix) is handled separately in the logic to ensure it is always first
     std::vector<VariationConfig> sysVariations = {
         {"_forceDatalikeJet",             "Data-like Jet",             kRed,      1, 20, false},
         {"_forceRandJet",                 "Rand Jet",                  kBlue,     1, 21, false},
@@ -269,7 +332,7 @@ void auxiliaryPlots(const std::string& wagonDir, const std::string& mcRefDir = "
 
             // B. Fetch Systematics Data
             std::vector<ProfileBundle> allSystematics;
-            allSystematics.push_back({pBase, baseConfig}); // Always keep baseline at index 0
+            allSystematics.push_back({pBase, baseConfig}); // Always keep baseline at index 0 (it is the very first thing in this array)
             
             std::vector<TProfile*> profilesToDelete; // Track for memory cleanup
             profilesToDelete.push_back(pBase);
@@ -292,43 +355,61 @@ void auxiliaryPlots(const std::string& wagonDir, const std::string& mcRefDir = "
             }
 
             // ---------------------------------------------------------
+            // FOLDING THE DATA (Summing Pos and Neg Eta)
+            // ---------------------------------------------------------
+            std::vector<ProfileBundle> allFoldedSystematics;
+            std::vector<TH1*> foldedToDelete;
+            
+            for (const auto& bundle : allSystematics) {
+                // Safely cast to TProfile since we know the original inputs were TProfiles
+                TProfile* pOrig = dynamic_cast<TProfile*>(bundle.profile);
+                std::string foldName = std::string(pOrig->GetName()) + "_Folded_" + bundle.config.suffix;
+                
+                TH1D* pFolded = FoldProfile(pOrig, foldName);
+                allFoldedSystematics.push_back({pFolded, bundle.config});
+                foldedToDelete.push_back(pFolded);
+            }
+
+            TH1D* pMCFolded = nullptr;
+            if (pMC) {
+                pMCFolded = FoldProfile(pMC, std::string(pMC->GetName()) + "_Folded_MC");
+                foldedToDelete.push_back(pMCFolded);
+            }
+
+            // Creating the Modulus X-Axis title (e.g. |#eta_{LeadP}|)
+            std::string foldedXTitle = "|" + profConfig.xAxisTitle + "|";
+
+            // ---------------------------------------------------------
             // DRAWING THE VARIATIONS
             // ---------------------------------------------------------
             
+            // --- 1. Standard (Unfolded) Plots ---
             // Variation 1: Baseline Only
-            DrawComparisonCanvas({{pBase, baseConfig}}, 
-                                 "Canvas_BaselineOnly", 
-                                 fam.familyName + " Baseline", 
-                                 obsDir, profConfig);
-
+            DrawComparisonCanvas({{pBase, baseConfig}}, "Canvas_BaselineOnly", fam.familyName + " Baseline", obsDir, profConfig);
             // Variation 2: Systematics (+ Baseline)
-            DrawComparisonCanvas(allSystematics, 
-                                 "Canvas_Systematics", 
-                                 fam.familyName + " Systematics", 
-                                 obsDir, profConfig);
-
-            // Variation 3: MC Only (if available)
+            DrawComparisonCanvas(allSystematics, "Canvas_Systematics", fam.familyName + " Systematics", obsDir, profConfig);
             if (pMC) {
-                DrawComparisonCanvas({{pMC, mcConfig}}, 
-                                     "Canvas_MCOnly", 
-                                     fam.familyName + " MC Baseline", 
-                                     obsDir, profConfig);
-            }
-
-            // Variation 4: All-in-One (if MC available)
-            if (pMC) {
+                // Variation 3: MC Only (if available)
+                DrawComparisonCanvas({{pMC, mcConfig}}, "Canvas_MCOnly", fam.familyName + " MC Baseline", obsDir, profConfig);
                 std::vector<ProfileBundle> allInOne = allSystematics;
                 allInOne.push_back({pMC, mcConfig});
-                DrawComparisonCanvas(allInOne, 
-                                     "Canvas_AllInOne", 
-                                     fam.familyName + " All Comparisons", 
-                                     obsDir, profConfig);
+                // Variation 4: All-in-One (if MC available)
+                DrawComparisonCanvas(allInOne, "Canvas_AllInOne", fam.familyName + " All Comparisons", obsDir, profConfig);
+            }
+
+            // --- 2. Folded Plots ---
+            DrawComparisonCanvas({allFoldedSystematics[0]}, "Canvas_Folded_BaselineOnly", fam.familyName + " Folded Baseline", obsDir, profConfig, foldedXTitle);
+            DrawComparisonCanvas(allFoldedSystematics, "Canvas_Folded_Systematics", fam.familyName + " Folded Systematics", obsDir, profConfig, foldedXTitle);
+            if (pMCFolded) {
+                DrawComparisonCanvas({{pMCFolded, mcConfig}}, "Canvas_Folded_MCOnly", fam.familyName + " Folded MC", obsDir, profConfig, foldedXTitle);
+                std::vector<ProfileBundle> allInOneFolded = allFoldedSystematics;
+                allInOneFolded.push_back({pMCFolded, mcConfig});
+                DrawComparisonCanvas(allInOneFolded, "Canvas_Folded_AllInOne", fam.familyName + " Folded Comparisons", obsDir, profConfig, foldedXTitle);
             }
 
             // Cleanup dynamically allocated profiles for this observable iteration
-            for (auto p : profilesToDelete) {
-                delete p;
-            }
+            for (auto p : profilesToDelete) delete p;
+            for (auto p : foldedToDelete) delete p;
         }
     }
 
