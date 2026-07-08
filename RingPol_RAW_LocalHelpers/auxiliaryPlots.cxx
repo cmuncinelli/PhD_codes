@@ -195,6 +195,42 @@ std::pair<double, double> GetIntegratedProfile(TProfile* pIn) {
 }
 
 // ---------------------------------------------------------
+// Helper 1.4: Toy Model Profile Extraction
+// ---------------------------------------------------------
+TProfile* GetToyModelProfile(const std::string& filePath, const std::string& profileName) {
+    if (filePath.empty()) return nullptr;
+    
+    TFile* fIn = TFile::Open(filePath.c_str(), "READ"); // Open as read-only, of course
+    if (!fIn || fIn->IsZombie()) {
+        std::cerr << "  [Warning] Could not open Toy Model file: " << filePath << std::endl;
+        if (fIn) fIn->Close();
+        return nullptr;
+    }
+
+    // Remark: The Toy Model trigger/jet direction is always random and fundamentally for Lambdas (though it wouldn't
+    // really make any meaningful distinction for antiLambdas or a case where both hyperons are considered).
+    // We map it to LeadP, Jet, 2ndJet, etc., strictly for plotting/comparison purposes!
+    std::string internalPath = "WithEtaGate/BothCuts/All/";
+    if (profileName.find("Lambda") != std::string::npos) {
+        internalPath += "pRingProxyJetVsEta";
+    } else {
+        internalPath += "pRingProxyJetVsEtaJet";
+    }
+
+    TProfile* prof = (TProfile*)fIn->Get(internalPath.c_str());
+    if (!prof) {
+        std::cerr << "  [Warning] Toy Model Profile not found: " << internalPath << std::endl;
+        fIn->Close();
+        return nullptr;
+    }
+
+    TProfile* pClone = (TProfile*)prof->Clone();
+    pClone->SetDirectory(nullptr); 
+    fIn->Close();
+    return pClone;
+}
+
+// ---------------------------------------------------------
 // Helper 2: Draw Comparison Canvas
 // ---------------------------------------------------------
 
@@ -429,28 +465,30 @@ void DrawIntegratedCanvas(const std::vector<ProfileBundle>& bundles,
 // ---------------------------------------------------------
 // Main Macro 
 // ---------------------------------------------------------
-
-void auxiliaryPlots(const std::string& consumerDir, const std::string& mcRefDir = "") {
+void auxiliaryPlots(const std::string& consumerDir, const std::string& mcRefDir = "", const std::string& toyModelPath = "") {
     
     // 1. Define Systematic Variations (the list of all useful variations I would like to track into this plot)
     // The base config (empty suffix) is handled separately in the logic to ensure it is always first
     std::vector<VariationConfig> sysVariations = {
-        {"_forceRandJet",                 "Rand Jet",                  kBlue,    1, 20, false}, // Full circle
-        {"_forceDatalikeJet",             "Data-like Jet",             kRed,     1, 21, false}, // Square
-        {"_forceDatalikeJet_10resamples", "Data-like Jet (10 resam.)", kRed,     2, 25, false}, // Open square
-        {"_forcePerpToJet",               "Perp to Jet",               kGreen+2, 1, 22, false}, // Triangle up
-        {"_forcePerpToJet_10resamples",   "Perp to Jet (10 resam.)",   kGreen+2, 2, 26, false}  // Open triangle up
+        {"_forceRandJet",                 "Rand Jet",                  kBlue,     1, 20, false}, // Full circle
+        {"_forceDatalikeJet",             "Data-like Jet",             kRed,      1, 21, false}, // Square
+        {"_forceDatalikeJet_10resamples", "Data-like Jet (10 resam.)", kRed,      2, 25, false}, // Open square
+        {"_forcePerpToJet",               "Perp to Jet",               kGreen+2,  1, 22, false}, // Triangle up
+        {"_forcePerpToJet_10resamples",   "Perp to Jet (10 resam.)",   kGreen+2,  2, 26, false}, // Open triangle up
+        {"_forcePreviousJet",             "Prev Jet",                  kOrange+1, 1, 34, false}  // Full cross (bold "+")
     };
 
     VariationConfig baseConfig = {"", "Baseline",    kBlack,  1, 8, true}; // Thick black line. Thickness is controlled by the flag turned "true", essentially
     VariationConfig mcConfig   = {"", "MC Baseline", kCyan+1, 2, 29, false}; // Full stars for MC, with a darker cyan type of color (see TColor and TAttMarker)
                                                                              // Kept line as dashed because MC error bars are (VERY!) large with current statistics
+    VariationConfig toyConfig  = {"", "Toy Model", kMagenta+1, 2, 33, false}; // Diamond shape, magenta
 
     // 2. Define the Families
     std::vector<FamilyConfig> families = {
         {"Lambda",       "JustLambda"},
         {"AntiLambda",   "JustAntiLambda"},
-        {"BothHyperons", "BothHyperons_2GeVLeadP"}
+        {"BothHyperons", "BothHyperons"} // BothHyperons_2GeVLeadP was already the standard LeadP pT, so I modified this to follow the usual
+                                         // naming scheme that was in place for other variations of BothHyperons configurables of the consumer
     };
 
     // 3. Define the Profiles to Extract
@@ -487,6 +525,7 @@ void auxiliaryPlots(const std::string& consumerDir, const std::string& mcRefDir 
         // (a "grand summary" for short)
         std::vector<std::pair<double, double>> grandBaseVals;
         std::vector<std::pair<double, double>> grandMCVals;
+        std::vector<std::pair<double, double>> grandToyVals;
         std::vector<std::vector<std::pair<double, double>>> grandSysVals(sysVariations.size()); // Track all systematic variations
         std::vector<std::string> grandLabels;
 
@@ -516,12 +555,19 @@ void auxiliaryPlots(const std::string& consumerDir, const std::string& mcRefDir 
                 }
             }
 
-            // C. Fetch MC Baseline Data (if requested)
+            // C. Fetch MC Baseline Data (if requested via non-null path)
             TProfile* pMC = nullptr;
             if (!mcRefDir.empty()) {
                 std::string mcFile = mcRefDir + "/ConsumerResults_" + fam.baseSuffix + ".root";
                 pMC = GetProfile(mcFile, profConfig.profileName);
                 if (pMC) profilesToDelete.push_back(pMC);
+            }
+
+            // D. Fetch Toy Model Data (if requested via non-null path)
+            TProfile* pToy = nullptr;
+            if (!toyModelPath.empty()) {
+                pToy = GetToyModelProfile(toyModelPath, profConfig.profileName);
+                if (pToy) profilesToDelete.push_back(pToy);
             }
 
             // ---------------------------------------------------------
@@ -544,6 +590,12 @@ void auxiliaryPlots(const std::string& consumerDir, const std::string& mcRefDir 
             if (pMC) {
                 pMCFolded = FoldProfile(pMC, std::string(pMC->GetName()) + "_Folded_MC");
                 foldedToDelete.push_back(pMCFolded);
+            }
+
+            TH1D* pToyFolded = nullptr;
+            if (pToy) {
+                pToyFolded = FoldProfile(pToy, std::string(pToy->GetName()) + "_Folded_Toy");
+                foldedToDelete.push_back(pToyFolded);
             }
 
             // Creating the Modulus X-Axis title (e.g. |#eta_{LeadP}|)
@@ -581,6 +633,13 @@ void auxiliaryPlots(const std::string& consumerDir, const std::string& mcRefDir 
                 subtractedToDelete.push_back(pMCSubtracted);
             }
 
+                // 4. Subtract for Toy Model
+            TH1D* pToySubtracted = nullptr;
+            if (pToy) {
+                pToySubtracted = SubtractProfiles(pBase, pToy, std::string(pToy->GetName()) + "_Subtracted_Toy");
+                subtractedToDelete.push_back(pToySubtracted);
+            }
+
             // Creating the Y-Axis title for the difference plots
             std::string subYTitle = "#Delta" + profConfig.yAxisTitle + " (Base - Var)";
 
@@ -593,35 +652,54 @@ void auxiliaryPlots(const std::string& consumerDir, const std::string& mcRefDir 
             DrawComparisonCanvas({{pBase, baseConfig}}, "Canvas_BaselineOnly", fam.familyName + " Baseline", obsDir, profConfig);
                 // Variation 2: Systematics (+ Baseline)
             DrawComparisonCanvas(allSystematics, "Canvas_Systematics", fam.familyName + " Systematics", obsDir, profConfig);
-            if (pMC) {
                 // Variation 3: MC Only (if available)
+            std::vector<ProfileBundle> allInOne = allSystematics;
+            if (pMC) {
                 DrawComparisonCanvas({{pMC, mcConfig}}, "Canvas_MCOnly", fam.familyName + " MC Baseline", obsDir, profConfig);
-                std::vector<ProfileBundle> allInOne = allSystematics;
                 allInOne.push_back({pMC, mcConfig});
-                // Variation 4: All-in-One (if MC available)
+            }
+                // Variation 4: Toy Model Only (if available)
+            if (pToy) {
+                DrawComparisonCanvas({{pToy, toyConfig}}, "Canvas_ToyOnly", fam.familyName + " Toy Model", obsDir, profConfig);
+                allInOne.push_back({pToy, toyConfig});
+            }
+                // Variation 5: All-in-One (if MC and Toy Model available)
+            if (pMC || pToy) {
                 DrawComparisonCanvas(allInOne, "Canvas_AllInOne", fam.familyName + " All Comparisons", obsDir, profConfig);
             }
 
             // --- 2. Folded Plots ---
             DrawComparisonCanvas({allFoldedSystematics[0]}, "Canvas_Folded_BaselineOnly", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Baseline", obsDir, profConfig, foldedXTitle);
             DrawComparisonCanvas(allFoldedSystematics, "Canvas_Folded_Systematics", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Systematics", obsDir, profConfig, foldedXTitle);
+            std::vector<ProfileBundle> allInOneFolded = allFoldedSystematics; // For folded plots tracking
             if (pMCFolded) {
                 DrawComparisonCanvas({{pMCFolded, mcConfig}}, "Canvas_Folded_MCOnly", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) MC", obsDir, profConfig, foldedXTitle);
-                std::vector<ProfileBundle> allInOneFolded = allFoldedSystematics;
                 allInOneFolded.push_back({pMCFolded, mcConfig});
+            }
+            if (pToyFolded) {
+                DrawComparisonCanvas({{pToyFolded, toyConfig}}, "Canvas_Folded_ToyOnly", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Toy Model", obsDir, profConfig, foldedXTitle);
+                allInOneFolded.push_back({pToyFolded, toyConfig});
+            }
+            if (pMCFolded || pToyFolded) {
                 DrawComparisonCanvas(allInOneFolded, "Canvas_Folded_AllInOne", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Comparisons", obsDir, profConfig, foldedXTitle);
             }
 
             // --- 3. Subtracted Baseline - Systematics ---
-                // Variation 1: Baseline minus Data Systematics:
+                // Variation 1: Baseline minus Data Systematics
             DrawComparisonCanvas(allSubtractedSystematics, "Canvas_Subtracted_Systematics", fam.familyName + " Systematics Difference", obsDir, profConfig, "", subYTitle);
-
-                // Variation 2: Baseline minus MC Only (and Variation 3: All-In-One):
+                // Variation 2: Baseline minus MC Only
+            std::vector<ProfileBundle> allInOneSubtracted = allSubtractedSystematics;
             if (pMCSubtracted) {
                 DrawComparisonCanvas({{pBaseZero, baseConfig}, {pMCSubtracted, mcConfig}}, "Canvas_Subtracted_MCOnly", fam.familyName + " MC Difference", obsDir, profConfig, "", subYTitle);
-
-                std::vector<ProfileBundle> allInOneSubtracted = allSubtractedSystematics;
                 allInOneSubtracted.push_back({pMCSubtracted, mcConfig});
+            }
+                // Variation 3: Baseline minus Toy Model Only
+            if (pToySubtracted) {
+                DrawComparisonCanvas({{pBaseZero, baseConfig}, {pToySubtracted, toyConfig}}, "Canvas_Subtracted_ToyOnly", fam.familyName + " Toy Difference", obsDir, profConfig, "", subYTitle);
+                allInOneSubtracted.push_back({pToySubtracted, toyConfig});
+            }
+                // Variation 4: All-In-One
+            if (pMCSubtracted || pToySubtracted) {
                 DrawComparisonCanvas(allInOneSubtracted, "Canvas_Subtracted_AllInOne", fam.familyName + " All Comparisons Difference", obsDir, profConfig, "", subYTitle);
             }
 
@@ -662,13 +740,14 @@ void auxiliaryPlots(const std::string& consumerDir, const std::string& mcRefDir 
             std::vector<ProfileBundle> integSubBundles;
             std::vector<TH1*> integToDelete;
 
-            int numCats = allSystematics.size() + (pMC ? 1 : 0);
+            int numCats = allSystematics.size() + (pMC ? 1 : 0) + (pToy ? 1 : 0);
             
                 // 1. Compute Integrated Baseline and save to Grand Summary
             auto baseInteg = GetIntegratedProfile(pBase);
             grandBaseVals.push_back(baseInteg);
             grandLabels.push_back(profConfig.xAxisTitle);
             if (pMC) grandMCVals.push_back(GetIntegratedProfile(pMC));
+            if (pToy) grandToyVals.push_back(GetIntegratedProfile(pToy));
 
             // Populate the grand summary for systematics
             // (allSystematics[0] is the baseline, so sysVariations[i] corresponds to allSystematics[i+1])
@@ -726,6 +805,25 @@ void auxiliaryPlots(const std::string& consumerDir, const std::string& mcRefDir 
                 integToDelete.push_back(hIntSubMC);
             }
 
+            if (pToy) {
+                integLabels.push_back(toyConfig.legendLabel);
+                auto integToy = GetIntegratedProfile(pToy);
+                int idx = allSystematics.size() + (pMC ? 1 : 0);
+                
+                TH1D* hIntToy = new TH1D("Integ_Toy", "", numCats, 0, numCats);
+                hIntToy->SetBinContent(idx + 1, integToy.first);
+                hIntToy->SetBinError(idx + 1, integToy.second);
+                
+                TH1D* hIntSubToy = new TH1D("IntegSub_Toy", "", numCats, 0, numCats);
+                hIntSubToy->SetBinContent(idx + 1, baseInteg.first - integToy.first);
+                hIntSubToy->SetBinError(idx + 1, std::sqrt(baseInteg.second*baseInteg.second + integToy.second*integToy.second));
+                
+                integBundles.push_back({hIntToy, toyConfig});
+                integSubBundles.push_back({hIntSubToy, toyConfig});
+                integToDelete.push_back(hIntToy);
+                integToDelete.push_back(hIntSubToy);
+            }
+
             // 4. Draw them using the custom categorical plotter
             DrawIntegratedCanvas(integBundles, integLabels, "Canvas_Integrated", fam.familyName + " Integrated Summary", integDir, "Integrated " + profConfig.yAxisTitle, false);
             DrawIntegratedCanvas(integSubBundles, integLabels, "Canvas_Integrated_Subtracted", fam.familyName + " Integrated Differences", integDir, "#Delta" + profConfig.yAxisTitle + " (Base - Var)", true);
@@ -780,6 +878,17 @@ void auxiliaryPlots(const std::string& consumerDir, const std::string& mcRefDir 
                 grandBundles.push_back({hGrandMC, mcConfig});
                 grandToDelete.push_back(hGrandMC);
             }
+
+            // D. Add Toy Model (if available)
+            if (!toyModelPath.empty() && grandToyVals.size() == (size_t)nGrand) { 
+                TH1D* hGrandToy = new TH1D("GrandToy", "", nGrand, 0, nGrand);
+                for(int i = 0; i < nGrand; ++i) {
+                    hGrandToy->SetBinContent(i + 1, grandToyVals[i].first);
+                    hGrandToy->SetBinError(i + 1, grandToyVals[i].second);
+                }
+                grandBundles.push_back({hGrandToy, toyConfig});
+                grandToDelete.push_back(hGrandToy);
+            }
             
             // Draw the Brute Force Canvas
             DrawIntegratedCanvas(grandBundles, grandLabels, "Canvas_BruteForce_Summary", fam.familyName + " Global Summary Across Kinematics", famDir, "Integrated R", false, true);
@@ -797,13 +906,14 @@ void auxiliaryPlots(const std::string& consumerDir, const std::string& mcRefDir 
 #ifndef __CINT__
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <consumerDir> [mcRefDir]\n";
+        std::cerr << "Usage: " << argv[0] << " <consumerDir> [mcRefDir] [toyModelPath]\n";
         return 1;
     }
     std::string consumerDir = argv[1];
     std::string mcRefDir = (argc > 2) ? argv[2] : "";
+    std::string toyModelPath = (argc > 3) ? argv[3] : "";
     
-    auxiliaryPlots(consumerDir, mcRefDir);
+    auxiliaryPlots(consumerDir, mcRefDir, toyModelPath);
     return 0;
 }
 #endif

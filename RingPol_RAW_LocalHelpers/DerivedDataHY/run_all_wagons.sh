@@ -27,6 +27,7 @@
 #   -h, --help                 Show this help message.
 #   -p, --post-process-only    Skip Step 1 (consumer) and run only the ROOT
 #                              macros (Steps 2, 3, 4) on existing output.
+#   -s, --skip-sig-extract     Skip Step 3 (signal extraction) during execution.
 #
 # Arguments:
 #   REGISTRY (optional):
@@ -69,7 +70,15 @@ DEFAULT_CONFIGS_DIR="/home/users/cicerodm/RingPol/consumer_configs"
 
 # Directory containing the MC reference ConsumerResults files for Auxiliary Plots
 # Leave empty ("") if you do not want to overlay MC.
-MC_REF_DIR="/home/users/cicerodm/RingPol/LHC25h3c/ITSandTPC_min3ITS/results_consumer"
+MC_REF_DIR="/home/users/cicerodm/RingPol/LHC25h3c/ITSandTPC_min3ITS/results_consumer" # TODO: add a remark in the README about this hardcoded path!!!
+                                                                                      # Same for the DEFAULT_CONFIGS_DIR path could probably come in hand
+
+# Absolute path to the Toy Model ROOT file for Auxiliary Plots (chose the Toy Model representative whose configurations are 
+# closest to what an actual data selection would do in data processing, as an attempt to keep everything consistent)
+# Leave empty ("") if you do not want to overlay the Toy Model.
+TOY_MODEL_PATH="/home/users/cicerodm/RingPol/HelicityToyModel/9_RealisticAlice/alice_an_std/helicity_alice_an_std.root" # TODO: Document this path in the README too!
+# For testing with a model configuration that is already on disk:
+# TOY_MODEL_PATH="/home/users/cicerodm/RingPol/HelicityToyModel/9_RealisticAlice/alice_std/helicity_alice_std.root"
 
 # Set executable paths
 EXTRACT_DELTA_EXE="${REPO_DIR}/RingPol_RAW_LocalHelpers/extractDeltaErrors.exe"
@@ -81,6 +90,7 @@ AUXILIARY_PLOTS_EXE="${REPO_DIR}/RingPol_RAW_LocalHelpers/auxiliaryPlots.exe"
 # ARGUMENT PARSING
 # ==============================================================================
 POST_PROCESS_ONLY=0
+SKIP_SIG_EXTRACT=0
 REGISTRY_ARG=""
 CONFIGS_DIR_ARG=""
 
@@ -97,6 +107,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --post-process-only|-p)
             POST_PROCESS_ONLY=1
+            shift
+            ;;
+        --skip-sig-extract|-s)
+            SKIP_SIG_EXTRACT=1
             shift
             ;;
         -*)
@@ -230,7 +244,8 @@ echo "  run_all_wagons.sh"
 echo "  Wagons       : ${#WAGON_LINES[@]}"
 echo "  Configs      : ${#CONFIG_FILES[@]}"
 echo "  Configs Dir  : ${CONSUMER_CONFIGS_DIR}"
-echo "  Mode         : $( [ $POST_PROCESS_ONLY -eq 1 ] && echo 'POST-PROCESS ONLY' || echo 'FULL CHAIN' )"
+echo "  Toy Model    : ${TOY_MODEL_PATH:-None}"
+echo "  Mode         : $( [ $POST_PROCESS_ONLY -eq 1 ] && echo 'POST-PROCESS ONLY' || echo 'FULL CHAIN' )$( [ $SKIP_SIG_EXTRACT -eq 1 ] && echo ' [SKIP SIG EXTRACT]' )"
 echo "========================================================"
 echo ""
 
@@ -322,15 +337,19 @@ for LINE in "${WAGON_LINES[@]}"; do
     # ------------------------------------------------------------------
     # Step 3: signalExtractionRing
     # ------------------------------------------------------------------
-    echo -n "  [3/5] sigExtract      : ${CONS_SUFFIX}"
-    "$SIGNAL_EXTRACT_EXE" "${CONSUMER_RESULT}" "${SIGNAL_EXTRACT_DIR}/" > "$SIG_LOG" 2>&1
-    SIG_EXIT=$?
+    if [ $SKIP_SIG_EXTRACT -eq 0 ]; then
+      echo -n "  [3/5] sigExtract      : ${CONS_SUFFIX}"
+      "$SIGNAL_EXTRACT_EXE" "${CONSUMER_RESULT}" "${SIGNAL_EXTRACT_DIR}/" > "$SIG_LOG" 2>&1
+      SIG_EXIT=$?
 
-    if [ $SIG_EXIT -ne 0 ]; then
-      echo "  -> FAILED  (log: ${SIG_LOG})"
-      FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | signalExtractionRing")
+      if [ $SIG_EXIT -ne 0 ]; then
+        echo "  -> FAILED  (log: ${SIG_LOG})"
+        FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | signalExtractionRing")
+      else
+        echo "  -> OK"
+      fi
     else
-      echo "  -> OK"
+      echo "  [3/5] sigExtract      : ${CONS_SUFFIX} (SKIPPED)"
     fi
 
     # ------------------------------------------------------------------
@@ -357,7 +376,9 @@ for LINE in "${WAGON_LINES[@]}"; do
   # We run this ONCE per wagon, passing the wagon's base working dir
   AUX_LOG="${WORK_DIR}/results_consumer/logs/auxPlots.log" # Saves a single log, to the root of the logs folder, because there will be only one single log for a given wagon
   echo -n "  [5/5] auxiliaryPlots  : (Cross-config summary)"
-  "$AUXILIARY_PLOTS_EXE" "${WORK_DIR}/results_consumer" "${MC_REF_DIR}" > "$AUX_LOG" 2>&1
+  
+  # Forwarding the consumer results directory, the MC reference, and now the Toy Model path:
+  "$AUXILIARY_PLOTS_EXE" "${WORK_DIR}/results_consumer" "${MC_REF_DIR}" "${TOY_MODEL_PATH}" > "$AUX_LOG" 2>&1
   AUX_EXIT=$?
 
   if [ $AUX_EXIT -ne 0 ]; then
