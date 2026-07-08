@@ -140,6 +140,7 @@ TH1D* FoldProfile(TProfile* pIn, const std::string& newName) {
 // ---------------------------------------------------------
 // Helper 1.2: Subtract Profiles (Base - Systematics)
 // ---------------------------------------------------------
+// (Also handles binning mismatches appropriately)
 TH1D* SubtractProfiles(TH1* pBase, TH1* pSys, const std::string& newName) {
     if (!pBase || !pSys) return nullptr;
     
@@ -152,15 +153,40 @@ TH1D* SubtractProfiles(TH1* pBase, TH1* pSys, const std::string& newName) {
     }
     hSub->Reset(); // Clear original contents and errors
     
+    // Verify if the binning structures are identical
+    bool binningMatches = (pBase->GetNbinsX() == pSys->GetNbinsX() &&
+                           std::abs(pBase->GetXaxis()->GetXmin() - pSys->GetXaxis()->GetXmin()) < 1e-6 &&
+                           std::abs(pBase->GetXaxis()->GetXmax() - pSys->GetXaxis()->GetXmax()) < 1e-6);
+    
     for (int i = 1; i <= hSub->GetNbinsX(); ++i) {
+        double xCenter = pBase->GetXaxis()->GetBinCenter(i);
         double vBase = pBase->GetBinContent(i);
         double eBase = pBase->GetBinError(i);
-        double vSys = pSys->GetBinContent(i);
-        double eSys = pSys->GetBinError(i);
         
-        // Ensure both bins contain data before subtracting
+        double vSys = 0.0;
+        double eSys = 0.0;
+        bool sysHasData = false;
+
+        if (binningMatches) { // Safe bin-by-bin alignment case
+            vSys = pSys->GetBinContent(i);
+            eSys = pSys->GetBinError(i);
+            sysHasData = (eSys > 1e-9 || std::abs(vSys) > 1e-9 || (dynamic_cast<TProfile*>(pSys) && ((TProfile*)pSys)->GetBinEntries(i) > 0));
+        } else {
+            // Binning mismatch (e.g., Toy Model)! 
+            // Protect boundaries: Only evaluate if the base bin center falls within the systematic axis range
+            if (xCenter >= pSys->GetXaxis()->GetXmin() && xCenter <= pSys->GetXaxis()->GetXmax()) {
+                vSys = pSys->Interpolate(xCenter); // A very convenient function in TProfiles! This allows for 
+                
+                // For error propagation on mismatched grids, proxy with the closest bin's error
+                // (could interpolate or do something fancier, but come on! Interpolation is already somewhat wrong,
+                // in the sense that we could have binned everything consistently, but this works as a good approximation)
+                int closestBin = pSys->FindBin(xCenter);
+                eSys = pSys->GetBinError(closestBin);
+                sysHasData = true; 
+            }
+        }
+        
         bool baseHasData = (eBase > 1e-9 || std::abs(vBase) > 1e-9 || (dynamic_cast<TProfile*>(pBase) && ((TProfile*)pBase)->GetBinEntries(i) > 0));
-        bool sysHasData = (eSys > 1e-9 || std::abs(vSys) > 1e-9 || (dynamic_cast<TProfile*>(pSys) && ((TProfile*)pSys)->GetBinEntries(i) > 0));
         
         if (baseHasData && sysHasData) {
             hSub->SetBinContent(i, vBase - vSys);
@@ -250,18 +276,23 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
     
     if (bundles.empty()) return;
 
-    // 1. Find global Min and Max across all bins and all provided profiles
+    // Find global Min and Max across all bins and all provided profiles
     double globalMin = 999999.;
     double globalMax = -999999.;
     
-    // We assume all profiles share the same X-axis binning structure
-    double xMin = bundles[0].profile->GetXaxis()->GetXmin();
-    double xMax = bundles[0].profile->GetXaxis()->GetXmax();
+    // Dynamically calculate X-axis bounds to accommodate different binnings safely
+    // (no longer assuming that all profiles share the same X-axis binning structure)
+    double xMin = 999999.;
+    double xMax = -999999.;
 
     for (const auto& bundle : bundles) {
+        double currentXMin = bundle.profile->GetXaxis()->GetXmin();
+        double currentXMax = bundle.profile->GetXaxis()->GetXmax();
+        if (currentXMin < xMin) xMin = currentXMin;
+        if (currentXMax > xMax) xMax = currentXMax;
+
         TH1* p = bundle.profile;
         for (int i = 1; i <= p->GetNbinsX(); ++i) {
-            
             // Check if bin has data (TProfile tracks entries, TH1D we just proxy via error/content)
             // Only consider bins that actually have data - Could probably think of a more ROOT-esque
             // way of doing this using some get min-max, but in this way I guarantee the error bars are
