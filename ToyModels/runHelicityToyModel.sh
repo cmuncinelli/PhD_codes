@@ -841,15 +841,26 @@ fi
 # polarities. This is the family whose <R_proxy> numbers matter for understanding
 # the fake polarization effects in the real ring observable analysis.
 #
-# alice_loose:    Similar to ITS-track regime; loose DCA, lower pT threshold
-# alice_std:      ALICE standard-ish V0 selection
-# alice_std_neg:  Same as alice_std but Bz = -0.5 T; the AEE must flip, the
-#                 HEE must not. Maybe interesting for a Run 2 combined-polarity dataset.
-# alice_tight:    Tighter selection for a central Pb-Pb; larger
-#                 pT and DCA thresholds produce larger combined fake signal.
-# alice_ring:     Standard-ish selection restricted to the ring analysis kinematic
-#                 window [0.5, 1.5] GeV/c; the most directly relevant number
-#                 for the ring polarization fake signal study.
+# alice_loose:   Similar to ITS-track regime; loose DCA, lower pT threshold
+# alice_std:     ALICE standard-ish V0 selection
+# alice_an_std:  Copied the default parameters from my Table Producer or, when not
+#                applicable, what would be the usual from PWGLF presentations.
+#                - MinPt mimicks what I saw in my AnalysisResults.root (only 5 counts
+#                with pT\in[0,0.1), so I am being generous with the low cut!)
+#                - MaxPt preserved as 10 GeV as more than that is overkill.
+#                - Eta is actually larger than what I select for jets, but V0s have
+#                an interval as wide as 1.5 in pseudorapidity plots even though I have
+#                cut my jets short in pseudorapidity.
+#                - MinPt for the proton and the pion were really eyeballed from a derived
+#                data sample. The cutoff is much less significant for these two daughter
+#                particles and they seem to explore much smaller pTs than the V0 itself (makes sense)
+# alice_std_neg: Same as alice_std but Bz = -0.5 T; the AEE must flip, the
+#                HEE must not. Maybe interesting for a Run 2 combined-polarity dataset.
+# alice_tight:   Tighter selection for a central Pb-Pb; larger
+#                pT and DCA thresholds produce larger combined fake signal.
+# alice_ring:    Standard-ish selection restricted to the ring analysis kinematic
+#                window [0.5, 1.5] GeV/c; the most directly relevant number
+#                for the ring polarization fake signal study.
 # -----------------------------------------------------------------------------
 if family_in_scope 9; then
     run_family_header 9 "REALISTIC ALICE CUTS  [combined HEE+AEE estimate for data correction]"
@@ -857,6 +868,7 @@ if family_in_scope 9; then
     #               NAME                  SUBDIR                             N             Bz     pTminL  pTmaxL  rap   etaMin  etaMax  T     pTp    pTpi   dcaP   dcaPi  seed
     register_job   "alice_loose"         "9_RealisticAlice/alice_loose"      ${DEFAULT_N}  0.50   0.000   10.000  4.0   -0.9    0.9     0.30  0.100  0.100  0.020  0.020  0
     register_job   "alice_std"           "9_RealisticAlice/alice_std"        ${DEFAULT_N}  0.50   0.000   10.000  4.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
+    register_job   "alice_an_std"        "9_RealisticAlice/alice_an_std"     ${DEFAULT_N}  0.50   0.075   10.000  1.0   -1.5    1.5     0.30  0.050  0.025  0.050  0.050  0
     register_job   "alice_std_neg"       "9_RealisticAlice/alice_std_neg"    ${DEFAULT_N}  -0.50  0.000   10.000  4.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
     register_job   "alice_tight"         "9_RealisticAlice/alice_tight"      ${DEFAULT_N}  0.50   0.000   10.000  4.0   -0.9    0.9     0.30  0.200  0.200  0.100  0.100  0
     register_job   "alice_ring"          "9_RealisticAlice/alice_ring"       ${DEFAULT_N}  0.50   0.500   1.500   4.0   -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
