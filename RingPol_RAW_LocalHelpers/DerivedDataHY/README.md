@@ -112,7 +112,7 @@ the registry: one folder per dataset, one subfolder per wagon configuration.
 
 | Script | You call it? | What it does |
 |---|---|---|
-| [`train_registry.conf`](train_registry.conf) | Edit manually | Maps train run IDs → dataset name, wagon shortname, storage path |
+| [`train_registry.conf`](train_registry.conf) | Edit manually | Maps train run IDs --> dataset name, wagon shortname, storage path |
 | [`init_wagon_structure.sh`](init_wagon_structure.sh) | ✅ Yes | Scaffolds the full folder tree for every entry in the registry |
 | [`download_hyperloop.sh`](download_hyperloop.sh) | ✅ Yes | Orchestrates the full download pipeline for one train run |
 | [`convert_alien_paths.sh`](convert_alien_paths.sh) | 🔧 Called by orchestrator | Reads `alien_paths.txt`, runs `alien_ls`, builds both LFN lists |
@@ -187,11 +187,11 @@ handles all formats.
 
 This calls the helper scripts in sequence:
 
-1. [`convert_alien_paths.sh`](convert_alien_paths.sh) -- `alien_ls` each path → builds `DownloadListFromAlien.txt` and `DownloadListAnalysisResults.txt`
+1. [`convert_alien_paths.sh`](convert_alien_paths.sh) -- `alien_ls` each path --> builds `DownloadListFromAlien.txt` and `DownloadListAnalysisResults.txt`
 2. [`download_files_without_timeout.sh`](download_files_without_timeout.sh) -- downloads `AO2D_*.root` into `AO2Ds/`
 3. [`download_files_without_timeout.sh`](download_files_without_timeout.sh) -- downloads `AnalysisResults_*.root` into `temp_analysis_results/`
 4. [`gen_input_paths.sh`](gen_input_paths.sh) -- writes `input_data_storage.txt`
-5. [`merge_analysis_results.sh`](merge_analysis_results.sh) -- `hadd`s all `AnalysisResults_*.root` → `AnalysisResults_merged.root`; deletes `temp_analysis_results/`
+5. [`merge_analysis_results.sh`](merge_analysis_results.sh) -- `hadd`s all `AnalysisResults_*.root` --> `AnalysisResults_merged.root`; deletes `temp_analysis_results/`
 
 Files already present in `AO2Ds/` are automatically skipped, so interrupted
 downloads can be safely resumed by re-running the same command.
@@ -242,10 +242,11 @@ in a single unattended run, use:
 ```bash
 ./run_all_wagons.sh [REGISTRY] [CONSUMER_CONFIGS_DIR]
 ```
-- REGISTRY (optional): Path to a train_registry.conf file. If omitted, the default registry inside the framework is used.
-- CONSUMER_CONFIGS_DIR (optional): Directory containing dpl-config-DerivedConsumer-*.json files.
-If omitted, the default configs directory is used.
+- REGISTRY (optional): Path to a `train_registry.conf` file. If omitted, the default registry inside the framework is used.
+- CONSUMER_CONFIGS_DIR (optional): Directory containing `dpl-config-DerivedConsumer-*.json` files. If omitted, the default configs directory is used.
 - Added NUMActl options for convenience when running in machines with 2 or more NUMA nodes.
+
+> **Important:** To overlay Monte Carlo and/or Toy Model data on your final plots, ensure you update (if needed) the `MC_REF_DIR` and `TOY_MODEL_PATH` variables hardcoded at the top of the `run_all_wagons.sh` script.
 
 **Examples**
 ```
@@ -264,8 +265,10 @@ This script will:
 - Run the derived data consumer for each (wagon, config) pair
 - Run `extractDeltaErrors.cxx` (ROOT)
 - Run `signalExtractionRing.cxx` (ROOT)
+- Run `makeCumulativeDCAdauProfile.cxx` (ROOT)
+- Run `auxiliaryPlots.cxx` (ROOT)
 
-Steps 2 and 3 are skipped automatically if step 1 fails for a given pair.
+Steps 2, 3, and 4 are skipped automatically if step 1 fails for a given pair.
 
 A summary table of all failures is printed at the end.
 
@@ -283,7 +286,7 @@ have a folder for.
 
 1. Add the new run to [`train_registry.conf`](train_registry.conf).
 2. Run `./init_wagon_structure.sh` to create the new wagon subfolder (existing ones are untouched).
-3. Follow **Steps 3 → 6** from Workflow A for the new run ID.
+3. Follow **Steps 3 --> 6** from Workflow A for the new run ID.
 
 ---
 
@@ -328,7 +331,7 @@ iterates over every registry entry and every config file automatically:
 ```
 
 For each (wagon, config) pair it runs the consumer, then
-`extractDeltaErrors.cxx`, then `signalExtractionRing.cxx`. Failures are
+`extractDeltaErrors.cxx`, `signalExtractionRing.cxx`, and `makeCumulativeDCAdauProfile.cxx`. Failures are
 skipped without stopping the run and printed as a table at the end:
 
 ```
@@ -532,7 +535,10 @@ runs the following steps:
 4. `makeCumulativeDCAdauProfile.cxx` (ROOT) -- cumulative DCA profiles QA
 5. `auxiliaryPlots.cxx` (ROOT) -- (Run once per wagon) Cross-config aggregation plotting for systematic comparisons, outputting to `AuxiliaryPlots.root`.
 
-Steps 2, 3, and 4 are skipped if step 1 failed for a specific config. Step 5 aggregates all successful configs for a given wagon at the very end.
+> **Note on Reference Overlay Data:**
+> Step 5 aggregates all successful configs for a given wagon at the very end, and optionally overlays Monte Carlo and Helicity Toy Model data. **The paths to the MC reference (`MC_REF_DIR`) and the Toy Model (`TOY_MODEL_PATH`) are hardcoded at the top of this bash script.** You must update them directly inside `run_all_wagons.sh` if your local storage layout changes.
+
+Steps 2, 3, and 4 are skipped if step 1 failed for a specific config.
 
 All macros are compiled Ahead-of-Time (AoT) into native executables for performance and stability. All macro paths are derived from `REPO_DIR` at the top of the script -- the only variable to update if the repository moves.
 
