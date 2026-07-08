@@ -357,7 +357,7 @@ for LINE in "${WAGON_LINES[@]}"; do
   # We run this ONCE per wagon, passing the wagon's base working dir
   AUX_LOG="${WORK_DIR}/results_consumer/logs/auxPlots.log" # Saves a single log, to the root of the logs folder, because there will be only one single log for a given wagon
   echo -n "  [5/5] auxiliaryPlots  : (Cross-config summary)"
-  "$AUXILIARY_PLOTS_EXE" "${WORK_DIR}" "${MC_REF_DIR}" > "$AUX_LOG" 2>&1
+  "$AUXILIARY_PLOTS_EXE" "${WORK_DIR}/results_consumer" "${MC_REF_DIR}" > "$AUX_LOG" 2>&1
   AUX_EXIT=$?
 
   if [ $AUX_EXIT -ne 0 ]; then
