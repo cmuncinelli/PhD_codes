@@ -70,13 +70,15 @@ DEFAULT_CONFIGS_DIR="/home/users/cicerodm/RingPol/consumer_configs"
 
 # Directory containing the MC reference ConsumerResults files for Auxiliary Plots
 # Leave empty ("") if you do not want to overlay MC.
-MC_REF_DIR="/home/users/cicerodm/RingPol/LHC25h3c/ITSandTPC_min3ITS/results_consumer" # TODO: add a remark in the README about this hardcoded path!!!
-                                                                                      # Same for the DEFAULT_CONFIGS_DIR path could probably come in hand
+MC_REF_DIR="/home/users/cicerodm/RingPol/LHC25h3c/ITSandTPC_min3ITS/results_consumer"
+
+# Same thing, but for the pp baseline dataset:
+PP_REF_DIR="/home/users/cicerodm/RingPol/LHC23_pass4_Thin_small/ITSandTPC_min3ITS/results_consumer"
 
 # Absolute path to the Toy Model ROOT file for Auxiliary Plots (chose the Toy Model representative whose configurations are 
 # closest to what an actual data selection would do in data processing, as an attempt to keep everything consistent)
 # Leave empty ("") if you do not want to overlay the Toy Model.
-TOY_MODEL_PATH="/home/users/cicerodm/RingPol/HelicityToyModel/9_RealisticAlice/alice_an_std/helicity_alice_an_std.root" # TODO: Document this path in the README too!
+TOY_MODEL_PATH="/home/users/cicerodm/RingPol/HelicityToyModel/9_RealisticAlice/alice_an_std/helicity_alice_an_std.root"
 # For testing with a model configuration that is already on disk:
 # TOY_MODEL_PATH="/home/users/cicerodm/RingPol/HelicityToyModel/9_RealisticAlice/alice_std/helicity_alice_std.root"
 
@@ -378,7 +380,7 @@ for LINE in "${WAGON_LINES[@]}"; do
   echo -n "  [5/5] auxiliaryPlots  : (Cross-config summary)"
   
   # Forwarding the consumer results directory, the MC reference, and now the Toy Model path:
-  "$AUXILIARY_PLOTS_EXE" "${WORK_DIR}/results_consumer" "${MC_REF_DIR}" "${TOY_MODEL_PATH}" > "$AUX_LOG" 2>&1
+  "$AUXILIARY_PLOTS_EXE" "${WORK_DIR}/results_consumer" "${MC_REF_DIR}" "${PP_REF_DIR}" "${TOY_MODEL_PATH}" > "$AUX_LOG" 2>&1
   AUX_EXIT=$?
 
   if [ $AUX_EXIT -ne 0 ]; then
