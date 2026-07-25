@@ -36,15 +36,14 @@ are not included here.
 | [`pythia_runs/`](pythia_runs) | PYTHIA8 and PYTHIA Angantyr generator codes with FastJet integration. Produces zero-polarization MC reference samples for the ring observable analysis. |
 | [`RingPol_RAW_LocalHelpers/`](RingPol_RAW_LocalHelpers) | Local analysis framework for the ring polarization observable. Includes tools for downloading, processing, and analyzing both raw AOD and Hyperloop derived data. |
 | [`LambdaV0Radius_QA/`](LambdaV0Radius_QA) | Quality assurance study for systematic effects related to the V0 decay radius in Λ reconstruction. |
+| [`ToyModels/`](ToyModels) | Collection of Toy Models to estimate and understand spurious polarization effects introduced by kinematic cuts and detector asymmetries. |
 | [`IC_helper_tasks/`](IC_helper_tasks) | Utility scripts written to support undergraduate research students. |
 
 ---
 
 ## Notes on Paths and Environment
 
-Some scripts contain hardcoded paths such as `/home/cicero/` or references
-to cluster nodes (e.g. `jarvis*`). These reflect the original computing
-environment at Unicamp and should be adapted to your local setup.
+Some scripts contain hardcoded paths such as `/home/cicero/` or references to cluster nodes (e.g. `jarvis*`). These reflect the original computing environment at Unicamp and should be adapted to your local setup.
 
 ---
 
