@@ -443,7 +443,7 @@ selections:
 | 6 | `eta_090` | ALICE inner barrel acceptance |
 | 7 | `temp_030` | nominal LHC Lambda inverse slope T = 0.30 GeV |
 | 8 | `win_ring` | the ring analysis window [0.5, 1.5] GeV/c |
-| 9 | `alice_std` | standard ALICE V0 working point |
+| 9 | `alice_an_std` | same cuts as my own defaults from O2Physics (wherever applicable) |
 | 10 | `fieldCuts_b050` | standard B = +0.5 T with both cut types active |
 | 11 | `pos10cmZvtx` | simplest asymmetric eta scenario (+10 cm Zvtx shift) |
 | 12 | `yLam4` | rapidity range used throughout the rest of the study |
