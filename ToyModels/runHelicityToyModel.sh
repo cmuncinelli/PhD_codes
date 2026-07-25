@@ -41,6 +41,16 @@
 #                               so the fake signal is visible and comparable.
 #   - Family 10 (Realistic):    full ALICE-like cuts; the combined estimate needed
 #                               for the actual data comparison.
+#   - Family 11 (eta window):   Asymmetric eta windows to emulate an asymmetric detector
+#                               (be it because of asymmetric collision systems, detector
+#                                faults, or asymmetric Zvtx populations which could contaminate
+#                                the final Ring Observable // make it so that spurious effects
+#                                do not cancel out)
+#   - Family 12 (rapidity):     Some sanity checks for the generator's rapidity window choice.
+#   - Family 13 (Psi-corr):     stress-test for the polarization-correction test
+#                               probe (Effect 4): fixes an eta-asymmetric window
+#                               and scans how independent Psi needs to be from
+#                               the acceptance before the naive corrections break.
 #
 # OUTPUT STRUCTURE
 # ----------------
@@ -54,9 +64,9 @@
 # ------------------
 # All jobs from ALL families are collected into a single queue first, then
 # dispatched simultaneously up to MAX_PARALLEL concurrent processes.
-# On a 192-core machine with ~59 total runs, the default MAX_PARALLEL=60
-# launches every job at once and the total wall time equals the slowest
-# single run.
+# On a 192-core machine with ~88 total runs, the default MAX_PARALLEL=88
+# launches every job at once and the total wall time is close to
+# the slowest single run.
 #
 # Dispatch strategy (in order of preference):
 #   1. GNU parallel (parallel --jobs N): preferred; handles job tracking,
@@ -125,6 +135,40 @@
 #       Combines pT and DCA cuts at loose / standard / tight working points, with
 #       both field polarities and in the ring analysis kinematic window.
 #
+#   Family 10: MAGNETIC FIELD WITH CUTS  [AEE+HEE combined field dependence]
+#       Repeats the Family 3 field scan (sign flip + strength) but with a
+#       pT = 0.2 GeV/c daughter threshold active, so both AEE and HEE respond
+#       to field polarity/strength simultaneously instead of AEE alone.
+#
+#   Family 11: ASYMMETRIC ETA  [AEE/HEE vs a non-symmetric acceptance window]
+#       Standard-ish ALICE cuts. Varies etaMin/etaMax independently (rather
+#       than symmetrically, as in Family 6) to emulate a shifted Zvtx or a
+#       partial forward/backward acceptance -- the same root cause the
+#       polarization-correction test probe (Effect 4, Family 13) targets.
+#       Tests whether the AEE sign flips with the direction of the asymmetry,
+#       and how much the asymmetry actually matters for the final observable.
+#
+#   Family 12: LAMBDA MAX RAPIDITY  [generator-level acceptance sanity check]
+#       Standard-ish ALICE cuts. Scans the generator's own rapidity cut
+#       (rapMax) to find the safe operating range where it does not itself
+#       introduce an implicit acceptance bias into the WithoutEtaGate
+#       histograms.
+#
+#   Family 13: PSI-CORRELATION SCAN  [polarization-correction test probe
+#                                      stress test, Effect 4 on the README]
+#       Standard-ish ALICE cuts. Fixes an asymmetric eta window (reusing
+#       Family 11's "pos10cmZvtx" configuration) and scans the generator's
+#       psiCorrelationFraction parameter from 0 (Psi independent of the
+#       daughter-track acceptance, matching the design of the four real
+#       analyses PolCorrProbe reproduces) up to 1 (Psi always forced equal
+#       to phi_lam). Tests whether the naive Psi-averaged corrections
+#       (P_global, P_starNaive) develop a growing spurious offset as this
+#       independence assumption breaks down, and whether the STAR-3GeV
+#       sinusoid-fit-and-offset remedy (P_starFitOffset) continues to
+#       recover zero regardless. Two points are repeated with a symmetric
+#       eta window as a control, to isolate the Psi-correlation mechanism
+#       from the eta-asymmetry-driven fake signal itself.
+#
 # USAGE
 # -----
 #   chmod +x runHelicityToyModel.sh
@@ -153,10 +197,17 @@
 #     7_Temperature/       temp_020/ ... temp_050/
 #     8_KinWindow/         win_inclusive/ win_vsoft/ win_soft/ win_ring/
 #                          win_mid/ win_hard/ win_vhard/
-#     9_RealisticAlice/    alice_loose/ alice_std/ alice_std_neg/
-#                          alice_tight/ alice_ring/
+#     9_RealisticAlice/    alice_loose/ alice_an_std alice_std/
+#                          alice_std_neg/ alice_tight/ alice_ring/
 #     10_BField/           fieldCuts_vlow/ fieldCuts_b050/ fieldCuts_b100/
 #                          fieldCuts_b050neg/
+#     11_EtaAsym/          pos10cmZvtx/ neg10cmZvtx/ pos10cmZvtxNegField/
+#                          EtaMin130etaMax090/ EtaMin110etaMax090/
+#                          EtaMin070etaMax090/ EtaMin050etaMax090/
+#                          EtaMin030etaMax090/
+#     12_LambdaRap/        yLam0_5GuardTest/ yLam2/ ... yLam10/
+#     13_PsiCorrScan/      psi_asym_000/ ... psi_asym_100/ psi_sym_030/
+#                          psi_sym_100/
 #     logs/
 #       <run_name>.log           (one per job: generator + plotter combined)
 #       parallel_joblog.tsv      (GNU parallel timing/status log, if used)
@@ -169,12 +220,11 @@
 #   - GNU parallel (optional but recommended; apt install parallel)
 #   - Bash 4.0+
 #
-# DISK ESTIMATE
+# DISK USAGE (some tested values)
 # -------------
-#   Each ROOT file (histograms only, no TTrees): ~4-8 MB after ROOT zlib
-#   compression (two histogram families: WithEtaGate + WithoutEtaGate).
-#   Total for ~59 runs: ~600 MB. (EYEBALLED! Didn't measure these.)
-#   Log files: ~50-200 KB per run; negligible.
+#   Each ROOT file (histograms only, no TTrees): ~6.6 MB after ROOT compression.
+#   Total for ~80 runs: ~530 MB.
+#   Log files: ~300 KB when running all families; negligible.
 #
 # =============================================================================
 
@@ -196,10 +246,10 @@ BASE_DIR="/home/users/cicerodm/RingPol/HelicityToyModel"
 LOG_DIR="${BASE_DIR}/logs"
 
 # Maximum concurrent ROOT processes.
-# Default: 80 (all jobs at once on a 192-core machine).
+# Default: 88 (all jobs at once on a 192-core machine).
 # Set to 0 to let GNU parallel use all available cores (parallel -j 0),
 # or to any positive integer to cap concurrency explicitly.
-MAX_PARALLEL=80
+MAX_PARALLEL=88
 
 # Default Lambda count per run.
 DEFAULT_N=360000000000 # Takes about 4 days after the optimized generator cxx, 11.5 days with the older code
@@ -273,7 +323,7 @@ done
 
 # Default: run all families
 if [[ ${#FAMILIES_TO_RUN[@]} -eq 0 ]]; then
-    FAMILIES_TO_RUN=(0 1 2 3 4 5 6 7 8 9 10 11 12)
+    FAMILIES_TO_RUN=(0 1 2 3 4 5 6 7 8 9 10 11 12 13)
 fi
 
 
@@ -413,16 +463,22 @@ family_in_scope() {
 #   $5  PTMIN_LAM  Lambda min pT [GeV/c]
 #   $6  PTMAX_LAM  Lambda max pT [GeV/c]
 #   $7  RAPMAX     Lambda max |rapidity|
-#   $8  ETAMAX     Daughter maximum detectable eta
-#   $9  ETAMIN     Daughter minimum detectable eta
+#   $8  ETAMIN     Daughter minimum detectable eta
+#   $9  ETAMAX     Daughter maximum detectable eta
 #   $10 T          Boltzmann temperature [GeV]
 #   $11 PTMIN_P    proton min pT [GeV/c]
 #   $12 PTMIN_PI   pion min pT [GeV/c]
 #   $13 DCAMIN_P   proton min DCA_xy [cm]
 #   $14 DCAMIN_PI  pion min DCA_xy [cm]
 #   $15 SEED       TRandom3 seed
+#   $16 PSICORR    (optional) psiCorrelationFraction, generator's 15th CLI
+#                  arg -- see README.md, "Effect 4" and "Polarization-
+#                  correction test probe". Defaults to 0 (Psi independent of
+#                  acceptance) so every pre-existing register_job call below
+#                  needs no change.
 register_job() {
-    local PACKED="$1:$2:$3:$4:$5:$6:$7:$8:$9:${10}:${11}:${12}:${13}:${14}:${15}"
+    local PSICORR="${16:-0}"
+    local PACKED="$1:$2:$3:$4:$5:$6:$7:$8:$9:${10}:${11}:${12}:${13}:${14}:${15}:${PSICORR}"
     JOB_QUEUE+=("${PACKED}")
     JOB_FAMILIES+=("${CURRENT_FAMILY}")
 }
@@ -446,10 +502,10 @@ run_family_header() {
 # It receives one colon-delimited packed argument string.
 
 execute_job() {
-    # Unpack the 14 fields
+    # Unpack the 16 fields
     IFS=':' read -r \
         NAME SUBDIR N BZ PTMIN_LAM PTMAX_LAM RAPMAX ETAMIN ETAMAX T \
-        PTMIN_P PTMIN_PI DCAMIN_P DCAMIN_PI SEED \
+        PTMIN_P PTMIN_PI DCAMIN_P DCAMIN_PI SEED PSICORR \
         <<< "$1"
 
     local OUTDIR="${BASE_DIR}/${SUBDIR}"
@@ -460,7 +516,7 @@ execute_job() {
 
     # Build argument array for the compiled generator (safely handles spaces in ROOT_FILE)
     # Notice this is different from before, where we parsed a giant string
-    local GEN_ARGS=("$N" "$ROOT_FILE" "$BZ" "$PTMIN_LAM" "$PTMAX_LAM" "$RAPMAX" "$ETAMIN" "$ETAMAX" "$T" "$PTMIN_P" "$PTMIN_PI" "$DCAMIN_P" "$DCAMIN_PI" "$SEED")
+    local GEN_ARGS=("$N" "$ROOT_FILE" "$BZ" "$PTMIN_LAM" "$PTMAX_LAM" "$RAPMAX" "$ETAMIN" "$ETAMAX" "$T" "$PTMIN_P" "$PTMIN_PI" "$DCAMIN_P" "$DCAMIN_PI" "$SEED" "$PSICORR")
     
     # Plotter still uses ROOT Cling (cheap, I/O bound, so no need to pre-compile this cxx)
     local PLT_CALL="\"${ROOT_FILE}\""
@@ -941,6 +997,59 @@ if family_in_scope 12; then
     register_job   "yLam10"           "12_LambdaRap/yLam10"           ${DEFAULT_N}  0.50   0.0     10.0    10.0  -0.9    0.9     0.30  0.150  0.150  0.050  0.050  0
 fi
 
+# -----------------------------------------------------------------------------
+# FAMILY 13: PSI-CORRELATION SCAN  [stress-test for the polarization-
+#                                    correction test probe, see README.md
+#                                    "Effect 4" and "Polarization-correction
+#                                    test probe"]
+# Standard-ish ALICE cuts (pTp=pTpi=0.15, dcaP=dcaPi=0.05), Bz=+0.5 T.
+# (Same as alice_an_std, but could do with alice_std for a more controlled/idealized cut scenario as well)
+#
+# Rationale:
+#   PolCorrProbe emulates the reference/event-plane angle Psi by reusing the
+#   independently-drawn per-jet-group random azimuth -- by construction
+#   uncorrelated with the daughter-track acceptance, exactly like the four
+#   real analyses this probe tests are designed to be (Psi built from a
+#   detector disjoint from the one reconstructing the Lambda). The new
+#   psiCorrelationFraction generator parameter breaks that independence for
+#   a controlled fraction of Lambdas, as a toy stand-in for the fixed-target
+#   v1-driven Psi/acceptance correlation documented in STAR PRC 103
+#   (arXiv 2108.00044).
+#
+#   psi_asym_* fixes the eta window at Family 11's "pos10cmZvtx" asymmetric
+#   configuration (etaMin=-0.85, etaMax=0.91) -- which already produces a
+#   genuine HEE/AEE fake signal -- and scans psiCorrelationFraction from 0
+#   (clean; both the naive Psi-average and the Appendix-A/B corrections
+#   should sit at zero) up to 1.0 (Psi always set equal to phi_lam; the
+#   independence assumption is maximally broken). The expectation, per the
+#   STAR PRC 103 remedy: as psiCorrelationFraction grows, the naive
+#   Psi-averaged estimators (P_global, P_starNaive) should develop a growing
+#   spurious offset, while the STAR-3GeV sinusoid-fit-and-offset estimator
+#   (P_starFitOffset, Fig C4) should continue recovering close to zero.
+#
+#   psi_sym_* repeats two of those points (0.30, 1.00) with a SYMMETRIC eta
+#   window (etaMin=-0.90, etaMax=0.90) instead, to disentangle the two
+#   possible contamination sources: with a symmetric window the underlying
+#   HEE/AEE fake signal itself is already close to zero (EtaPos/EtaNeg
+#   cancel), so any residual offset seen here must come from the
+#   Psi-correlation mechanism alone, not from an eta-asymmetry-driven bias.
+# -----------------------------------------------------------------------------
+if family_in_scope 13; then
+    run_family_header 13 "PSI-CORRELATION SCAN  [polarization-correction test probe stress test]"
+
+    # -- Asymmetric eta window (Family 11's "pos10cmZvtx"), psiCorrelationFraction scan --
+    #               NAME             SUBDIR                         N             Bz    pTminL  pTmaxL  rap   etaMin  etaMax  T     pTp    pTpi   dcaP   dcaPi  seed  psiCorr
+    register_job   "psi_asym_000"   "13_PsiCorrScan/psi_asym_000"   ${DEFAULT_N}  0.5   0.075   10.0    1.0   -0.85   0.91    0.30  0.050  0.025  0.050  0.050  0     0.00
+    register_job   "psi_asym_005"   "13_PsiCorrScan/psi_asym_005"   ${DEFAULT_N}  0.5   0.075   10.0    1.0   -0.85   0.91    0.30  0.050  0.025  0.050  0.050  0     0.05
+    register_job   "psi_asym_015"   "13_PsiCorrScan/psi_asym_015"   ${DEFAULT_N}  0.5   0.075   10.0    1.0   -0.85   0.91    0.30  0.050  0.025  0.050  0.050  0     0.15
+    register_job   "psi_asym_030"   "13_PsiCorrScan/psi_asym_030"   ${DEFAULT_N}  0.5   0.075   10.0    1.0   -0.85   0.91    0.30  0.050  0.025  0.050  0.050  0     0.30
+    register_job   "psi_asym_050"   "13_PsiCorrScan/psi_asym_050"   ${DEFAULT_N}  0.5   0.075   10.0    1.0   -0.85   0.91    0.30  0.050  0.025  0.050  0.050  0     0.50
+    register_job   "psi_asym_100"   "13_PsiCorrScan/psi_asym_100"   ${DEFAULT_N}  0.5   0.075   10.0    1.0   -0.85   0.91    0.30  0.050  0.025  0.050  0.050  0     1.00
+    # -- Symmetric eta window control, at two representative psiCorrelationFraction values --
+    register_job   "psi_sym_030"    "13_PsiCorrScan/psi_sym_030"    ${DEFAULT_N}  0.5   0.075   10.0    1.0   -0.90   0.90    0.30  0.050  0.025  0.050  0.050  0     0.30
+    register_job   "psi_sym_100"    "13_PsiCorrScan/psi_sym_100"    ${DEFAULT_N}  0.5   0.075   10.0    1.0   -0.90   0.90    0.30  0.050  0.025  0.050  0.050  0     1.00
+fi
+
 
 # =============================================================================
 # QUEUE SUMMARY
@@ -966,19 +1075,19 @@ echo "============================================================"
 # Print the full job table (useful for --list and --dry-run)
 echo ""
 echo "  Registered jobs:"
-printf "  %-4s  %-28s  %-10s  %-6s  %-14s  %-14s  %-5s\n" \
-    "#" "Name" "N" "Bz" "pTmin[p,pi]" "DCA[p,pi]" "T"
-printf "  %-4s  %-28s  %-10s  %-6s  %-14s  %-14s  %-5s\n" \
+printf "  %-4s  %-28s  %-10s  %-6s  %-14s  %-14s  %-5s  %-7s\n" \
+    "#" "Name" "N" "Bz" "pTmin[p,pi]" "DCA[p,pi]" "T" "PsiCorr"
+printf "  %-4s  %-28s  %-10s  %-6s  %-14s  %-14s  %-5s  %-7s\n" \
     "---" "----------------------------" "----------" "------" \
-    "--------------" "--------------" "-----"
+    "--------------" "--------------" "-----" "-------"
 
 IDX=0
 for JOB in "${JOB_QUEUE[@]}"; do
     IFS=':' read -r NAME SUBDIR N BZ PTMIN_LAM PTMAX_LAM RAPMAX ETAMIN ETAMAX T \
-                      PTMIN_P PTMIN_PI DCAMIN_P DCAMIN_PI SEED <<< "${JOB}"
-    printf "  %-4d  %-28s  %-10s  %+.4f  [%.3f, %.3f]   [%.3f, %.3f]   %.2f\n" \
+                      PTMIN_P PTMIN_PI DCAMIN_P DCAMIN_PI SEED PSICORR <<< "${JOB}"
+    printf "  %-4d  %-28s  %-10s  %+.4f  [%.3f, %.3f]   [%.3f, %.3f]   %.2f   %s\n" \
         $(( IDX + 1 )) "${NAME}" "${N}" "${BZ}" \
-        "${PTMIN_P}" "${PTMIN_PI}" "${DCAMIN_P}" "${DCAMIN_PI}" "${T}"
+        "${PTMIN_P}" "${PTMIN_PI}" "${DCAMIN_P}" "${DCAMIN_PI}" "${T}" "${PSICORR}"
     IDX=$(( IDX + 1 ))
 done
 echo ""
@@ -1065,7 +1174,7 @@ else
     # Pure bash background pool (fallback when GNU parallel is absent)
     # ------------------------------------------------------------------
     # Strategy: launch all jobs as background subshells immediately.
-    # On a 192-core machine with ~59 jobs this is unconditionally fine.
+    # On a 192-core machine with ~88 jobs this is unconditionally fine.
     # If MAX_PARALLEL is set below N_JOBS (e.g. for testing), a simple
     # slot-counter loop throttles the launch rate.
     #
@@ -1161,6 +1270,9 @@ echo "    grep -A4 'WithEtaGate.*DCACutOnly' ${LOG_DIR}/field_b050neg.log"
 echo ""
 echo "    # Compare HEE for pion-only vs proton-only pT cuts:"
 echo "    grep 'pTCutOnly' ${LOG_DIR}/pt_pi_150.log ${LOG_DIR}/pt_p_150.log"
+echo ""
+echo "    # Check the polarization-correction probe summary across the psi-correlation scan:"
+echo "    grep -A6 'Polarization-correction probe summary' ${LOG_DIR}/psi_asym_*.log"
 echo ""
 echo "    # Open a result in ROOT:"
 echo "    root -l ${BASE_DIR}/0_Baseline/baseline/helicity_baseline.root"

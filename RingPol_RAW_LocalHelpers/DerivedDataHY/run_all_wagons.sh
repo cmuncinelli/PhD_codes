@@ -79,7 +79,7 @@ PP_REF_DIR="/home/users/cicerodm/RingPol/LHC23_pass4_Thin_small/ITSandTPC_min3IT
 # closest to what an actual data selection would do in data processing, as an attempt to keep everything consistent)
 # Leave empty ("") if you do not want to overlay the Toy Model.
 TOY_MODEL_PATH="/home/users/cicerodm/RingPol/HelicityToyModel/9_RealisticAlice/alice_an_std/helicity_alice_an_std.root"
-# For testing with a model configuration that is already on disk:
+# Testing with other model configurations:
 # TOY_MODEL_PATH="/home/users/cicerodm/RingPol/HelicityToyModel/9_RealisticAlice/alice_std/helicity_alice_std.root"
 
 # Set executable paths
@@ -223,10 +223,10 @@ echo "Compiling ROOT macros into native executables..."
 COMPILE_WARN_FLAGS="-Wall -Wextra -Wpedantic -Wshadow" # For bug catching (TODO: check some unused variables that were revealed! May be buggy code!)
 # COMPILE_WARN_FLAGS="" # For quick compiling without warnings (do NOT use me without care!)
 ROOT_AWARE_FLAGS="-DNDEBUG $(root-config --cflags)" # Strips out all assert() checks. ROOT headers respect this flag!
-OPTIMIZATION_FLAGS="-O3 -march=native -fno-math-errno -flto -fno-trapping-math" # Using the fno-math-errno to disable the errno verification of passing negative numbers to sqrts and the such.
-                                                                                # My code should be safe, so this will never be used!
-                                                                                # Also introduced -fno-trapping-math as there is no explicit usage of NaNs
-                                                                                # nor any expected unsafe divisions by zero appearing anywhere in the code!
+OPTIMIZATION_FLAGS="-O3 -march=native -fno-math-errno -flto=auto -fno-trapping-math" # Using the fno-math-errno to disable the errno verification of passing negative numbers to sqrts and the such.
+                                                                                     # My code should be safe, so this will never be used!
+                                                                                     # Also introduced -fno-trapping-math as there is no explicit usage of NaNs
+                                                                                     # nor any expected unsafe divisions by zero appearing anywhere in the code!
 ROOT_LIBS="$(root-config --glibs)"
 
 # Compile Step (Stops script if compilation fails)

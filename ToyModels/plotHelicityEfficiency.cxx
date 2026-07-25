@@ -65,6 +65,9 @@
 
 #include <TArrow.h>
 #include <TProfile2D.h>
+#include <TF1.h>
+#include <TFitResult.h>
+#include <TFitResultPtr.h>
 
 #include <cstdio>
 #include <cstring>
@@ -94,6 +97,10 @@ static const char* kScenNames[4]  = {"NoCuts", "pTCutOnly", "DCACutOnly", "BothC
 static const char* kScenLabels[4] = {"No cuts", "p_{T} cut only", "DCA cut only", "Both cuts"};
 static const int   kScenColors[4] = {kColNoCuts, kColPtCut, kColDcaCut, kColBoth};
 static const int   kScenMarkers[4]= {kMarkerNC, kMarkerPT, kMarkerDC, kMarkerBC};
+
+// Lambda decay-parameter used throughout the polarization-correction-test
+// estimators below. MUST match kAlphaLambda in helicityEfficiencyToyModel.cxx
+static const double kAlphaLambda = 0.749;
 
 
 // ==========================================================================
@@ -258,6 +265,174 @@ static TH1D* SafeClone(TH1D* h) {
     // histogram pollution and ensuring the TCanvas renders the overlays correctly!
     hc->SetDirectory(nullptr); 
     return hc;
+}
+
+
+// ==========================================================================
+/**
+ * @brief Conservative upper-bound SEM for an O(1)-bounded quantity (sines,
+ *        cosines, and their raw first moments all satisfy |x| <= 1, so
+ *        Var(x) <= 1 always). Used only for the "auxiliary" channels of
+ *        PolCorrProbe (bins 1-3 of hPolCorr_Sums) that were not given a
+ *        proper Kahan-tracked second moment in the generator, to keep the
+ *        hot loop lighter. Headline channels use a real unbiased-variance
+ *        SEM instead (see hPolCorr_Sums bins 4-7 error bars, filled directly
+ *        by PolCorrProbe::FlushToTH1).
+ * @param N  Number of entries.
+ * @return   1/sqrt(N), or 0 if N<=1.
+ */
+// ==========================================================================
+static double ConservativeSEM(double N) { return (N > 1.) ? 1.0 / std::sqrt(N) : 0.; }
+
+
+// ==========================================================================
+/**
+ * @brief Weighted mean of a TProfile's bin contents, weighted by each bin's
+ *        effective entry count. Equivalent to the plain per-entry average of
+ *        the underlying quantity over the whole sample (algebraically:
+ *        sum_ib[content(ib)*entries(ib)] = sum_ib[sum_y(ib)], so the ratio to
+ *        sum_ib[entries(ib)] recovers the exact global mean).
+ * @param p  Source TProfile; a null pointer is tolerated (returns 0).
+ */
+// ==========================================================================
+static double WeightedMeanOfProfile(TProfile* p) {
+    if (!p) return 0.;
+    double sumWY = 0., sumW = 0.;
+    for (int ib = 1; ib <= p->GetNbinsX(); ++ib) {
+        double w = p->GetBinEntries(ib);
+        if (w <= 0.) continue;
+        sumWY += p->GetBinContent(ib) * w;
+        sumW  += w;
+    }
+    return (sumW > 0.) ? sumWY / sumW : 0.;
+}
+
+
+// ==========================================================================
+/**
+ * @brief Bundles every "does the fake signal go to zero" estimator computed
+ *        for one (scenario, eta-selection) leaf directory -- naive, the
+ *        traditional `<cos^2 theta*>`-only correction, the STAR/ALICE
+ *        `Psi`-averaged corrections (global and event-plane-differential),
+ *        and the STAR-3GeV sinusoid-fit remedy. See README.md, "Effect 4"
+ *        and "Correction estimator formulas", for what each field means and
+ *        which paper/mechanism it tests.
+ *
+ * All _err fields are 1-sigma uncertainties in the same units as the
+ * corresponding value. ok=false and all-zero fields indicate a missing or
+ * too-small (N<2) input directory.
+ */
+// ==========================================================================
+struct PolCorrEstimators {
+    bool   ok = false;
+    double N  = 0.;
+
+    double Pz_naive = 0., Pz_naive_err = 0.;
+    double Px_naive = 0., Px_naive_err = 0.;
+    double Py_naive = 0., Py_naive_err = 0.;
+
+    double kappa_eff = 0.;
+    double Pz_kappaCorr = 0., Pz_kappaCorr_err = 0.;
+
+    double A0 = 0.;
+    double P_global = 0., P_global_err = 0.;
+
+    double P_zsn[3]     = {0., 0., 0.};
+    double P_zsn_err[3] = {0., 0., 0.};
+
+    double P_starNaive = 0.,     P_starNaive_err = 0.;
+    double P_starFitOffset = 0., P_starFitOffset_err = 0.;
+    double P_starFitAmp = 0.,    P_starFitAmp_err = 0.;
+};
+
+static PolCorrEstimators ComputePolCorrEstimators(TDirectory* dir, double alphaLambda)
+{
+    PolCorrEstimators e;
+    if (!dir) return e;
+
+    TH1D* hs = static_cast<TH1D*>(SafeGet(dir, "hPolCorr_Sums"));
+    if (!hs) return e;
+
+    double N = hs->GetEntries();
+    e.N = N;
+    if (N < 2.) return e;
+
+    const double prefac = 3.0 / alphaLambda;
+    const double semAux = ConservativeSEM(N); // conservative O(1)-bounded SEM for aux (non-SEM-tracked) channels
+
+    double cosThP  = hs->GetBinContent(1);
+    double cos2ThP = hs->GetBinContent(2);
+    double sinThP  = hs->GetBinContent(3);
+    double sinDPsiP     = hs->GetBinContent(4);
+    double sinDPsiP_err = hs->GetBinError(4);
+
+    // -- naive Pz (beam-fixed, uncorrected) --
+    e.Pz_naive     = prefac * cosThP;
+    e.Pz_naive_err = prefac * semAux;
+
+    // -- naive Px, Py from the pre-existing pPstarX/Y_vsEtaLam profiles --
+    TProfile* pX = static_cast<TProfile*>(SafeGet(dir, "pPstarX_vsEtaLam"));
+    TProfile* pY = static_cast<TProfile*>(SafeGet(dir, "pPstarY_vsEtaLam"));
+    e.Px_naive     = prefac * WeightedMeanOfProfile(pX);
+    e.Py_naive     = prefac * WeightedMeanOfProfile(pY);
+    e.Px_naive_err = prefac * semAux;
+    e.Py_naive_err = prefac * semAux;
+
+    // -- Traditional Method 1: <cos^2 theta*> normalization ("kappa_eff") --
+    e.kappa_eff = 3.0 * cos2ThP;
+    if (std::fabs(e.kappa_eff) > 1.e-6) {
+        e.Pz_kappaCorr     = e.Pz_naive     / e.kappa_eff;
+        e.Pz_kappaCorr_err = e.Pz_naive_err / std::fabs(e.kappa_eff);
+    }
+
+    // -- STAR/ALICE global-polarization style (Appendix A of the auxiliary polarization correction tex: Psi-averaging) --
+    e.A0 = (4.0 / TMath::Pi()) * sinThP;
+    if (std::fabs(sinThP) > 1.e-6) {
+        e.P_global     = (2.0 / alphaLambda) * sinDPsiP     / sinThP;
+        e.P_global_err = (2.0 / alphaLambda) * sinDPsiP_err / std::fabs(sinThP);
+    }
+
+    // -- ALICE longitudinal style (Appendix B of the auxiliary polarization correction tex: event-plane-differential), n=1,2,3 --
+    for (int n = 0; n < 3; ++n) {
+        double num     = hs->GetBinContent(5 + n);
+        double num_err = hs->GetBinError(5 + n);
+        if (std::fabs(cos2ThP) > 1.e-6) {
+            e.P_zsn[n]     = num     / (alphaLambda * cos2ThP);
+            e.P_zsn_err[n] = num_err / (alphaLambda * std::fabs(cos2ThP));
+        }
+    }
+
+    // -- STAR (2108.00044) style: sinusoid-fit-and-offset on pDeltaPhi_sinPsiMinusPhiP --
+    TProfile* pDPhi = static_cast<TProfile*>(SafeGet(dir, "pDeltaPhi_sinPsiMinusPhiP"));
+    if (pDPhi && pDPhi->GetEntries() > 10.) {
+        const double prefacStar = 8.0 / (TMath::Pi() * alphaLambda);
+
+        double sumWY = 0., sumW = 0.;
+        for (int ib = 1; ib <= pDPhi->GetNbinsX(); ++ib) {
+            double w = pDPhi->GetBinEntries(ib);
+            if (w <= 0.) continue;
+            sumWY += pDPhi->GetBinContent(ib) * w;
+            sumW  += w;
+        }
+        if (sumW > 0.) {
+            e.P_starNaive     = prefacStar * (sumWY / sumW);
+            e.P_starNaive_err = prefacStar * ConservativeSEM(sumW);
+        }
+
+        // p0 + p1*sin(Delta) fit, following STAR PRC103/2108.00044 Eq. (2)-(3).
+        TF1 fFit("fStarFit_local", "[0] + [1]*sin(x)", -TMath::Pi(), TMath::Pi());
+        fFit.SetParameters(0., 0.);
+        TFitResultPtr fr = pDPhi->Fit(&fFit, "QNS"); // Q=quiet, N=no draw/store, S=return result
+        if (fr.Get() && fr->IsValid()) {
+            e.P_starFitOffset     = prefacStar * fFit.GetParameter(0);
+            e.P_starFitOffset_err = prefacStar * fFit.GetParError(0);
+            e.P_starFitAmp        = prefacStar * fFit.GetParameter(1);
+            e.P_starFitAmp_err    = prefacStar * fFit.GetParError(1);
+        }
+    }
+
+    e.ok = true;
+    return e;
 }
 
 // ==========================================================================
@@ -2706,6 +2881,418 @@ static void MakeFig20_FloatSwamping(TDirectory* famDir, TDirectory* famOut, cons
 
 // ==========================================================================
 /**
+ * @brief Small helper: draws one series of point+error markers on the
+ *        current pad, one point per labeled category bin (bin i occupies
+ *        x in [i, i+1)), offset by xOffset within each bin. Mirrors the
+ *        TGraphErrors idiom already used by MakeFig6_IntegratedRing for its
+ *        TProfile-vs-Kahan comparison, generalized to an arbitrary number of
+ *        series so the four figures below can overlay 2-3 estimators per
+ *        category bin without duplicating this boilerplate each time.
+ * @param vals, errs  Per-bin values/1-sigma errors (same length).
+ * @param xOffset     Horizontal offset within each unit-width bin, in [-0.5,0.5].
+ * @param marker, color, markerSize  TGraphErrors marker style.
+ */
+// ==========================================================================
+static void DrawSeriesPoints(const std::vector<double>& vals,
+                              const std::vector<double>& errs,
+                              double xOffset, int marker, int color, double markerSize = 1.3)
+{
+    int n = (int)vals.size();
+    TGraphErrors* gr = new TGraphErrors(n);
+    for (int i = 0; i < n; ++i) {
+        gr->SetPoint(i, i + 0.5 + xOffset, vals[i]);
+        gr->SetPointError(i, 0., errs[i]);
+    }
+    gr->SetMarkerStyle(marker);
+    gr->SetMarkerColor(color);
+    gr->SetLineColor(color);
+    gr->SetLineWidth(2);
+    gr->SetMarkerSize(markerSize);
+    gr->Draw("P SAME");
+}
+
+// Shared marker/color conventions for the four correction-test figures below,
+// kept consistent across all of them so a reader only has to learn the code
+// once: gray circle = naive/uncorrected, blue square = traditional
+// <cos^2 theta*>-only correction, green cross = Psi-averaged correction
+// (Appendix A/B mechanism), orange star = STAR-3GeV sinusoid-fit offset.
+static const int kMkNaive = 20, kColNaive = kGray + 2;
+static const int kMkKappa = 21, kColKappa = kAzure + 2;
+static const int kMkPsi   = 34, kColPsi   = kGreen + 2;
+static const int kMkFit   = 29, kColFit   = kOrange + 7;
+
+// ==========================================================================
+/**
+ * @brief Fig. C1 -- beam-fixed-frame P_z: naive vs. traditional <cos^2 theta*>
+ *        correction vs. Psi-averaged correction. One panel per eta selection,
+ *        each panel showing all four cut scenarios. See README.md, "Effect 4"
+ *        and "Correction estimator formulas", for what's being tested.
+ *
+ * @param famDir    Family directory (WithEtaGate or WithoutEtaGate).
+ * @param famOut    Output sub-directory.
+ * @param famLabel  Short label used in object names.
+ */
+// ==========================================================================
+static void MakeFigC1_PzCorrections(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
+{
+    const char* etaSels[3]   = {"EtaPos", "EtaNeg", "All"};
+    const char* etaLabels[3] = {"#eta_{#Lambda} > 0", "#eta_{#Lambda} < 0", "All #eta"};
+
+    // Pre-compute all estimators and the global y-range in one pass.
+    PolCorrEstimators est[3][4]; // [etaSel][scenario]
+    double globalMax = 1.e-8;
+    for (int ie = 0; ie < 3; ++ie) {
+        for (int is = 0; is < 4; ++is) {
+            TDirectory* dir = GetScenarioDir(famDir, kScenNames[is], etaSels[ie]);
+            est[ie][is] = ComputePolCorrEstimators(dir, kAlphaLambda);
+            if (!est[ie][is].ok) continue;
+            for (double v : {est[ie][is].Pz_naive + est[ie][is].Pz_naive_err,
+                              est[ie][is].Pz_naive - est[ie][is].Pz_naive_err,
+                              est[ie][is].Pz_kappaCorr + est[ie][is].Pz_kappaCorr_err,
+                              est[ie][is].Pz_kappaCorr - est[ie][is].Pz_kappaCorr_err,
+                              est[ie][is].P_global + est[ie][is].P_global_err,
+                              est[ie][is].P_global - est[ie][is].P_global_err}) {
+                if (std::fabs(v) > globalMax) globalMax = std::fabs(v);
+            }
+        }
+    }
+    globalMax *= 1.5;
+
+    TCanvas* c = new TCanvas(Form("c_%s_polCorrC1", famLabel), "", 1500, 500);
+    c->Divide(3, 1, 0.006, 0.002);
+
+    for (int ie = 0; ie < 3; ++ie) {
+        c->cd(ie + 1);
+        gPad->SetLeftMargin(0.16); gPad->SetBottomMargin(0.16);
+
+        TH1D* hAxis = new TH1D(Form("hAxisC1_%s_%s", famLabel, etaSels[ie]),
+                                Form("P_{z} corrections -- %s;Scenario;P_{z} (beam-fixed)", etaLabels[ie]),
+                                4, 0., 4.);
+        hAxis->SetDirectory(nullptr);
+        hAxis->GetYaxis()->SetRangeUser(-globalMax, globalMax);
+        hAxis->SetStats(0);
+        for (int is = 0; is < 4; ++is) hAxis->GetXaxis()->SetBinLabel(is + 1, kScenLabels[is]);
+        hAxis->GetXaxis()->SetLabelSize(0.052);
+        hAxis->Draw("AXIS");
+
+        TLine* zl = new TLine(0., 0., 4., 0.);
+        zl->SetLineColor(kGray + 2); zl->SetLineStyle(2); zl->SetLineWidth(2); zl->Draw("SAME");
+
+        std::vector<double> vNaive, eNaive, vKappa, eKappa, vPsi, ePsi;
+        for (int is = 0; is < 4; ++is) {
+            vNaive.push_back(est[ie][is].Pz_naive);      eNaive.push_back(est[ie][is].Pz_naive_err);
+            vKappa.push_back(est[ie][is].Pz_kappaCorr);  eKappa.push_back(est[ie][is].Pz_kappaCorr_err);
+            vPsi.push_back  (est[ie][is].P_global);      ePsi.push_back  (est[ie][is].P_global_err);
+        }
+        DrawSeriesPoints(vNaive, eNaive, -0.22, kMkNaive, kColNaive);
+        DrawSeriesPoints(vKappa, eKappa,  0.00, kMkKappa, kColKappa);
+        DrawSeriesPoints(vPsi,   ePsi,    0.22, kMkPsi,   kColPsi);
+
+        AddLabel(0.5, 0.96, etaLabels[ie], 0.045, 22);
+
+        if (ie == 2) {
+            TLegend* leg = MakeLegend(0.16, 0.70, 0.97, 0.88);
+            TMarker* m1 = new TMarker(0., 0., kMkNaive); m1->SetMarkerColor(kColNaive); m1->SetMarkerSize(1.3);
+            leg->AddEntry(m1, "Naive (uncorrected)", "p");
+            TMarker* m2 = new TMarker(0., 0., kMkKappa); m2->SetMarkerColor(kColKappa); m2->SetMarkerSize(1.3);
+            leg->AddEntry(m2, "<cos^{2}#theta*>-only (Traditional)", "p");
+            TMarker* m3 = new TMarker(0., 0., kMkPsi);   m3->SetMarkerColor(kColPsi);   m3->SetMarkerSize(1.3);
+            leg->AddEntry(m3, "#Psi-averaged (STAR/ALICE global)", "p");
+            leg->Draw("SAME");
+        }
+    }
+
+    c->cd(0);
+    AddLabel(0.5, 0.995, Form("Beam-frame P_{z}: naive vs corrected -- %s", famLabel), 0.036, 22);
+    WriteCanvas(c, famOut);
+    delete c;
+}
+
+// ==========================================================================
+/**
+ * @brief Fig. C2 -- naive P_x, P_y, P_z side by side (fixed lab frame,
+ *        BothCuts), one panel per eta selection. The Psi-averaged correction
+ *        is overlaid only for P_z (see README.md, "Effect 4", for why P_x/P_y
+ *        have no equally simple Psi-projected analogue).
+ *
+ * @param famDir    Family directory.
+ * @param famOut    Output sub-directory.
+ * @param famLabel  Short label used in object names.
+ */
+// ==========================================================================
+static void MakeFigC2_PxPyPzNaive(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
+{
+    const char* etaSels[3]   = {"EtaPos", "EtaNeg", "All"};
+    const char* etaLabels[3] = {"#eta_{#Lambda} > 0", "#eta_{#Lambda} < 0", "All #eta"};
+
+    PolCorrEstimators est[3];
+    double globalMax = 1.e-8;
+    for (int ie = 0; ie < 3; ++ie) {
+        TDirectory* dir = GetScenarioDir(famDir, "BothCuts", etaSels[ie]);
+        est[ie] = ComputePolCorrEstimators(dir, kAlphaLambda);
+        if (!est[ie].ok) continue;
+        for (double v : {est[ie].Px_naive + est[ie].Px_naive_err, est[ie].Px_naive - est[ie].Px_naive_err,
+                          est[ie].Py_naive + est[ie].Py_naive_err, est[ie].Py_naive - est[ie].Py_naive_err,
+                          est[ie].Pz_naive + est[ie].Pz_naive_err, est[ie].Pz_naive - est[ie].Pz_naive_err,
+                          est[ie].P_global + est[ie].P_global_err, est[ie].P_global - est[ie].P_global_err}) {
+            if (std::fabs(v) > globalMax) globalMax = std::fabs(v);
+        }
+    }
+    globalMax *= 1.5;
+
+    TCanvas* c = new TCanvas(Form("c_%s_polCorrC2", famLabel), "", 1500, 500);
+    c->Divide(3, 1, 0.006, 0.002);
+
+    for (int ie = 0; ie < 3; ++ie) {
+        c->cd(ie + 1);
+        gPad->SetLeftMargin(0.16); gPad->SetBottomMargin(0.14);
+
+        TH1D* hAxis = new TH1D(Form("hAxisC2_%s_%s", famLabel, etaSels[ie]),
+                                Form("Naive P_{x,y,z} (BothCuts) -- %s;Component;P (beam-fixed lab frame)", etaLabels[ie]),
+                                3, 0., 3.);
+        hAxis->SetDirectory(nullptr);
+        hAxis->GetYaxis()->SetRangeUser(-globalMax, globalMax);
+        hAxis->SetStats(0);
+        hAxis->GetXaxis()->SetBinLabel(1, "P_{x}");
+        hAxis->GetXaxis()->SetBinLabel(2, "P_{y}");
+        hAxis->GetXaxis()->SetBinLabel(3, "P_{z}");
+        hAxis->GetXaxis()->SetLabelSize(0.07);
+        hAxis->Draw("AXIS");
+
+        TLine* zl = new TLine(0., 0., 3., 0.);
+        zl->SetLineColor(kGray + 2); zl->SetLineStyle(2); zl->SetLineWidth(2); zl->Draw("SAME");
+
+        std::vector<double> vNaive = {est[ie].Px_naive, est[ie].Py_naive, est[ie].Pz_naive};
+        std::vector<double> eNaive = {est[ie].Px_naive_err, est[ie].Py_naive_err, est[ie].Pz_naive_err};
+        DrawSeriesPoints(vNaive, eNaive, 0.0, kMkNaive, kColNaive);
+
+        // Psi-averaged correction has no meaning for a fixed lab axis; only
+        // draw it for the P_z bin (index 2 -> third category, x=2.5).
+        TGraphErrors* grPsiZ = new TGraphErrors(1);
+        grPsiZ->SetPoint(0, 2.5 + 0.25, est[ie].P_global);
+        grPsiZ->SetPointError(0, 0., est[ie].P_global_err);
+        grPsiZ->SetMarkerStyle(kMkPsi); grPsiZ->SetMarkerColor(kColPsi);
+        grPsiZ->SetLineColor(kColPsi); grPsiZ->SetLineWidth(2); grPsiZ->SetMarkerSize(1.3);
+        grPsiZ->Draw("P SAME");
+
+        AddLabel(0.5, 0.96, etaLabels[ie], 0.045, 22);
+
+        if (ie == 2) {
+            TLegend* leg = MakeLegend(0.16, 0.72, 0.97, 0.88);
+            TMarker* m1 = new TMarker(0., 0., kMkNaive); m1->SetMarkerColor(kColNaive); m1->SetMarkerSize(1.3);
+            leg->AddEntry(m1, "Naive (fixed lab frame)", "p");
+            TMarker* m2 = new TMarker(0., 0., kMkPsi);   m2->SetMarkerColor(kColPsi);   m2->SetMarkerSize(1.3);
+            leg->AddEntry(m2, "P_{z}, #Psi-averaged (P_{z} only)", "p");
+            leg->Draw("SAME");
+        }
+    }
+
+    c->cd(0);
+    AddLabel(0.5, 0.995, Form("Naive P_{x}, P_{y}, P_{z} (fixed lab frame, BothCuts) -- %s", famLabel), 0.034, 22);
+    WriteCanvas(c, famOut);
+    delete c;
+}
+
+// ==========================================================================
+/**
+ * @brief Fig. C3 -- ALICE-longitudinal-style event-plane-differential
+ *        P_{z,sn}, n=1,2,3 (BothCuts, one panel per eta selection). See
+ *        README.md, "Effect 4", for the mechanism being tested.
+ *
+ * @param famDir    Family directory.
+ * @param famOut    Output sub-directory.
+ * @param famLabel  Short label used in object names.
+ */
+// ==========================================================================
+static void MakeFigC3_LongitudinalHarmonics(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
+{
+    const char* etaSels[3]   = {"EtaPos", "EtaNeg", "All"};
+    const char* etaLabels[3] = {"#eta_{#Lambda} > 0", "#eta_{#Lambda} < 0", "All #eta"};
+
+    PolCorrEstimators est[3];
+    double globalMax = 1.e-8;
+    for (int ie = 0; ie < 3; ++ie) {
+        TDirectory* dir = GetScenarioDir(famDir, "BothCuts", etaSels[ie]);
+        est[ie] = ComputePolCorrEstimators(dir, kAlphaLambda);
+        if (!est[ie].ok) continue;
+        for (int n = 0; n < 3; ++n) {
+            double v = std::fabs(est[ie].P_zsn[n]) + est[ie].P_zsn_err[n];
+            if (v > globalMax) globalMax = v;
+        }
+    }
+    globalMax *= 1.5;
+
+    TCanvas* c = new TCanvas(Form("c_%s_polCorrC3", famLabel), "", 1500, 500);
+    c->Divide(3, 1, 0.006, 0.002);
+
+    for (int ie = 0; ie < 3; ++ie) {
+        c->cd(ie + 1);
+        gPad->SetLeftMargin(0.16); gPad->SetBottomMargin(0.14);
+
+        TH1D* hAxis = new TH1D(Form("hAxisC3_%s_%s", famLabel, etaSels[ie]),
+                                Form("P_{z,sn} (BothCuts) -- %s;Harmonic order n;P_{z,sn}", etaLabels[ie]),
+                                3, 0., 3.);
+        hAxis->SetDirectory(nullptr);
+        hAxis->GetYaxis()->SetRangeUser(-globalMax, globalMax);
+        hAxis->SetStats(0);
+        hAxis->GetXaxis()->SetBinLabel(1, "n = 1");
+        hAxis->GetXaxis()->SetBinLabel(2, "n = 2");
+        hAxis->GetXaxis()->SetBinLabel(3, "n = 3");
+        hAxis->GetXaxis()->SetLabelSize(0.06);
+        hAxis->Draw("AXIS");
+
+        TLine* zl = new TLine(0., 0., 3., 0.);
+        zl->SetLineColor(kGray + 2); zl->SetLineStyle(2); zl->SetLineWidth(2); zl->Draw("SAME");
+
+        std::vector<double> v(est[ie].P_zsn, est[ie].P_zsn + 3);
+        std::vector<double> e(est[ie].P_zsn_err, est[ie].P_zsn_err + 3);
+        DrawSeriesPoints(v, e, 0.0, kMkPsi, kColPsi);
+
+        AddLabel(0.5, 0.96, etaLabels[ie], 0.045, 22);
+    }
+
+    c->cd(0);
+    AddLabel(0.5, 0.995,
+             Form("Event-plane-differential P_{z,sn} (ALICE-longitudinal style, BothCuts) -- %s", famLabel),
+             0.032, 22);
+    WriteCanvas(c, famOut);
+    delete c;
+}
+
+// ==========================================================================
+/**
+ * @brief Fig. C4 -- STAR-3GeV-style sinusoid-fit-and-offset remedy. Left
+ *        panel: raw pDeltaPhi_sinPsiMinusPhiP profile (All eta, BothCuts)
+ *        with the p0+p1*sin(Delta) fit overlaid. Right panel: naive average
+ *        vs. fitted offset p0, across eta selections. See README.md,
+ *        "Effect 4" and Fig. C4 description, for when the two differ.
+ *
+ * @param famDir    Family directory.
+ * @param famOut    Output sub-directory.
+ * @param famLabel  Short label used in object names.
+ */
+// ==========================================================================
+static void MakeFigC4_Star3GeVStyle(TDirectory* famDir, TDirectory* famOut, const char* famLabel)
+{
+    const char* etaSels[3]   = {"EtaPos", "EtaNeg", "All"};
+    const char* etaLabels[3] = {"#eta_{#Lambda} > 0", "#eta_{#Lambda} < 0", "All #eta"};
+
+    TCanvas* c = new TCanvas(Form("c_%s_polCorrC4", famLabel), "", 1300, 550);
+    c->Divide(2, 1, 0.01, 0.002);
+
+    // -- Left: raw profile + sinusoid fit, All eta / BothCuts --
+    c->cd(1);
+    gPad->SetLeftMargin(0.16); gPad->SetBottomMargin(0.14);
+    TDirectory* dirAll = GetScenarioDir(famDir, "BothCuts", "All");
+    TProfile* pDPhi = dirAll ? static_cast<TProfile*>(SafeGet(dirAll, "pDeltaPhi_sinPsiMinusPhiP")) : nullptr;
+    if (pDPhi) {
+        TProfile* pDraw = static_cast<TProfile*>(pDPhi->Clone(Form("pDPhiDraw_%s", famLabel)));
+        pDraw->SetDirectory(nullptr);
+        SetHistStyle(pDraw, kAzure + 2, 20);
+        pDraw->SetTitle(Form("STAR-style diagnostic (All #eta, BothCuts);"
+                              "#phi_{#Lambda} - #phi*_{p,beam} [rad];"
+                              "#LTsin(#Psi - #phi*_{p,beam})#GT"));
+        pDraw->SetStats(0);
+        pDraw->Draw("E1");
+
+        TF1* fFit = new TF1(Form("fStarFitDraw_%s", famLabel), "[0] + [1]*sin(x)", -TMath::Pi(), TMath::Pi());
+        fFit->SetParameters(0., 0.);
+        if (pDraw->GetEntries() > 10.) {
+            pDraw->Fit(fFit, "QN");
+            fFit->SetLineColor(kRed + 1);
+            fFit->SetLineWidth(2);
+            fFit->Draw("SAME");
+        }
+        AddLabel(0.5, 0.96, "p_{0} + p_{1}sin(#Delta#phi) fit (STAR PRC103/2108.00044 Eq.2-3)", 0.032, 22);
+    } else {
+        AddLabel(0.5, 0.5, "pDeltaPhi_sinPsiMinusPhiP not found", 0.04, 22);
+    }
+
+    // -- Right: naive vs fit-offset, all three eta selections --
+    c->cd(2);
+    gPad->SetLeftMargin(0.16); gPad->SetBottomMargin(0.16);
+
+    PolCorrEstimators est[3];
+    double globalMax = 1.e-8;
+    for (int ie = 0; ie < 3; ++ie) {
+        TDirectory* dir = GetScenarioDir(famDir, "BothCuts", etaSels[ie]);
+        est[ie] = ComputePolCorrEstimators(dir, kAlphaLambda);
+        if (!est[ie].ok) continue;
+        for (double v : {est[ie].P_starNaive + est[ie].P_starNaive_err,
+                          est[ie].P_starNaive - est[ie].P_starNaive_err,
+                          est[ie].P_starFitOffset + est[ie].P_starFitOffset_err,
+                          est[ie].P_starFitOffset - est[ie].P_starFitOffset_err}) {
+            if (std::fabs(v) > globalMax) globalMax = std::fabs(v);
+        }
+    }
+    globalMax *= 1.5;
+
+    TH1D* hAxis = new TH1D(Form("hAxisC4_%s", famLabel),
+                            "STAR-3GeV-style: naive vs fit-offset (BothCuts);Eta selection;P_{#Lambda}",
+                            3, 0., 3.);
+    hAxis->SetDirectory(nullptr);
+    hAxis->GetYaxis()->SetRangeUser(-globalMax, globalMax);
+    hAxis->SetStats(0);
+    for (int ie = 0; ie < 3; ++ie) hAxis->GetXaxis()->SetBinLabel(ie + 1, etaLabels[ie]);
+    hAxis->GetXaxis()->SetLabelSize(0.05);
+    hAxis->Draw("AXIS");
+
+    TLine* zl = new TLine(0., 0., 3., 0.);
+    zl->SetLineColor(kGray + 2); zl->SetLineStyle(2); zl->SetLineWidth(2); zl->Draw("SAME");
+
+    std::vector<double> vNaive = {est[0].P_starNaive, est[1].P_starNaive, est[2].P_starNaive};
+    std::vector<double> eNaive = {est[0].P_starNaive_err, est[1].P_starNaive_err, est[2].P_starNaive_err};
+    std::vector<double> vFit   = {est[0].P_starFitOffset, est[1].P_starFitOffset, est[2].P_starFitOffset};
+    std::vector<double> eFit   = {est[0].P_starFitOffset_err, est[1].P_starFitOffset_err, est[2].P_starFitOffset_err};
+    DrawSeriesPoints(vNaive, eNaive, -0.15, kMkNaive, kColNaive);
+    DrawSeriesPoints(vFit,   eFit,    0.15, kMkFit,   kColFit);
+
+    TLegend* leg = MakeLegend(0.16, 0.74, 0.95, 0.90);
+    TMarker* m1 = new TMarker(0., 0., kMkNaive); m1->SetMarkerColor(kColNaive); m1->SetMarkerSize(1.3);
+    leg->AddEntry(m1, "Naive (no fit, Eq. 1)", "p");
+    TMarker* m2 = new TMarker(0., 0., kMkFit);   m2->SetMarkerColor(kColFit);   m2->SetMarkerSize(1.3);
+    leg->AddEntry(m2, "Fit offset p_{0} (Eq. 2-3)", "p");
+    leg->Draw("SAME");
+
+    c->cd(0);
+    AddLabel(0.5, 0.995, Form("STAR (2108.00044)-style sinusoid-fit remedy -- %s", famLabel), 0.032, 22);
+    WriteCanvas(c, famOut);
+    delete c;
+}
+
+// ==========================================================================
+/**
+ * @brief Console summary table for the polarization-correction-test probe,
+ *        printed once per family (BothCuts scenario, all three eta
+ *        selections) so the headline "does it reach zero" numbers are
+ *        readable without opening the output ROOT file.
+ * @param famDir   Family directory.
+ * @param famLabel Short label used in the printed header.
+ */
+// ==========================================================================
+static void PrintPolCorrSummary(TDirectory* famDir, const char* famLabel)
+{
+    const char* etaSels[3]   = {"EtaPos", "EtaNeg", "All"};
+    printf("\n  -- Polarization-correction probe summary (BothCuts) : %s --\n", famLabel);
+    printf("  %-8s %12s %14s %14s %14s %14s\n",
+           "eta", "N", "Pz_naive", "Pz_kappaCorr", "P_global", "P_zs1");
+    for (const char* eta : etaSels) {
+        TDirectory* dir = GetScenarioDir(famDir, "BothCuts", eta);
+        PolCorrEstimators e = ComputePolCorrEstimators(dir, kAlphaLambda);
+        if (!e.ok) { printf("  %-8s  (missing or too few entries)\n", eta); continue; }
+        printf("  %-8s %12.0f %8.5f+-%5.5f %8.5f+-%5.5f %8.5f+-%5.5f %8.5f+-%5.5f\n",
+               eta, e.N,
+               e.Pz_naive, e.Pz_naive_err,
+               e.Pz_kappaCorr, e.Pz_kappaCorr_err,
+               e.P_global, e.P_global_err,
+               e.P_zsn[0], e.P_zsn_err[0]);
+    }
+    printf("\n");
+}
+
+
+// ==========================================================================
+/**
  * @brief Lambda kinematics figure -- drawn once, shared across families.
  *
  * Six panels (2 rows x 3 columns):
@@ -2819,6 +3406,7 @@ void plotHelicityEfficiency(const char* inputFile = "helicityEffOutput.root")
         // TDirectory* outEta  = famOut->mkdir("EtaAsymmetry");      // fig  9
         TDirectory* outJet  = famOut->mkdir("RingJet");           // figs 10-15
         TDirectory* outVF   = famOut->mkdir("PolarizationVectorField"); // figs 16-17
+        TDirectory* outPolC = famOut->mkdir("PolarizationCorrections");  // figs C1-C4
 
         printf("Producing figures for family: %s\n", famName);
 
@@ -2859,6 +3447,16 @@ void plotHelicityEfficiency(const char* inputFile = "helicityEffOutput.root")
         MakeFig18s_PstarVectorFieldZXSupp (famDir, outVF, famName);
         MakeFig19_PstarVsEtaLam           (famDir, outVF, famName);
         MakeFig17_PstarVsPhiLam       (famDir, outVF, famName);
+
+        // Figs C1-C4: polarization-correction test probe (STAR/ALICE
+        // global- and longitudinal-polarization correction principles,
+        // applied to this same toy-model sample -- see PolCorrProbe in the
+        // generator and the ComputePolCorrEstimators doc comment above).
+        MakeFigC1_PzCorrections         (famDir, outPolC, famName);
+        MakeFigC2_PxPyPzNaive           (famDir, outPolC, famName);
+        MakeFigC3_LongitudinalHarmonics (famDir, outPolC, famName);
+        MakeFigC4_Star3GeVStyle         (famDir, outPolC, famName);
+        PrintPolCorrSummary             (famDir, famName);
     }
 
     // Lambda kinematics -- shared, written at the fout top level

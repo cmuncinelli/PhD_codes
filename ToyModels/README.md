@@ -49,6 +49,28 @@ When evaluating the Ring Observable, the AEE induces a spurious component that c
 
 Numerical integration reveals that kinematic biases (such as the distributions of the jet correlation `Delta_phi` and the Lambda pseudorapidity `eta_Lambda`) produce visible distortions matching experimental data. However, full integration over `dOmega_Jet` and `dOmega*_Lambda` theoretically cancels this AEE-induced effect out, leading to a pure vortex-polarization observable.
 
+### Effect 4: fake global/longitudinal polarization in event-plane-referenced observables
+
+Beyond the ring observable, four published analyses measure a conceptually related but methodologically distinct quantity: the polarization of Lambda hyperons projected onto a FIXED lab/beam axis (rather than the Lambda's own momentum direction), combined with an average over an externally-reconstructed "event plane" angle `Psi` (the reaction plane, spectator plane, or n-th order flow-plane angle):
+
+| Paper | Measurement | Reference angle/direction |
+|---|---|---|
+| STAR, *Global polarization measurement in Au+Au collisions* (0705.1691, PRC 76, 024915) | Global polarization along the system angular momentum | Reaction plane `Psi_RP` |
+| ALICE, *Global polarization of Lambda and AntiLambda hyperons in Pb-Pb* (1909.01281, PRC 101, 044611) | Same, at LHC energies | Spectator plane `Psi_SP` (from ZDC) |
+| STAR, *Global Lambda-hyperon polarization at sqrt(s_NN) = 3 GeV* (2108.00044) | Same, fixed-target mode | First-order event plane `Psi_1` (from EPD) |
+| ALICE, *Hyperon (Lambda) polarization along the beam axis in Pb-Pb at 5.36 TeV* (2606.18070) | Longitudinal (beam-axis) polarization, differential in the n-th order event plane | `Psi_n` (from FT0C) |
+
+**Why this matters for HEE/AEE.** All four papers rely on projecting the observable onto `Psi`, reconstructed from a detector DISJOINT from the one used to reconstruct the Lambda itself (ZDC/EPD/FT0C vs. TPC/ITS), and therefore assumed statistically independent of whatever acceptance biases (HEE, AEE, or anything else) are present in the Lambda sample. If that independence genuinely holds, a mathematical "annihilation" argument shows that averaging over `Psi` kills the fake bias -- for the two global-polarization papers, only the additive offset is protected (a residual multiplicative distortion, `A0`/`A2` in STAR's language, still needs a separate correction. See my "general framework" tex file for a discussion in the appendices!); for the ALICE beam-axis paper, a stronger demonstrations shows the **whole** `phi_Lambda`-dependent structure of the fake bias is (thankfully!) killed, not just its average. The traditional `<cos^2 theta*>`-only correction used elsewhere in the literature protects against neither: it is purely multiplicative and leaves an eta-asymmetry-induced additive HEE bias untouched.
+
+**Where it can fail.** The STAR fixed-target measurement is a real, published example of the independence assumption breaking down: the detector's rapidity acceptance is not symmetric, which correlates the Lambda's own directed flow with `Psi_1`, contaminating the naive `Psi`-average with a spurious `sin(phi_Lambda - phi_p*)` term. STAR's remedy is to bin narrowly in `(phi_Lambda - phi_p*)`, fit `p0 + p1*sin(...)`, and take the offset `p0` as the corrected polarization, discarding the fitted sinusoid as a flow-driven contaminant.
+
+**What the toy model tests.** `helicityEfficiencyToyModel.cxx` includes a `PolCorrProbe` accumulator (see "Polarization-correction test probe" below) that reproduces each of these four correction recipes on the SAME generated Lambdas used for the ring-observable diagnostics, so the "does the correction actually reach zero?" question can be tested numerically -- in particular under an eta-**ASYMMETRIC** detector window, which breaks the same EtaPos/EtaNeg cancellation that (silently) protects a symmetric window from both HEE and AEE.
+
+> This is the same kind of protection we've seen for the Ring Observable: perfect detector symmetry made the ring observable insensitive to these spurious polarization effects of AEE/HEE (daughterDCAtoPV and minPt cuts). The non-zero polarization effects become zero after integrating, but **only in a symmetric condition!!!**.
+> Maybe testing this could be an interesting check of existing correction procedures' completeness and robustness, and an inspiration for Ring Observable corrections as well (and possible symmetries that we could search for/prioritize in data to make the observable robust).
+
+See `plotHelicityEfficiency.cxx`'s Figs C1-C4 for the resulting comparison plots, and the two accompanying notes (`General_Framework_for_Ring_Observable_Corrections.tex`, Appendices A and B; `Traditional_efficiency-acceptance_correction_comments.tex`) for the full derivations these tests are built to check.
+
 ---
 
 ## Files in this folder
@@ -163,6 +185,30 @@ underestimate the true uncertainty:
 - `pPstarX_vsPzPx`, `pPstarZ_vsPzPx`, `pPstarY_vsPzPx` -- TProfile2Ds displaying the proton rest-frame direction vector field mapped in the longitudinal-transverse ZX momentum plane against `(pz_lam, px_lam)`. Horizontal components display `<p*_z>`, vertical components display `<p*_x>`, and the out-of-plane background color map charts `<p*_y>`.
 - `pPstarX_vsEtaLam`, `pPstarY_vsEtaLam`, `pPstarZ_vsEtaLam` -- 1D compact TProfile projections tracking the individual `<p*>` components against Lambda pseudorapidity `eta_lam` to reveal longitudinal structures driven by kinematics.
 
+**Polarization-correction test probe** (see "Effect 4" in Physics background for the full motivation):
+- `hPolCorr_Sums` -- 7-bin container holding the raw ingredients for every
+  correction estimator: mean `cos(theta*_p,beam)`, `cos^2(theta*_p,beam)`,
+  `sin(theta*_p,beam)`, `sin(phi*_p,beam - Psi)`, and
+  `cos(theta*_p,beam)*sin(n*(phi_lam-Psi))` for n=1,2,3 (see the histogram's
+  own bin labels, or `ComputePolCorrEstimators()` in
+  `plotHelicityEfficiency.cxx` for the exact formulas). All angles here are
+  measured w.r.t. the fixed lab/beam axis -- never the Lambda-momentum frame
+  used for the ring observable elsewhere in this file.
+- `pDeltaPhi_sinPsiMinusPhiP` -- 24-bin TProfile of `<sin(Psi-phi*_p,beam)>`
+  vs. `(phi_lam - phi*_p,beam)`, reproducing the STAR fixed-target paper's
+  sinusoid-fit diagnostic (their Fig. 2) inside this toy model.
+
+`Psi`, the reference/event-plane angle used throughout this probe, is
+emulated by reusing the already-independent, per-jet-group random azimuth
+(the same one used for the ring-observable jet proxy) -- by construction
+uncorrelated with any Lambda's own kinematics, mirroring the "disjoint
+detector" design of the four real analyses cited above. The
+`psiCorrelationFraction` generator parameter (default `0`) optionally breaks
+that independence for a controllable fraction of Lambdas, as a toy stand-in
+for the fixed-target v1 contamination described in Effect 4; use a nonzero
+value to see when the STAR-3GeV sinusoid-fit remedy becomes necessary because
+the simpler `Psi`-averaged correction is no longer enough on its own.
+
 **Daughter kinematics:**
 - `h1d_pT_proton`, `h1d_pT_pion` -- daughter pT distributions.
 - `h1d_DCA_proton`, `h1d_DCA_pion` -- daughter DCA_xy to PV distributions.
@@ -175,7 +221,6 @@ g++ -O3 -std=c++20 -march=native -flto -pipe helicityEfficiencyToyModel.cxx -o h
 
 # Run the compiled binary (an example -- if you really want to use all the options I heavily recommend you stick to the shell coordinator script! It is much more organized!)
 ./helicityToyModel 2000000 "output.root" 0.5
-
 ```
 
 **Run via ROOT CLING (interpreted, or at least JIT-compiled):**
@@ -187,6 +232,9 @@ root -l -b -q 'helicityEfficiencyToyModel.cxx'
 # Custom parameters (see preamble in the file for full signature):
 root -l -b -q 'helicityEfficiencyToyModel.cxx(2000000,"output.root",0.5,...)'
 
+# Full signature ends with [seed] [psiCorrelationFraction]; the latter
+# stress-tests the polarization-correction probe's independence assumption
+# (see "Effect 4" above) and defaults to 0 if omitted.
 ```
 
 ---
@@ -206,7 +254,7 @@ ROOT file. The output structure per family is:
   Daughters/         -- Figs 7–8
   RingJet/           -- Figs 10–15 (including Fig 12b split by jet eta)
   PolarizationVectorField/  -- Figs 16–19
-
+  PolarizationCorrections/  -- Figs C1–C4
 ```
 
 Fig 9 (eta asymmetry) is saved directly in the family root directory.
@@ -292,11 +340,30 @@ that would appear as a non-zero ring observable in the data.
 - **Fig 18s**: Supplemental ZX-plane polarization vector field displaying the behavior of the two intermediate cut configurations (`pTCutOnly` and `DCACutOnly`).
 - **Fig 19**: 1D projections showing `<p*_x>`, `<p*_y>`, and `<p*_z>` components vs. Lambda pseudorapidity `eta_lam` across all four cut scenarios, tracking beam-direction modulations or kinematic biases introduced by selection rules.
 
+**Correction estimator formulas** (computed by `ComputePolCorrEstimators()` from `hPolCorr_Sums` and `pDeltaPhi_sinPsiMinusPhiP`; all `_err` fields are 1-sigma uncertainties in the same units):
+
+| Estimator | Formula | Tests |
+|---|---|---|
+| `Pz_naive`, `Px_naive`, `Py_naive` | `(3/alpha)<p*_i>`, fixed lab frame | Uncorrected baseline |
+| `Pz_kappaCorr` | `Pz_naive / (3<cos^2 theta*_p,beam>)` | Traditional `<cos^2 theta*>`-only correction (extra factor of 3 cancels out with what we defined as P = (3/alpha)*<hat p_x*>) |
+| `P_global` | `(2/alpha) * <sin(phi*_p-Psi)> / <sin theta*_p>` | STAR/ALICE global-polarization, Psi-averaging (Appendix A) |
+| `P_zsn[n]`, n=1,2,3 | `<cos theta*_p * sin(n(phi_lam-Psi))> / (alpha <cos^2 theta*_p>)` | ALICE longitudinal, event-plane-differential (Appendix B); `R_n=1` in this toy (no resolution smearing), so only whether it nulls is being tested, not the absolute scale |
+| `P_starNaive` | `(8/pi/alpha) * <sin(Psi-phi*_p)>`, no fit | STAR-3GeV raw Eq. 1 |
+| `P_starFitOffset`, `P_starFitAmp` | `p0`, `p1` of a `p0+p1*sin(Delta)` fit to `pDeltaPhi_sinPsiMinusPhiP`, same prefactor | STAR-3GeV sinusoid-fit-and-offset remedy (their Eq. 2-3) |
+
+**Figs C1–C4 (PolarizationCorrections):** tests of the four published correction principles described in "Effect 4" of the physics background, applied to this same toy-model sample. All four figures place one panel per eta selection (`EtaPos`, `EtaNeg`, `All`) side by side, so whether a correction survives an eta-asymmetric window -- and whether the answer depends on averaging over `EtaPos`+`EtaNeg` vs. looking at either half alone -- can be read off directly.
+
+- **Fig C1**: beam-frame `P_z` -- naive vs. the `<cos^2 theta*>`-only ("Traditional") correction vs. the STAR/ALICE global-polarization-style `Psi`-averaged correction, across all four cut scenarios.
+- **Fig C2**: naive `P_x`, `P_y`, `P_z` side by side (fixed lab frame, BothCuts), with the `Psi`-averaged correction overlaid only on `P_z` -- deliberately not shown for `P_x`/`P_y`, since the annihilation mechanism only protects an observable that is itself built from `Psi`, not a static lab axis.
+- **Fig C3**: ALICE-longitudinal-style event-plane-differential `P_{z,sn}` for harmonics n = 1, 2, 3 (BothCuts).
+- **Fig C4**: STAR-3GeV-style sinusoid-fit remedy -- left panel shows the raw `pDeltaPhi_sinPsiMinusPhiP` profile with the `p0 + p1*sin(Delta)` fit overlaid (All eta, BothCuts); right panel compares the naive (no-fit) average against the fitted offset `p0` across eta selections. The interesting case (naive average picking up a genuine offset, corrected by the fit) only appears when the input file was generated with `psiCorrelationFraction > 0`.
+
+A console summary (`PrintPolCorrSummary`) is also printed for each family (BothCuts scenario, all three eta selections) so the headline numbers are readable without opening the output ROOT file.
+
 **Run with ROOT:**
 
 ```bash
 root -l -b -q 'plotHelicityEfficiency.cxx("output.root","plots_dir")'
-
 ```
 
 ---
@@ -400,13 +467,13 @@ root -l -b -q 'compareHelicityFamilies.cxx("/path/to/BaseDir","my_compare.root")
 
 **The coordinator script -- start here for a full parameter scan.**
 
-Runs the generator and plotter across eleven families (0–10) of parameter
+Runs the generator and plotter across fourteen families (0–13) of parameter
 variations designed to isolate one effect by silencing the other. It organizes
 all output into a structured directory tree under a configurable base directory.
 
 Before dispatching the generator jobs, the script automatically pre-compiles `helicityEfficiencyToyModel.cxx` using `g++` with "aggressive" (but still, should by IEEE-standard safe) optimizations (`-O3`, `-march=native`, `-flto`, etc.). The parallel workers then execute this compiled binary rather than interpreting the script via ROOT, yielding significant speed improvements. The plotting step remains I/O bound and is still executed via ROOT CLING.
 
-Supports parallel execution (default `MAX_PARALLEL=64`) and produces one log
+Supports parallel execution (default `MAX_PARALLEL=88`) and produces one log
 file per run.
 
 #### Command-line options
@@ -425,7 +492,7 @@ file per run.
 ```bash
 chmod +x runHelicityToyModel.sh
 
-# Run all families (may take ~15 min with MAX_PARALLEL=64 on a 192-core machine):
+# Run all families (may take ~15 min with MAX_PARALLEL=88 on a 192-core machine):
 ./runHelicityToyModel.sh
 
 # Run only one specific family:
@@ -445,7 +512,6 @@ chmod +x runHelicityToyModel.sh
 
 # Skip data generation and re-run only the plotters (both compareHelicityFamilies.cxx and plotHelicityEfficiency.cxx):
 ./runHelicityToyModel.sh --plot
-
 ```
 
 When `--plot` is set, the generator step is skipped for every job; the plotters
@@ -470,6 +536,7 @@ same flag.
 | 10 | `10_BField/` | Magnetic field (with pT and DCA cuts) | Combined AEE+HEE field dependence with both cuts simultaneously active; sign flip and strength scan. |
 | 11 | `11_EtaAsym/` | Asymmetric eta acceptance | How does a non-symmetric eta gate (emulated Zvtx shift or partial forward/backward acceptance) generate or modify fake signals? Does the AEE sign flip with the Zvtx sign? |
 | 12 | `12_LambdaRap/` | Lambda max rapidity at generator level | What is the optimal rapidity range for Lambda generation? Does the rapidity cut itself introduce an acceptance-induced fake signal in the WithoutEtaGate histograms, and at what rapidity does it become negligible? |
+| 13 | `13_PsiCorrScan/` | `psiCorrelationFraction` (polarization-correction test probe) | Fixes an eta-asymmetric window and scans how independent the probe's reference angle `Psi` needs to be from the acceptance before the naive `Psi`-averaged corrections (`P_global`, `P_starNaive`) break down, and whether the STAR-3GeV sinusoid-fit remedy (`P_starFitOffset`) keeps recovering zero regardless. Just a good sanity check on other analyses' correction principles using this Toy Model as a basis. |
 
 Families 1, 2, 3 are **AEE probes** (DCA cuts active, pT cuts = 0). Family 10
 re-runs the field scan from Family 3 but with pT cuts enabled, allowing the
@@ -480,6 +547,13 @@ with the direction of the asymmetry and the B-field polarity.
 Family 12 characterises the generator-level rapidity cut: above a certain
 rapidity range the cut itself introduces an implicit acceptance bias visible in
 the WithoutEtaGate histograms; the family identifies the safe operating range.
+Family 13 stress-tests the polarization-correction test probe itself (see
+"Effect 4" in the physics background): it fixes Family 11's asymmetric eta
+window and scans `psiCorrelationFraction`, the generator parameter that
+deliberately correlates the probe's `Psi` with `phi_lam` for a controlled
+fraction of Lambdas, from 0 (clean) to 1 (always correlated). Two points are
+repeated with a symmetric eta window as a control, to separate the
+`Psi`-correlation mechanism from the eta-asymmetry-driven fake signal itself.
 Families 5 and 6 are **HEE probes** (pT cuts active, DCA cuts = 0). Families
 4, 7, 8 and 9 use standard-ish ALICE cuts to study kinematic context and
 combined effects.
@@ -503,7 +577,7 @@ file is also produced in `LOG_DIR/`.
 **Default log directory:** `/home/users/cicerodm/RingPol/HelicityToyModel/logs/`
 
 Both can be changed at the top of the script. The entire scan generates
-approximately 600 MB of ROOT files (~80 runs across 13 families × ~4–8 MB
+approximately 700 MB of ROOT files (~88 runs across 14 families × ~4–8 MB
 each; eyeballed). After all jobs complete, `compareHelicityFamilies.cxx`
 is invoked automatically and produces `compare_families.root` (~5–20 MB
 depending on family coverage).
@@ -556,3 +630,12 @@ same reconstruction algorithm used on data.
       structure has not been formally derived. Comparisons with the
       TProfile SEM and per-event estimator (Fig 14) are the current
       validation tool.
+- [ ] The polarization-correction test probe (`PolCorrProbe`, Effect 4) has
+      no genuine multi-particle event structure to reconstruct a real event
+      plane from, so `Psi` is emulated by reusing the independently-drawn
+      per-jet-group random azimuth. This is a clean, fully-independent-by-
+      construction stand-in for the "clean" case (`psiCorrelationFraction=0`),
+      but the `psiCorrelationFraction>0` stress test is only a crude,
+      per-Lambda correlation knob -- it does not reproduce the actual
+      dynamical origin (directed flow) of the STAR fixed-target contamination
+      it is meant to emulate.

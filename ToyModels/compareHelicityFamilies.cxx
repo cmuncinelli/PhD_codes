@@ -317,11 +317,12 @@ static std::vector<FamilyInfo> BuildFamilies()
       F.push_back(std::move(f)); }
 
     // -- F9: Realistic ALICE cuts [combined HEE+AEE estimate] -----------------
-    // repIdx=1 --> alice_std: the standard working point (the one most relevant to data)
+    // repIdx=1 --> alice_an_std: the standard working point (the one most relevant to data)
     { FamilyInfo f; f.num=9; f.repIdx=1;
       f.shortName="RealisticAlice"; f.longName="Realistic ALICE cuts [combined HEE+AEE]";
       f.cfgs={
         {"alice_loose",   "9_RealisticAlice/alice_loose",   "loose"},
+        {"alice_an_std",  "9_RealisticAlice/alice_an_std",  "an_std"},
         {"alice_std",     "9_RealisticAlice/alice_std",     "std"},
         {"alice_std_neg", "9_RealisticAlice/alice_std_neg", "std/neg"},
         {"alice_tight",   "9_RealisticAlice/alice_tight",   "tight"},
