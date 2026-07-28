@@ -866,6 +866,29 @@ struct KahanAccumulator {
         return std::sqrt(variance / (double)N);
     }
 
+    /// @brief Merges another accumulator's state into this one (element-wise
+    ///        sum of both Kahan sum/compensation pairs and the entry count).
+    ///        Used to reconstruct "All" = EtaPos + EtaNeg for any struct that
+    ///        holds several KahanAccumulator channels, without hand-writing
+    ///        the same five-field merge at every call site.
+    inline void AddFrom(const KahanAccumulator& s) {
+        sum_y  += s.sum_y;  c_y  += s.c_y;
+        sum_y2 += s.sum_y2; c_y2 += s.c_y2;
+        N      += s.N;
+    }
+
+    /// @brief Writes mean/SEM into an arbitrary bin of a (possibly
+    ///        multi-bin) histogram, without touching SetEntries -- callers
+    ///        with several channels sharing one histogram set entries once,
+    ///        after all channels are flushed. See FlushToTH1 for the
+    ///        single-bin, single-channel case.
+    /// @note  Honestly, just a convenience. Same as the AddFrom method.   
+    inline void FlushToBin(TH1* h, int bin) const {
+        if (!h) return;
+        h->SetBinContent(bin, GetMean());
+        h->SetBinError(bin, GetSEM());
+    }
+
     /**
      * @brief Exports the accumulated statistics into a 1-bin ROOT histogram.
      *
@@ -877,8 +900,9 @@ struct KahanAccumulator {
      */
     inline void FlushToTH1(TH1* h) const { // The method is declared as a const because it doesn't change the state of the KahanAccumulator
         if (!h) return; // Safety check
-        h->SetBinContent(1, GetMean());
-        h->SetBinError(1, GetSEM());
+        // h->SetBinContent(1, GetMean());
+        // h->SetBinError(1, GetSEM());
+        FlushToBin(h, 1); // Now that we've built this convenience for other parts of the code, let's be consistent with it!
         h->SetEntries(N);
     }
 };
@@ -886,9 +910,9 @@ struct KahanAccumulator {
 
 // ==========================================================================
 /**
- * @brief Multi-channel Kahan-compensated accumulator for the polarization-
- *        correction test probe (beam-fixed z axis). See README.md, "Effect 4:
- *        fake global/longitudinal polarization in event-plane-referenced
+ * @brief Multi-channel accumulator for the polarization-correction test
+ *        probe (beam-fixed z axis). See README.md, "Effect 4: fake
+ *        global/longitudinal polarization in event-plane-referenced
  *        observables" for the physics motivation and paper references, and
  *        "Polarization-correction test probe" for a channel-by-channel
  *        reference.
@@ -900,114 +924,90 @@ struct KahanAccumulator {
  * event-plane angle (see Add() below and the psiCorrelationFraction
  * parameter of helicityEfficiencyToyModel()).
  *
- * Auxiliary channels (cosThP, cos2ThP, sinThP) carry a mean only; headline
- * channels (sinDPsiP, cosThP_sinN) also carry a second moment, for a proper
- * Kahan-based SEM (see KahanAccumulator above).
+ * Every channel is a KahanAccumulator, so every one carries a proper unbiased-variance SEM estimator.
  */
 // ==========================================================================
 struct PolCorrProbe {
     long N = 0;
 
-    // -- Auxiliary/denominator channels (mean only) --
-    double sum_cosThP = 0.,  c_cosThP = 0.;   // <cos theta*_p,beam>
-    double sum_cos2ThP = 0., c_cos2ThP = 0.;  // <cos^2 theta*_p,beam>  (kappa_eff / P_{z,sn} denominator)
-    double sum_sinThP = 0.,  c_sinThP = 0.;   // <sin theta*_p,beam>   (STAR "A0" analogue)
+    KahanAccumulator cosThP;  // <cos theta*_p,beam>                    (naive Pz numerator)
+    KahanAccumulator cos2ThP; // <cos^2 theta*_p,beam>                  (kappa_eff / P_{z,sn} denominator)
+    KahanAccumulator sinThP;  // <sin theta*_p,beam>                    (STAR "A0" analogue)
+    KahanAccumulator pxBeam;  // <sin theta*_p,beam * cos(phi*_p,beam)> (naive Px numerator)
+    KahanAccumulator pyBeam;  // <sin theta*_p,beam * sin(phi*_p,beam)> (naive Py numerator)
 
-    // -- Headline channel: STAR/ALICE global-polarization-style numerator --
     // PLAIN sin(phi*_p,beam - Psi) -- see class doc comment for why no
-    // extra sin(theta*_p) weight belongs here.
-    double sum_sinDPsiP = 0.,  c_sinDPsiP = 0.;
-    double sum_sinDPsiP2 = 0., c_sinDPsiP2 = 0.;
+    // extra sin(theta*_p) weight belongs here (STAR/ALICE global numerator).
+    KahanAccumulator sinDPsiP;
 
-    // -- Headline channels: ALICE-longitudinal-style numerators, n = 1,2,3 --
-    double sum_cosThP_sinN[3]  = {0., 0., 0.};
-    double c_cosThP_sinN[3]    = {0., 0., 0.};
-    double sum_cosThP_sinN2[3] = {0., 0., 0.};
-    double c_cosThP_sinN2[3]   = {0., 0., 0.};
+    // PLAIN sin(Psi - phi*_p,beam) = -sinDPsiP, unbinned -- the STAR-3GeV
+    // "no fit" numerator (P_starNaive). Kept as its own channel rather than
+    // just negating sinDPsiP's mean so it also carries its own proper SEM.
+    KahanAccumulator sinPsiMinusPhiP;
 
-    /// @brief Single Kahan-compensated add step, factored out to avoid
-    ///        repeating the 4-line pattern for every channel below.
-    static inline void KahanAdd(double& sum, double& c, double val) noexcept {
-        double v = val - c;
-        double t = sum + v;
-        c = (t - sum) - v;
-        sum = t;
-    }
+    // ALICE-longitudinal-style numerators, n = 1,2,3.
+    KahanAccumulator cosThP_sinN[3];
 
     /**
      * @brief Accumulate one Lambda into all channels.
-     * @param cosThP  cos(theta*_p,beam) = pstar_uz.
-     * @param sinThP  sin(theta*_p,beam) = sqrt(1-cosThP^2).
+     * @param cosTh   cos(theta*_p,beam) = pstar_uz.
+     * @param sinTh   sin(theta*_p,beam) = sqrt(1-cosTh^2).
      * @param phiP    phi*_p,beam = atan2(pstar_uy, pstar_ux), in [-pi,pi).
      * @param psi     Reference/event-plane angle Psi used for this Lambda.
      * @param phiLam  Lambda's own lab azimuth (the "phi_H" of the formalism).
      */
-    inline void Add(double cosThP, double sinThP, double phiP, double psi, double phiLam) noexcept {
-        KahanAdd(sum_cosThP,  c_cosThP,  cosThP);
-        KahanAdd(sum_cos2ThP, c_cos2ThP, cosThP * cosThP);
-        KahanAdd(sum_sinThP,  c_sinThP,  sinThP);
+    inline void Add(double cosTh, double sinTh, double phiP, double psi, double phiLam) noexcept {
+        cosThP.Add(cosTh); // Could probably write this in a better notation, but notice that here we call the "Add" method from the KahanAccumulator structure. NOT a recursive function.
+        cos2ThP.Add(cosTh * cosTh);
+        sinThP.Add(sinTh);
+        pxBeam.Add(sinTh * std::cos(phiP));
+        pyBeam.Add(sinTh * std::sin(phiP));
 
-        // PLAIN sin(phi*_p - Psi) -- no sin(theta*_p) weight (see class doc comment).
-        double num0 = std::sin(phiP - psi);
-        KahanAdd(sum_sinDPsiP,  c_sinDPsiP,  num0);
-        KahanAdd(sum_sinDPsiP2, c_sinDPsiP2, num0 * num0);
+        double sinPhiPMinusPsi = std::sin(phiP - psi);
+        sinDPsiP.Add(sinPhiPMinusPsi);
+        sinPsiMinusPhiP.Add(-sinPhiPMinusPsi); // sin(Psi-phiP) = -sin(phiP-Psi); reuse the sin() call above
 
         double dPhi = phiLam - psi;
         for (int n = 0; n < 3; ++n) {
-            double numN = cosThP * std::sin(double(n + 1) * dPhi);
-            KahanAdd(sum_cosThP_sinN[n],  c_cosThP_sinN[n],  numN);
-            KahanAdd(sum_cosThP_sinN2[n], c_cosThP_sinN2[n], numN * numN);
+            cosThP_sinN[n].Add(cosTh * std::sin(double(n + 1) * dPhi));
         }
 
         ++N;
     }
 
-    /// @brief Element-wise merge, used to reconstruct "All" = EtaPos + EtaNeg.
+    /// @brief Merges "All" = EtaPos + EtaNeg, one KahanAccumulator::AddFrom() per channel.
     inline void AddFrom(const PolCorrProbe& s) noexcept {
         N += s.N;
-        sum_cosThP  += s.sum_cosThP;  c_cosThP  += s.c_cosThP;
-        sum_cos2ThP += s.sum_cos2ThP; c_cos2ThP += s.c_cos2ThP;
-        sum_sinThP  += s.sum_sinThP;  c_sinThP  += s.c_sinThP;
-        sum_sinDPsiP  += s.sum_sinDPsiP;  c_sinDPsiP  += s.c_sinDPsiP;
-        sum_sinDPsiP2 += s.sum_sinDPsiP2; c_sinDPsiP2 += s.c_sinDPsiP2;
-        for (int n = 0; n < 3; ++n) {
-            sum_cosThP_sinN[n]  += s.sum_cosThP_sinN[n];  c_cosThP_sinN[n]  += s.c_cosThP_sinN[n];
-            sum_cosThP_sinN2[n] += s.sum_cosThP_sinN2[n]; c_cosThP_sinN2[n] += s.c_cosThP_sinN2[n];
-        }
+        cosThP.AddFrom(s.cosThP);
+        cos2ThP.AddFrom(s.cos2ThP);
+        sinThP.AddFrom(s.sinThP);
+        pxBeam.AddFrom(s.pxBeam);
+        pyBeam.AddFrom(s.pyBeam);
+        sinDPsiP.AddFrom(s.sinDPsiP);
+        sinPsiMinusPhiP.AddFrom(s.sinPsiMinusPhiP);
+        for (int n = 0; n < 3; ++n) cosThP_sinN[n].AddFrom(s.cosThP_sinN[n]);
     }
 
     inline void Reset() noexcept { *this = PolCorrProbe(); }
 
     /**
-     * @brief Flush all channels into a 7-bin labeled TH1D container for convenient access.
-     * Bin layout: 1=<cosThP>, 2=<cos2ThP>, 3=<sinThP>, 4=<sin(phi*_p-Psi)>,
-     *             5,6,7 = <cosThP*sin(n*Dphi)> for n=1,2,3.
-     * Auxiliary channels (bins 1-3) carry no SEM (set to 0) for simplicity. The plotting
-     * macro makes some conservative estimates for plotting these.
-     * The main channels (bins 4-7) carry a proper unbiased-variance SEM though.
+     * @brief Flush all channels into a 10-bin labeled TH1D container.
+     * Bin layout: 1=<cosThP> 2=<cos2ThP> 3=<sinThP> 4=<sin(phi*_p-Psi)>
+     *             5,6,7=<cosThP*sin(n*Dphi)> for n=1,2,3
+     *             8=<pxBeam> 9=<pyBeam> 10=<sin(Psi-phi*_p)>.
+     * Every bin carries a proper unbiased-variance SEM (KahanAccumulator::GetSEM()).
      */
     inline void FlushToTH1(TH1* h) const {
         if (!h) return;
 
-        auto sem = [](double sum, double sum2, long n) -> double {
-            if (n < 2) return 0.;
-            double mean = sum / (double)n;
-            double var  = (sum2 - (double)n * mean * mean) / (double)(n - 1);
-            if (var < 0.) var = 0.;
-            return std::sqrt(var / (double)n);
-        };
-
-        h->SetBinContent(1, (N > 0) ? sum_cosThP  / (double)N : 0.);  h->SetBinError(1, 0.);
-        h->SetBinContent(2, (N > 0) ? sum_cos2ThP / (double)N : 0.);  h->SetBinError(2, 0.);
-        h->SetBinContent(3, (N > 0) ? sum_sinThP  / (double)N : 0.);  h->SetBinError(3, 0.);
-
-        h->SetBinContent(4, (N > 0) ? sum_sinDPsiP / (double)N : 0.);
-        h->SetBinError(4, sem(sum_sinDPsiP, sum_sinDPsiP2, N));
-
-        for (int n = 0; n < 3; ++n) {
-            h->SetBinContent(5 + n, (N > 0) ? sum_cosThP_sinN[n] / (double)N : 0.);
-            h->SetBinError(5 + n, sem(sum_cosThP_sinN[n], sum_cosThP_sinN2[n], N));
-        }
+        cosThP.FlushToBin(h, 1);
+        cos2ThP.FlushToBin(h, 2);
+        sinThP.FlushToBin(h, 3);
+        sinDPsiP.FlushToBin(h, 4);
+        for (int n = 0; n < 3; ++n) cosThP_sinN[n].FlushToBin(h, 5 + n);
+        pxBeam.FlushToBin(h, 8);
+        pyBeam.FlushToBin(h, 9);
+        sinPsiMinusPhiP.FlushToBin(h, 10);
 
         h->SetEntries((double)N);
     }
@@ -1196,7 +1196,7 @@ struct ScenarioHistos {
     // -- Polarization-correction test probe (beam-fixed z axis; see README.md, "Effect 4") --
     // "All" is reconstructed post-loop as EtaPos + EtaNeg, as everything else in this struct.
     PolCorrProbe polCorr;
-    TH1D*     hPolCorr_Sums; // The 7-bin summary container
+    TH1D*     hPolCorr_Sums; // The 10-bin summary container
     TProfile* pDeltaPhi_sinPsiMinusPhiP; // <sin(Psi-phi*_p,beam)> vs (phi_lam - phi*_p,beam)
 };
 
@@ -1334,7 +1334,7 @@ static ScenarioHistos BookScenario(TDirectory* dir, double etaMinDetector, doubl
     h.hRingProxyJet_JetEtaNeg_Kahan = new TH1D("hRingProxyJet_JetEtaNeg_Kahan", "Integrated <R_{proxyJet}> (Kahan Acc.) for #eta_{jet} < 0; bin; <R_{proxyJet}>", 1, -0.5, 0.5);
 
     // -- Polarization-correction test probe (see PolCorrProbe for the physics) --
-    h.hPolCorr_Sums = new TH1D("hPolCorr_Sums", "Polarization-correction probe sums;Channel;Value", 7, 0.5, 7.5);
+    h.hPolCorr_Sums = new TH1D("hPolCorr_Sums", "Polarization-correction probe sums;Channel;Value", 10, 0.5, 10.5);
     h.hPolCorr_Sums->GetXaxis()->SetBinLabel(1, "<cos#theta*_{p,beam}>");
     h.hPolCorr_Sums->GetXaxis()->SetBinLabel(2, "<cos^{2}#theta*_{p,beam}>");
     h.hPolCorr_Sums->GetXaxis()->SetBinLabel(3, "<sin#theta*_{p,beam}>");
@@ -1342,6 +1342,9 @@ static ScenarioHistos BookScenario(TDirectory* dir, double etaMinDetector, doubl
     h.hPolCorr_Sums->GetXaxis()->SetBinLabel(5, "<cos#theta*_{p}sin(1(#phi_{#Lambda}-#Psi))>");
     h.hPolCorr_Sums->GetXaxis()->SetBinLabel(6, "<cos#theta*_{p}sin(2(#phi_{#Lambda}-#Psi))>");
     h.hPolCorr_Sums->GetXaxis()->SetBinLabel(7, "<cos#theta*_{p}sin(3(#phi_{#Lambda}-#Psi))>");
+    h.hPolCorr_Sums->GetXaxis()->SetBinLabel(8, "<sin#theta*_{p,beam}cos(#phi*_{p,beam})>");
+    h.hPolCorr_Sums->GetXaxis()->SetBinLabel(9, "<sin#theta*_{p,beam}sin(#phi*_{p,beam})>");
+    h.hPolCorr_Sums->GetXaxis()->SetBinLabel(10, "<sin(#Psi-#phi*_{p,beam})>");
 
     h.pDeltaPhi_sinPsiMinusPhiP = new TProfile("pDeltaPhi_sinPsiMinusPhiP", "STAR (2108.00044)-style diagnostic;#phi_{#Lambda} - #phi*_{p,beam} [rad];"
         "#LTsin(#Psi - #phi*_{p,beam})#GT", 24, -Pi, Pi);
@@ -1969,27 +1972,26 @@ static void FlushKahanFamily(FamilyHistos& f) {
 
 // ==========================================================================
 /**
- * @brief Flushes the PolCorrProbe accumulator into its TH1D container for a
- *        single ScenarioHistos. Companion to FlushKahan().
- * @param h  Reference to the ScenarioHistos containing polCorr / hPolCorr_Sums.
- */
-// ==========================================================================
-static void FlushPolCorr(ScenarioHistos& h) {
-    h.polCorr.FlushToTH1(h.hPolCorr_Sums);
-}
-
-
-// ==========================================================================
-/**
- * @brief Calls FlushPolCorr() on all twelve ScenarioHistos in a FamilyHistos.
+ * @brief Flushes the PolCorrProbe accumulator into its TH1D container for
+ *        all twelve ScenarioHistos in a FamilyHistos. Companion to
+ *        FlushKahanFamily(). Calls polCorr.FlushToTH1() directly rather
+ *        than through a one-line per-scenario wrapper.
  * @param f  Reference to the FamilyHistos to finalize.
  */
 // ==========================================================================
 static void FlushPolCorrFamily(FamilyHistos& f) {
-    FlushPolCorr(f.NC_Pos); FlushPolCorr(f.NC_Neg); FlushPolCorr(f.NC_All);
-    FlushPolCorr(f.PT_Pos); FlushPolCorr(f.PT_Neg); FlushPolCorr(f.PT_All);
-    FlushPolCorr(f.DC_Pos); FlushPolCorr(f.DC_Neg); FlushPolCorr(f.DC_All);
-    FlushPolCorr(f.BC_Pos); FlushPolCorr(f.BC_Neg); FlushPolCorr(f.BC_All);
+    f.NC_Pos.polCorr.FlushToTH1(f.NC_Pos.hPolCorr_Sums);
+    f.NC_Neg.polCorr.FlushToTH1(f.NC_Neg.hPolCorr_Sums);
+    f.NC_All.polCorr.FlushToTH1(f.NC_All.hPolCorr_Sums);
+    f.PT_Pos.polCorr.FlushToTH1(f.PT_Pos.hPolCorr_Sums);
+    f.PT_Neg.polCorr.FlushToTH1(f.PT_Neg.hPolCorr_Sums);
+    f.PT_All.polCorr.FlushToTH1(f.PT_All.hPolCorr_Sums);
+    f.DC_Pos.polCorr.FlushToTH1(f.DC_Pos.hPolCorr_Sums);
+    f.DC_Neg.polCorr.FlushToTH1(f.DC_Neg.hPolCorr_Sums);
+    f.DC_All.polCorr.FlushToTH1(f.DC_All.hPolCorr_Sums);
+    f.BC_Pos.polCorr.FlushToTH1(f.BC_Pos.hPolCorr_Sums);
+    f.BC_Neg.polCorr.FlushToTH1(f.BC_Neg.hPolCorr_Sums);
+    f.BC_All.polCorr.FlushToTH1(f.BC_All.hPolCorr_Sums);
 }
 
 

@@ -270,46 +270,6 @@ static TH1D* SafeClone(TH1D* h) {
 
 // ==========================================================================
 /**
- * @brief Conservative upper-bound SEM for an O(1)-bounded quantity (sines,
- *        cosines, and their raw first moments all satisfy |x| <= 1, so
- *        Var(x) <= 1 always). Used only for the "auxiliary" channels of
- *        PolCorrProbe (bins 1-3 of hPolCorr_Sums) that were not given a
- *        proper Kahan-tracked second moment in the generator, to keep the
- *        hot loop lighter. Headline channels use a real unbiased-variance
- *        SEM instead (see hPolCorr_Sums bins 4-7 error bars, filled directly
- *        by PolCorrProbe::FlushToTH1).
- * @param N  Number of entries.
- * @return   1/sqrt(N), or 0 if N<=1.
- */
-// ==========================================================================
-static double ConservativeSEM(double N) { return (N > 1.) ? 1.0 / std::sqrt(N) : 0.; }
-
-
-// ==========================================================================
-/**
- * @brief Weighted mean of a TProfile's bin contents, weighted by each bin's
- *        effective entry count. Equivalent to the plain per-entry average of
- *        the underlying quantity over the whole sample (algebraically:
- *        sum_ib[content(ib)*entries(ib)] = sum_ib[sum_y(ib)], so the ratio to
- *        sum_ib[entries(ib)] recovers the exact global mean).
- * @param p  Source TProfile; a null pointer is tolerated (returns 0).
- */
-// ==========================================================================
-static double WeightedMeanOfProfile(TProfile* p) {
-    if (!p) return 0.;
-    double sumWY = 0., sumW = 0.;
-    for (int ib = 1; ib <= p->GetNbinsX(); ++ib) {
-        double w = p->GetBinEntries(ib);
-        if (w <= 0.) continue;
-        sumWY += p->GetBinContent(ib) * w;
-        sumW  += w;
-    }
-    return (sumW > 0.) ? sumWY / sumW : 0.;
-}
-
-
-// ==========================================================================
-/**
  * @brief Bundles every "does the fake signal go to zero" estimator computed
  *        for one (scenario, eta-selection) leaf directory -- naive, the
  *        traditional `<cos^2 theta*>`-only correction, the STAR/ALICE
@@ -331,10 +291,10 @@ struct PolCorrEstimators {
     double Px_naive = 0., Px_naive_err = 0.;
     double Py_naive = 0., Py_naive_err = 0.;
 
-    double kappa_eff = 0.;
+    double kappa_eff = 0., kappa_eff_err = 0.;
     double Pz_kappaCorr = 0., Pz_kappaCorr_err = 0.;
 
-    double A0 = 0.;
+    double A0 = 0., A0_err = 0.;
     double P_global = 0., P_global_err = 0.;
 
     double P_zsn[3]     = {0., 0., 0.};
@@ -358,35 +318,39 @@ static PolCorrEstimators ComputePolCorrEstimators(TDirectory* dir, double alphaL
     if (N < 2.) return e;
 
     const double prefac = 3.0 / alphaLambda;
-    const double semAux = ConservativeSEM(N); // conservative O(1)-bounded SEM for aux (non-SEM-tracked) channels
 
-    double cosThP  = hs->GetBinContent(1);
-    double cos2ThP = hs->GetBinContent(2);
-    double sinThP  = hs->GetBinContent(3);
-    double sinDPsiP     = hs->GetBinContent(4);
-    double sinDPsiP_err = hs->GetBinError(4);
+    double cosThP   = hs->GetBinContent(1), cosThP_err   = hs->GetBinError(1);
+    double cos2ThP  = hs->GetBinContent(2), cos2ThP_err  = hs->GetBinError(2);
+    double sinThP   = hs->GetBinContent(3), sinThP_err   = hs->GetBinError(3);
+    double sinDPsiP = hs->GetBinContent(4), sinDPsiP_err = hs->GetBinError(4);
+    double pxBeam   = hs->GetBinContent(8), pxBeam_err   = hs->GetBinError(8);
+    double pyBeam   = hs->GetBinContent(9), pyBeam_err   = hs->GetBinError(9);
 
-    // -- naive Pz (beam-fixed, uncorrected) --
+    // -- naive Px, Py, Pz (beam-fixed, uncorrected) -- all three now read
+    // directly off hPolCorr_Sums, with a proper Kahan-tracked SEM apiece.
     e.Pz_naive     = prefac * cosThP;
-    e.Pz_naive_err = prefac * semAux;
-
-    // -- naive Px, Py from the pre-existing pPstarX/Y_vsEtaLam profiles --
-    TProfile* pX = static_cast<TProfile*>(SafeGet(dir, "pPstarX_vsEtaLam"));
-    TProfile* pY = static_cast<TProfile*>(SafeGet(dir, "pPstarY_vsEtaLam"));
-    e.Px_naive     = prefac * WeightedMeanOfProfile(pX);
-    e.Py_naive     = prefac * WeightedMeanOfProfile(pY);
-    e.Px_naive_err = prefac * semAux;
-    e.Py_naive_err = prefac * semAux;
+    e.Pz_naive_err = prefac * cosThP_err;
+    e.Px_naive     = prefac * pxBeam;
+    e.Px_naive_err = prefac * pxBeam_err;
+    e.Py_naive     = prefac * pyBeam;
+    e.Py_naive_err = prefac * pyBeam_err;
 
     // -- Traditional Method 1: <cos^2 theta*> normalization ("kappa_eff") --
-    e.kappa_eff = 3.0 * cos2ThP;
+    // kappa_eff_err is exposed for transparency but NOT folded into
+    // Pz_kappaCorr_err below: kappa_eff is treated as a reference
+    // normalization (as STAR/ALICE treat A0/A2), consistent with only
+    // propagating the numerator's statistical uncertainty:
+    e.kappa_eff     = 3.0 * cos2ThP;
+    e.kappa_eff_err = 3.0 * cos2ThP_err;
     if (std::fabs(e.kappa_eff) > 1.e-6) {
         e.Pz_kappaCorr     = e.Pz_naive     / e.kappa_eff;
         e.Pz_kappaCorr_err = e.Pz_naive_err / std::fabs(e.kappa_eff);
     }
 
     // -- STAR/ALICE global-polarization style (Appendix A of the auxiliary polarization correction tex: Psi-averaging) --
-    e.A0 = (4.0 / TMath::Pi()) * sinThP;
+    // Same numerator-only error-propagation convention as kappa_eff above.
+    e.A0     = (4.0 / TMath::Pi()) * sinThP;
+    e.A0_err = (4.0 / TMath::Pi()) * sinThP_err;
     if (std::fabs(sinThP) > 1.e-6) {
         e.P_global     = (2.0 / alphaLambda) * sinDPsiP     / sinThP;
         e.P_global_err = (2.0 / alphaLambda) * sinDPsiP_err / std::fabs(sinThP);
@@ -402,23 +366,17 @@ static PolCorrEstimators ComputePolCorrEstimators(TDirectory* dir, double alphaL
         }
     }
 
-    // -- STAR (2108.00044) style: sinusoid-fit-and-offset on pDeltaPhi_sinPsiMinusPhiP --
+    // -- STAR (2108.00044) style: naive (no-fit) average, now read directly
+    // off hPolCorr_Sums bin 10 (its own unbinned channel, with a proper
+    // SEM) instead of aggregating pDeltaPhi_sinPsiMinusPhiP's per-bin
+    // entries under a conservative bound.
+    const double prefacStar = 8.0 / (TMath::Pi() * alphaLambda);
+    e.P_starNaive     = prefacStar * hs->GetBinContent(10);
+    e.P_starNaive_err = prefacStar * hs->GetBinError(10);
+
+    // -- sinusoid-fit-and-offset remedy still needs the Delta-phi-binned profile --
     TProfile* pDPhi = static_cast<TProfile*>(SafeGet(dir, "pDeltaPhi_sinPsiMinusPhiP"));
     if (pDPhi && pDPhi->GetEntries() > 10.) {
-        const double prefacStar = 8.0 / (TMath::Pi() * alphaLambda);
-
-        double sumWY = 0., sumW = 0.;
-        for (int ib = 1; ib <= pDPhi->GetNbinsX(); ++ib) {
-            double w = pDPhi->GetBinEntries(ib);
-            if (w <= 0.) continue;
-            sumWY += pDPhi->GetBinContent(ib) * w;
-            sumW  += w;
-        }
-        if (sumW > 0.) {
-            e.P_starNaive     = prefacStar * (sumWY / sumW);
-            e.P_starNaive_err = prefacStar * ConservativeSEM(sumW);
-        }
-
         // p0 + p1*sin(Delta) fit, following STAR PRC103/2108.00044 Eq. (2)-(3).
         TF1 fFit("fStarFit_local", "[0] + [1]*sin(x)", -TMath::Pi(), TMath::Pi());
         fFit.SetParameters(0., 0.);
