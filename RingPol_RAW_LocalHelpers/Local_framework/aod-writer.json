@@ -1,7 +1,7 @@
 {
   "OutputDirector": {
-    "debugmode": true,
-    "resfile": "AO2D_LambdaJetsRing_DerivedTest",
+    "debug_mode": false,
+    "resfile": "DerivedOutput",
     "resfilemode": "RECREATE",
     "ntfmerge": 1,
     "OutputDescriptors": [

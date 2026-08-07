@@ -266,9 +266,10 @@ This script will:
 - Run `extractDeltaErrors.cxx` (ROOT)
 - Run `signalExtractionRing.cxx` (ROOT)
 - Run `makeCumulativeDCAdauProfile.cxx` (ROOT)
-- Run `auxiliaryPlots.cxx` (ROOT)
+- Run `auxiliaryPerConfigPlots.cxx` (ROOT)
+- Run `auxiliarySummaryPlots.cxx` (ROOT)
 
-Steps 2, 3, and 4 are skipped automatically if step 1 fails for a given pair.
+Steps 2, 3, 4, and 5 are skipped automatically if step 1 fails for a given pair.
 
 A summary table of all failures is printed at the end.
 
@@ -533,12 +534,13 @@ runs the following steps:
 2. `extractDeltaErrors.cxx` (ROOT) -- delta/error plots from the consumer output
 3. `signalExtractionRing.cxx` (ROOT) -- signal extraction, output in `results_SigExtract/`
 4. `makeCumulativeDCAdauProfile.cxx` (ROOT) -- cumulative DCA profiles QA
-5. `auxiliaryPlots.cxx` (ROOT) -- (Run once per wagon) Cross-config aggregation plotting for systematic comparisons, outputting to `AuxiliaryPlots.root`.
+5. `auxiliaryPerConfigPlots.cxx` (ROOT) -- Once per config. Outputs to `AuxiliaryPerConfigPlots_<SUFFIX>.root`, similar to `makeCumulativeDCAdauProfile.cxx`'s output.
+6. `auxiliarySummaryPlots.cxx` (ROOT) -- (Run once per wagon, after all configs) Cross-config aggregation plotting for systematic comparisons, outputting to `auxiliarySummaryPlots.root`.
 
 > **Note on Reference Overlay Data:**
-> Step 5 aggregates all successful configs for a given wagon at the very end, and optionally overlays Monte Carlo and Helicity Toy Model data. **The paths to the MC reference (`MC_REF_DIR`) and the Toy Model (`TOY_MODEL_PATH`) are hardcoded at the top of this bash script.** You must update them directly inside `run_all_wagons.sh` if your local storage layout changes.
+> Step 6 aggregates all successful configs for a given wagon at the very end, and optionally overlays Monte Carlo and Helicity Toy Model data. **The paths to the MC reference (`MC_REF_DIR`) and the Toy Model (`TOY_MODEL_PATH`) are hardcoded at the top of this bash script.** You must update them directly inside `run_all_wagons.sh` if your local storage layout changes.
 
-Steps 2, 3, and 4 are skipped if step 1 failed for a specific config.
+Steps 2, 3, 4, and 5 are skipped if step 1 failed for a specific config.
 
 All macros are compiled Ahead-of-Time (AoT) into native executables for performance and stability. All macro paths are derived from `REPO_DIR` at the top of the script -- the only variable to update if the repository moves.
 
@@ -549,7 +551,8 @@ The ROOT macro paths it uses:
 | `EXTRACT_DELTA_MACRO` | `$REPO_DIR/RingPol_RAW_LocalHelpers/extractDeltaErrors.cxx` |
 | `SIGNAL_EXTRACT_MACRO` | `$REPO_DIR/RingPol_RAW_LocalHelpers/signalExtractionRing.cxx` |
 | `CUMUL_DCA_MACRO` | `$REPO_DIR/RingPol_RAW_LocalHelpers/makeCumulativeDCAdauProfile.cxx` |
-| `AUXILIARY_PLOTS_MACRO` | `$REPO_DIR/RingPol_RAW_LocalHelpers/auxiliaryPlots.cxx` |
+| `AUX_PERCONFIG_MACRO` | `$REPO_DIR/RingPol_RAW_LocalHelpers/auxiliaryPerConfigPlots.cxx` |
+| `AUXILIARY_PLOTS_MACRO` | `$REPO_DIR/RingPol_RAW_LocalHelpers/auxiliarySummaryPlots.cxx` |
 
 All stdout from child processes is suppressed to keep the terminal readable, routing logs to `results_consumer/logs/` categorized by each step of the coordinator bash.
 A failure summary table is printed at the end of the run.

@@ -1,6 +1,6 @@
 /*
 * ============================================================
-* auxiliaryPlots.cxx
+* auxiliarySummaryPlots.cxx
 * Extracts and compares various 1D TProfiles (e.g., Ring Observable 
 * vs Eta of different reference particles) across multiple Consumer 
 * configuration outputs within a single wagon's working directory.
@@ -8,7 +8,7 @@
 * (Lambda, AntiLambda, BothHyperons) and their respective systematic 
 * variations (Data-like Jet, Rand Jet, etc.), appropriately scaled.
 *
-* Usage: root -l -b -q 'auxiliaryPlots.cxx("path/to/wagon/dir", "[optional_MC_ref_path]")'
+* Usage: root -l -b -q 'auxiliarySummaryPlots.cxx("path/to/wagon/dir", "[optional_MC_ref_path]")'
 * (or just use the bash coordinator script, which properly compiles this into production-level code)
 * ============================================================
 */
@@ -496,7 +496,7 @@ void DrawIntegratedCanvas(const std::vector<ProfileBundle>& bundles,
 // ---------------------------------------------------------
 // Main Macro 
 // ---------------------------------------------------------
-void auxiliaryPlots(const std::string& consumerDir, const std::string& mcRefDir = "", const std::string& ppRefDir = "", const std::string& toyModelPath = "") {
+void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mcRefDir = "", const std::string& ppRefDir = "", const std::string& toyModelPath = "") {
     
     // 1. Define Systematic Variations (the list of all useful variations I would like to track into this plot)
     // The base config (empty suffix) is handled separately in the logic to ensure it is always first
@@ -534,7 +534,7 @@ void auxiliaryPlots(const std::string& consumerDir, const std::string& mcRefDir 
     };
 
     // 4. Create the output file
-    std::string outFilePath = consumerDir + "/AuxiliaryPlots.root";
+    std::string outFilePath = consumerDir + "/auxiliarySummaryPlots.root";
     TFile* fOut = new TFile(outFilePath.c_str(), "RECREATE");
     if (!fOut || fOut->IsZombie()) {
         std::cerr << "[Error] Could not create output file: " << outFilePath << std::endl;
@@ -1018,7 +1018,7 @@ int main(int argc, char** argv) {
     std::string ppRefDir = (argc > 3) ? argv[3] : "";
     std::string toyModelPath = (argc > 4) ? argv[4] : "";
     
-    auxiliaryPlots(consumerDir, mcRefDir, ppRefDir, toyModelPath);
+    auxiliarySummaryPlots(consumerDir, mcRefDir, ppRefDir, toyModelPath);
     return 0;
 }
 #endif

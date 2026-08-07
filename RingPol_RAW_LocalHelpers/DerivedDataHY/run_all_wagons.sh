@@ -15,9 +15,10 @@
 #     2. Run extractDeltaErrors.cxx (ROOT) -> delta/error plots
 #     3. Run signalExtractionRing.cxx (ROOT) -> results_SigExtract/
 #     4. Run makeCumulativeDCAdauProfile.cxx (ROOT)-> CumulativeProfiles_<SUFFIX>.root
-#     5. Run auxiliaryPlots.cxx (ROOT) -> AuxiliaryPlots.root (Cross-config)
+#     5. Run auxiliaryPerConfigPlots.cxx (ROOT) -> AuxiliaryPerConfigPlots_<SUFFIX>.root
+#     6. Run auxiliarySummaryPlots.cxx (ROOT) -> auxiliarySummaryPlots.root (Cross-config)
 #
-#   Steps 2, 3 and 4 are skipped for a given pair if step 1 fails or if the 
+#   Steps 2, 3, 4 and 5 are skipped for a given pair if step 1 fails or if the 
 #   ConsumerResults file is missing.
 #
 # Usage:
@@ -26,7 +27,7 @@
 # Options:
 #   -h, --help                 Show this help message.
 #   -p, --post-process-only    Skip Step 1 (consumer) and run only the ROOT
-#                              macros (Steps 2, 3, 4) on existing output.
+#                              macros (Steps 2, 3, 4, 5) on existing output.
 #   -s, --skip-sig-extract     Skip Step 3 (signal extraction) during execution.
 #
 # Arguments:
@@ -58,7 +59,8 @@ REPO_DIR="/home/users/cicerodm/PhD_codes"
 EXTRACT_DELTA_MACRO="${REPO_DIR}/RingPol_RAW_LocalHelpers/extractDeltaErrors.cxx"
 SIGNAL_EXTRACT_MACRO="${REPO_DIR}/RingPol_RAW_LocalHelpers/signalExtractionRing.cxx"
 CUMUL_DCA_MACRO="${REPO_DIR}/RingPol_RAW_LocalHelpers/makeCumulativeDCAdauProfile.cxx"
-AUXILIARY_PLOTS_MACRO="${REPO_DIR}/RingPol_RAW_LocalHelpers/auxiliaryPlots.cxx"
+AUX_PERCONFIG_MACRO="${REPO_DIR}/RingPol_RAW_LocalHelpers/auxiliaryPerConfigPlots.cxx"
+AUXILIARY_PLOTS_MACRO="${REPO_DIR}/RingPol_RAW_LocalHelpers/auxiliarySummaryPlots.cxx"
 
 # Absolute path to the consumer launcher script.
 FRAMEWORK_DIR="${REPO_DIR}/RingPol_RAW_LocalHelpers/DerivedDataHY"
@@ -86,7 +88,8 @@ TOY_MODEL_PATH="/home/users/cicerodm/RingPol/HelicityToyModel/9_RealisticAlice/a
 EXTRACT_DELTA_EXE="${REPO_DIR}/RingPol_RAW_LocalHelpers/extractDeltaErrors.exe"
 SIGNAL_EXTRACT_EXE="${REPO_DIR}/RingPol_RAW_LocalHelpers/signalExtractionRing.exe"
 CUMUL_DCA_EXE="${REPO_DIR}/RingPol_RAW_LocalHelpers/makeCumulativeDCAdauProfile.exe"
-AUXILIARY_PLOTS_EXE="${REPO_DIR}/RingPol_RAW_LocalHelpers/auxiliaryPlots.exe"
+AUX_PERCONFIG_EXE="${REPO_DIR}/RingPol_RAW_LocalHelpers/auxiliaryPerConfigPlots.exe"
+AUXILIARY_PLOTS_EXE="${REPO_DIR}/RingPol_RAW_LocalHelpers/auxiliarySummaryPlots.exe"
 
 # ==============================================================================
 # ARGUMENT PARSING
@@ -170,7 +173,7 @@ handle_interrupt() {
 
 cleanup() {
   # Removing the compiled binaries after usage:
-  rm -f "$EXTRACT_DELTA_EXE" "$SIGNAL_EXTRACT_EXE" "$CUMUL_DCA_EXE" "$AUXILIARY_PLOTS_EXE"
+  rm -f "$EXTRACT_DELTA_EXE" "$SIGNAL_EXTRACT_EXE" "$CUMUL_DCA_EXE" "$AUX_PERCONFIG_EXE" "$AUXILIARY_PLOTS_EXE"
 }
 
 trap cleanup EXIT
@@ -180,7 +183,7 @@ trap handle_interrupt INT TERM
 # PRE-FLIGHT CHECKS
 # ==============================================================================
 for REQUIRED in "$REGISTRY" "$CONSUMER_SCRIPT" \
-                "$EXTRACT_DELTA_MACRO" "$SIGNAL_EXTRACT_MACRO" "$CUMUL_DCA_MACRO" "$AUXILIARY_PLOTS_MACRO"; do
+                "$EXTRACT_DELTA_MACRO" "$SIGNAL_EXTRACT_MACRO" "$CUMUL_DCA_MACRO" "$AUX_PERCONFIG_MACRO" "$AUXILIARY_PLOTS_MACRO"; do
   if [ ! -f "$REQUIRED" ]; then
     echo "Error: required file not found: ${REQUIRED}"
     exit 1
@@ -233,6 +236,7 @@ ROOT_LIBS="$(root-config --glibs)"
 g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$EXTRACT_DELTA_EXE" "$EXTRACT_DELTA_MACRO" $ROOT_LIBS || exit 1
 g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$SIGNAL_EXTRACT_EXE" "$SIGNAL_EXTRACT_MACRO" $ROOT_LIBS || exit 1
 g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$CUMUL_DCA_EXE" "$CUMUL_DCA_MACRO" $ROOT_LIBS || exit 1
+g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$AUX_PERCONFIG_EXE" "$AUX_PERCONFIG_MACRO" $ROOT_LIBS || exit 1
 g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$AUXILIARY_PLOTS_EXE" "$AUXILIARY_PLOTS_MACRO" $ROOT_LIBS || exit 1
 
 echo "Compilation successful!"
@@ -286,16 +290,18 @@ for LINE in "${WAGON_LINES[@]}"; do
     mkdir -p "${LOG_DIR}/deltaErr/"
     mkdir -p "${LOG_DIR}/sigExtract/"
     mkdir -p "${LOG_DIR}/cumulHist/"
+    mkdir -p "${LOG_DIR}/auxPerConfig/"
     WRAPPER_LOG="${LOG_DIR}/wrappers/wrapper_${CONS_SUFFIX}.log"
     DELTA_LOG="${LOG_DIR}/deltaErr/extractDeltaErr_${CONS_SUFFIX}.log"
     SIG_LOG="${LOG_DIR}/sigExtract/sigExtract_${CONS_SUFFIX}.log"
     CUMUL_LOG="${LOG_DIR}/cumulHist/cumulDCA_${CONS_SUFFIX}.log"
+    AUX_PERCONFIG_LOG="${LOG_DIR}/auxPerConfig/auxPerConfig_${CONS_SUFFIX}.log"
 
     # ------------------------------------------------------------------
     # Step 1: consumer
     # ------------------------------------------------------------------
     if [ $POST_PROCESS_ONLY -eq 0 ]; then
-      echo -n "  [1/5] consumer        : ${CONS_SUFFIX}"
+      echo -n "  [1/6] consumer        : ${CONS_SUFFIX}"
       # Consumer output goes to a per-config log file so failures are inspectable.
       if [ -d /sys/devices/system/node/node1 ]; then
         # Binding consumer to the NUMA node1 (just convenience: producers are running in node 0 on jarvis15 right now)
@@ -313,7 +319,7 @@ for LINE in "${WAGON_LINES[@]}"; do
       echo "  -> OK"
     else
       # Post-process only mode: verify file exists
-      echo -n "  [1/5] consumer        : ${CONS_SUFFIX} (SKIPPED)"
+      echo -n "  [1/6] consumer        : ${CONS_SUFFIX} (SKIPPED)"
       if [ ! -f "$CONSUMER_RESULT" ]; then
         echo "  -> FAILED  (File missing)"
         FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | missing_consumer_result")
@@ -325,7 +331,7 @@ for LINE in "${WAGON_LINES[@]}"; do
     # ------------------------------------------------------------------
     # Step 2: extractDeltaErrors
     # ------------------------------------------------------------------
-    echo -n "  [2/5] extractDeltaErr : ${CONS_SUFFIX}"
+    echo -n "  [2/6] extractDeltaErr : ${CONS_SUFFIX}"
     "$EXTRACT_DELTA_EXE" "${CONSUMER_RESULT}" > "$DELTA_LOG" 2>&1
     DELTA_EXIT=$?
 
@@ -340,7 +346,7 @@ for LINE in "${WAGON_LINES[@]}"; do
     # Step 3: signalExtractionRing
     # ------------------------------------------------------------------
     if [ $SKIP_SIG_EXTRACT -eq 0 ]; then
-      echo -n "  [3/5] sigExtract      : ${CONS_SUFFIX}"
+      echo -n "  [3/6] sigExtract      : ${CONS_SUFFIX}"
       "$SIGNAL_EXTRACT_EXE" "${CONSUMER_RESULT}" "${SIGNAL_EXTRACT_DIR}/" > "$SIG_LOG" 2>&1
       SIG_EXIT=$?
 
@@ -351,13 +357,13 @@ for LINE in "${WAGON_LINES[@]}"; do
         echo "  -> OK"
       fi
     else
-      echo "  [3/5] sigExtract      : ${CONS_SUFFIX} (SKIPPED)"
+      echo "  [3/6] sigExtract      : ${CONS_SUFFIX} (SKIPPED)"
     fi
 
     # ------------------------------------------------------------------
     # Step 4: makeCumulativeDCAdauProfile
     # ------------------------------------------------------------------
-    echo -n "  [4/5] cumulDCA        : ${CONS_SUFFIX}"
+    echo -n "  [4/6] cumulDCA        : ${CONS_SUFFIX}"
     "$CUMUL_DCA_EXE" "${CONSUMER_RESULT}" > "$CUMUL_LOG" 2>&1
     CUMUL_EXIT=$?
 
@@ -368,16 +374,30 @@ for LINE in "${WAGON_LINES[@]}"; do
       echo "  -> OK"
     fi
 
+    # ------------------------------------------------------------------
+    # Step 5: auxiliaryPerConfigPlots
+    # ------------------------------------------------------------------
+    echo -n "  [5/6] auxPerConfig    : ${CONS_SUFFIX}"
+    "$AUX_PERCONFIG_EXE" "${CONSUMER_RESULT}" > "$AUX_PERCONFIG_LOG" 2>&1
+    AUX_PERCONFIG_EXIT=$?
+
+    if [ $AUX_PERCONFIG_EXIT -ne 0 ]; then
+      echo "  -> FAILED  (log: ${AUX_PERCONFIG_LOG})"
+      FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | auxPerConfigPlots")
+    else
+      echo "  -> OK"
+    fi
+
     echo ""
 
   done  # configs
 
   # ------------------------------------------------------------------
-  # Step 5: auxiliaryPlots (Cross-configuration aggregation)
+  # Step 6: auxiliarySummaryPlots (Cross-configuration aggregation)
   # ------------------------------------------------------------------
   # We run this ONCE per wagon, passing the wagon's base working dir
   AUX_LOG="${WORK_DIR}/results_consumer/logs/auxPlots.log" # Saves a single log, to the root of the logs folder, because there will be only one single log for a given wagon
-  echo -n "  [5/5] auxiliaryPlots  : (Cross-config summary)"
+  echo -n "  [6/6] auxiliarySummaryPlots  : (Cross-config summary)"
   
   # Forwarding the consumer results directory, the MC reference, and now the Toy Model path:
   "$AUXILIARY_PLOTS_EXE" "${WORK_DIR}/results_consumer" "${MC_REF_DIR}" "${PP_REF_DIR}" "${TOY_MODEL_PATH}" > "$AUX_LOG" 2>&1
@@ -385,7 +405,7 @@ for LINE in "${WAGON_LINES[@]}"; do
 
   if [ $AUX_EXIT -ne 0 ]; then
     echo "  -> FAILED  (log: ${AUX_LOG})"
-    FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ALL_CONFIGS | auxiliaryPlots")
+    FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ALL_CONFIGS | auxiliarySummaryPlots")
   else
     echo "  -> OK"
   fi

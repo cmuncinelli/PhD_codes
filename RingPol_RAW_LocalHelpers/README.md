@@ -21,13 +21,16 @@ mode, Lambda-only, AntiLambda-only, and full QA with permissive pT cuts.
 
 ## C++ Analysis Codes
 
+(most of these are called by a coordinator in in [`DerivedDataHY/run_all_wagons.sh`](DerivedDataHY/run_all_wagons.sh))
+
 | File | Description |
 |---|---|
 | `signalExtractionRing.cxx` | Main signal extraction code for the ring polarization observable. Extracts the ring signal from invariant mass spectra across the (pT, centrality, Δφ) analysis bins. |
 | `signalExtractionRingTest.cxx` | Test and development version of the signal extraction code. |
 | `extractDeltaErrors.cxx` | Extracts and propagates statistical uncertainties using the Delta Method, which more accurately preserves the covariance terms to avoid SEM mathematical pitfalls. (Did not improve by much though) |
 | `makeCumulativeDCAdauProfile.cxx` | Evaluates the robustness of the ring observable against varying Distance of Closest Approach (DCA) cuts, specially the DCA of the daughter particles wrt the PV. Condenses 2D/3D differential QA profiles into unified cumulative distributions. |
-| `auxiliaryPlots.cxx` | Cross-configuration aggregation macro. Combines baseline, MC reference, Helicity Toy Model inputs, and systematic variations (e.g., Data-like Jet, Rand Jet) of ring observables into appropriately scaled, unified canvases for easy comparison. |
+| `auxiliarySummaryPlots.cxx` | Cross-configuration aggregation macro. Combines baseline, MC reference, Helicity Toy Model inputs, and systematic variations (e.g., Data-like Jet, Rand Jet) of ring observables into appropriately scaled, unified canvases for easy comparison. |
+| `auxiliaryPerConfigPlots.cxx` | Per-configuration post-processing macro. Goal is to analyze all configurations for a given macro and output useful plots which do not fit into O2Physics' principles. For instance, this code has the necessary functions to plot the polarization vector field graph inspired by the Helicity Efficiency Toy Model's plotting function. |
 | `testVersionOfHeaders.h` | Development version of shared header definitions. |
 
 ## Utilities

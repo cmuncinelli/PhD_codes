@@ -258,7 +258,7 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
             nocache cp "$CLEAN_PATH" "$BATCH_WORK_DIR/$FILENAME"
             echo "file:$BATCH_WORK_DIR/$FILENAME" >> "$LOCAL_INPUT_LIST"
         else
-            echo -e "\n    WARNING: Source file missing: $CLEAN_PATH"
+            echo -e "\n    WARNING: Source file missing: $CLEAN_PATH \n    Did you try checking if the NFS (e.g., hadrex2) is properly mounted in the machine?"
         fi
 
         # --- Progress bar ---
@@ -288,84 +288,82 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
 
     cd "$BATCH_WORK_DIR" || exit 1
 
-    OPTION="-b --configuration json://$JSON_CONFIG_PATH --aod-writer-json ${AOD_WRITER_JSON}"
+    # OPTION="-b --configuration json://$JSON_CONFIG_PATH --aod-writer-json ${AOD_WRITER_JSON}"
+    # Mirroring the Hyperloop call to make sure that the tables I actually need are written to the disk:
+    # (actually, previous version already worked! This was mostly a cosmetic change.)
+        # WORKFLOW_OPT is applied to every task in the pipeline:
+    WORKFLOW_OPT="-b --configuration json://$JSON_CONFIG_PATH"
+        # GLOBAL_OPT (including --aod-writer-json) is attached ONLY once to the final task:
+    GLOBAL_OPT="--aod-file @${LOCAL_INPUT_LIST} --aod-writer-json ${AOD_WRITER_JSON} --aod-memory-rate-limit ${MEM_RATE_LIMIT} --shm-segment-size ${SHM_SIZE}"
 
     if [ "$USE_TOF" = true ]; then
         if [ "$LOG_OUTPUT" = true ]; then
-            time o2-analysis-event-selection-service ${OPTION} \
+            time o2-analysis-event-selection-service ${WORKFLOW_OPT} \
                 --pipeline eventselection-run3:${PIPE_EVENTSEL} | \
-            o2-analysis-multcenttable ${OPTION} \
+            o2-analysis-multcenttable ${WORKFLOW_OPT} \
                 --pipeline mult-cent-table:${PIPE_MULTCENT} | \
-            o2-analysis-propagationservice ${OPTION} \
+            o2-analysis-propagationservice ${WORKFLOW_OPT} \
                 --pipeline propagation-service:${PIPE_PROPAGATION} | \
-            o2-analysis-pid-tpc-service ${OPTION} \
+            o2-analysis-pid-tpc-service ${WORKFLOW_OPT} \
                 --pipeline pid-tpc-service:${PIPE_PIDTPC} | \
-            o2-analysis-ft0-corrected-table ${OPTION} | \
-            o2-analysis-pid-tof-base ${OPTION} \
+            o2-analysis-ft0-corrected-table ${WORKFLOW_OPT} | \
+            o2-analysis-pid-tof-base ${WORKFLOW_OPT} \
                 --pipeline tof-event-time:${PIPE_TOF} | \
-            o2-analysis-lf-strangenesstofpid ${OPTION} \
+            o2-analysis-lf-strangenesstofpid ${WORKFLOW_OPT} \
                 --pipeline strangenesstofpid:${PIPE_STRANGE} | \
-            o2-analysis-lf-lambdajetpolarizationions ${OPTION} \
+            o2-analysis-lf-lambdajetpolarizationions ${WORKFLOW_OPT} \
                 --pipeline lambdajetpolarizationions:${PIPE_LAMBDA} \
-                --aod-file "@${LOCAL_INPUT_LIST}" \
-                --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
-                --shm-segment-size "$SHM_SIZE" \
+                ${GLOBAL_OPT} \
                 > "$BATCH_LOG" 2>&1
         else
-            time o2-analysis-event-selection-service ${OPTION} \
+            time o2-analysis-event-selection-service ${WORKFLOW_OPT} \
                 --pipeline eventselection-run3:${PIPE_EVENTSEL} | \
-            o2-analysis-multcenttable ${OPTION} \
+            o2-analysis-multcenttable ${WORKFLOW_OPT} \
                 --pipeline mult-cent-table:${PIPE_MULTCENT} | \
-            o2-analysis-propagationservice ${OPTION} \
+            o2-analysis-propagationservice ${WORKFLOW_OPT} \
                 --pipeline propagation-service:${PIPE_PROPAGATION} | \
-            o2-analysis-pid-tpc-service ${OPTION} \
+            o2-analysis-pid-tpc-service ${WORKFLOW_OPT} \
                 --pipeline pid-tpc-service:${PIPE_PIDTPC} | \
-            o2-analysis-ft0-corrected-table ${OPTION} | \
-            o2-analysis-pid-tof-base ${OPTION} \
+            o2-analysis-ft0-corrected-table ${WORKFLOW_OPT} | \
+            o2-analysis-pid-tof-base ${WORKFLOW_OPT} \
                 --pipeline tof-event-time:${PIPE_TOF} | \
-            o2-analysis-lf-strangenesstofpid ${OPTION} \
+            o2-analysis-lf-strangenesstofpid ${WORKFLOW_OPT} \
                 --pipeline strangenesstofpid:${PIPE_STRANGE} | \
-            o2-analysis-lf-lambdajetpolarizationions ${OPTION} \
+            o2-analysis-lf-lambdajetpolarizationions ${WORKFLOW_OPT} \
                 --pipeline lambdajetpolarizationions:${PIPE_LAMBDA} \
-                --aod-file "@${LOCAL_INPUT_LIST}" \
-                --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
-                --shm-segment-size "$SHM_SIZE" \
+                ${GLOBAL_OPT} \
                 > /dev/null 2>&1
         fi
     else
         # If debugging code, insert the flag "--fairmq-rate-logging 1" in the end of the workflow.
         # This can help diagnose bottlenecks
         if [ "$LOG_OUTPUT" = true ]; then
-            time o2-analysis-event-selection-service ${OPTION} \
+            time o2-analysis-event-selection-service ${WORKFLOW_OPT} \
                 --pipeline eventselection-run3:${PIPE_EVENTSEL} | \
-            o2-analysis-multcenttable ${OPTION} \
+            o2-analysis-multcenttable ${WORKFLOW_OPT} \
                 --pipeline mult-cent-table:${PIPE_MULTCENT} | \
-            o2-analysis-propagationservice ${OPTION} \
+            o2-analysis-propagationservice ${WORKFLOW_OPT} \
                 --pipeline propagation-service:${PIPE_PROPAGATION} | \
-            o2-analysis-pid-tpc-service ${OPTION} \
+            o2-analysis-pid-tpc-service ${WORKFLOW_OPT} \
                 --pipeline pid-tpc-service:${PIPE_PIDTPC} | \
-            o2-analysis-ft0-corrected-table ${OPTION} | \
-            o2-analysis-lf-lambdajetpolarizationions ${OPTION} \
+            o2-analysis-ft0-corrected-table ${WORKFLOW_OPT} | \
+            o2-analysis-lf-lambdajetpolarizationions ${WORKFLOW_OPT} \
                 --pipeline lambdajetpolarizationions:${PIPE_LAMBDA} \
-                --aod-file "@${LOCAL_INPUT_LIST}" \
-                --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
-                --shm-segment-size "$SHM_SIZE" \
+                ${GLOBAL_OPT} \
                 > "$BATCH_LOG" 2>&1
         else
-            time o2-analysis-event-selection-service ${OPTION} \
+            time o2-analysis-event-selection-service ${WORKFLOW_OPT} \
                 --pipeline eventselection-run3:${PIPE_EVENTSEL} | \
-            o2-analysis-multcenttable ${OPTION} \
+            o2-analysis-multcenttable ${WORKFLOW_OPT} \
                 --pipeline mult-cent-table:${PIPE_MULTCENT} | \
-            o2-analysis-propagationservice ${OPTION} \
+            o2-analysis-propagationservice ${WORKFLOW_OPT} \
                 --pipeline propagation-service:${PIPE_PROPAGATION} | \
-            o2-analysis-pid-tpc-service ${OPTION} \
+            o2-analysis-pid-tpc-service ${WORKFLOW_OPT} \
                 --pipeline pid-tpc-service:${PIPE_PIDTPC} | \
-            o2-analysis-ft0-corrected-table ${OPTION} | \
-            o2-analysis-lf-lambdajetpolarizationions ${OPTION} \
+            o2-analysis-ft0-corrected-table ${WORKFLOW_OPT} | \
+            o2-analysis-lf-lambdajetpolarizationions ${WORKFLOW_OPT} \
                 --pipeline lambdajetpolarizationions:${PIPE_LAMBDA} \
-                --aod-file "@${LOCAL_INPUT_LIST}" \
-                --aod-memory-rate-limit "$MEM_RATE_LIMIT" \
-                --shm-segment-size "$SHM_SIZE" \
+                ${GLOBAL_OPT} \
                 > /dev/null 2>&1
         fi
     fi
@@ -395,8 +393,8 @@ for BATCH_FILE in $(ls "$TEMP_BASE/batches/batch_"* | sort); do
         fi
 
         # 2. Handle Derived AODs -> Placed in WAGON_DIR/AO2Ds/
-        DERIVED_FILE=$(find . -maxdepth 1 -name "AO2D_*.root" | head -n 1)
-        if [ -n "$DERIVED_FILE" ]; then
+        DERIVED_FILE="DerivedOutput.root"
+        if [ -f "$DERIVED_FILE" ]; then
             TARGET_AOD="$WAGON_DIR/AO2Ds/AO2D_${BATCH_ID}.root"
             mv "$DERIVED_FILE" "$TARGET_AOD"
             echo "    Saved derived AOD to: AO2Ds/AO2D_${BATCH_ID}.root"

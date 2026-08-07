@@ -252,7 +252,7 @@ LOG_DIR="${BASE_DIR}/logs"
 MAX_PARALLEL=88
 
 # Default Lambda count per run.
-DEFAULT_N=360000000000 # Takes about 4 days after the optimized generator cxx, 11.5 days with the older code
+DEFAULT_N=360000000000 # Takes about 7 days after the optimized generator cxx, 11.5 days with the older code
 # DEFAULT_N=180000000000 # 180.000.000.000 Lambdas would take 10.5 days previously. With refactor it took 4.3 days!
 # DEFAULT_N=10000000000 # 10.000.000.000 Lambdas takes about 12 hours on newer, heavier, code versions (After PGO and refactoring, went down to 6 hours)
 # DEFAULT_N=100000000 # For testing only (Refactoring went from ~5 minutes per run to ~3.5 minutes. After PGO, this changed little)
