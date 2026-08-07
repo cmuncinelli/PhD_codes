@@ -404,7 +404,7 @@ static void MakeVectorFieldCanvas(TDirectory* taskDir, TDirectory* outDir, const
     c->cd(2);
     gPad->SetLeftMargin(0.10); gPad->SetRightMargin(0.16); gPad->SetTopMargin(0.08); gPad->SetBottomMargin(0.10);
     hPyZX->GetZaxis()->SetTitleOffset(1.5);
-    DrawVectorFieldPanel(hPxZX, hPzZX, hPyZX, " ;p_{z}^{#Lambda} [GeV/c];p_{x}^{#Lambda} [GeV/c];<P*_{y}> [%]");
+    DrawVectorFieldPanel(hPzZX, hPxZX, hPyZX, " ;p_{z}^{#Lambda} [GeV/c];p_{x}^{#Lambda} [GeV/c];<P*_{y}> [%]");
     AddLabel(0.5, 0.95, "Z-X plane", 0.045, 22);
 
     c->cd(0);
