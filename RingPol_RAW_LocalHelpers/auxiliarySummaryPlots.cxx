@@ -39,13 +39,13 @@ struct VariationConfig {
     int color;
     int lineStyle;
     int markerStyle;
-    bool isBase;             // Flag to indicate if this is the main, thick black line
+    bool isData;             // Flag to indicate if this is the main, thick black line
 };
 
 // Represents a full family (Lambda, AntiLambda, Both) and its associated variations
 struct FamilyConfig {
     std::string familyName;                 // e.g., "Lambda"
-    std::string baseSuffix;                 // e.g., "JustLambda"
+    std::string dataSuffix;                 // e.g., "JustLambda"
 };
 
 // Represents the different 1D TProfiles we want to extract from the files
@@ -138,42 +138,42 @@ TH1D* FoldProfile(TProfile* pIn, const std::string& newName) {
 }
 
 // ---------------------------------------------------------
-// Helper 1.2: Subtract Profiles (Base - Systematics)
+// Helper 1.2: Subtract Profiles (Data - Systematics)
 // ---------------------------------------------------------
 // (Also handles binning mismatches appropriately)
-TH1D* SubtractProfiles(TH1* pBase, TH1* pSys, const std::string& newName) {
-    if (!pBase || !pSys) return nullptr;
+TH1D* SubtractProfiles(TH1* pData, TH1* pSys, const std::string& newName) {
+    if (!pData || !pSys) return nullptr;
     
-    // Safely clone the base binning structure
+    // Safely clone the data binning structure
     TH1D* hSub = nullptr;
-    if (auto pBaseProf = dynamic_cast<TProfile*>(pBase)) {
-        hSub = pBaseProf->ProjectionX(newName.c_str());
+    if (auto pDataProf = dynamic_cast<TProfile*>(pData)) {
+        hSub = pDataProf->ProjectionX(newName.c_str());
     } else {
-        hSub = (TH1D*)pBase->Clone(newName.c_str());
+        hSub = (TH1D*)pData->Clone(newName.c_str());
     }
     hSub->Reset(); // Clear original contents and errors
     
     // Verify if the binning structures are identical
-    bool binningMatches = (pBase->GetNbinsX() == pSys->GetNbinsX() &&
-                           std::abs(pBase->GetXaxis()->GetXmin() - pSys->GetXaxis()->GetXmin()) < 1e-6 &&
-                           std::abs(pBase->GetXaxis()->GetXmax() - pSys->GetXaxis()->GetXmax()) < 1e-6);
+    bool binningMatches = (pData->GetNbinsX() == pSys->GetNbinsX() &&
+                           std::abs(pData->GetXaxis()->GetXmin() - pSys->GetXaxis()->GetXmin()) < 1e-6 &&
+                           std::abs(pData->GetXaxis()->GetXmax() - pSys->GetXaxis()->GetXmax()) < 1e-6);
     
     for (int i = 1; i <= hSub->GetNbinsX(); ++i) {
-        double xCenter = pBase->GetXaxis()->GetBinCenter(i);
-        double vBase = pBase->GetBinContent(i);
-        double eBase = pBase->GetBinError(i);
+        double xCenter = pData->GetXaxis()->GetBinCenter(i);
+        double vData = pData->GetBinContent(i);
+        double eData = pData->GetBinError(i);
         
         double vSys = 0.0;
         double eSys = 0.0;
-        bool sysHasData = false;
+        bool sysHasInfo = false;
 
         if (binningMatches) { // Safe bin-by-bin alignment case
             vSys = pSys->GetBinContent(i);
             eSys = pSys->GetBinError(i);
-            sysHasData = (eSys > 1e-9 || std::abs(vSys) > 1e-9 || (dynamic_cast<TProfile*>(pSys) && ((TProfile*)pSys)->GetBinEntries(i) > 0));
+            sysHasInfo = (eSys > 1e-9 || std::abs(vSys) > 1e-9 || (dynamic_cast<TProfile*>(pSys) && ((TProfile*)pSys)->GetBinEntries(i) > 0));
         } else {
             // Binning mismatch (e.g., Toy Model)! 
-            // Protect boundaries: Only evaluate if the base bin center falls within the systematic axis range
+            // Protect boundaries: Only evaluate if the data bin center falls within the systematic axis range
             if (xCenter >= pSys->GetXaxis()->GetXmin() && xCenter <= pSys->GetXaxis()->GetXmax()) {
                 vSys = pSys->Interpolate(xCenter); // A very convenient function in TProfiles! This allows for 
                 
@@ -182,15 +182,15 @@ TH1D* SubtractProfiles(TH1* pBase, TH1* pSys, const std::string& newName) {
                 // in the sense that we could have binned everything consistently, but this works as a good approximation)
                 int closestBin = pSys->FindBin(xCenter);
                 eSys = pSys->GetBinError(closestBin);
-                sysHasData = true; 
+                sysHasInfo = true; 
             }
         }
         
-        bool baseHasData = (eBase > 1e-9 || std::abs(vBase) > 1e-9 || (dynamic_cast<TProfile*>(pBase) && ((TProfile*)pBase)->GetBinEntries(i) > 0));
+        bool dataHasInfo = (eData > 1e-9 || std::abs(vData) > 1e-9 || (dynamic_cast<TProfile*>(pData) && ((TProfile*)pData)->GetBinEntries(i) > 0));
         
-        if (baseHasData && sysHasData) {
-            hSub->SetBinContent(i, vBase - vSys);
-            hSub->SetBinError(i, std::sqrt(eBase*eBase + eSys*eSys));
+        if (dataHasInfo && sysHasInfo) {
+            hSub->SetBinContent(i, vData - vSys);
+            hSub->SetBinError(i, std::sqrt(eData*eData + eSys*eSys));
         } else {
             hSub->SetBinContent(i, 0.0);
             hSub->SetBinError(i, 0.0);
@@ -346,8 +346,8 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
     frame->GetYaxis()->SetTitleSize(0.045);
 
     // 4. Style everything and populate the legend first
-    ProfileBundle baseBundle;
-    bool hasBase = false;
+    ProfileBundle dataBundle;
+    bool hasData = false;
 
     for (auto& bundle : bundles) {
         TH1* p = bundle.profile;
@@ -357,27 +357,27 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
         p->SetLineStyle(bundle.config.lineStyle);
         p->SetMarkerStyle(bundle.config.markerStyle);
 
-        if (bundle.config.isBase) {
-            p->SetLineWidth(3); // Thick line for the baseline
-            baseBundle = bundle;
-            hasBase = true;
+        if (bundle.config.isData) {
+            p->SetLineWidth(3); // Thick line for the data
+            dataBundle = bundle;
+            hasData = true;
         } else {
             p->SetLineWidth(1); // Standard width for systematics
         }
         
-        // Add to legend (Baseline will be added first assuming it's passed first in the vector)
+        // Add to legend (Data will be added first assuming it's passed first in the vector)
         leg->AddEntry(p, bundle.config.legendLabel.c_str(), "pe");
     }
 
-    // 5. Draw the profiles (Systematics first, then Baseline on top)
+    // 5. Draw the profiles (Systematics first, then Data on top)
     for (auto& bundle : bundles) {
-        if (!bundle.config.isBase) {
+        if (!bundle.config.isData) {
             bundle.profile->Draw("PE SAME");
         }
     }
     
-    if (hasBase) { // Drawing the baseline after all others
-        baseBundle.profile->Draw("PE SAME");
+    if (hasData) { // Drawing the data after all others
+        dataBundle.profile->Draw("PE SAME");
     }
 
     leg->Draw();
@@ -456,7 +456,7 @@ void DrawIntegratedCanvas(const std::vector<ProfileBundle>& bundles,
         p->SetMarkerColor(bundle.config.color);
         p->SetLineStyle(bundle.config.lineStyle);
         p->SetMarkerStyle(bundle.config.markerStyle);
-        p->SetLineWidth(bundle.config.isBase ? 3 : 2);
+        p->SetLineWidth(bundle.config.isData ? 3 : 2);
         p->SetMarkerSize(1.5);
         p->Draw("PE SAME");
     }
@@ -470,7 +470,7 @@ void DrawIntegratedCanvas(const std::vector<ProfileBundle>& bundles,
     // Drawing an extra legend that adds the systematic variation description as legend instead
     // of relying only on the x-axis:
         // This is not a problem for plots such as the Integrated_summary folder's, where the X
-        // axis actually explains if we are dealing with randJets, datalike estimators, baseline
+        // axis actually explains if we are dealing with randJets, datalike estimators, data
         // estimators, perpToJet, ..., but not for the "brute force" plot where the X axis actually
         // indicates if a given observable was calculated using the FastJet's output, the 2nd highest
         // pT jet from FastJet, or the leading particle! This information has to be in a legend!
@@ -499,21 +499,32 @@ void DrawIntegratedCanvas(const std::vector<ProfileBundle>& bundles,
 void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mcRefDir = "", const std::string& ppRefDir = "", const std::string& toyModelPath = "") {
     
     // 1. Define Systematic Variations (the list of all useful variations I would like to track into this plot)
-    // The base config (empty suffix) is handled separately in the logic to ensure it is always first
+    // The data config (empty suffix) is handled separately in the logic to ensure it is always first
     std::vector<VariationConfig> sysVariations = {
         {"_forceRandJet",                 "Rand Jet",                  kBlue,     1, 20, false}, // Full circle
         {"_forceDatalikeJet",             "Data-like Jet",             kRed,      1, 21, false}, // Square
         {"_forceDatalikeJet_10resamples", "Data-like Jet (10 resam.)", kRed,      2, 25, false}, // Open square
         {"_forcePerpToJet",               "Perp to Jet",               kGreen+2,  1, 22, false}, // Triangle up
         {"_forcePerpToJet_10resamples",   "Perp to Jet (10 resam.)",   kGreen+2,  2, 26, false}, // Open triangle up
-        {"_forcePreviousJet",             "Prev Jet",                  kOrange+1, 1, 34, false}  // Full cross (bold "+")
+        {"_forcePreviousJet",             "Prev Jet",                  kOrange+1, 1, 34, false}, // Full cross (bold "+")
+        {"_MixedEventLeadP",              "MixedEv Lead P",            kGray+1,   1, 24, false}  // Open circle
     };
 
-    VariationConfig baseConfig = {"", "Baseline", kBlack,  1, 8, true}; // Thick black line. Thickness is controlled by the flag turned "true", essentially
+    VariationConfig dataConfig = {"", "Data", kBlack,  1, 8, true}; // Thick black line. Thickness is controlled by the flag turned "true", essentially
     VariationConfig mcConfig   = {"", "OO MC Base", kCyan+1, 2, 29, false}; // Full stars for MC, with a darker cyan type of color (see TColor and TAttMarker)
                                                                              // Kept line as dashed because MC error bars are (VERY!) large with current statistics
-    VariationConfig ppConfig   = {"", "pp Baseline", kAzure+2, 2, 47, false}; // X shape, something between blue and cyan
+    VariationConfig ppConfig   = {"", "pp Data", kAzure+2, 2, 47, false}; // X shape, something between blue and cyan
     VariationConfig toyConfig  = {"", "Toy Model", kViolet+1, 2, 33, false}; // Diamond shape, purple-ish
+
+    // Define Mass Selection Variations (treated as a separate standalone family to avoid polluting main plots)
+    // (We are essentially checking to see if the eta dependency of the ring, the integrated observables and the folded spectra
+    //  change whenever considering a ring observable calculated using particles strictly inside a mass window or strictly outside
+    //  that window, defined by the v0InMassPeak bool in the consumer)
+        // This is a naive alternative to signal extraction!
+    std::vector<VariationConfig> massVariations = {
+        {"_excludeOutOfPeak", "In Mass Peak",     kTeal+3,    1, 34, false}, // Cross
+        {"_excludeInPeak",    "Out Of Mass Peak", kMagenta+2, 1, 23, false}  // Down triangle
+    };
 
     // 2. Define the Families
     std::vector<FamilyConfig> families = {
@@ -555,7 +566,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
 
         // Variables to accumulate the integrated observable summary across all variations for this family
         // (a "grand summary" for short)
-        std::vector<std::pair<double, double>> grandBaseVals;
+        std::vector<std::pair<double, double>> grandDataVals;
         std::vector<std::pair<double, double>> grandMCVals;
         std::vector<std::pair<double, double>> grandPPVals;
         std::vector<std::pair<double, double>> grandToyVals;
@@ -567,20 +578,20 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
             // Create a subdirectory for the observable to keep things extremely tidy
             TDirectory* obsDir = famDir->mkdir(profConfig.profileName.c_str());
 
-            // Fetch Baseline Data
-            std::string baseFile = consumerDir + "/ConsumerResults_" + fam.baseSuffix + ".root";
-            TProfile* pBase = GetProfile(baseFile, profConfig.profileName);
-            if (!pBase) continue; // Skip to next observable if baseline is missing
+            // Fetch Data:
+            std::string dataFile = consumerDir + "/ConsumerResults_" + fam.dataSuffix + ".root";
+            TProfile* pData = GetProfile(dataFile, profConfig.profileName);
+            if (!pData) continue; // Skip to next observable if data is missing
 
             // Fetch Systematics Data
             std::vector<ProfileBundle> allSystematics;
-            allSystematics.push_back({pBase, baseConfig}); // Always keep baseline at index 0 (it is the very first thing in this array)
+            allSystematics.push_back({pData, dataConfig}); // Always keep data at index 0 (it is the very first thing in this array)
             
             std::vector<TProfile*> profilesToDelete; // Track for memory cleanup
-            profilesToDelete.push_back(pBase);
+            profilesToDelete.push_back(pData);
 
             for (const auto& sys : sysVariations) {
-                std::string sysFile = consumerDir + "/ConsumerResults_" + fam.baseSuffix + sys.suffix + ".root";
+                std::string sysFile = consumerDir + "/ConsumerResults_" + fam.dataSuffix + sys.suffix + ".root";
                 TProfile* pSys = GetProfile(sysFile, profConfig.profileName);
                 if (pSys) {
                     allSystematics.push_back({pSys, sys});
@@ -588,18 +599,18 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
                 }
             }
 
-            // Fetch MC Baseline Data (if requested via non-null path)
+            // Fetch MC Base Data (if requested via non-null path)
             TProfile* pMC = nullptr;
             if (!mcRefDir.empty()) {
-                std::string mcFile = mcRefDir + "/ConsumerResults_" + fam.baseSuffix + ".root";
+                std::string mcFile = mcRefDir + "/ConsumerResults_" + fam.dataSuffix + ".root";
                 pMC = GetProfile(mcFile, profConfig.profileName);
                 if (pMC) profilesToDelete.push_back(pMC);
             }
 
-            // Fetch PP Baseline Data
+            // Fetch PP Data
             TProfile* pPP = nullptr;
             if (!ppRefDir.empty()) {
-                std::string ppFile = ppRefDir + "/ConsumerResults_" + fam.baseSuffix + ".root";
+                std::string ppFile = ppRefDir + "/ConsumerResults_" + fam.dataSuffix + ".root";
                 pPP = GetProfile(ppFile, profConfig.profileName);
                 if (pPP) profilesToDelete.push_back(pPP);
             }
@@ -609,6 +620,19 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
             if (!toyModelPath.empty()) {
                 pToy = GetToyModelProfile(toyModelPath, profConfig.profileName);
                 if (pToy) profilesToDelete.push_back(pToy);
+            }
+
+            // Fetch Mass Selection Data
+            std::vector<ProfileBundle> allMassSystematics;
+            allMassSystematics.push_back({pData, dataConfig}); // Keep data as baseline
+            
+            for (const auto& mass : massVariations) {
+                std::string massFile = consumerDir + "/ConsumerResults_" + fam.dataSuffix + mass.suffix + ".root";
+                TProfile* pMass = GetProfile(massFile, profConfig.profileName);
+                if (pMass) {
+                    allMassSystematics.push_back({pMass, mass});
+                    profilesToDelete.push_back(pMass); // Track for standard cleanup
+                }
             }
 
             // ---------------------------------------------------------
@@ -645,29 +669,39 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
                 foldedToDelete.push_back(pToyFolded);
             }
 
+            // Fold Mass Selection Data
+            std::vector<ProfileBundle> allFoldedMass;
+            for (const auto& bundle : allMassSystematics) {
+                TProfile* pOrig = dynamic_cast<TProfile*>(bundle.profile);
+                std::string foldName = std::string(pOrig->GetName()) + "_Folded_" + bundle.config.suffix;
+                TH1D* pFolded = FoldProfile(pOrig, foldName);
+                allFoldedMass.push_back({pFolded, bundle.config});
+                foldedToDelete.push_back(pFolded);
+            }
+
             // Creating the Modulus X-Axis title (e.g. |#eta_{LeadP}|)
             std::string foldedXTitle = "|" + profConfig.xAxisTitle + "|";
 
             // ---------------------------------------------------------
-            // SUBTRACTING THE DATA (Baseline - Variations)
+            // SUBTRACTING THE DATA (Data - Variations)
             // ---------------------------------------------------------
             std::vector<ProfileBundle> allSubtractedSystematics;
             std::vector<TH1*> subtractedToDelete;
 
-                // Create a zero-line reference for the Baseline bundle (could have made this into just a true vertical line,
+                // Create a zero-line reference for the Data bundle (could have made this into just a true vertical line,
             // but in this implementation we actually get some points in the plot, which could look better)
-            TH1D* pBaseZero = SubtractProfiles(pBase, pBase, std::string(pBase->GetName()) + "_Subtracted_Base");
-            // Force errors to 0 so the baseline acts purely as a flat reference line
-            for (int i = 1; i <= pBaseZero->GetNbinsX(); ++i) pBaseZero->SetBinError(i, 0.0);
+            TH1D* pDataZero = SubtractProfiles(pData, pData, std::string(pData->GetName()) + "_Subtracted_Data");
+            // Force errors to 0 so the data acts purely as a flat reference line
+            for (int i = 1; i <= pDataZero->GetNbinsX(); ++i) pDataZero->SetBinError(i, 0.0);
             
-            allSubtractedSystematics.push_back({pBaseZero, baseConfig});
-            subtractedToDelete.push_back(pBaseZero);
+            allSubtractedSystematics.push_back({pDataZero, dataConfig});
+            subtractedToDelete.push_back(pDataZero);
 
-                // Subtract systematics (start loop at 1 to skip the baseline itself)
+                // Subtract systematics (start loop at 1 to skip the data itself)
             for (size_t i = 1; i < allSystematics.size(); ++i) {
                 const auto& bundle = allSystematics[i];
-                std::string subName = std::string(pBase->GetName()) + "_Subtracted_" + bundle.config.suffix;
-                TH1D* pSub = SubtractProfiles(pBase, bundle.profile, subName);
+                std::string subName = std::string(pData->GetName()) + "_Subtracted_" + bundle.config.suffix;
+                TH1D* pSub = SubtractProfiles(pData, bundle.profile, subName);
                 
                 allSubtractedSystematics.push_back({pSub, bundle.config});
                 subtractedToDelete.push_back(pSub);
@@ -676,45 +710,57 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
                 // Subtract MC
             TH1D* pMCSubtracted = nullptr;
             if (pMC) {
-                pMCSubtracted = SubtractProfiles(pBase, pMC, std::string(pMC->GetName()) + "_Subtracted_MC");
+                pMCSubtracted = SubtractProfiles(pData, pMC, std::string(pMC->GetName()) + "_Subtracted_MC");
                 subtractedToDelete.push_back(pMCSubtracted);
             }
 
                 // Same for pp data:
             TH1D* pPPSubtracted = nullptr;
             if (pPP) {
-                pPPSubtracted = SubtractProfiles(pBase, pPP, std::string(pPP->GetName()) + "_Subtracted_PP");
+                pPPSubtracted = SubtractProfiles(pData, pPP, std::string(pPP->GetName()) + "_Subtracted_PP");
                 subtractedToDelete.push_back(pPPSubtracted);
             }
 
                 // Subtract for Toy Model
             TH1D* pToySubtracted = nullptr;
             if (pToy) {
-                pToySubtracted = SubtractProfiles(pBase, pToy, std::string(pToy->GetName()) + "_Subtracted_Toy");
+                pToySubtracted = SubtractProfiles(pData, pToy, std::string(pToy->GetName()) + "_Subtracted_Toy");
                 subtractedToDelete.push_back(pToySubtracted);
             }
 
+                // Subtract Mass Selection Data
+            std::vector<ProfileBundle> allSubtractedMass;
+            allSubtractedMass.push_back({pDataZero, dataConfig}); // Re-use the existing zero-line reference
+            
+            for (size_t i = 1; i < allMassSystematics.size(); ++i) {
+                const auto& bundle = allMassSystematics[i];
+                std::string subName = std::string(pData->GetName()) + "_Subtracted_" + bundle.config.suffix;
+                TH1D* pSub = SubtractProfiles(pData, bundle.profile, subName);
+                allSubtractedMass.push_back({pSub, bundle.config});
+                subtractedToDelete.push_back(pSub);
+            }
+
             // Creating the Y-Axis title for the difference plots
-            std::string subYTitle = "#Delta" + profConfig.yAxisTitle + " (Base - Var)";
+            std::string subYTitle = "#Delta" + profConfig.yAxisTitle + " (Data - Var)";
 
             // ---------------------------------------------------------
             // DRAWING THE VARIATIONS
             // ---------------------------------------------------------
             
             // --- 1. Standard (Unfolded) Plots ---
-                // Variation 1: Baseline Only
-            DrawComparisonCanvas({{pBase, baseConfig}}, "Canvas_BaselineOnly", fam.familyName + " Baseline", obsDir, profConfig);
-                // Variation 2: Systematics (+ Baseline)
+                // Variation 1: Data Only
+            DrawComparisonCanvas({{pData, dataConfig}}, "Canvas_DataOnly", fam.familyName + " Data", obsDir, profConfig);
+                // Variation 2: Systematics (+ Data)
             DrawComparisonCanvas(allSystematics, "Canvas_Systematics", fam.familyName + " Systematics", obsDir, profConfig);
                 // Variation 3: MC Only (if available)
             std::vector<ProfileBundle> allInOne = allSystematics;
             if (pMC) {
-                DrawComparisonCanvas({{pMC, mcConfig}}, "Canvas_MCOnly", fam.familyName + " MC Baseline", obsDir, profConfig);
+                DrawComparisonCanvas({{pMC, mcConfig}}, "Canvas_MCOnly", fam.familyName + " MC", obsDir, profConfig);
                 allInOne.push_back({pMC, mcConfig});
             }
-                // Variation 4: pp data baseline (if available)
+                // Variation 4: pp data data (if available)
             if (pPP) {
-                DrawComparisonCanvas({{pPP, ppConfig}}, "Canvas_PPOnly", fam.familyName + " PP Baseline", obsDir, profConfig);
+                DrawComparisonCanvas({{pPP, ppConfig}}, "Canvas_PPOnly", fam.familyName + " PP Data", obsDir, profConfig);
                 allInOne.push_back({pPP, ppConfig});
             }
                 // Variation 5: Toy Model Only (if available)
@@ -728,7 +774,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
             }
 
             // --- 2. Folded Plots ---
-            DrawComparisonCanvas({allFoldedSystematics[0]}, "Canvas_Folded_BaselineOnly", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Baseline", obsDir, profConfig, foldedXTitle);
+            DrawComparisonCanvas({allFoldedSystematics[0]}, "Canvas_Folded_DataOnly", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Data", obsDir, profConfig, foldedXTitle);
             DrawComparisonCanvas(allFoldedSystematics, "Canvas_Folded_Systematics", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Systematics", obsDir, profConfig, foldedXTitle);
             std::vector<ProfileBundle> allInOneFolded = allFoldedSystematics; // For folded plots tracking
             if (pMCFolded) {
@@ -747,23 +793,23 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
                 DrawComparisonCanvas(allInOneFolded, "Canvas_Folded_AllInOne", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Comparisons", obsDir, profConfig, foldedXTitle);
             }
 
-            // --- 3. Subtracted Baseline - Systematics ---
-                // Baseline minus Data Systematics
+            // --- 3. Subtracted Data - Systematics ---
+                // Data minus Data Systematics
             DrawComparisonCanvas(allSubtractedSystematics, "Canvas_Subtracted_Systematics", fam.familyName + " Systematics Difference", obsDir, profConfig, "", subYTitle);
-                // Baseline minus MC Only
+                // Data minus MC Only
             std::vector<ProfileBundle> allInOneSubtracted = allSubtractedSystematics;
             if (pMCSubtracted) {
-                DrawComparisonCanvas({{pBaseZero, baseConfig}, {pMCSubtracted, mcConfig}}, "Canvas_Subtracted_MCOnly", fam.familyName + " MC Difference", obsDir, profConfig, "", subYTitle);
+                DrawComparisonCanvas({{pDataZero, dataConfig}, {pMCSubtracted, mcConfig}}, "Canvas_Subtracted_MCOnly", fam.familyName + " MC Difference", obsDir, profConfig, "", subYTitle);
                 allInOneSubtracted.push_back({pMCSubtracted, mcConfig});
             }
-                // Baseline minus pp data
+                // Data minus pp data
             if (pPPSubtracted) {
-                DrawComparisonCanvas({{pBaseZero, baseConfig}, {pPPSubtracted, ppConfig}}, "Canvas_Subtracted_PPOnly", fam.familyName + " PP Difference", obsDir, profConfig, "", subYTitle);
+                DrawComparisonCanvas({{pDataZero, dataConfig}, {pPPSubtracted, ppConfig}}, "Canvas_Subtracted_PPOnly", fam.familyName + " PP Difference", obsDir, profConfig, "", subYTitle);
                 allInOneSubtracted.push_back({pPPSubtracted, ppConfig});
             }
-                // Baseline minus Toy Model Only
+                // Data minus Toy Model Only
             if (pToySubtracted) {
-                DrawComparisonCanvas({{pBaseZero, baseConfig}, {pToySubtracted, toyConfig}}, "Canvas_Subtracted_ToyOnly", fam.familyName + " Toy Difference", obsDir, profConfig, "", subYTitle);
+                DrawComparisonCanvas({{pDataZero, dataConfig}, {pToySubtracted, toyConfig}}, "Canvas_Subtracted_ToyOnly", fam.familyName + " Toy Difference", obsDir, profConfig, "", subYTitle);
                 allInOneSubtracted.push_back({pToySubtracted, toyConfig});
             }
                 // All-In-One
@@ -771,18 +817,30 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
                 DrawComparisonCanvas(allInOneSubtracted, "Canvas_Subtracted_AllInOne", fam.familyName + " All Comparisons Difference", obsDir, profConfig, "", subYTitle);
             }
 
+            // --- Mass Selection Proxy Plots ---
+            if (allMassSystematics.size() > 1) { // Only draw if mass files were found
+                TDirectory* massDir = obsDir->mkdir("Mass_Selection");
+                
+                // Standard
+                DrawComparisonCanvas(allMassSystematics, "Canvas_MassSelection", fam.familyName + " Mass Selection", massDir, profConfig);
+                // Folded
+                DrawComparisonCanvas(allFoldedMass, "Canvas_Folded_MassSelection", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Mass Selection", massDir, profConfig, foldedXTitle);
+                // Subtracted
+                DrawComparisonCanvas(allSubtractedMass, "Canvas_Subtracted_MassSelection", fam.familyName + " Mass Selection Difference", massDir, profConfig, "", subYTitle);
+            }
+
             // --- 4. Individual Comparisons (One-by-One) ---
             // (condensed all of this into a single block of code because the loops become cleaner!)
                 // Create a sub-directory specifically for the individual comparisons to keep things organized
             TDirectory* indivDir = obsDir->mkdir("Individual_Comparisons");
 
-            // Loop through all variations (starting at i = 1 to skip the baseline comparing against itself)
+            // Loop through all variations (starting at i = 1 to skip the data comparing against itself)
             for (size_t i = 1; i < allSystematics.size(); ++i) {
                 std::string sysLabel = allSystematics[i].config.legendLabel;
                 std::string sysSuffix = allSystematics[i].config.suffix; // e.g., "_forceDatalikeJet"
 
                 // Standard
-                DrawComparisonCanvas({allSystematics[0], allSystematics[i]}, "Canvas_Standard" + sysSuffix, fam.familyName + " Baseline vs " + sysLabel, indivDir, profConfig);
+                DrawComparisonCanvas({allSystematics[0], allSystematics[i]}, "Canvas_Standard" + sysSuffix, fam.familyName + " Data vs " + sysLabel, indivDir, profConfig);
                 // Folded
                 DrawComparisonCanvas({allFoldedSystematics[0], allFoldedSystematics[i]}, "Canvas_Folded" + sysSuffix, fam.familyName + " Folded vs " + sysLabel, indivDir, profConfig, foldedXTitle);
                 // Subtracted
@@ -792,14 +850,14 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
             // Do the same for the MC reference, which was introduced separately
             if (pMC) {
                 // Standard
-                DrawComparisonCanvas({allSystematics[0], {pMC, mcConfig}}, "Canvas_Standard_MC", fam.familyName + " Baseline vs MC", indivDir, profConfig);
+                DrawComparisonCanvas({allSystematics[0], {pMC, mcConfig}}, "Canvas_Standard_MC", fam.familyName + " Data vs MC", indivDir, profConfig);
                 // Folded
                 DrawComparisonCanvas({allFoldedSystematics[0], {pMCFolded, mcConfig}}, "Canvas_Folded_MC", fam.familyName + " Folded vs MC", indivDir, profConfig, foldedXTitle);
                 // Subtracted
                 DrawComparisonCanvas({allSubtractedSystematics[0], {pMCSubtracted, mcConfig}}, "Canvas_Subtracted_MC", fam.familyName + " Difference vs MC", indivDir, profConfig, "", subYTitle);
             }
             if (pPP) {
-                DrawComparisonCanvas({allSystematics[0], {pPP, ppConfig}}, "Canvas_Standard_PP", fam.familyName + " Baseline vs PP", indivDir, profConfig);
+                DrawComparisonCanvas({allSystematics[0], {pPP, ppConfig}}, "Canvas_Standard_PP", fam.familyName + " Data vs PP", indivDir, profConfig);
                 DrawComparisonCanvas({allFoldedSystematics[0], {pPPFolded, ppConfig}}, "Canvas_Folded_PP", fam.familyName + " Folded vs PP", indivDir, profConfig, foldedXTitle);
                 DrawComparisonCanvas({allSubtractedSystematics[0], {pPPSubtracted, ppConfig}}, "Canvas_Subtracted_PP", fam.familyName + " Difference vs PP", indivDir, profConfig, "", subYTitle);
             }
@@ -815,16 +873,16 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
 
             int numCats = allSystematics.size() + (pMC ? 1 : 0) + (pPP ? 1 : 0) + (pToy ? 1 : 0);
             
-                // Compute Integrated Baseline and save to Grand Summary
-            auto baseInteg = GetIntegratedProfile(pBase);
-            grandBaseVals.push_back(baseInteg);
+                // Compute Integrated Data and save to Grand Summary
+            auto dataInteg = GetIntegratedProfile(pData);
+            grandDataVals.push_back(dataInteg);
             grandLabels.push_back(profConfig.xAxisTitle);
             if (pMC) grandMCVals.push_back(GetIntegratedProfile(pMC));
             if (pPP) grandPPVals.push_back(GetIntegratedProfile(pPP));
             if (pToy) grandToyVals.push_back(GetIntegratedProfile(pToy));
 
             // Populate the grand summary for systematics
-            // (allSystematics[0] is the baseline, so sysVariations[i] corresponds to allSystematics[i+1])
+            // (allSystematics[0] is the data, so sysVariations[i] corresponds to allSystematics[i+1])
             for (size_t i = 0; i < sysVariations.size(); ++i) {
                 if (i + 1 < allSystematics.size()) {
                     auto sysInteg = GetIntegratedProfile(dynamic_cast<TProfile*>(allSystematics[i+1].profile));
@@ -849,8 +907,8 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
                     hIntSub->SetBinContent(i + 1, 0.0);
                     hIntSub->SetBinError(i + 1, 0.0);
                 } else {
-                    hIntSub->SetBinContent(i + 1, baseInteg.first - integ.first);
-                    hIntSub->SetBinError(i + 1, std::sqrt(baseInteg.second*baseInteg.second + integ.second*integ.second));
+                    hIntSub->SetBinContent(i + 1, dataInteg.first - integ.first);
+                    hIntSub->SetBinError(i + 1, std::sqrt(dataInteg.second*dataInteg.second + integ.second*integ.second));
                 }
 
                 integBundles.push_back({hInt, allSystematics[i].config});
@@ -870,8 +928,8 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
                 hIntMC->SetBinError(idx + 1, integMC.second);
                 
                 TH1D* hIntSubMC = new TH1D("IntegSub_MC", "", numCats, 0, numCats);
-                hIntSubMC->SetBinContent(idx + 1, baseInteg.first - integMC.first);
-                hIntSubMC->SetBinError(idx + 1, std::sqrt(baseInteg.second*baseInteg.second + integMC.second*integMC.second));
+                hIntSubMC->SetBinContent(idx + 1, dataInteg.first - integMC.first);
+                hIntSubMC->SetBinError(idx + 1, std::sqrt(dataInteg.second*dataInteg.second + integMC.second*integMC.second));
                 
                 integBundles.push_back({hIntMC, mcConfig});
                 integSubBundles.push_back({hIntSubMC, mcConfig});
@@ -889,8 +947,8 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
                 hIntPP->SetBinError(idx + 1, integPP.second);
                 
                 TH1D* hIntSubPP = new TH1D("IntegSub_PP", "", numCats, 0, numCats);
-                hIntSubPP->SetBinContent(idx + 1, baseInteg.first - integPP.first);
-                hIntSubPP->SetBinError(idx + 1, std::sqrt(baseInteg.second*baseInteg.second + integPP.second*integPP.second));
+                hIntSubPP->SetBinContent(idx + 1, dataInteg.first - integPP.first);
+                hIntSubPP->SetBinError(idx + 1, std::sqrt(dataInteg.second*dataInteg.second + integPP.second*integPP.second));
                 
                 integBundles.push_back({hIntPP, ppConfig});
                 integSubBundles.push_back({hIntSubPP, ppConfig});
@@ -908,8 +966,8 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
                 hIntToy->SetBinError(idx + 1, integToy.second);
                 
                 TH1D* hIntSubToy = new TH1D("IntegSub_Toy", "", numCats, 0, numCats);
-                hIntSubToy->SetBinContent(idx + 1, baseInteg.first - integToy.first);
-                hIntSubToy->SetBinError(idx + 1, std::sqrt(baseInteg.second*baseInteg.second + integToy.second*integToy.second));
+                hIntSubToy->SetBinContent(idx + 1, dataInteg.first - integToy.first);
+                hIntSubToy->SetBinError(idx + 1, std::sqrt(dataInteg.second*dataInteg.second + integToy.second*integToy.second));
                 
                 integBundles.push_back({hIntToy, toyConfig});
                 integSubBundles.push_back({hIntSubToy, toyConfig});
@@ -919,17 +977,54 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
 
             // 4. Draw them using the custom categorical plotter
             DrawIntegratedCanvas(integBundles, integLabels, "Canvas_Integrated", fam.familyName + " Integrated Summary", integDir, "Integrated " + profConfig.yAxisTitle, false);
-            DrawIntegratedCanvas(integSubBundles, integLabels, "Canvas_Integrated_Subtracted", fam.familyName + " Integrated Differences", integDir, "#Delta" + profConfig.yAxisTitle + " (Base - Var)", true);
-            
-            for (auto p : integToDelete) delete p;
+            DrawIntegratedCanvas(integSubBundles, integLabels, "Canvas_Integrated_Subtracted", fam.familyName + " Integrated Differences", integDir, "#Delta" + profConfig.yAxisTitle + " (Data - Var)", true);
+
+            // 5. Draw Mass Selection Integrated Summaries
+            if (allMassSystematics.size() > 1) {
+                std::vector<std::string> massIntegLabels;
+                std::vector<ProfileBundle> massIntegBundles;
+                std::vector<ProfileBundle> massIntegSubBundles;
+                int numMassCats = allMassSystematics.size();
+                
+                for (size_t i = 0; i < allMassSystematics.size(); ++i) {
+                    massIntegLabels.push_back(allMassSystematics[i].config.legendLabel);
+                    auto integ = GetIntegratedProfile(dynamic_cast<TProfile*>(allMassSystematics[i].profile));
+                    
+                    TH1D* hInt = new TH1D(Form("MassInteg_%zu", i), "", numMassCats, 0, numMassCats);
+                    hInt->SetBinContent(i + 1, integ.first);
+                    hInt->SetBinError(i + 1, integ.second);
+                    
+                    TH1D* hIntSub = new TH1D(Form("MassIntegSub_%zu", i), "", numMassCats, 0, numMassCats);
+                    if (i == 0) {
+                        hIntSub->SetBinContent(i + 1, 0.0);
+                        hIntSub->SetBinError(i + 1, 0.0);
+                    } else {
+                        hIntSub->SetBinContent(i + 1, dataInteg.first - integ.first);
+                        hIntSub->SetBinError(i + 1, std::sqrt(dataInteg.second*dataInteg.second + integ.second*integ.second));
+                    }
+                    
+                    massIntegBundles.push_back({hInt, allMassSystematics[i].config});
+                    massIntegSubBundles.push_back({hIntSub, allMassSystematics[i].config});
+                    
+                    integToDelete.push_back(hInt);     // Now safely in scope!
+                    integToDelete.push_back(hIntSub);
+                }
+                
+                TDirectory* massDir = (TDirectory*)obsDir->Get("Mass_Selection");
+                if (massDir) {
+                    DrawIntegratedCanvas(massIntegBundles, massIntegLabels, "Canvas_Integrated_MassSelection", fam.familyName + " Mass Selection Integrated", massDir, "Integrated " + profConfig.yAxisTitle, false);
+                    DrawIntegratedCanvas(massIntegSubBundles, massIntegLabels, "Canvas_Integrated_Subtracted_MassSelection", fam.familyName + " Mass Selection Integrated Differences", massDir, "#Delta" + profConfig.yAxisTitle + " (Data - Var)", true);
+                }
+            }
 
             // Cleanup dynamically allocated profiles for this observable iteration
+            for (auto p : integToDelete) delete p;
             for (auto p : profilesToDelete) delete p;
             for (auto p : foldedToDelete) delete p;
             for (auto p : subtractedToDelete) delete p;
         } // end of profiles loop, inside families loop
 
-        // --- 6. Integrated observable Summary (Observable in each variation vs Observable for Baseline) ---
+        // --- 6. Integrated observable Summary (Observable in each variation vs Observable for Data) ---
         // Comparing eta_Jet and eta_Lambda integrations is a way of probing if there were any overflows/underflows
         // and the such (there were! I then modified the eta axis range in the consumer, so this was a good catch!
         // The single-bin integrated observables from other scripts were impervious to this problem though, so good news!),
@@ -939,14 +1034,14 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
             std::vector<ProfileBundle> grandBundles;
             std::vector<TH1*> grandToDelete; // For memory cleanup
             
-            // Add Baseline
-            TH1D* hGrandBase = new TH1D("GrandBase", "", nGrand, 0, nGrand);
+            // Add Data
+            TH1D* hGrandData = new TH1D("GrandData", "", nGrand, 0, nGrand);
             for(int i = 0; i < nGrand; ++i) {
-                hGrandBase->SetBinContent(i + 1, grandBaseVals[i].first);
-                hGrandBase->SetBinError(i + 1, grandBaseVals[i].second);
+                hGrandData->SetBinContent(i + 1, grandDataVals[i].first);
+                hGrandData->SetBinError(i + 1, grandDataVals[i].second);
             }
-            grandBundles.push_back({hGrandBase, baseConfig});
-            grandToDelete.push_back(hGrandBase);
+            grandBundles.push_back({hGrandData, dataConfig});
+            grandToDelete.push_back(hGrandData);
 
             // Add All Systematics
             for (size_t sysIdx = 0; sysIdx < sysVariations.size(); ++sysIdx) {
@@ -972,7 +1067,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
                 grandToDelete.push_back(hGrandMC);
             }
 
-            // Add pp data baseline (if available)
+            // Add pp data data (if available)
             if (!ppRefDir.empty() && grandPPVals.size() == (size_t)nGrand) { 
                 TH1D* hGrandPP = new TH1D("GrandPP", "", nGrand, 0, nGrand);
                 for(int i = 0; i < nGrand; ++i) {

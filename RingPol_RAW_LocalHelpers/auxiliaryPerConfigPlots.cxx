@@ -29,17 +29,14 @@
 * ADDING A NEW SECTION: see the "ADD MORE POST-PROCESSING SECTIONS HERE" comment inside main() below.
 *
 * ON THE DUPLICATED DrawVectorFieldPanel():
-* DrawVectorFieldPanel() below is copied close to verbatim from
-* plotHelicityEfficiency.cxx (the toy-model plotter). This is a deliberate
-* choice: the toy-model plotter and this per-config post-processor are two independent workflows,
-* compiled and ran separately, and the function itself is small, self-contained, and should not
-* change that often. Sharing it via a common header would couple two otherwise-unrelated build targets
-* for little benefit. If it ever needs to diverge meaningfully or grows non-trivially, that is the
-* trigger to revisit and actually factor it out.
+* DrawVectorFieldPanel() below is copied close to verbatim from plotHelicityEfficiency.cxx (the toy-model plotter).
+* This is a deliberate choice: the toy-model plotter and this per-config post-processor are two independent workflows,
+* compiled and ran separately, and the function itself is small, self-contained, and should not change that often.
+* Sharing it via a common header would couple two otherwise-unrelated build targets for little benefit.
+* If it ever needs to diverge meaningfully or grows non-trivially, that is the trigger to revisit and actually factor it out.
 *
-* Usage mirrors makeCumulativeDCAdauProfile.cxx; compiled ahead-of-time
-* by run_all_wagons.sh, not invoked as a ROOT interpreted macro.
-* In case you do want to run it by hand, command would look like this:
+* Usage mirrors makeCumulativeDCAdauProfile.cxx; compiled ahead-of-time by run_all_wagons.sh, not invoked as a ROOT interpreted macro.
+* In case you do want to run it by hand anyways, command would look like this:
 *   ./auxiliaryPerConfigPlots.exe path/to/ConsumerResults_SUFFIX.root
 * ============================================================
 */
@@ -367,9 +364,6 @@ static const char* kTaskDir = "lambdajetpolarizationionsderived"; // My O2Physic
  *
  * Left panel (X-Y plane):  colormap = <P*_z> (out-of-plane), arrows = (<P*_x>, <P*_y>).
  * Right panel (Z-X plane): colormap = <P*_y> (out-of-plane), arrows sourced as
- * (hPxZX, hPzZX, hPyZX) -- this argument order matches the established
- * convention in plotHelicityEfficiency.cxx's own (pz,px)-plane calls; see
- * that file's DrawVectorFieldPanel() call sites.
  *
  * @param taskDir  Top-level task TDirectory ("lambdajetpolarizationionsderived").
  * @param outDir   Output sub-directory to write the canvas into.

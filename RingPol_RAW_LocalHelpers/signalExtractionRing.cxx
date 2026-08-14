@@ -1140,7 +1140,7 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
                 // Bins in the peak are independent, so errors add in quadrature:
             totNumErrSq += std::pow(hNumProj->GetBinError(jBin), 2);
         }
-        double errTotCounts = std::sqrt(totCountsErrSq);
+        // double errTotCounts = std::sqrt(totCountsErrSq); // Not used! "totCountsErrSq" is used directly instead.
 
         // --- STABILITY CHECK 3: Ensure there are actually any counts to divide by ---
         if (totCounts <= 0) {
