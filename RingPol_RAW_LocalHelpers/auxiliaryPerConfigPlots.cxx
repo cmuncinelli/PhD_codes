@@ -411,29 +411,37 @@ static void MakeVectorFieldCanvas(TDirectory* taskDir, TDirectory* outDir, const
 // ==========================================================================
 /**
  * @brief One canvas per folder: X-Y plane and Z-X plane ring-observable
- * COLZ maps, reading p2dRingObservableVsPxPy / p2dRingObservableVsPzPx
- * (booked directly under <folder>/, NOT under QA/). No arrow overlay is
- * needed here -- the ring observable is already a single scalar per
+ * COLZ maps. Can be reused for different proxies for jet (e.g., FastJet, Leading Particle)
+ * by passing appropriate histogram prefixes and titles.
+ * No arrow overlay is needed here -- the ring observable is already a single scalar per
  * candidate, so the COLZ background alone is the full result.
  *
- * @param taskDir  Top-level task TDirectory.
- * @param outDir   Output sub-directory to write the canvas into.
- * @param f        Folder to process (see kFolders).
+ * @param taskDir      Top-level task TDirectory.
+ * @param outDir       Output sub-directory to write the canvas into.
+ * @param f            Folder to process (see kFolders).
+ * @param histPrefix   Prefix of the histogram (e.g., "p2dRingObservable" or "p2dRingObservableLeadP").
+ * @param canvasPrefix Prefix for the generated canvas name.
+ * @param mainTitle    The main title displayed at the top of the canvas.
  */
 // ==========================================================================
-static void MakeRingObservable2DCanvas(TDirectory* taskDir, TDirectory* outDir, const FolderSpec& f)
+static void MakeRingObservable2DCanvas(TDirectory* taskDir, TDirectory* outDir, const FolderSpec& f, 
+                                       const char* histPrefix, const char* canvasPrefix, const char* mainTitle)
 {
     TDirectory* dir = GetDir(taskDir, f.name);
     if (!dir) { printf("WARNING: skipping ring-observable canvas for '%s' (folder missing)\n", f.name); return; }
 
-    TProfile2D* hXY = static_cast<TProfile2D*>(SafeGet(dir, "p2dRingObservableVsPxPy"));
-    TProfile2D* hZX = static_cast<TProfile2D*>(SafeGet(dir, "p2dRingObservableVsPzPx"));
+    TString histNameXY = Form("%sVsPxPy", histPrefix);
+    TString histNameZX = Form("%sVsPzPx", histPrefix);
+
+    TProfile2D* hXY = static_cast<TProfile2D*>(SafeGet(dir, histNameXY.Data()));
+    TProfile2D* hZX = static_cast<TProfile2D*>(SafeGet(dir, histNameZX.Data()));
+    
     if (!hXY || !hZX) {
-        printf("WARNING: skipping ring-observable canvas for '%s' (one or both histograms missing)\n", f.name);
+        printf("WARNING: skipping ring-observable canvas for '%s' (missing %s or %s)\n", f.name, histNameXY.Data(), histNameZX.Data());
         return;
     }
 
-    TCanvas* c = new TCanvas(Form("cRingObservable2D_%s", f.name), "", 1400, 650);
+    TCanvas* c = new TCanvas(Form("%s_%s", canvasPrefix, f.name), "", 1400, 650);
     c->Divide(2, 1, 0.005, 0.005);
 
     c->cd(1);
@@ -447,7 +455,7 @@ static void MakeRingObservable2DCanvas(TDirectory* taskDir, TDirectory* outDir, 
     AddLabel(0.5, 0.95, "Z-X plane", 0.045, 22);
 
     c->cd(0);
-    AddLabel(0.5, 0.98, Form("Ring observable <#it{R}>  --  %s", f.label), 0.032, 22);
+    AddLabel(0.5, 0.98, Form("%s  --  %s", mainTitle, f.label), 0.032, 22);
 
     WriteCanvas(c, outDir);
     delete c;
@@ -533,10 +541,15 @@ int main(int argc, char** argv)
     for (const auto& f : kFolders)
         MakeVectorFieldCanvas(taskDir, dirVectorField, f);
 
-    // 2. Ring-observable 2D scalar canvases (one per folder)
+    // 2. Ring-observable 2D scalar canvases (FastJet Proxy)
     std::cout << " -> Drawing ring-observable 2D canvases...\n";
     for (const auto& f : kFolders)
-        MakeRingObservable2DCanvas(taskDir, dirRingObs2D, f);
+        MakeRingObservable2DCanvas(taskDir, dirRingObs2D, f, "p2dRingObservable", "cRingObservable2D", "Ring observable <#it{R}>");
+
+    // 3. Ring-observable 2D scalar canvases (Leading Particle Proxy)
+    std::cout << " -> Drawing ring-observable (Leading Particle) 2D canvases...\n";
+    for (const auto& f : kFolders)
+        MakeRingObservable2DCanvas(taskDir, dirRingObs2D, f, "p2dRingObservableLeadP", "cRingObservableLeadP2D", "Ring observable <#it{R}>_{LeadP}");
 
     // ===========================================================
     // ADD MORE POST-PROCESSING SECTIONS HERE.

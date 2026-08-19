@@ -39,7 +39,7 @@
 # ==============================================================================
 # TUNING KNOBS
 # ==============================================================================
-FILES_PER_BATCH=80          # Number of AO2D files per batch. Reduce if DPL
+FILES_PER_BATCH=30          # Number of AO2D files per batch. Reduce if DPL
                             # still reports scheduling stalls on this machine.
 SHM_SIZE="64000000000"      # Shared memory: 64 GB
 MEM_RATE_LIMIT="12000000000" # AOD memory rate limit: 8 GB/s

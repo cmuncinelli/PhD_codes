@@ -507,7 +507,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
         {"_forcePerpToJet",               "Perp to Jet",               kGreen+2,  1, 22, false}, // Triangle up
         {"_forcePerpToJet_10resamples",   "Perp to Jet (10 resam.)",   kGreen+2,  2, 26, false}, // Open triangle up
         {"_forcePreviousJet",             "Prev Jet",                  kOrange+1, 1, 34, false}, // Full cross (bold "+")
-        {"_MixedEventLeadP",              "MixedEv Lead P",            kGray+1,   1, 24, false}  // Open circle
+        {"_MixedEventProxies",            "MixedEv Jet",               kGray+1,   1, 24, false}  // Open circle
     };
 
     VariationConfig dataConfig = {"", "Data", kBlack,  1, 8, true}; // Thick black line. Thickness is controlled by the flag turned "true", essentially

@@ -1,0 +1,3 @@
+Simply put, this folder contains some versions and partially implemented ideas I had when implementing my O2Physics codes. They are stored here instead of in a commit in the fork's saved tags because they never really reached production level.
+
+- The "CustomGroupingAttempt" file is one such case, where I tried an optimization proposed by Gianni but later found that it doesn't do much of a difference (it does reduce CPU time, "user" time, as per the output of `time` command, but total "real" time is ~1-3% larger).
