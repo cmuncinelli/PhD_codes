@@ -40,6 +40,8 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <utility>  // std::pair, used for the selection-flow chain segments
+#include <algorithm> // std::min, std::max
 #include <cmath>
 #include <filesystem> // To create output folder whenever it is not present
 
@@ -74,6 +76,27 @@
 namespace fs = std::filesystem;
 
 constexpr double lambdaPDGMassApprox = 1.11568; // Just for some fit initial guesses
+
+// ------------------------------------------------------------------------------------------------
+// V0 selection flow layout -- mirrors V0SelectionFlowCounter in the producer task.
+// CAUTION! If the selection order changes in the task, these must change here too.
+//
+//   x = 0 .. 30    generic V0 cuts, shared by both mass hypotheses  -> ROOT bins 1 .. 31
+//   x = 31 .. 41   Lambda-specific cuts                             -> ROOT bins 32 .. 42
+//   x = 42 .. 52   AntiLambda-specific cuts                         -> ROOT bins 43 .. 53
+//
+// Note that the producer's fill() writes BOTH h2dSelectionLambdaMass and h2dSelectionAntiLambdaMass
+// at every step, so each 2D histogram physically contains all 53 bins. But the two hypothesis
+// blocks are NOT nested in one another: a candidate goes down one branch or the other, and only the
+// generic block is a common ancestor of both. Reading the AntiLambda block out of the Lambda-mass
+// histogram (or vice versa) means looking at candidates selected under the wrong hypothesis, and
+// chaining across the branch boundary would break the nesting assumption that the retention
+// uncertainties rely on. Each species is therefore processed along its own chain:
+//   Lambda     : bins 1..31 then 32..42
+//   AntiLambda : bins 1..31 then 43..53   (the Lambda block is skipped entirely)
+// ------------------------------------------------------------------------------------------------
+constexpr int kNGenericV0Cuts = 31;  // Shared cuts, occupying ROOT bins 1 .. kNGenericV0Cuts
+constexpr int kNHypothesisCuts = 11; // Cuts per mass hypothesis, in one contiguous block each
 
 // ================================================================================================
 // ================================================================================================
@@ -1230,28 +1253,97 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
         // This is mathematically equivalent to the Bessel-corrected estimator but uses the
         // TProfile's properly propagated errors instead of the raw squared sum, which is
         // consistent with the corrected sideband errors.
-        double varR_peak = totNumErrSq / std::pow(totCounts, 2);
+        //
+        // IMPORTANT (this is what makes the whole block below consistent): totNumErrSq is a
+        // CONDITIONAL variance, i.e. the spread of Sum_R_i at FIXED candidate counts. That is
+        // exactly what a TProfile error gives, and it is why no covariance correction between
+        // totNum and totCounts is needed here. It also fixes the convention used everywhere below:
+        //   Cov(totNum, totCounts) = R_peak * Var(totCounts),
+        //   Cov(bkgNum, bkgCounts) = R_B    * Var(bkgCounts),
+        // since fluctuating the candidate population scales the sum and the count together, with
+        // the mean as the proportionality factor.
+        // double varR_peak = totNumErrSq / std::pow(totCounts, 2); // Not used! The compact R_S
+        // formula below consumes totNumErrSq directly, so the intermediate is no longer needed.
+        // The derivation above is kept because it documents where totNumErrSq comes from.
 
-        // Variance of R_B (simple error propagation for ratio B_num / B_counts)
-        double varR_B = std::pow(R_B, 2) * (std::pow(errBkgNum/bkgNum, 2) + std::pow(errBkgCounts/bkgCounts, 2));
-        
-        // Variance of f_B
+        // --- Error Propagation for R_B ---
+        // R_B = bkgNum / bkgCounts is a mean, exactly like R_peak, so it obeys the same logic.
+        // errBkgNum is the error on a SUM of R values at fixed sideband populations (it descends
+        // from the TProfile errors), while errBkgCounts is the error on those populations. The two
+        // are correlated: fluctuating the sideband population scales bkgNum and bkgCounts together
+        // and leaves their ratio untouched. Inserting Cov(bkgNum, bkgCounts) = R_B*Var(bkgCounts)
+        // into the ratio expansion,
+        //   Var(R_B)/R_B^2 = var(bkgNum)/bkgNum^2 + var(bkgCounts)/bkgCounts^2
+        //                    - 2*Cov(bkgNum,bkgCounts)/(bkgNum*bkgCounts),
+        // the last two terms cancel exactly and the result collapses to the same "error of the
+        // mean" form already used for R_peak:
+        //   Var(R_B) = errBkgNum^2 / bkgCounts^2.
+        // The previous expression treated bkgNum and bkgCounts as independent and therefore kept a
+        // spurious (errBkgCounts/bkgCounts)^2 term, overestimating the error on R_B.
+        double varR_B = std::pow(errBkgNum / bkgCounts, 2);
+
+        // Variance of f_B.
+        // This one is left as it was: f_B = bkgCounts/totCounts is a ratio of two quantities that
+        // really are independent, because bkgCounts is obtained from a fit to the SIDEBANDS only
+        // while totCounts counts the peak window, and the two mass regions are disjoint (hence
+        // disjoint candidates, hence independent Poisson populations).
         double var_fB = std::pow(fB, 2) * (std::pow(errBkgCounts/bkgCounts, 2) + (totCountsErrSq/std::pow(totCounts, 2)));
 
-        // Final error on R_S (formula unchanged, inputs improved)
-        // sigma^2(R_S) = (1/f_S^2)*sigma^2(R_peak) + (f_B^2/f_S^2)*sigma^2(R_B) + ((R_peak - R_B)/f_S^2)^2 * sigma^2(f_B)
-        double errR_S = std::sqrt(
-            varR_peak / std::pow(fS, 2) +
-            (std::pow(fB, 2) / std::pow(fS, 2)) * varR_B +
-            std::pow((R_peak - R_B) / std::pow(fS, 2), 2) * var_fB);
-        
+        // --- Error Propagation for R_S ---
+        // The three-step expression R_S = (R_peak - f_B*R_B)/f_S is, algebraically, nothing but
+        //   R_S = (totNum - bkgNum) / (totCounts - bkgCounts),
+        // i.e. signal numerator over signal counts. The central value is identical either way, but
+        // propagating in this compact form is the correct thing to do: R_peak, R_B and f_B all
+        // share the denominators totCounts and bkgCounts, so they are strongly correlated, and the
+        // old formula summed their variances as if they were not.
+        //
+        // Propagating the compact form in the four primitives (totNum, bkgNum, totCounts,
+        // bkgCounts) with the two covariance relations stated above, every cross term regroups
+        // into a perfect square and the result is simply:
+        //
+        //   Var(R_S) = [ totNumErrSq + errBkgNum^2
+        //                + (R_peak - R_S)^2 * Var(totCounts)
+        //                + (R_B    - R_S)^2 * Var(bkgCounts) ] / sigCounts^2
+        //
+        // The two squared factors are physically transparent: a yield uncertainty only matters to
+        // the extent that moving candidates between the signal and background pools actually
+        // changes the mean. In the limit R_B -> R_S the background subtraction contributes no
+        // uncertainty at all, which the old formula could not reproduce.
+        //
+        // ASSUMPTIONS: (i) peak window and sidebands are disjoint in mass, so totCounts/totNum are
+        // independent of bkgCounts/bkgNum; (ii) the TProfile-derived errors are conditional on the
+        // candidate counts, as discussed above; (iii) linear (first-order) propagation, which
+        // requires sigCounts to be comfortably away from zero. Assumption (iii) is the binding one:
+        // in bins where sigCounts is only a couple of sigma from zero the ratio distribution
+        // develops heavy tails and NO first-order formula is reliable.
+        double varR_S = (totNumErrSq
+                         + errBkgNum * errBkgNum
+                         + std::pow(R_peak - R_S, 2) * totCountsErrSq
+                         + std::pow(R_B - R_S, 2) * errBkgCounts * errBkgCounts)
+                        / std::pow(sigCounts, 2);
+        double errR_S = std::sqrt(varR_S);
+
         // --- Calculate Purity & Significance ---
         double purity = fS; 
         double errPurity = std::sqrt(var_fB); // Since fS = 1 - fB, the variance is identical
 
         double significance = sigCounts / std::sqrt(totCounts);
-        // Standard error propagation for Z = S/sqrt(N)
-        double errSignificance = std::sqrt( (errSigCounts*errSigCounts)/totCounts + (sigCounts*sigCounts*totCountsErrSq)/(4.0 * std::pow(totCounts, 3)));
+        // Error propagation for Z = S/sqrt(N).
+        // Here N is the MEASURED total totCounts, not S + B: the denominator is counted directly
+        // and does not move when the background estimate moves. Writing Z in the two independent
+        // primitives, Z = (totCounts - bkgCounts)/sqrt(totCounts), gives
+        //   dZ/d(totCounts) = (totCounts + bkgCounts) / (2 * totCounts^(3/2)),
+        //   dZ/d(bkgCounts) = -1 / sqrt(totCounts),
+        // hence
+        //   Var(Z) = (totCounts + bkgCounts)^2 * Var(totCounts)/(4*totCounts^3)
+        //            + Var(bkgCounts)/totCounts.
+        // The previous version used sigCounts in place of (totCounts + bkgCounts) AND added
+        // Var(sigCounts)/totCounts, which double counts the totCounts fluctuation because
+        // sigCounts and totCounts are not independent (Cov = Var(totCounts)). In the
+        // zero-background limit the correct expression gives the textbook Z = sqrt(N) with
+        // sigma_Z = 1/2, while the old one gave 1.12.
+        double errSignificance = std::sqrt(std::pow(totCounts + bkgCounts, 2) * totCountsErrSq / (4.0 * std::pow(totCounts, 3))
+                                           + errBkgCounts * errBkgCounts / totCounts);
 
         // Fill Histograms
         hSigYield->SetBinContent(iBin, sigCounts);
@@ -1443,19 +1535,24 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
                             
                             double R_S_Int = (R_peak_Int - fB_Int * R_B_Int) / fS_Int;
 
-                            // Error Propagation (Using Unbiased Estimator!)
-                            // varR_peak_Int: uses TProfile-derived errors (totNumErrSqInt), same logic as per-bin loop
-                            // OLD METHOD: double varR_peak_Int = (totCountsInt > 1) ? ((totSqNumInt / totCountsInt) - (R_peak_Int * R_peak_Int)) / (totCountsInt - 1.0) : 0;
-                            double varR_peak_Int = totNumErrSqInt / std::pow(totCountsInt, 2);
-                            
-                            double varR_B_Int = 0;
-                            if (bkgCountsInt > 0 && bkgNumInt_val != 0) {
-                                varR_B_Int = std::pow(R_B_Int, 2) * (std::pow(errBkgNumInt / bkgNumInt_val, 2) + std::pow(errBkgCountsInt / bkgCountsInt, 2));
-                            }
+                            // Error Propagation -- identical treatment to the per-bin loop above,
+                            // see the long derivation there for the assumptions and the algebra.
+                            // Compact form: R_S = (totNum - bkgNum)/(totCounts - bkgCounts), whose
+                            // variance regroups into
+                            //   Var(R_S) = [ totNumErrSq + errBkgNum^2
+                            //                + (R_peak - R_S)^2 * Var(totCounts)
+                            //                + (R_B    - R_S)^2 * Var(bkgCounts) ] / sigCounts^2
+                            // OLD METHOD (R_peak variance from a separate squared-observable TH2D):
+                            //   double varR_peak_Int = (totCountsInt > 1) ? ((totSqNumInt / totCountsInt) - (R_peak_Int * R_peak_Int)) / (totCountsInt - 1.0) : 0;
+                            // totNumErrSqInt is the TProfile-derived, count-conditional variance of
+                            // the numerator sum, which is what the formula below expects.
+                            double varR_S_Int = (totNumErrSqInt
+                                                 + errBkgNumInt * errBkgNumInt
+                                                 + std::pow(R_peak_Int - R_S_Int, 2) * totCountsErrSqInt
+                                                 + std::pow(R_B_Int - R_S_Int, 2) * errBkgCountsInt * errBkgCountsInt)
+                                                / std::pow(sigCountsInt, 2);
 
-                            double var_fB_Int = std::pow(fB_Int, 2) * (std::pow(errBkgCountsInt / bkgCountsInt, 2) + (totCountsErrSqInt / std::pow(totCountsInt, 2)));
-
-                            double errR_S_Int = std::sqrt(varR_peak_Int / std::pow(fS_Int, 2) + (std::pow(fB_Int, 2) / std::pow(fS_Int, 2)) * varR_B_Int + std::pow((R_peak_Int - R_B_Int) / std::pow(fS_Int, 2), 2) * var_fB_Int);
+                            double errR_S_Int = std::sqrt(varR_S_Int);
 
                             // Save to histogram
                             hIntegratedRSig->SetBinContent(1, R_S_Int);
@@ -2059,6 +2156,13 @@ void PerformDenominatorQA(TH1D* hMassSigExtract, TDirectory* outDir,
 //   outDir           -- TDirectory in which the results are stored.
 //   tag              -- short label used to build unique ROOT names ("Lambda", "AntiLambda").
 //   hypothesisTitle  -- mass axis title for the QA plots.
+//   chainSegments    -- inclusive ROOT bin ranges, listed in nesting order, that make up this
+//                       species' selection chain. Bins outside these ranges belong to the other
+//                       hypothesis' branch and are skipped entirely: they are neither extracted
+//                       nor used as a reference for any retention ratio. Consecutive segments are
+//                       treated as consecutive links of one nested chain, so the step-to-step
+//                       ratio at the start of a segment correctly refers back to the last bin of
+//                       the previous segment rather than to the adjacent (unrelated) bin.
 //
 // NOTE ON BINNING AND LABELS:
 //   Nothing about the selection axis is hardcoded here. The number of steps, the bin edges and
@@ -2069,7 +2173,8 @@ void PerformDenominatorQA(TH1D* hMassSigExtract, TDirectory* outDir,
 void PerformSelectionCutFlowExtraction(TH2D* h2dSelectionMass,
                                        TDirectory* outDir,
                                        TString tag,
-                                       TString hypothesisTitle)
+                                       TString hypothesisTitle,
+                                       const std::vector<std::pair<int, int>>& chainSegments)
 {
     if (!h2dSelectionMass || !outDir) {
         std::cerr << "[CutFlow] ERROR: null input for tag '" << tag << "'. Skipping.\n";
@@ -2134,11 +2239,26 @@ void PerformSelectionCutFlowExtraction(TH2D* h2dSelectionMass,
     std::vector<double> bkgVal(nCuts + 1, 0.0), bkgErr(nCuts + 1, 0.0);
     std::vector<bool> stepOk(nCuts + 1, false);
 
+    // Flatten the segments into a single ordered list of bins to visit. This list IS the nesting
+    // chain: consecutive entries are nested samples even where the bin numbers jump across the
+    // other hypothesis' block.
+    std::vector<int> chainBins;
+    for (const auto& seg : chainSegments) {
+        for (int b = std::max(1, seg.first); b <= std::min(nCuts, seg.second); ++b) chainBins.push_back(b);
+    }
+    if (chainBins.empty()) {
+        std::cerr << "[CutFlow] ERROR: empty selection chain for tag '" << tag << "'. Skipping.\n";
+        return;
+    }
+    std::cout << "  -> [CutFlow " << tag << "] chain covers " << chainBins.size()
+              << " of the " << nCuts << " bins (bins outside this species' branch are skipped)."
+              << std::endl;
+
     // ---------------------------------------------------------------------------------------
-    // Extraction loop, one selection step at a time
+    // Extraction loop, one selection step at a time (in chain order)
     // ---------------------------------------------------------------------------------------
     int nGood = 0;
-    for (int iCut = 1; iCut <= nCuts; ++iCut) {
+    for (int iCut : chainBins) {
 
         const char* cutLabel = h2dSelectionMass->GetXaxis()->GetBinLabel(iCut);
 
@@ -2275,7 +2395,13 @@ void PerformSelectionCutFlowExtraction(TH2D* h2dSelectionMass,
         double errPurity = std::sqrt(var_fB); // fS = 1 - fB, so the variances are identical
 
         double significance = sigCounts / std::sqrt(totCounts);
-        double errSignificance = std::sqrt((errSigCounts * errSigCounts) / totCounts + (sigCounts * sigCounts * totCountsErrSq) / (4.0 * std::pow(totCounts, 3)));
+        // Error propagation for Z = S/sqrt(N), with N the MEASURED totCounts (see the long note in
+        // ExtractObservable2D Step 6). In the two independent primitives,
+        // Z = (totCounts - bkgCounts)/sqrt(totCounts), so
+        //   Var(Z) = (totCounts + bkgCounts)^2 * Var(totCounts)/(4*totCounts^3)
+        //            + Var(bkgCounts)/totCounts.
+        double errSignificance = std::sqrt(std::pow(totCounts + bkgCounts, 2) * totCountsErrSq / (4.0 * std::pow(totCounts, 3))
+                                           + errBkgCounts * errBkgCounts / totCounts);
 
         // S/B is deliberately propagated as T/B - 1 rather than as a ratio of S and B.
         // S = T - B, so S and B are strongly anti-correlated and treating them as independent
@@ -2359,12 +2485,12 @@ void PerformSelectionCutFlowExtraction(TH2D* h2dSelectionMass,
     };
 
     int refIdx = -1;
-    for (int i = 1; i <= nCuts; ++i) {
-        if (stepOk[i]) { refIdx = i; break; }
+    for (int b : chainBins) {
+        if (stepOk[b]) { refIdx = b; break; }
     }
 
     int prevIdx = -1;
-    for (int i = 1; i <= nCuts; ++i) {
+    for (int i : chainBins) {
         if (!stepOk[i]) continue;
 
         double val = 0.0, err = 0.0;
@@ -2416,6 +2542,26 @@ void PerformSelectionCutFlowExtraction(TH2D* h2dSelectionMass,
     hSig->SetLineColor(kBlue + 1);
     hSig->SetMarkerColor(kBlue + 1);
     hSig->SetMarkerStyle(20);
+
+    // With "SAME", the frame is defined ENTIRELY by the first histogram drawn. Since the background
+    // is far above the signal, letting hBkg set the range pushed the signal points below the bottom
+    // of the log-scale pad -- they were drawn, just outside the visible frame. So compute the range
+    // over BOTH histograms explicitly. Only strictly positive values are considered, because a log
+    // axis cannot show zeros (skipped steps sit at exactly zero and are simply not drawn).
+    double yLow = 0.0, yHigh = 0.0;
+    for (const TH1D* h : {hSig, hBkg}) {
+        for (int b = 1; b <= h->GetNbinsX(); ++b) {
+            double c = h->GetBinContent(b);
+            if (c <= 0.0) continue;
+            double e = h->GetBinError(b);
+            double lo = (c - e > 0.0) ? (c - e) : c; // Keep it positive for the log axis
+            if (yLow == 0.0 || lo < yLow) yLow = lo;
+            if (c + e > yHigh) yHigh = c + e;
+        }
+    }
+    if (yLow <= 0.0 || yHigh <= 0.0) { yLow = 0.5; yHigh = 10.0; } // Degenerate fallback
+    hBkg->SetMinimum(0.5 * yLow);  // A little breathing room below
+    hBkg->SetMaximum(5.0 * yHigh); // Extra headroom above, so the legend does not sit on the points
 
     hBkg->SetTitle(Form("%s: signal and background vs selection step; ;Counts in #pm4#sigma window", tag.Data()));
     hBkg->Draw("E1");
@@ -2565,6 +2711,18 @@ int main(int argc, char** argv) {
 
             TDirectory* dirCutFlow = outFile->mkdir("V0SelectionCutFlow");
 
+            // Nested chains for each species, as inclusive ROOT bin ranges in nesting order.
+            // See the kNGenericV0Cuts / kNHypothesisCuts block at the top of this file for why the
+            // two hypothesis branches must not be chained into one another.
+            const std::vector<std::pair<int, int>> lambdaChain = {
+                {1, kNGenericV0Cuts},                                                  // shared V0 cuts
+                {kNGenericV0Cuts + 1, kNGenericV0Cuts + kNHypothesisCuts}               // Lambda block
+            };
+            const std::vector<std::pair<int, int>> antiLambdaChain = {
+                {1, kNGenericV0Cuts},                                                  // shared V0 cuts
+                {kNGenericV0Cuts + kNHypothesisCuts + 1, kNGenericV0Cuts + 2 * kNHypothesisCuts} // AntiLambda block
+            };
+
             // Keep the raw selection flow next to the extracted yields, for traceability
             if (hSelectionV0s) {
                 dirCutFlow->cd();
@@ -2575,7 +2733,7 @@ int main(int argc, char** argv) {
                 dirCutFlow->cd();
                 h2dSelLambdaMass->Write(); // Input histogram, saved for traceability
                 PerformSelectionCutFlowExtraction(h2dSelLambdaMass, dirCutFlow, "Lambda",
-                                                  "M_{p#pi^{-}} (GeV/#it{c}^{2})");
+                                                  "M_{p#pi^{-}} (GeV/#it{c}^{2})", lambdaChain);
             }
             else std::cerr << "  Warning: h2dSelectionLambdaMass missing. Skipping Lambda cut flow.\n";
 
@@ -2583,7 +2741,7 @@ int main(int argc, char** argv) {
                 dirCutFlow->cd();
                 h2dSelAntiLambdaMass->Write(); // Input histogram, saved for traceability
                 PerformSelectionCutFlowExtraction(h2dSelAntiLambdaMass, dirCutFlow, "AntiLambda",
-                                                  "M_{#bar{p}#pi^{+}} (GeV/#it{c}^{2})");
+                                                  "M_{#bar{p}#pi^{+}} (GeV/#it{c}^{2})", antiLambdaChain);
             }
             else std::cerr << "  Warning: h2dSelectionAntiLambdaMass missing. Skipping AntiLambda cut flow.\n";
         }
