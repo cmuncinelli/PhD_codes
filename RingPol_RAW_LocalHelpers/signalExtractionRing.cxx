@@ -2534,7 +2534,7 @@ void PerformSelectionCutFlowExtraction(TH2D* h2dSelectionMass,
                                    Form("Signal and background vs selection step (%s)", tag.Data()), 1400, 800);
     cYields->SetBottomMargin(0.42); // The selection labels are long, so they need the room
     cYields->SetLogy();
-    cYields->SetGridy();
+    cYields->SetGridx();
 
     hBkg->SetLineColor(kRed + 1);
     hBkg->SetMarkerColor(kRed + 1);

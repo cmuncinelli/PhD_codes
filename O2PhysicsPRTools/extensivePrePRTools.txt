@@ -1,0 +1,48 @@
+Linting and clang-formatting already in tasks.json
+
+- Here the include cleaner:
+
+cd ~/alice/O2Physics/PWGLF/TableProducer/Strangeness
+
+for f in \
+  ../../DataModel/lambdaJetPolarizationIons.h \
+  lambdaJetPolarizationIons.cxx \
+  ../../Tasks/Strangeness/lambdaJetPolarizationIonsDerived.cxx
+do
+  clang-tidy -fix \
+    -checks=-*,misc-include-cleaner,google-global-names-in-headers,misc-unused-using-decls \
+    "$f"
+  echo "$f $?"
+done > ~/clang_tidy_results.log
+
+
+- Here the include formatting:
+cd ~/alice/O2Physics
+for f in \
+  PWGLF/DataModel/lambdaJetPolarizationIons.h \
+  PWGLF/TableProducer/Strangeness/lambdaJetPolarizationIons.cxx \
+  PWGLF/Tasks/Strangeness/lambdaJetPolarizationIonsDerived.cxx
+do
+  awk -f Scripts/format_includes.awk "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+done
+
+
+
+- Here the cppcheck for extensive checks:
+cppcheck \
+  --language=c++ \
+  --std=c++20 \
+  --enable=style \
+  --check-level=exhaustive \
+  --suppressions-list=cppcheck_suppressions \
+  --inline-suppr \
+  --force \
+  PWGLF/DataModel/lambdaJetPolarizationIons.h \
+  PWGLF/TableProducer/Strangeness/lambdaJetPolarizationIons.cxx \
+  PWGLF/Tasks/Strangeness/lambdaJetPolarizationIonsDerived.cxx \
+  2> ~/cppcheck_results.log
+  
+- If doesn't work, install on bare metal:
+sudo apt install cppcheck
+
+- Then run again!

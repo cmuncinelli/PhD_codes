@@ -1,0 +1,86 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "O2: Lint Current File",
+            "type": "shell",
+            "command": "python3",
+            "args": [
+                "Scripts/o2_linter.py",
+                "${file}"
+            ],
+            "options": {
+                "cwd": "${env:HOME}/alice/O2Physics"
+            },
+            "problemMatcher": {
+                "owner": "o2-linter",
+                "fileLocation": "absolute",
+                "pattern": {
+                    "regexp": "^(.*):(\\d+): (error|warning): (.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "severity": 3,
+                    "message": 4
+                }
+            },
+            "presentation": {
+                "reveal": "never",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "O2: Format Current File",
+            "type": "shell",
+            "command": "alienv",
+            "args": [
+                "setenv", 
+                "O2Physics/latest", 
+                "-c", 
+                "clang-format",
+                "-i",
+                "${file}"
+            ],
+            "options": {
+                "cwd": "${env:HOME}/alice/O2Physics"
+            },
+            "presentation": {
+                "reveal": "never",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "O2: Format and Lint",
+            "dependsOn": [
+                "O2: Format Current File",
+                "O2: Lint Current File"
+            ],
+            "dependsOrder": "sequence",
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "O2: Clear Linter Squiggles",
+            "type": "shell",
+            "command": "echo",
+            "args": [
+                "Cleared!"
+            ],
+            "problemMatcher": {
+                "owner": "o2-linter",
+                "pattern": {
+                    "regexp": "^(.*):(\\d+): (error|warning): (.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "severity": 3,
+                    "message": 4
+                }
+            },
+            "presentation": {
+                "reveal": "never"
+            }
+        }
+    ]
+}

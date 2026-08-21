@@ -1,0 +1,5 @@
+- `tasksForCI_indotVScode.json` is a json you can use to configure some linting and clang-formatting tasks straight out of vscode (place it under the `.vscode` folder on the root of your current explorer tab workspace). You can call this via `Ctrl + Shift + P`, then `Tasks: Run Task`, and inside that you will find the tasks described in this `tasks.json` file.
+
+> The name for this json file may be important, so locally I have it under the name of `tasks.json`. You may want to have it renamed, yet I am not sure if this is mandatory. Not going to test it because it is already working for me though!
+
+- Other useful tools one can use before doing a PR, as detailed in [ALICE O2 Tools](https://aliceo2group.github.io/analysis-framework/docs/tools/), can be found in [extensivePrePRTools.txt](extensivePrePRTools.txt).
