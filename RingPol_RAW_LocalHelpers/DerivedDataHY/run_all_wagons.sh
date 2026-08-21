@@ -11,12 +11,15 @@
 #
 #   For each (wagon, config) pair it will:
 #
-#     1. Run runDerivedDataConsumer_HY.sh -> ConsumerResults_<SUFFIX>.root
-#     2. Run extractDeltaErrors.cxx (ROOT) -> delta/error plots
+#     1. Run runDerivedDataConsumer_HY.sh -> results_consumer/ConsumerResults_<SUFFIX>.root
+#     2. Run extractDeltaErrors.cxx (ROOT) -> results_DeltaErr/
 #     3. Run signalExtractionRing.cxx (ROOT) -> results_SigExtract/
-#     4. Run makeCumulativeDCAdauProfile.cxx (ROOT)-> CumulativeProfiles_<SUFFIX>.root
-#     5. Run auxiliaryPerConfigPlots.cxx (ROOT) -> AuxiliaryPerConfigPlots_<SUFFIX>.root
-#     6. Run auxiliarySummaryPlots.cxx (ROOT) -> auxiliarySummaryPlots.root (Cross-config)
+#     4. Run makeCumulativeDCAdauProfile.cxx (ROOT)-> results_CumulativePlots/
+#     5. Run auxiliaryPerConfigPlots.cxx (ROOT) -> results_AuxPerConfig/
+#     6. Run auxiliarySummaryPlots.cxx (ROOT) -> results_consumer/auxiliarySummaryPlots.root (Cross-config)
+#
+#   Steps 2, 4, and 5 each write into their own dedicated folder, mirroring how step 3 already uses results_SigExtract/,
+#   instead of writing back into results_consumer/ itself.
 #
 #   Steps 2, 3, 4 and 5 are skipped for a given pair if step 1 fails or if the 
 #   ConsumerResults file is missing.
@@ -279,23 +282,36 @@ for LINE in "${WAGON_LINES[@]}"; do
     CONS_SUFFIX="${CONFIG_BASENAME#dpl-config-DerivedConsumer-}"
 
     CONSUMER_RESULT="${WORK_DIR}/results_consumer/ConsumerResults_${CONS_SUFFIX}.root"
+
+    # Defining folders for each post-processing step:
     SIGNAL_EXTRACT_DIR="${WORK_DIR}/results_SigExtract"
-    
+    DELTA_ERR_DIR="${WORK_DIR}/results_DeltaErr"
+    CUMUL_DIR="${WORK_DIR}/results_CumulativePlots"
+    AUX_PERCONFIG_DIR="${WORK_DIR}/results_AuxPerConfig"
+
     # Logging Setup
+    # Each step's log lives under its own "results_*/logs/" folder
+    # Only the consumer's own wrapper/batch logs (and the wagon-level auxiliarySummaryPlots
+    # log, see Step 6 below) remain under results_consumer/logs/.
     LOG_DIR="${WORK_DIR}/results_consumer/logs"
+    DELTA_LOG_DIR="${DELTA_ERR_DIR}/logs"
+    SIG_LOG_DIR="${SIGNAL_EXTRACT_DIR}/logs"
+    CUMUL_LOG_DIR="${CUMUL_DIR}/logs"
+    AUX_PERCONFIG_LOG_DIR="${AUX_PERCONFIG_DIR}/logs"
+
     mkdir -p "${LOG_DIR}"
       # Creating smaller log folders to keep everything tidy (it was getting really messy!)
     mkdir -p "${LOG_DIR}/wrappers/"
     mkdir -p "${LOG_DIR}/batches/"
-    mkdir -p "${LOG_DIR}/deltaErr/"
-    mkdir -p "${LOG_DIR}/sigExtract/"
-    mkdir -p "${LOG_DIR}/cumulHist/"
-    mkdir -p "${LOG_DIR}/auxPerConfig/"
+    mkdir -p "${DELTA_LOG_DIR}"
+    mkdir -p "${SIG_LOG_DIR}"
+    mkdir -p "${CUMUL_LOG_DIR}"
+    mkdir -p "${AUX_PERCONFIG_LOG_DIR}"
     WRAPPER_LOG="${LOG_DIR}/wrappers/wrapper_${CONS_SUFFIX}.log"
-    DELTA_LOG="${LOG_DIR}/deltaErr/extractDeltaErr_${CONS_SUFFIX}.log"
-    SIG_LOG="${LOG_DIR}/sigExtract/sigExtract_${CONS_SUFFIX}.log"
-    CUMUL_LOG="${LOG_DIR}/cumulHist/cumulDCA_${CONS_SUFFIX}.log"
-    AUX_PERCONFIG_LOG="${LOG_DIR}/auxPerConfig/auxPerConfig_${CONS_SUFFIX}.log"
+    DELTA_LOG="${DELTA_LOG_DIR}/extractDeltaErr_${CONS_SUFFIX}.log"
+    SIG_LOG="${SIG_LOG_DIR}/sigExtract_${CONS_SUFFIX}.log"
+    CUMUL_LOG="${CUMUL_LOG_DIR}/cumulDCA_${CONS_SUFFIX}.log"
+    AUX_PERCONFIG_LOG="${AUX_PERCONFIG_LOG_DIR}/auxPerConfig_${CONS_SUFFIX}.log"
 
     # ------------------------------------------------------------------
     # Step 1: consumer
@@ -332,7 +348,7 @@ for LINE in "${WAGON_LINES[@]}"; do
     # Step 2: extractDeltaErrors
     # ------------------------------------------------------------------
     echo -n "  [2/6] extractDeltaErr : ${CONS_SUFFIX}"
-    "$EXTRACT_DELTA_EXE" "${CONSUMER_RESULT}" > "$DELTA_LOG" 2>&1
+    "$EXTRACT_DELTA_EXE" "${CONSUMER_RESULT}" "${DELTA_ERR_DIR}/" > "$DELTA_LOG" 2>&1
     DELTA_EXIT=$?
 
     if [ $DELTA_EXIT -ne 0 ]; then
@@ -364,7 +380,7 @@ for LINE in "${WAGON_LINES[@]}"; do
     # Step 4: makeCumulativeDCAdauProfile
     # ------------------------------------------------------------------
     echo -n "  [4/6] cumulDCA        : ${CONS_SUFFIX}"
-    "$CUMUL_DCA_EXE" "${CONSUMER_RESULT}" > "$CUMUL_LOG" 2>&1
+    "$CUMUL_DCA_EXE" "${CONSUMER_RESULT}" "${CUMUL_DIR}/" > "$CUMUL_LOG" 2>&1
     CUMUL_EXIT=$?
 
     if [ $CUMUL_EXIT -ne 0 ]; then
@@ -378,7 +394,7 @@ for LINE in "${WAGON_LINES[@]}"; do
     # Step 5: auxiliaryPerConfigPlots
     # ------------------------------------------------------------------
     echo -n "  [5/6] auxPerConfig    : ${CONS_SUFFIX}"
-    "$AUX_PERCONFIG_EXE" "${CONSUMER_RESULT}" > "$AUX_PERCONFIG_LOG" 2>&1
+    "$AUX_PERCONFIG_EXE" "${CONSUMER_RESULT}" "${AUX_PERCONFIG_DIR}/" > "$AUX_PERCONFIG_LOG" 2>&1
     AUX_PERCONFIG_EXIT=$?
 
     if [ $AUX_PERCONFIG_EXIT -ne 0 ]; then
@@ -396,7 +412,7 @@ for LINE in "${WAGON_LINES[@]}"; do
   # Step 6: auxiliarySummaryPlots (Cross-configuration aggregation)
   # ------------------------------------------------------------------
   # We run this ONCE per wagon, passing the wagon's base working dir
-  AUX_LOG="${WORK_DIR}/results_consumer/logs/auxPlots.log" # Saves a single log, to the root of the logs folder, because there will be only one single log for a given wagon
+  AUX_LOG="${WORK_DIR}/results_consumer/logs/auxSummaryPlots.log" # Saves a single log, to the root of the logs folder, because there will be only one single log for a given wagon
   echo -n "  [6/6] auxiliarySummaryPlots  : (Cross-config summary)"
   
   # Forwarding the consumer results directory, the MC reference, and now the Toy Model path:
@@ -435,6 +451,8 @@ else
     STEP_COL=$(  echo "$ENTRY" | awk -F'|' '{gsub(/^ +| +$/,"",$3); print $3}')
     printf "  %-45s  %-40s  %-20s\n" "$WAGON_COL" "$CONF_COL" "$STEP_COL"
   done
-  echo "  (Check the 'results_consumer/logs' folder for the respective wagon)"
+  echo "  (Each step's log lives under its own results_*/logs/ folder inside the wagon"
+  echo "   directory -- e.g. results_DeltaErr/logs/, results_SigExtract/logs/, etc. -- except"
+  echo "   the consumer and auxiliarySummaryPlots logs, which stay under results_consumer/logs/)"
 fi
 echo "========================================================"

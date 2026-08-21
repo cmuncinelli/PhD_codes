@@ -21,11 +21,13 @@
 * 5. Copies the original SEM-based TProfiles into the output file so both 
 * error calculation methods can be directly compared.
 *
-* Input:  "/path/to/ConsumerResults_<SUFFIX>.root" (Output from the O2 consumer task)
-* Output: "/path/to/ErrorPropagation_<SUFFIX>.root" (Auto-generated in the same folder)
+* Input:  "/path/to/results_consumer/ConsumerResults_<SUFFIX>.root" (Output from the O2 consumer task)
+* Output: "<outputDirectory>/ErrorPropagation_<SUFFIX>.root" (outputDirectory is given explicitly
+*         as the second argument, and is created recursively if it does not already exist --
+*         this keeps post-processing output out of results_consumer/, see run_all_wagons.sh)
 *
-* Usage:    root -l -b -q 'extractDeltaErrors.cxx("/path/to/ConsumerResults_SUFFIX.root")'
-* Example:  root -l -b -q 'extractDeltaErrors.cxx("/home/users/cicerodm/RingPol/LHC25ae_pass2_small/UsingTOF_min3ITS/results_consumer/ConsumerResults_BothHyperons.root")'
+* Usage:    ./extractDeltaErrors.exe <inputFilePath> <outputDirectory>
+* Example:  ./extractDeltaErrors.exe /home/users/cicerodm/RingPol/LHC25ae_pass2_small/UsingTOF_min3ITS/results_consumer/ConsumerResults_BothHyperons.root /home/users/cicerodm/RingPol/LHC25ae_pass2_small/UsingTOF_min3ITS/results_DeltaErr/
 * =====================================================================================
 */
 
@@ -42,6 +44,7 @@
 #include "TProfile2D.h"
 #include "TDirectory.h"
 #include "TKey.h"
+#include "TSystem.h"
 
 // -----------------------------------------------------------------------------
 // Helper: Compute Delta Method R and its Error from the 5 sums
@@ -98,22 +101,24 @@ TH1D* Process2DTo1D(TH2D* h2d, const std::string& newName) {
 // Main Macro
 // -----------------------------------------------------------------------------
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <inputFilePath>\n";
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0] << " <inputFilePath> <outputDirectory>\n";
         return 1;
     }
     
     const char* inFileStr = argv[1];
+    const char* outDirStr = argv[2];
 
     // --- Dynamic Output Filename Generation ---
+    // The output directory is now taken explicitly from argv[2] (instead of being
+    // inferred from the input file's directory), so the filename is derived from
+    // the input's basename only.
     std::string inPath(inFileStr);
-    std::string directory = "";
     std::string filename = inPath;
 
-    // Separate the directory path from the filename
+    // Strip any leading directory components off the input path, keeping only the filename
     size_t lastSlash = inPath.find_last_of('/');
     if (lastSlash != std::string::npos) {
-        directory = inPath.substr(0, lastSlash + 1); // Includes the trailing slash
         filename = inPath.substr(lastSlash + 1);
     }
 
@@ -127,7 +132,15 @@ int main(int argc, char** argv) {
         filename = "ErrorPropagation_" + filename;
     }
 
-    std::string outFileStr = directory + filename;
+    // Normalize the output directory to always end with exactly one trailing slash
+    std::string outDir(outDirStr);
+    if (outDir.empty() || outDir.back() != '/') outDir += "/";
+
+    // Create the output directory (and any missing parents) if it does not exist yet.
+    // kTRUE requests recursive creation, mirroring signalExtractionRing.cxx's convention.
+    gSystem->mkdir(outDir.c_str(), kTRUE);
+
+    std::string outFileStr = outDir + filename;
 
     std::cout << "\n=======================================================\n";
     std::cout << " Starting Delta Method Post-Processing\n";

@@ -37,7 +37,9 @@
 *
 * Usage mirrors makeCumulativeDCAdauProfile.cxx; compiled ahead-of-time by run_all_wagons.sh, not invoked as a ROOT interpreted macro.
 * In case you do want to run it by hand anyways, command would look like this:
-*   ./auxiliaryPerConfigPlots.exe path/to/ConsumerResults_SUFFIX.root
+*   ./auxiliaryPerConfigPlots.exe path/to/ConsumerResults_SUFFIX.root path/to/outputDirectory/
+* (outputDirectory is created recursively if it does not already exist -- this keeps
+*  post-processing output out of results_consumer/, see run_all_wagons.sh)
 * ============================================================
 */
 
@@ -52,6 +54,7 @@
 #include <TPaveText.h>
 #include <TLatex.h>
 #include <TStyle.h>
+#include <TSystem.h>
 
 #include <algorithm>
 #include <cmath>
@@ -466,21 +469,23 @@ static void MakeRingObservable2DCanvas(TDirectory* taskDir, TDirectory* outDir, 
 // ---------------------------------------------------------
 int main(int argc, char** argv)
 {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <inputFilePath (ConsumerResults_*.root)>\n";
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0] << " <inputFilePath (ConsumerResults_*.root)> <outputDirectory>\n";
         return 1;
     }
 
     const char* inFileStr = argv[1];
+    const char* outDirStr = argv[2];
 
     // --- Dynamic Output Filename (mirrors makeCumulativeDCAdauProfile.cxx) ---
+    // The output directory is now taken explicitly from argv[2] (instead of being
+    // inferred from the input file's directory), so the filename is derived from
+    // the input's basename only.
     std::string inPath(inFileStr);
-    std::string directory = "";
     std::string filename = inPath;
 
     size_t lastSlash = inPath.find_last_of('/');
     if (lastSlash != std::string::npos) {
-        directory = inPath.substr(0, lastSlash + 1);
         filename = inPath.substr(lastSlash + 1);
     }
 
@@ -492,7 +497,15 @@ int main(int argc, char** argv)
         filename = "AuxiliaryPerConfigPlots_" + filename;
     }
 
-    std::string outFileStr = directory + filename;
+    // Normalize the output directory to always end with exactly one trailing slash
+    std::string outDir(outDirStr);
+    if (outDir.empty() || outDir.back() != '/') outDir += "/";
+
+    // Create the output directory (and any missing parents) if it does not exist yet.
+    // kTRUE requests recursive creation, mirroring signalExtractionRing.cxx's convention.
+    gSystem->mkdir(outDir.c_str(), kTRUE);
+
+    std::string outFileStr = outDir + filename;
 
     std::cout << "\n=======================================================\n";
     std::cout << " Starting Auxiliary Per-Config Plots\n";

@@ -8,7 +8,9 @@
 * experimental signal with increasingly higher minDCAdau cuts, to test for robustness
 * of the ring observable wrt the AEE effect's main source.
 *
-* Usage: root -l -b -q 'makeCumulativeDCAdauProfile.cxx("path/to/ConsumerResults_SUFFIX.root")'
+* Usage: ./makeCumulativeDCAdauProfile.exe <inputFilePath> <outputDirectory>
+* (outputDirectory is created recursively if it does not already exist -- this
+*  keeps post-processing output out of results_consumer/, see run_all_wagons.sh)
 * ============================================================
 */
 
@@ -27,6 +29,7 @@
 #include "TString.h"
 #include "TCanvas.h"
 #include "TLegend.h"
+#include "TSystem.h"
 
 // Declaring helper functions to process all TProfiles and THDs that could benefit from accumulation to draw minDCAcut plots:
 
@@ -426,21 +429,23 @@ void DrawComparisonCanvases(TDirectory* dir1D, TDirectory* dirCanvases) {
 // Main Function
 // ---------------------------------------------------------
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <inputFilePath>\n";
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0] << " <inputFilePath> <outputDirectory>\n";
         return 1;
     }
     
     const char* inFileStr = argv[1];
+    const char* outDirStr = argv[2];
 
     // --- Dynamic Output Filename ---
+    // The output directory is now taken explicitly from argv[2] (instead of being
+    // inferred from the input file's directory), so the filename is derived from
+    // the input's basename only.
     std::string inPath(inFileStr);
-    std::string directory = "";
     std::string filename = inPath;
 
     size_t lastSlash = inPath.find_last_of('/');
     if (lastSlash != std::string::npos) {
-        directory = inPath.substr(0, lastSlash + 1);
         filename = inPath.substr(lastSlash + 1);
     }
 
@@ -452,7 +457,15 @@ int main(int argc, char** argv) {
         filename = "CumulativeProfiles_" + filename;
     }
 
-    std::string outFileStr = directory + filename;
+    // Normalize the output directory to always end with exactly one trailing slash
+    std::string outDir(outDirStr);
+    if (outDir.empty() || outDir.back() != '/') outDir += "/";
+
+    // Create the output directory (and any missing parents) if it does not exist yet.
+    // kTRUE requests recursive creation, mirroring signalExtractionRing.cxx's convention.
+    gSystem->mkdir(outDir.c_str(), kTRUE);
+
+    std::string outFileStr = outDir + filename;
 
     std::cout << "\n=======================================================\n";
     std::cout << " Starting Cumulative Profile Drawing\n";
