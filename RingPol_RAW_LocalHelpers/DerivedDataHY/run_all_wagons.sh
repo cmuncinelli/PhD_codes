@@ -17,12 +17,17 @@
 #     4. Run makeCumulativeDCAdauProfile.cxx (ROOT)-> results_CumulativePlots/
 #     5. Run auxiliaryPerConfigPlots.cxx (ROOT) -> results_AuxPerConfig/
 #     6. Run auxiliarySummaryPlots.cxx (ROOT) -> results_consumer/auxiliarySummaryPlots.root (Cross-config)
+#     7. Run zvtxBitForensics.cxx (ROOT) -> results_consumer/zvtxBitForensics.root (Per-wagon, parallel)
 #
 #   Steps 2, 4, and 5 each write into their own dedicated folder, mirroring how step 3 already uses results_SigExtract/,
 #   instead of writing back into results_consumer/ itself.
 #
 #   Steps 2, 3, 4 and 5 are skipped for a given pair if step 1 fails or if the 
 #   ConsumerResults file is missing.
+#
+#   Steps 6 and 7 run once per wagon rather than once per config. Step 7 reads the
+#   raw AO2Ds instead of the consumer output, so it runs even in post-process-only
+#   mode; it is skipped (not failed) when the AO2Ds/ folder is absent or empty.
 #
 # Usage:
 #   ./run_all_wagons.sh [OPTIONS] [REGISTRY] [CONSUMER_CONFIGS_DIR]
@@ -32,6 +37,8 @@
 #   -p, --post-process-only    Skip Step 1 (consumer) and run only the ROOT
 #                              macros (Steps 2, 3, 4, 5) on existing output.
 #   -s, --skip-sig-extract     Skip Step 3 (signal extraction) during execution.
+#   -f, --skip-forensics       Skip Step 7 (AO2D bit forensics). Useful when the
+#                              AO2Ds have already been checked or deleted.
 #
 # Arguments:
 #   REGISTRY (optional):
@@ -64,6 +71,7 @@ SIGNAL_EXTRACT_MACRO="${REPO_DIR}/RingPol_RAW_LocalHelpers/signalExtractionRing.
 CUMUL_DCA_MACRO="${REPO_DIR}/RingPol_RAW_LocalHelpers/makeCumulativeDCAdauProfile.cxx"
 AUX_PERCONFIG_MACRO="${REPO_DIR}/RingPol_RAW_LocalHelpers/auxiliaryPerConfigPlots.cxx"
 AUXILIARY_PLOTS_MACRO="${REPO_DIR}/RingPol_RAW_LocalHelpers/auxiliarySummaryPlots.cxx"
+FORENSICS_MACRO="${REPO_DIR}/RingPol_RAW_LocalHelpers/zvtxBitForensics.cxx"
 
 # Absolute path to the consumer launcher script.
 FRAMEWORK_DIR="${REPO_DIR}/RingPol_RAW_LocalHelpers/DerivedDataHY"
@@ -95,12 +103,23 @@ SIGNAL_EXTRACT_EXE="${REPO_DIR}/RingPol_RAW_LocalHelpers/signalExtractionRing.ex
 CUMUL_DCA_EXE="${REPO_DIR}/RingPol_RAW_LocalHelpers/makeCumulativeDCAdauProfile.exe"
 AUX_PERCONFIG_EXE="${REPO_DIR}/RingPol_RAW_LocalHelpers/auxiliaryPerConfigPlots.exe"
 AUXILIARY_PLOTS_EXE="${REPO_DIR}/RingPol_RAW_LocalHelpers/auxiliarySummaryPlots.exe"
+FORENSICS_EXE="${REPO_DIR}/RingPol_RAW_LocalHelpers/zvtxBitForensics.exe"
+
+# Parallel workers for Step 7. Only a handful of branches are read per file
+# (SetBranchStatus("*", 0)), so the per-file cost is basket decompression rather
+# than streaming whole AO2Ds. 24 is about enough for a SATA SSD and leaves ample headroom
+# on NVMe; raising it further only helps if the step proves CPU-bound.
+FORENSICS_JOBS=24
+
+# Set by Step 7 so the EXIT trap can remove the batch folder after an interrupt.
+FORENSICS_TMP_DIR=""
 
 # ==============================================================================
 # ARGUMENT PARSING
 # ==============================================================================
 POST_PROCESS_ONLY=0
 SKIP_SIG_EXTRACT=0
+SKIP_FORENSICS=0
 REGISTRY_ARG=""
 CONFIGS_DIR_ARG=""
 
@@ -121,6 +140,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-sig-extract|-s)
             SKIP_SIG_EXTRACT=1
+            shift
+            ;;
+        --skip-forensics|-f)
+            SKIP_FORENSICS=1
             shift
             ;;
         -*)
@@ -178,7 +201,11 @@ handle_interrupt() {
 
 cleanup() {
   # Removing the compiled binaries after usage:
-  rm -f "$EXTRACT_DELTA_EXE" "$SIGNAL_EXTRACT_EXE" "$CUMUL_DCA_EXE" "$AUX_PERCONFIG_EXE" "$AUXILIARY_PLOTS_EXE"
+  rm -f "$EXTRACT_DELTA_EXE" "$SIGNAL_EXTRACT_EXE" "$CUMUL_DCA_EXE" "$AUX_PERCONFIG_EXE" "$AUXILIARY_PLOTS_EXE" "$FORENSICS_EXE"
+  # Step 7's batch folder is temporary by design; remove it even on interrupt.
+  if [ -n "$FORENSICS_TMP_DIR" ] && [ -d "$FORENSICS_TMP_DIR" ]; then
+    rm -rf "$FORENSICS_TMP_DIR"
+  fi
 }
 
 trap cleanup EXIT
@@ -188,7 +215,7 @@ trap handle_interrupt INT TERM
 # PRE-FLIGHT CHECKS
 # ==============================================================================
 for REQUIRED in "$REGISTRY" "$CONSUMER_SCRIPT" \
-                "$EXTRACT_DELTA_MACRO" "$SIGNAL_EXTRACT_MACRO" "$CUMUL_DCA_MACRO" "$AUX_PERCONFIG_MACRO" "$AUXILIARY_PLOTS_MACRO"; do
+                "$EXTRACT_DELTA_MACRO" "$SIGNAL_EXTRACT_MACRO" "$CUMUL_DCA_MACRO" "$AUX_PERCONFIG_MACRO" "$AUXILIARY_PLOTS_MACRO" "$FORENSICS_MACRO"; do
   if [ ! -f "$REQUIRED" ]; then
     echo "Error: required file not found: ${REQUIRED}"
     exit 1
@@ -243,6 +270,7 @@ g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$SIGNAL_EXTRAC
 g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$CUMUL_DCA_EXE" "$CUMUL_DCA_MACRO" $ROOT_LIBS || exit 1
 g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$AUX_PERCONFIG_EXE" "$AUX_PERCONFIG_MACRO" $ROOT_LIBS || exit 1
 g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$AUXILIARY_PLOTS_EXE" "$AUXILIARY_PLOTS_MACRO" $ROOT_LIBS || exit 1
+g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$FORENSICS_EXE" "$FORENSICS_MACRO" $ROOT_LIBS || exit 1
 
 echo "Compilation successful!"
 echo ""
@@ -256,7 +284,8 @@ echo "  Wagons       : ${#WAGON_LINES[@]}"
 echo "  Configs      : ${#CONFIG_FILES[@]}"
 echo "  Configs Dir  : ${CONSUMER_CONFIGS_DIR}"
 echo "  Toy Model    : ${TOY_MODEL_PATH:-None}"
-echo "  Mode         : $( [ $POST_PROCESS_ONLY -eq 1 ] && echo 'POST-PROCESS ONLY' || echo 'FULL CHAIN' )$( [ $SKIP_SIG_EXTRACT -eq 1 ] && echo ' [SKIP SIG EXTRACT]' )"
+echo "  Mode         : $( [ $POST_PROCESS_ONLY -eq 1 ] && echo 'POST-PROCESS ONLY' || echo 'FULL CHAIN' )$( [ $SKIP_SIG_EXTRACT -eq 1 ] && echo ' [SKIP SIG EXTRACT]' )$( [ $SKIP_FORENSICS -eq 1 ] && echo ' [SKIP FORENSICS]' )"
+echo "  Forensics    : $( [ $SKIP_FORENSICS -eq 1 ] && echo 'skipped' || echo "${FORENSICS_JOBS} parallel workers" )"
 echo "========================================================"
 echo ""
 
@@ -319,7 +348,7 @@ for LINE in "${WAGON_LINES[@]}"; do
     # Step 1: consumer
     # ------------------------------------------------------------------
     if [ $POST_PROCESS_ONLY -eq 0 ]; then
-      echo -n "  [1/6] consumer        : ${CONS_SUFFIX}"
+      echo -n "  [1/7] consumer        : ${CONS_SUFFIX}"
       # Consumer output goes to a per-config log file so failures are inspectable.
       if [ -d /sys/devices/system/node/node1 ]; then
         # Binding consumer to the NUMA node1 (just convenience: producers are running in node 0 on jarvis15 right now)
@@ -337,7 +366,7 @@ for LINE in "${WAGON_LINES[@]}"; do
       echo "  -> OK"
     else
       # Post-process only mode: verify file exists
-      echo -n "  [1/6] consumer        : ${CONS_SUFFIX} (SKIPPED)"
+      echo -n "  [1/7] consumer        : ${CONS_SUFFIX} (SKIPPED)"
       if [ ! -f "$CONSUMER_RESULT" ]; then
         echo "  -> FAILED  (File missing)"
         FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | missing_consumer_result")
@@ -349,7 +378,7 @@ for LINE in "${WAGON_LINES[@]}"; do
     # ------------------------------------------------------------------
     # Step 2: extractDeltaErrors
     # ------------------------------------------------------------------
-    echo -n "  [2/6] extractDeltaErr : ${CONS_SUFFIX}"
+    echo -n "  [2/7] extractDeltaErr : ${CONS_SUFFIX}"
     "$EXTRACT_DELTA_EXE" "${CONSUMER_RESULT}" "${DELTA_ERR_DIR}/" > "$DELTA_LOG" 2>&1
     DELTA_EXIT=$?
 
@@ -364,7 +393,7 @@ for LINE in "${WAGON_LINES[@]}"; do
     # Step 3: signalExtractionRing
     # ------------------------------------------------------------------
     if [ $SKIP_SIG_EXTRACT -eq 0 ]; then
-      echo -n "  [3/6] sigExtract      : ${CONS_SUFFIX}"
+      echo -n "  [3/7] sigExtract      : ${CONS_SUFFIX}"
       "$SIGNAL_EXTRACT_EXE" "${CONSUMER_RESULT}" "${SIGNAL_EXTRACT_DIR}/" > "$SIG_LOG" 2>&1
       SIG_EXIT=$?
 
@@ -375,13 +404,13 @@ for LINE in "${WAGON_LINES[@]}"; do
         echo "  -> OK"
       fi
     else
-      echo "  [3/6] sigExtract      : ${CONS_SUFFIX} (SKIPPED)"
+      echo "  [3/7] sigExtract      : ${CONS_SUFFIX} (SKIPPED)"
     fi
 
     # ------------------------------------------------------------------
     # Step 4: makeCumulativeDCAdauProfile
     # ------------------------------------------------------------------
-    echo -n "  [4/6] cumulDCA        : ${CONS_SUFFIX}"
+    echo -n "  [4/7] cumulDCA        : ${CONS_SUFFIX}"
     "$CUMUL_DCA_EXE" "${CONSUMER_RESULT}" "${CUMUL_DIR}/" > "$CUMUL_LOG" 2>&1
     CUMUL_EXIT=$?
 
@@ -395,7 +424,7 @@ for LINE in "${WAGON_LINES[@]}"; do
     # ------------------------------------------------------------------
     # Step 5: auxiliaryPerConfigPlots
     # ------------------------------------------------------------------
-    echo -n "  [5/6] auxPerConfig    : ${CONS_SUFFIX}"
+    echo -n "  [5/7] auxPerConfig    : ${CONS_SUFFIX}"
     "$AUX_PERCONFIG_EXE" "${CONSUMER_RESULT}" "${AUX_PERCONFIG_DIR}/" > "$AUX_PERCONFIG_LOG" 2>&1
     AUX_PERCONFIG_EXIT=$?
 
@@ -415,7 +444,7 @@ for LINE in "${WAGON_LINES[@]}"; do
   # ------------------------------------------------------------------
   # We run this ONCE per wagon, passing the wagon's base working dir
   AUX_LOG="${WORK_DIR}/results_consumer/logs/auxSummaryPlots.log" # Saves a single log, to the root of the logs folder, because there will be only one single log for a given wagon
-  echo -n "  [6/6] auxiliarySummaryPlots  : (Cross-config summary)"
+  echo -n "  [6/7] auxiliarySummaryPlots  : (Cross-config summary)"
   
   # Forwarding the consumer results directory, the MC reference, and now the Toy Model path:
   "$AUXILIARY_PLOTS_EXE" "${WORK_DIR}/results_consumer" "${MC_REF_DIR}" "${PP_REF_DIR}" "${TOY_MODEL_PATH}" > "$AUX_LOG" 2>&1
@@ -426,6 +455,95 @@ for LINE in "${WAGON_LINES[@]}"; do
     FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ALL_CONFIGS | auxiliarySummaryPlots")
   else
     echo "  -> OK"
+  fi
+
+    # ------------------------------------------------------------------
+  # Step 7: zvtxBitForensics (AO2D bit-level and integrity QA)
+  # ------------------------------------------------------------------
+  # Runs once per wagon on the raw AO2Ds, independently of the consumer output.
+  # Files are distributed round-robin across FORENSICS_JOBS workers, each writing
+  # its own partial .root; hadd merges them and a --finalize pass turns the
+  # additive numerator/denominator counters into ratio histograms. Ratios cannot
+  # be produced before the merge because hadd can only sum.
+  FORENSICS_DIR="${WORK_DIR}/AO2Ds"
+  FORENSICS_OUT="${WORK_DIR}/results_consumer/zvtxBitForensics.root"
+  FORENSICS_LOG="${WORK_DIR}/results_consumer/logs/zvtxBitForensics.log"
+  mkdir -p "${WORK_DIR}/results_consumer/logs"
+
+  echo -n "  [7/7] zvtxBitForensics       : (AO2D integrity QA)"
+
+  if [ $SKIP_FORENSICS -eq 1 ]; then
+    echo "  -> SKIPPED (--skip-forensics)"
+  else
+    shopt -s nullglob
+    AOD_FILES=("${FORENSICS_DIR}"/AO2D_*.root)
+    shopt -u nullglob
+
+    if [ ${#AOD_FILES[@]} -eq 0 ]; then
+      # Not a failure: the AO2Ds may legitimately have been deleted after the
+      # consumer produced its derived output.
+      echo "  -> SKIPPED (no AO2Ds in ${FORENSICS_DIR})"
+    else
+      # One worker per batch, never more workers than files.
+      NJOBS=$FORENSICS_JOBS
+      if [ ${#AOD_FILES[@]} -lt $NJOBS ]; then
+        NJOBS=${#AOD_FILES[@]}
+      fi
+
+      FORENSICS_TMP_DIR="${WORK_DIR}/results_consumer/.forensics_batches_$$"
+      mkdir -p "$FORENSICS_TMP_DIR"
+
+      # Round-robin rather than contiguous chunks: AO2D sizes vary, and this
+      # spreads large files across workers instead of loading one batch.
+      IDX=0
+      for AOD_FILE in "${AOD_FILES[@]}"; do
+        echo "$AOD_FILE" >> "${FORENSICS_TMP_DIR}/batch_$((IDX % NJOBS)).txt"
+        IDX=$((IDX + 1))
+      done
+
+      # Each worker logs to its own file; they are concatenated afterwards so
+      # parallel writes cannot interleave inside the wagon log.
+      : > "$FORENSICS_LOG"
+      FORENSICS_PIDS=()
+      for ((B = 0; B < NJOBS; B++)); do
+        BATCH_MANIFEST="${FORENSICS_TMP_DIR}/batch_${B}.txt"
+        [ -f "$BATCH_MANIFEST" ] || continue
+        "$FORENSICS_EXE" "$BATCH_MANIFEST" "${FORENSICS_TMP_DIR}/zvtxForensics_batch_${B}.root" \
+          > "${FORENSICS_TMP_DIR}/batch_${B}.log" 2>&1 &
+        FORENSICS_PIDS+=($!)
+      done
+
+      FORENSICS_EXIT=0
+      for PID in "${FORENSICS_PIDS[@]}"; do
+        wait "$PID" || FORENSICS_EXIT=1
+      done
+      cat "${FORENSICS_TMP_DIR}"/batch_*.log >> "$FORENSICS_LOG" 2>/dev/null
+
+      # Merge, then finalize. Both must succeed for the step to count as OK.
+      if [ $FORENSICS_EXIT -eq 0 ]; then
+        shopt -s nullglob
+        BATCH_ROOTS=("${FORENSICS_TMP_DIR}"/zvtxForensics_batch_*.root)
+        shopt -u nullglob
+        if [ ${#BATCH_ROOTS[@]} -eq 0 ]; then
+          FORENSICS_EXIT=1
+        else
+          hadd -f "$FORENSICS_OUT" "${BATCH_ROOTS[@]}" >> "$FORENSICS_LOG" 2>&1 || FORENSICS_EXIT=1
+        fi
+      fi
+      if [ $FORENSICS_EXIT -eq 0 ]; then
+        "$FORENSICS_EXE" --finalize "$FORENSICS_OUT" >> "$FORENSICS_LOG" 2>&1 || FORENSICS_EXIT=1
+      fi
+
+      rm -rf "$FORENSICS_TMP_DIR"
+      FORENSICS_TMP_DIR=""
+
+      if [ $FORENSICS_EXIT -ne 0 ]; then
+        echo "  -> FAILED  (log: ${FORENSICS_LOG})"
+        FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ALL_CONFIGS | zvtxBitForensics")
+      else
+        echo "  -> OK"
+      fi
+    fi
   fi
 
   echo ""
