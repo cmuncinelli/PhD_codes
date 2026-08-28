@@ -37,6 +37,7 @@
 #include "TF1.h"
 #include "TFitResult.h"
 #include "TPaveText.h"
+#include "TPaveStats.h"
 #include "TGraphAsymmErrors.h"
 #include "TStyle.h"
 #include "TMath.h"
@@ -59,6 +60,11 @@ struct VariationConfig {
     int lineStyle;
     int markerStyle;
     bool isData;             // Flag to indicate if this is the main, thick black line
+
+    // Part of the "does a minimum-pT gate on artificial proxies change anything" study. Those get a
+    // dedicated canvas so the gated/ungated pairs can be read without the other systematics on top.
+    // Declared last, with a default, so the entries that are not part of it need not spell it out.
+    bool inGateStudy = false;
 };
 
 /// @brief A hyperon selection (Lambda, AntiLambda, Both), i.e. one set of consumer output files.
@@ -219,11 +225,37 @@ std::string SanitizeName(const std::string& label) {
  *
  * @return The subdirectory, owned by the parent, or nullptr if the parent itself is null.
  */
+/**
+ * @brief Returns an existing subdirectory, creating it only if absent.
+ *
+ * Used to keep directory creation lazy: nothing is created until we actually have a canvas to
+ * write into it, so consumer files that do not enable a given cut folder do not leave a trail
+ * of empty folders behind.
+ *
+ * @param name May be a slash-separated path ("ProxyPt/EtaSplits"), in which case every level is
+ *             created or reused in turn. That is what lets an ObservableGroup declare its position
+ *             in the output tree purely through its groupName.
+ * @return The deepest subdirectory, owned by its parent, or nullptr if the parent itself is null.
+ */
 TDirectory* EnsureDir(TDirectory* parent, const std::string& name) {
     if (!parent) return nullptr;
-    TDirectory* dir = parent->GetDirectory(name.c_str());
-    if (!dir) dir = parent->mkdir(name.c_str());
-    return dir;
+
+    TDirectory* current = parent;
+    size_t start = 0;
+    while (start <= name.size()) {
+        size_t slash = name.find('/', start);
+        std::string part = (slash == std::string::npos) ? name.substr(start)
+                                                        : name.substr(start, slash - start);
+        if (!part.empty()) {
+            TDirectory* next = current->GetDirectory(part.c_str());
+            if (!next) next = current->mkdir(part.c_str());
+            if (!next) return nullptr;
+            current = next;
+        }
+        if (slash == std::string::npos) break;
+        start = slash + 1;
+    }
+    return current;
 }
 
 /**
@@ -631,6 +663,12 @@ TH1D* MakeLabelledFrame(TH1* src, const std::string& name, double yMin, double y
         const char* label = src->GetXaxis()->GetBinLabel(i);
         if (label && label[0] != '\0') frame->GetXaxis()->SetBinLabel(i, label);
     }
+
+    // Long selection names ("#eta_{Jet} > R, #eta_{#Lambda} < 0") overlap badly when laid flat across
+    // 9 or 15 bins, so anything past a handful of bins gets angled. ROOT's angle options are "d" and "u"
+    // for 45 degrees ("u" tilts the way we want here, "d" tilts the other way) and "v" for vertical.
+    // Short axes (the three-bin eta-sign digest) stay horizontal.
+    if (nBins > 4) frame->GetXaxis()->LabelsOption("u");
     frame->SetMinimum(yMin);
     frame->SetMaximum(yMax);
     return frame;
@@ -728,8 +766,12 @@ TH1D* BuildToyEtaSignHist(FileCache& cache, const std::string& toyFilePath,
  *                     compare it against, so callers need not special-case single-curve canvases.
  * @param categorical  Draws a labelled-bin axis copied from the first bundle instead of a numeric one.
  *                     Needed for the EtaStudy cut profiles, whose x-axis is a list of named selections.
+ * @param isDifference Marks the canvas as a Data - Variation plot. The data bundle is then dropped from
+ *                     both the drawing and the legend (it is identically zero by construction, so its
+ *                     marker carries no information), zero is forced inside the y-range, and a dashed
+ *                     reference line is drawn there instead.
  */
-void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
+void DrawComparisonCanvas(const std::vector<ProfileBundle>& inputBundles,
                           const std::string& canvasName,
                           const std::string& canvasTitle,
                           TDirectory* outDir,
@@ -737,9 +779,23 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
                           const std::string& customXTitle = "",
                           const std::string& customYTitle = "",
                           LowerPadMode lowerPad = kNoLowerPad,
-                          bool categorical = false) {
+                          bool categorical = false,
+                          bool isDifference = false) {
     
-    if (bundles.empty() || !outDir) return;
+    if (inputBundles.empty() || !outDir) return;
+
+    // On a difference plot the data curve is identically zero by construction, so its markers and its
+    // legend entry say nothing that the axis does not already say. Drop it here and draw a dashed zero
+    // reference line instead (see below), rather than making every caller filter its own list.
+    std::vector<ProfileBundle> bundles;
+    if (isDifference) {
+        for (const auto& b : inputBundles) {
+            if (!b.config.isData) bundles.push_back(b);
+        }
+    } else {
+        bundles = inputBundles;
+    }
+    if (bundles.empty()) return;
 
     // Find global Min and Max across all bins and all provided profiles
     double globalMin = 999999.;
@@ -783,6 +839,13 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
     if (margin < 1e-12) margin = 0.05; 
     double yMin = globalMin - margin;
     double yMax = globalMax + margin;
+
+    // A difference plot is read against zero, so keep zero in frame even when every variation sits
+    // comfortably to one side of it
+    if (isDifference) {
+        if (yMin > -margin) yMin = -margin;
+        if (yMax <  margin) yMax =  margin;
+    }
 
     // 2. Setup Canvas and Legend
     // A lower pad only makes sense when there is a data curve AND something to compare it against,
@@ -895,6 +958,16 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
         dataBundle.profile->Draw("PE SAME");
     }
 
+    // Dashed reference at zero, replacing the flat data curve that difference plots used to carry
+    TLine* zeroRef = nullptr;
+    if (isDifference) {
+        zeroRef = new TLine(xMin, 0.0, xMax, 0.0);
+        zeroRef->SetLineColor(kBlack);
+        zeroRef->SetLineStyle(2);
+        zeroRef->SetLineWidth(2);
+        zeroRef->Draw("SAME");
+    }
+
     leg->Draw();
 
     // 5b. Lower pad: every variation compared against the data
@@ -975,16 +1048,23 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
         lowFrame->GetYaxis()->SetTitleOffset(0.45);
         lowFrame->GetYaxis()->SetNdivisions(505); // Fewer ticks: the pad is short
 
-        // Shaded sigma bands for the pull. Drawn first so the curves sit on top of them, and kept at low
-        // opacity specifically so the gray MixedEv Jet points stay legible against the fill.
+        // Shaded sigma bands for the pull, drawn first so the curves sit on top of them.
+        // Deliberately SOLID light fills rather than transparent ones: ROOT's alpha channel is not
+        // honoured by every canvas backend (it works in PDF/PNG and with OpenGL canvases, but is
+        // commonly ignored in the plain interactive canvas), which is why raising the alpha twice
+        // changed nothing. Solid pale colours always render. Green/yellow rather than gray, since
+        // gray would collide with the MixedEv Jet points, and pale enough not to be mistaken for the
+        // saturated kGreen+2 used by Perp to Jet.
         if (lowerPad == kPull) {
             TBox* band2 = new TBox(xMin, std::max(-2.0, lowMin), xMax, std::min(2.0, lowMax));
-            band2->SetFillColorAlpha(kGray + 1, 0.12);
+            band2->SetFillColor(kYellow - 9); // +/- 2 sigma
+            band2->SetFillStyle(1001);
             band2->SetLineColor(0);
             band2->Draw("SAME");
 
             TBox* band1 = new TBox(xMin, std::max(-1.0, lowMin), xMax, std::min(1.0, lowMax));
-            band1->SetFillColorAlpha(kGray + 1, 0.20);
+            band1->SetFillColor(kGreen - 9); // +/- 1 sigma
+            band1->SetFillStyle(1001);
             band1->SetLineColor(0);
             band1->Draw("SAME");
         }
@@ -1073,16 +1153,14 @@ TanhFitResult FitTanhProfile(TProfile* prof,
     fTanh->SetLineWidth(2);
     fTanh->SetNpx(500);
 
-    TFitResultPtr res = prof->Fit(fTanh, "QSEM", "", xLo, xHi);
-
-    // Stat box reduced to the bare minimum: entries, then chi2/ndf and the two parameters with their errors.
-    // OptStat 10 keeps only "Entries"; OptFit 111 keeps chi2/ndf, values and errors while dropping the fit-probability line.
+    // gStyle must be set BEFORE anything is painted: the stats box is built at paint time and reads
+    // these values then. Setting them after Draw (as this did) had no effect at all.
+    // OptStat 10 keeps only "Entries"; OptFit 111 keeps chi2/ndf, parameter values and errors while
+    // dropping the fit-probability line.
     gStyle->SetOptStat(10);
     gStyle->SetOptFit(111);
-    gStyle->SetStatX(0.98);
-    gStyle->SetStatY(0.92);
-    gStyle->SetStatW(0.30);
-    gStyle->SetStatH(0.16);
+
+    TFitResultPtr res = prof->Fit(fTanh, "QSEM", "", xLo, xHi);
 
     TCanvas* c = new TCanvas(canvasName.c_str(), canvasName.c_str(), 800, 600);
     c->SetLeftMargin(0.12);
@@ -1099,14 +1177,41 @@ TanhFitResult FitTanhProfile(TProfile* prof,
     prof->GetYaxis()->SetTitle(profConfig.yAxisTitle.c_str());
     prof->Draw("PE");
 
-    // Function definition, sitting immediately below the stat box (which spans y = 0.76 to 0.92)
-    TPaveText* fnLabel = new TPaveText(0.68, 0.685, 0.98, 0.755, "NDC");
-    fnLabel->SetFillColor(0);
-    fnLabel->SetFillStyle(0);
+    // Force a paint pass so the TPaveStats actually gets built. TCanvas::Write() does NOT paint, so
+    // without this the canvas was stored with no stats object at all, and ROOT rebuilt a default one
+    // from whatever gStyle happened to be active when the file was later opened. That is precisely why
+    // the box came back with default contents and no fit information in it.
+    c->Update();
+
+    // Having got hold of the object, set the options ON IT rather than only on gStyle. Those settings
+    // are then serialised with the canvas and survive independently of the reader's global style.
+    TPaveStats* stats = dynamic_cast<TPaveStats*>(prof->FindObject("stats"));
+    if (stats) {
+        stats->SetOptStat(10);
+        stats->SetOptFit(111);
+        // Upper LEFT corner: the tanh rises to the right, so the top-left is the empty part of the pad
+        stats->SetX1NDC(0.14);
+        stats->SetX2NDC(0.46);
+        stats->SetY1NDC(0.72);
+        stats->SetY2NDC(0.90);
+        stats->SetFillColor(kWhite);
+        stats->SetFillStyle(1001); // Opaque, so the grid does not run through the numbers
+        stats->SetBorderSize(1);
+        stats->SetTextSize(0.030);
+    }
+
+    // Function definition, sitting immediately below the stat box
+    TPaveText* fnLabel = new TPaveText(0.14, 0.645, 0.46, 0.712, "NDC");
+    fnLabel->SetFillColor(kWhite);
+    fnLabel->SetFillStyle(1001); // Opaque white, as requested: transparent was unreadable over the grid
     fnLabel->SetBorderSize(1);
-    fnLabel->SetTextSize(0.030);
+    fnLabel->SetTextSize(0.028);
     fnLabel->AddText(("f(" + profConfig.xAxisTitle + ")=[p0]*TMath::TanH([p1]*x)").c_str());
     fnLabel->Draw();
+
+    // Second pass, so the repositioned stats box and the new label are part of what gets written
+    c->Modified();
+    c->Update();
 
     outDir->cd();
     c->Write();
@@ -1188,6 +1293,8 @@ void DrawFitSummaryCanvas(const std::vector<std::string>& labels,
     for (int i = 0; i < nBins; ++i) frame->GetXaxis()->SetBinLabel(i + 1, labels[i].c_str());
     frame->GetYaxis()->SetTitle(yTitle.c_str());
     frame->SetStats(0);
+    // Long category names overlap when laid flat; angle them once the axis gets busy
+    if (nBins > 4) frame->GetXaxis()->LabelsOption("u");
     frame->GetXaxis()->SetLabelSize(0.045);
     frame->GetYaxis()->SetTitleSize(0.045);
     frame->SetMinimum(gMin - margin);
@@ -1281,6 +1388,8 @@ void DrawIntegratedCanvas(const std::vector<ProfileBundle>& bundles,
     }
     frame->GetYaxis()->SetTitle(yTitle.c_str());
     frame->GetYaxis()->SetRangeUser(yMin, yMax);
+    // Long category names overlap when laid flat; angle them once the axis gets busy
+    if (nBins > 4) frame->GetXaxis()->LabelsOption("u");
     frame->SetStats(0);
     frame->GetXaxis()->SetLabelSize(0.045);
     frame->GetYaxis()->SetTitleSize(0.045);
@@ -1359,9 +1468,9 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
     // 1. Define Systematic Variations (the list of all useful variations I would like to track into this plot)
     // The data config (empty suffix) is handled separately in the logic to ensure it is always first
     std::vector<VariationConfig> sysVariations = {
-        {"_forceRandJet",                 "Rand Jet",                  kBlue,     1, 20, false}, // Full circle
-        {"_forceDatalikeJet",             "Data-like Jet",             kRed,      1, 21, false}, // Square
-        {"_forcePerpToJet",               "Perp to Jet",               kGreen+2,  1, 22, false}, // Triangle up
+        {"_forceRandJet",                 "Rand Jet",                  kBlue,     1, 20, false, true}, // Full circle
+        {"_forceDatalikeJet",             "Data-like Jet",             kRed,      1, 21, false, true}, // Square
+        {"_forcePerpToJet",               "Perp to Jet",               kGreen+2,  1, 22, false, true}, // Triangle up
         {"_forcePreviousJet",             "Prev Jet",                  kOrange+1, 1, 34, false}, // Full cross (bold "+")
         {"_MixedEventProxies",            "MixedEv Jet",               kGray+1,   1, 24, false}, // Open circle
 
@@ -1369,8 +1478,11 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         // the original |p| (see gatePtOnArtificialProxies in applyProxyDistortion), so gating on it is a genuine
         // selection rather than a no-op, and it may sculpt the sample. Same colour as the ungated parent, dashed
         // line and the open counterpart of its marker, so the pairs read together on a shared canvas.
-        {"_forceRandJet_gatePtOnProxy",   "Rand Jet (pT gated)",       kBlue,     2, 24, false}, // Open circle
-        {"_forcePerpToJet_gatePtOnProxy", "Perp to Jet (pT gated)",    kGreen+2,  2, 26, false}, // Open triangle up
+        // The trailing "true" marks both members of each pair as part of the gate study, which gets its own
+        // canvas (Canvas_PtGateStudy) free of the unrelated systematics.
+        {"_forceRandJet_gatePtOnProxy",   "Rand Jet (pT gated)",       kBlue,     2, 24, false, true}, // Open circle
+        {"_forcePerpToJet_gatePtOnProxy", "Perp to Jet (pT gated)",    kGreen+2,  2, 26, false, true}, // Open triangle up
+        {"_forceDatalikeJet_gatePtOnProxy", "Data-like Jet (pT gated)", kRed,     2, 25, false, true}, // Open square
 
         // Tighter primary-vertex selection. Unrelated to the proxy machinery, so it gets its own colour.
         {"_5cmZvtx",                      "|Zvtx| < 5 cm",             kPink+7,   1, 23, false}  // Full triangle down
@@ -1459,7 +1571,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             false // pT is strictly positive: folding about zero is meaningless
         },
         {
-            "ProxyPtEtaSplits", // The LeadP pT dependence, split by the sign of the proxy's or the hyperon's eta.
+            "ProxyPt/EtaSplits", // The LeadP pT dependence, split by the sign of the proxy's or the hyperon's eta.
                                 // Kept to the four single-sign splits: the four combined (proxy AND V0) splits exist
                                 // in the consumer too, but they multiply the plot count for little extra information.
                                 // No toy counterpart, for the same reason as ProxyPt above.
@@ -1472,7 +1584,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             false
         },
         {
-            "DeltaPhi", // Azimuthal separation between the hyperon and the proxy
+            "OtherAngDepndcs/DeltaPhi", // Azimuthal separation between the hyperon and the proxy
             //
             // TODO (Toy Model): a <R> vs (phi_Lambda - phi_jet) TProfile would be a cheap addition. Both
             // angles are already in scope where ringProxyJet is computed (phiJet from the jet reshuffle
@@ -1486,7 +1598,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             false // DeltaPhi runs over a full period, not symmetric about zero
         },
         {
-            "DeltaTheta", // Polar separation between the hyperon and the proxy
+            "OtherAngDepndcs/DeltaTheta", // Polar separation between the hyperon and the proxy
             //
             // TODO (Toy Model): same situation as DeltaPhi. cosThetaJet and the hyperon direction are both
             // already available at the ring computation, so <R> vs DeltaTheta is a booking plus one Fill.
@@ -1508,7 +1620,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             true // PVz is symmetric about zero, so folding it is meaningful
         },
         {
-            "QA_LabFrame", // Lab-frame azimuth. Relevant to the acceptance/AEE story rather than to the ring itself
+            "OtherAngDepndcs", // Lab-frame azimuth. Relevant to the acceptance/AEE story rather than to the ring itself
             //
             // TODO (Toy Model): <R> vs phi_Lambda would be the cheapest addition of the three flagged here.
             // phi_Lambda is already being used as an axis by pPstarX/Y/Z_vsPhiLam, so the binning and the
@@ -1570,8 +1682,30 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
     std::cout << " Cut folder: " << cutFolder << "\n";
     std::cout << "========================================================\n";
 
+    // One representative observable per proxy. Integrated values are a property of the entry set, not of
+    // the binning, so a single observable per proxy captures everything the others would repeat.
+    const std::vector<std::pair<std::string, std::string>> proxyRepresentatives = {
+        {"LeadP",   "pRingObservableEtaLeadP"},
+        {"LeadJet", "pRingObservableEtaJet"},
+        {"SubJet",  "pRingObservableEta2ndJet"}
+    };
+
+    // Styling for the cross-family comparison, where the SERIES are the hyperon selections
+    const std::vector<VariationConfig> familyStyles = {
+        {"", "Lambda",       kBlue,  1, 20, false},
+        {"", "AntiLambda",   kRed,   1, 21, false},
+        {"", "BothHyperons", kBlack, 1, 8,  true}
+    };
+
+    // crossFamilyVals[proxy][family] = one integrated value per variation, in allSystematics order
+    std::vector<std::vector<std::vector<std::pair<double, double>>>>
+        crossFamilyVals(proxyRepresentatives.size(),
+                        std::vector<std::vector<std::pair<double, double>>>(families.size()));
+    std::vector<std::vector<std::string>> crossFamilyLabels(proxyRepresentatives.size());
+
     // 5. Main Processing Loops
-    for (const auto& fam : families) {
+    for (size_t famIdx = 0; famIdx < families.size(); ++famIdx) {
+        const auto& fam = families[famIdx];
         std::cout << " -> Processing Family: " << fam.familyName << std::endl;
 
         // Directories are created lazily (only once something is actually written into them),
@@ -1583,6 +1717,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         std::vector<std::pair<double, double>> grandDataVals;
         std::vector<std::vector<std::pair<double, double>>> grandExtVals(externals.size());  // One row per external reference
         std::vector<std::vector<std::pair<double, double>>> grandSysVals(sysVariations.size()); // Track all systematic variations
+        std::vector<std::vector<std::pair<double, double>>> grandMassVals(massVariations.size());  // Mass-window selections
         std::vector<std::string> grandLabels;
 
         for (const auto& group : observableGroups) {
@@ -1792,6 +1927,19 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     drawWithLowerPads(allInOne, "Canvas_AllInOne", fam.familyName + " All Comparisons", overlayDir, kPullOnly);
                 }
 
+                    // Variation: the pT-gate study on its own. Data plus the three gated/ungated pairs
+                    // (Rand, Perp, Data-like), with everything unrelated left out so the only difference
+                    // visible on the canvas is the gate itself.
+                std::vector<ProfileBundle> gateBundles;
+                gateBundles.push_back(allSystematics[0]); // Data is the reference for the pair comparison
+                for (size_t i = 1; i < allSystematics.size(); ++i) {
+                    if (allSystematics[i].config.inGateStudy) gateBundles.push_back(allSystematics[i]);
+                }
+                if (gateBundles.size() > 1) {
+                    drawWithLowerPads(gateBundles, "Canvas_PtGateStudy",
+                                      fam.familyName + " pT gate on artificial proxies", overlayDir, kPullOnly);
+                }
+
                 // --- 2. Folded Plots ---
                 if (group.doFold) {
                     DrawComparisonCanvas({allFoldedSystematics[0]}, "Canvas_Folded_DataOnly", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Data", foldedDir, profConfig, foldedXTitle);
@@ -1811,18 +1959,18 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
 
                 // --- 3. Subtracted Data - Systematics ---
                     // Data minus Data Systematics
-                DrawComparisonCanvas(allSubtractedSystematics, "Canvas_Subtracted_Systematics", fam.familyName + " Systematics Difference", subDir, profConfig, "", subYTitle);
+                DrawComparisonCanvas(allSubtractedSystematics, "Canvas_Subtracted_Systematics", fam.familyName + " Systematics Difference", subDir, profConfig, "", subYTitle, kNoLowerPad, false, true);
                     // Data minus each external reference
                 std::vector<ProfileBundle> allInOneSubtracted = allSubtractedSystematics;
                 for (size_t i = 0; i < allSubtractedExternals.size(); ++i) {
                     const std::string& label = allSubtractedExternals[i].config.legendLabel;
-                    DrawComparisonCanvas({{pDataZero, dataConfig}, allSubtractedExternals[i]}, "Canvas_Subtracted_Only_" + SanitizeName(label),
-                                         fam.familyName + " " + label + " Difference", subDir, profConfig, "", subYTitle);
+                    DrawComparisonCanvas({allSubtractedExternals[i]}, "Canvas_Subtracted_Only_" + SanitizeName(label),
+                                         fam.familyName + " " + label + " Difference", subDir, profConfig, "", subYTitle, kNoLowerPad, false, true);
                     allInOneSubtracted.push_back(allSubtractedExternals[i]);
                 }
                     // All-In-One
                 if (!allSubtractedExternals.empty()) {
-                    DrawComparisonCanvas(allInOneSubtracted, "Canvas_Subtracted_AllInOne", fam.familyName + " All Comparisons Difference", subDir, profConfig, "", subYTitle);
+                    DrawComparisonCanvas(allInOneSubtracted, "Canvas_Subtracted_AllInOne", fam.familyName + " All Comparisons Difference", subDir, profConfig, "", subYTitle, kNoLowerPad, false, true);
                 }
 
                 // --- Mass Selection Proxy Plots ---
@@ -1837,7 +1985,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         DrawComparisonCanvas(allFoldedMass, "Canvas_Folded_MassSelection", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Mass Selection", massDir, profConfig, foldedXTitle);
                     }
                     // Subtracted
-                    DrawComparisonCanvas(allSubtractedMass, "Canvas_Subtracted_MassSelection", fam.familyName + " Mass Selection Difference", massDir, profConfig, "", subYTitle);
+                    DrawComparisonCanvas(allSubtractedMass, "Canvas_Subtracted_MassSelection", fam.familyName + " Mass Selection Difference", massDir, profConfig, "", subYTitle, kNoLowerPad, false, true);
                 }
 
                 // --- 4. Individual Comparisons (One-by-One) ---
@@ -1860,7 +2008,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                             drawWithLowerPads({allFoldedSystematics[0], allFoldedSystematics[i]}, "Canvas_Folded" + sysSuffix, fam.familyName + " Folded vs " + sysLabel, indivDir, lowerPadModes, foldedXTitle);
                         }
                         // Subtracted
-                        DrawComparisonCanvas({allSubtractedSystematics[0], allSubtractedSystematics[i]}, "Canvas_Subtracted" + sysSuffix, fam.familyName + " Difference vs " + sysLabel, indivDir, profConfig, "", subYTitle);
+                        DrawComparisonCanvas({allSubtractedSystematics[i]}, "Canvas_Subtracted" + sysSuffix, fam.familyName + " Difference vs " + sysLabel, indivDir, profConfig, "", subYTitle, kNoLowerPad, false, true);
                     }
 
                     // Do the same for every external reference, which are introduced separately
@@ -1871,26 +2019,21 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         if (group.doFold) {
                             drawWithLowerPads({allFoldedSystematics[0], allFoldedExternals[i]}, "Canvas_Folded_" + SanitizeName(label), fam.familyName + " Folded vs " + label, indivDir, lowerPadModes, foldedXTitle);
                         }
-                        DrawComparisonCanvas({allSubtractedSystematics[0], allSubtractedExternals[i]}, "Canvas_Subtracted_" + SanitizeName(label), fam.familyName + " Difference vs " + label, indivDir, profConfig, "", subYTitle);
+                        DrawComparisonCanvas({allSubtractedExternals[i]}, "Canvas_Subtracted_" + SanitizeName(label), fam.familyName + " Difference vs " + label, indivDir, profConfig, "", subYTitle, kNoLowerPad, false, true);
                     }
                 }
 
-                // --- 5. Integrated Summaries ---
-                TDirectory* integDir = EnsureDir(obsDir, "Integrated_Summary");
-
-                std::vector<std::string> integLabels;
-                std::vector<ProfileBundle> integBundles;
-                std::vector<ProfileBundle> integSubBundles;
-                std::vector<TH1*> integToDelete;
-
-                int numCats = allSystematics.size() + presentExternals.size();
-                
-                    // Compute Integrated Data and save to Grand Summary
+                // --- 5. Integrated accumulation (drawn once per family, not once per observable) ---
+                // Integrating a profile just recovers the entry-weighted mean of whatever filled it, so
+                // two observables filled from the SAME entries with different x-binnings give the SAME
+                // number. Every LeadP observable therefore produced an identical Integrated_Summary, as
+                // did every LeadJet one, and so on: 20 of the 28 folders per family were exact duplicates
+                // of one of the other 8. Nothing is drawn here any more; the values are accumulated and
+                // presented once, at family level, by the brute-force summaries below.
                 auto dataInteg = GetIntegratedProfile(pData);
                 grandDataVals.push_back(dataInteg);
-                grandLabels.push_back(profConfig.xAxisTitle);
+                grandLabels.push_back(profConfig.profileName);
 
-                // Populate the grand summary for systematics
                 // (allSystematics[0] is the data, so sysVariations[i] corresponds to allSystematics[i+1])
                 for (size_t i = 0; i < sysVariations.size(); ++i) {
                     if (i + 1 < allSystematics.size()) {
@@ -1898,84 +2041,27 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         grandSysVals[i].push_back(sysInteg);
                     }
                 }
-                // ... and for the external references, indexed by their position in the externals list
                 for (const auto& ext : presentExternals) {
                     grandExtVals[ext.first].push_back(GetIntegratedProfile(dynamic_cast<TProfile*>(ext.second.profile)));
                 }
-
-                    // Loop over variations and construct isolated categorical bins
-                for (size_t i = 0; i < allSystematics.size(); ++i) {
-                    integLabels.push_back(allSystematics[i].config.legendLabel);
-                    
-                    auto integ = GetIntegratedProfile(dynamic_cast<TProfile*>(allSystematics[i].profile));
-                    
-                    TH1D* hInt = MakeCategoricalPoint(Form("Integ_%zu", i), i, numCats, integ.first, integ.second);
-                    
-                    // Performing also the subtraction between integrated observables, variation by variation
-                    // (error bars are also properly propagated)
-                    TH1D* hIntSub = (i == 0)
-                        ? MakeCategoricalPoint(Form("IntegSub_%zu", i), i, numCats, 0.0, 0.0)
-                        : MakeCategoricalPoint(Form("IntegSub_%zu", i), i, numCats,
-                                               dataInteg.first - integ.first,
-                                               std::sqrt(dataInteg.second*dataInteg.second + integ.second*integ.second));
-
-                    integBundles.push_back({hInt, allSystematics[i].config});
-                    integSubBundles.push_back({hIntSub, allSystematics[i].config});
-                    integToDelete.push_back(hInt);
-                    integToDelete.push_back(hIntSub);
-                }
-                
-                    // Add the external references to the integrated list, continuing the same bin numbering
-                for (size_t i = 0; i < presentExternals.size(); ++i) {
-                    const auto& extBundle = presentExternals[i].second;
-                    integLabels.push_back(extBundle.config.legendLabel);
-
-                    auto integExt = GetIntegratedProfile(dynamic_cast<TProfile*>(extBundle.profile));
-                    int idx = static_cast<int>(allSystematics.size() + i); // No manual offset bookkeeping any more
-
-                    TH1D* hIntExt = MakeCategoricalPoint(Form("Integ_Ext%zu", i), idx, numCats, integExt.first, integExt.second);
-                    TH1D* hIntSubExt = MakeCategoricalPoint(Form("IntegSub_Ext%zu", i), idx, numCats,
-                                                            dataInteg.first - integExt.first,
-                                                            std::sqrt(dataInteg.second*dataInteg.second + integExt.second*integExt.second));
-
-                    integBundles.push_back({hIntExt, extBundle.config});
-                    integSubBundles.push_back({hIntSubExt, extBundle.config});
-                    integToDelete.push_back(hIntExt);
-                    integToDelete.push_back(hIntSubExt);
-                }
-
-                // 4. Draw them using the custom categorical plotter
-                DrawIntegratedCanvas(integBundles, integLabels, "Canvas_Integrated", fam.familyName + " Integrated Summary", integDir, "Integrated " + profConfig.yAxisTitle, false);
-                DrawIntegratedCanvas(integSubBundles, integLabels, "Canvas_Integrated_Subtracted", fam.familyName + " Integrated Differences", integDir, "#Delta" + profConfig.yAxisTitle + " (Data - Var)", true);
-
-                // 5. Draw Mass Selection Integrated Summaries
-                if (allMassSystematics.size() > 1 && massDir) {
-                    std::vector<std::string> massIntegLabels;
-                    std::vector<ProfileBundle> massIntegBundles;
-                    std::vector<ProfileBundle> massIntegSubBundles;
-                    int numMassCats = allMassSystematics.size();
-                    
-                    for (size_t i = 0; i < allMassSystematics.size(); ++i) {
-                        massIntegLabels.push_back(allMassSystematics[i].config.legendLabel);
-                        auto integ = GetIntegratedProfile(dynamic_cast<TProfile*>(allMassSystematics[i].profile));
-                        
-                        TH1D* hInt = MakeCategoricalPoint(Form("MassInteg_%zu", i), i, numMassCats, integ.first, integ.second);
-                        
-                        TH1D* hIntSub = (i == 0)
-                            ? MakeCategoricalPoint(Form("MassIntegSub_%zu", i), i, numMassCats, 0.0, 0.0)
-                            : MakeCategoricalPoint(Form("MassIntegSub_%zu", i), i, numMassCats,
-                                                   dataInteg.first - integ.first,
-                                                   std::sqrt(dataInteg.second*dataInteg.second + integ.second*integ.second));
-                        
-                        massIntegBundles.push_back({hInt, allMassSystematics[i].config});
-                        massIntegSubBundles.push_back({hIntSub, allMassSystematics[i].config});
-                        
-                        integToDelete.push_back(hInt);     // Now safely in scope!
-                        integToDelete.push_back(hIntSub);
+                for (size_t i = 0; i < massVariations.size(); ++i) {
+                    if (i + 1 < allMassSystematics.size()) {
+                        grandMassVals[i].push_back(GetIntegratedProfile(dynamic_cast<TProfile*>(allMassSystematics[i+1].profile)));
                     }
-                    
-                    DrawIntegratedCanvas(massIntegBundles, massIntegLabels, "Canvas_Integrated_MassSelection", fam.familyName + " Mass Selection Integrated", massDir, "Integrated " + profConfig.yAxisTitle, false);
-                    DrawIntegratedCanvas(massIntegSubBundles, massIntegLabels, "Canvas_Integrated_Subtracted_MassSelection", fam.familyName + " Mass Selection Integrated Differences", massDir, "#Delta" + profConfig.yAxisTitle + " (Data - Var)", true);
+                }
+
+                // Cross-family comparison: only the three representative observables are recorded, one per
+                // proxy, since anything else would just repeat one of them (same argument as above).
+                for (size_t iRep = 0; iRep < proxyRepresentatives.size(); ++iRep) {
+                    if (profConfig.profileName != proxyRepresentatives[iRep].second) continue;
+                    auto& slot = crossFamilyVals[iRep][famIdx];
+                    slot.push_back(dataInteg);
+                    for (size_t i = 1; i < allSystematics.size(); ++i) {
+                        slot.push_back(GetIntegratedProfile(dynamic_cast<TProfile*>(allSystematics[i].profile)));
+                    }
+                    if (crossFamilyLabels[iRep].empty()) {
+                        for (const auto& b2 : allSystematics) crossFamilyLabels[iRep].push_back(b2.config.legendLabel);
+                    }
                 }
 
                 // --- 6. tanh fit of the eta dependence ---
@@ -1990,12 +2076,14 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     std::vector<std::string> fitLabels;
                     std::vector<TanhFitResult> fitResults;
                     std::vector<VariationConfig> fitConfigs;
+                    std::vector<bool> fitIsToy; // Toy is excluded from the entries summary, see below
 
                     for (const auto& bundle : allSystematics) {
                         TProfile* pFit = dynamic_cast<TProfile*>(bundle.profile);
                         if (!pFit) continue;
                         fitLabels.push_back(bundle.config.legendLabel);
                         fitConfigs.push_back(bundle.config);
+                        fitIsToy.push_back(false);
                         fitResults.push_back(FitTanhProfile(pFit, profConfig, bundle.config,
                                                             "Canvas_TanhFit_" + SanitizeName(bundle.config.legendLabel),
                                                             perVarDir));
@@ -2005,6 +2093,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         if (!pFit) continue;
                         fitLabels.push_back(ext.second.config.legendLabel);
                         fitConfigs.push_back(ext.second.config);
+                        fitIsToy.push_back(externals[ext.first].kind == ExternalRef::kToyModel);
                         fitResults.push_back(FitTanhProfile(pFit, profConfig, ext.second.config,
                                                             "Canvas_TanhFit_" + SanitizeName(ext.second.config.legendLabel),
                                                             perVarDir));
@@ -2014,15 +2103,24 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     // including the ones whose fit did not converge: a wild chi2/ndf is itself the
                     // quickest way to spot a failed fit. The parameter summaries keep only the
                     // converged ones, since a non-converged p0 or p1 is not a measurement of anything.
-                    std::vector<std::string> allLabels, okLabels;
+                    std::vector<std::string> allLabels, okLabels, entriesLabels;
                     std::vector<FitSummaryPoint> entriesPts, chi2Pts, p0Pts, p1Pts;
 
                     for (size_t i = 0; i < fitResults.size(); ++i) {
                         const auto& fr = fitResults[i];
 
                         allLabels.push_back(fitLabels[i]);
-                        entriesPts.push_back({fitConfigs[i], fr.entries, 0.0, 0.0});
                         chi2Pts.push_back({fitConfigs[i], (fr.ndf > 0) ? fr.chi2 / fr.ndf : 0.0, 0.0, 0.0});
+
+                        // The Toy Model is run with something like three orders of magnitude more
+                        // statistics than any data or MC sample, so including it forces a y-range in
+                        // which every real point collapses onto the axis. It is left out of the entries
+                        // summary entirely; its statistics are a property of how long the toy was run
+                        // for, not a result worth comparing.
+                        if (!fitIsToy[i]) {
+                            entriesLabels.push_back(fitLabels[i]);
+                            entriesPts.push_back({fitConfigs[i], fr.entries, 0.0, 0.0});
+                        }
 
                         if (!fr.valid) continue;
                         okLabels.push_back(fitLabels[i]);
@@ -2030,8 +2128,8 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         p1Pts.push_back({fitConfigs[i], fr.p1, fr.p1Low, fr.p1High});
                     }
 
-                    DrawFitSummaryCanvas(allLabels, entriesPts, "Canvas_FitSummary_Entries",
-                                         fam.familyName + " tanh fit: entries", fitDir, "Entries");
+                    DrawFitSummaryCanvas(entriesLabels, entriesPts, "Canvas_FitSummary_Entries",
+                                         fam.familyName + " tanh fit: entries (Toy excluded)", fitDir, "Entries");
                     DrawFitSummaryCanvas(allLabels, chi2Pts, "Canvas_FitSummary_RedChi2",
                                          fam.familyName + " tanh fit: reduced #chi^{2}", fitDir, "#chi^{2}/ndf");
                     DrawFitSummaryCanvas(okLabels, p0Pts, "Canvas_FitSummary_p0",
@@ -2041,7 +2139,6 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 }
 
                 // Cleanup dynamically allocated profiles for this observable iteration
-                for (auto p : integToDelete) delete p;
                 for (auto p : profilesToDelete) delete p;
                 for (auto p : foldedToDelete) delete p;
                 for (auto p : subtractedToDelete) delete p;
@@ -2112,7 +2209,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             DrawComparisonCanvas(catSubBundles, "Canvas_Subtracted_AllInOne",
                                  fam.familyName + " " + catObs.profileName + " difference",
                                  catSubDir, catConfig, "", "#Delta" + catObs.yAxisTitle + " (Data - Var)",
-                                 kNoLowerPad, true);
+                                 kNoLowerPad, true, true);
 
             // --- Three-bin eta-sign digest, the one slice the Toy Model can speak to ---
             if (catObs.doEtaSignSummary) {
@@ -2200,61 +2297,128 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             for (auto p : catToDelete) delete p;
         } // end of categorical observables loop
 
-        // --- 6. Integrated observable Summary (Observable in each variation vs Observable for Data) ---
-        // Comparing eta_Jet and eta_Lambda integrations is a way of probing if there were any overflows/underflows
-        // and the such (there were! I then modified the eta axis range in the consumer, so this was a good catch!
-        // The single-bin integrated observables from other scripts were impervious to this problem though, so good news!),
-        // or even other possible problems lingering in the code (none found after the aformentioned fix!)
+        // --- 6. Integrated summaries, drawn ONCE per family ---
+        // Everything integrated now lives here rather than being repeated inside every observable folder.
+        // The x-axis is the observable, the series are the variations, so this single canvas carries all
+        // the information the 28 per-observable folders used to hold between them.
+        // Comparing the eta_Jet and eta_Lambda entries is also a way of probing for overflow/underflow
+        // problems (there were some! The eta axis range in the consumer was fixed after this was spotted).
         int nGrand = grandLabels.size();
         if (nGrand > 0 && famDir) {
-            std::vector<ProfileBundle> grandBundles;
-            std::vector<TH1*> grandToDelete; // For memory cleanup
-            
-            // Add Data
-            TH1D* hGrandData = new TH1D("GrandData", "", nGrand, 0, nGrand);
-            hGrandData->SetDirectory(nullptr);
-            for(int i = 0; i < nGrand; ++i) {
-                hGrandData->SetBinContent(i + 1, grandDataVals[i].first);
-                hGrandData->SetBinError(i + 1, grandDataVals[i].second);
-            }
-            grandBundles.push_back({hGrandData, dataConfig});
-            grandToDelete.push_back(hGrandData);
+            TDirectory* integDir = EnsureDir(famDir, "IntegratedSummaries");
 
-            // Add All Systematics
-            for (size_t sysIdx = 0; sysIdx < sysVariations.size(); ++sysIdx) {
-                if (grandSysVals[sysIdx].size() == (size_t)nGrand) {
-                    TH1D* hGrandSys = new TH1D(Form("GrandSys_%zu", sysIdx), "", nGrand, 0, nGrand);
-                    hGrandSys->SetDirectory(nullptr);
-                    for (int i = 0; i < nGrand; ++i) {
-                        hGrandSys->SetBinContent(i + 1, grandSysVals[sysIdx][i].first);
-                        hGrandSys->SetBinError(i + 1, grandSysVals[sysIdx][i].second);
-                    }
-                    grandBundles.push_back({hGrandSys, sysVariations[sysIdx]});
-                    grandToDelete.push_back(hGrandSys);
+            std::vector<TH1*> grandToDelete;
+
+            // Small local helper: one multi-bin series across all observables, for a given variation
+            auto makeSeries = [&](const std::vector<std::pair<double, double>>& vals,
+                                  const std::string& name) -> TH1D* {
+                if (vals.size() != static_cast<size_t>(nGrand)) return nullptr;
+                TH1D* h = new TH1D(name.c_str(), "", nGrand, 0, nGrand);
+                h->SetDirectory(nullptr);
+                for (int i = 0; i < nGrand; ++i) {
+                    h->SetBinContent(i + 1, vals[i].first);
+                    h->SetBinError(i + 1, vals[i].second);
                 }
-            }
+                return h;
+            };
 
-            // Add every external reference that was present for all observables
+            // (a) Values
+            std::vector<ProfileBundle> grandBundles;
+            TH1D* hGrandData = makeSeries(grandDataVals, "GrandData");
+            if (hGrandData) { grandBundles.push_back({hGrandData, dataConfig}); grandToDelete.push_back(hGrandData); }
+
+            for (size_t sysIdx = 0; sysIdx < sysVariations.size(); ++sysIdx) {
+                TH1D* h = makeSeries(grandSysVals[sysIdx], Form("GrandSys_%zu", sysIdx));
+                if (h) { grandBundles.push_back({h, sysVariations[sysIdx]}); grandToDelete.push_back(h); }
+            }
             for (size_t extIdx = 0; extIdx < externals.size(); ++extIdx) {
                 if (externals[extIdx].basePath.empty()) continue;
-                if (grandExtVals[extIdx].size() != (size_t)nGrand) continue;
-
-                TH1D* hGrandExt = new TH1D(Form("GrandExt_%zu", extIdx), "", nGrand, 0, nGrand);
-                hGrandExt->SetDirectory(nullptr);
-                for (int i = 0; i < nGrand; ++i) {
-                    hGrandExt->SetBinContent(i + 1, grandExtVals[extIdx][i].first);
-                    hGrandExt->SetBinError(i + 1, grandExtVals[extIdx][i].second);
-                }
-                grandBundles.push_back({hGrandExt, externals[extIdx].config});
-                grandToDelete.push_back(hGrandExt);
+                TH1D* h = makeSeries(grandExtVals[extIdx], Form("GrandExt_%zu", extIdx));
+                if (h) { grandBundles.push_back({h, externals[extIdx].config}); grandToDelete.push_back(h); }
             }
-            
-            // Draw the Brute Force Canvas
-            DrawIntegratedCanvas(grandBundles, grandLabels, "Canvas_BruteForce_Summary", fam.familyName + " Global Summary Across Kinematics", famDir, "Integrated R", false, true);
-            
+            DrawIntegratedCanvas(grandBundles, grandLabels, "Canvas_BruteForce_Summary",
+                                 fam.familyName + " integrated R across observables", integDir,
+                                 "Integrated R", false, true);
+
+            // (b) Differences against the data, which the per-observable folders used to show
+            std::vector<ProfileBundle> grandSubBundles;
+            for (size_t k = 1; k < grandBundles.size(); ++k) { // Skip the data: Data - Data is zero
+                TH1D* hSub = (TH1D*)grandBundles[k].profile->Clone(Form("GrandSub_%zu", k));
+                hSub->SetDirectory(nullptr);
+                for (int i = 1; i <= nGrand; ++i) {
+                    double d = grandDataVals[i-1].first,  ed = grandDataVals[i-1].second;
+                    double v = grandBundles[k].profile->GetBinContent(i);
+                    double ev = grandBundles[k].profile->GetBinError(i);
+                    hSub->SetBinContent(i, d - v);
+                    hSub->SetBinError(i, std::sqrt(ed*ed + ev*ev));
+                }
+                grandSubBundles.push_back({hSub, grandBundles[k].config});
+                grandToDelete.push_back(hSub);
+            }
+            if (!grandSubBundles.empty()) {
+                DrawIntegratedCanvas(grandSubBundles, grandLabels, "Canvas_BruteForce_Subtracted",
+                                     fam.familyName + " integrated difference across observables", integDir,
+                                     "#DeltaR (Data - Var)", true, true);
+            }
+
+            // (c) Mass-window selections, hoisted out of every observable's Mass_Selection folder
+            std::vector<ProfileBundle> grandMassBundles;
+            if (hGrandData) grandMassBundles.push_back({hGrandData, dataConfig});
+            for (size_t mIdx = 0; mIdx < massVariations.size(); ++mIdx) {
+                TH1D* h = makeSeries(grandMassVals[mIdx], Form("GrandMass_%zu", mIdx));
+                if (h) { grandMassBundles.push_back({h, massVariations[mIdx]}); grandToDelete.push_back(h); }
+            }
+            if (grandMassBundles.size() > 1) {
+                DrawIntegratedCanvas(grandMassBundles, grandLabels, "Canvas_BruteForce_MassSelection",
+                                     fam.familyName + " integrated R, mass windows", integDir,
+                                     "Integrated R", false, true);
+            }
+
             for (auto p : grandToDelete) delete p;
         }
     } // end of families loop
+
+    // ---------------------------------------------------------
+    // Cross-family comparison, one level above Lambda / AntiLambda / BothHyperons
+    // ---------------------------------------------------------
+    // Same integrated quantity, but now the SERIES are the hyperon selections and the axis is the
+    // variation. One canvas per proxy, because integrated values are per entry set: a single canvas
+    // mixing proxies would be comparing three different things on one axis.
+    {
+        TDirectory* xFamDir = nullptr;
+
+        for (size_t iRep = 0; iRep < proxyRepresentatives.size(); ++iRep) {
+            const auto& labels = crossFamilyLabels[iRep];
+            if (labels.empty()) continue;
+
+            std::vector<ProfileBundle> famBundles;
+            std::vector<TH1*> famToDelete;
+
+            for (size_t iFam = 0; iFam < families.size(); ++iFam) {
+                const auto& vals = crossFamilyVals[iRep][iFam];
+                if (vals.size() != labels.size()) continue; // Family missing this observable entirely
+
+                TH1D* h = new TH1D(Form("XFam_%zu_%zu", iRep, iFam), "", (int)labels.size(), 0, (double)labels.size());
+                h->SetDirectory(nullptr);
+                for (size_t i = 0; i < vals.size(); ++i) {
+                    h->SetBinContent((int)i + 1, vals[i].first);
+                    h->SetBinError((int)i + 1, vals[i].second);
+                }
+                // familyStyles is indexed in the same order as families, so the legend names the selection
+                famBundles.push_back({h, familyStyles[std::min(iFam, familyStyles.size() - 1)]});
+                famToDelete.push_back(h);
+            }
+
+            if (famBundles.size() > 1) {
+                if (!xFamDir) xFamDir = EnsureDir(fOut, "CrossFamily_Integrated");
+                DrawIntegratedCanvas(famBundles, labels,
+                                     "Canvas_CrossFamily_" + proxyRepresentatives[iRep].first,
+                                     "Integrated R by hyperon selection (" + proxyRepresentatives[iRep].first + " proxy)",
+                                     xFamDir, "Integrated R", false, true);
+            }
+            for (auto p : famToDelete) delete p;
+        }
+    }
 
     cache.CloseAll(); // Release every input file before closing the output
 
