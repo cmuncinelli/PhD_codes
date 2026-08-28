@@ -38,7 +38,9 @@
 // Configuration Data Structures
 // ---------------------------------------------------------
 
-// Holds styling and file suffix for a single systematic variation
+/// @brief Styling and file suffix for a single systematic variation.
+/// @note isData marks the reference curve: it is drawn last, thicker, and acts as the minuend
+///       of every subtraction. Exactly one entry per canvas should set it.
 struct VariationConfig {
     std::string suffix;      // e.g., "JustLambda_forceDatalikeJet"
     std::string legendLabel; // e.g., "Data-like Jet"
@@ -48,13 +50,14 @@ struct VariationConfig {
     bool isData;             // Flag to indicate if this is the main, thick black line
 };
 
-// Represents a full family (Lambda, AntiLambda, Both) and its associated variations
+/// @brief A hyperon selection (Lambda, AntiLambda, Both), i.e. one set of consumer output files.
+/// @note familyName names the output folder; dataSuffix is what actually appears in the filenames.
 struct FamilyConfig {
     std::string familyName;                 // e.g., "Lambda"
     std::string dataSuffix;                 // e.g., "JustLambda"
 };
 
-// Represents the different 1D TProfiles we want to extract from the files
+/// @brief One 1D TProfile to extract, together with where it lives and how to label it.
 struct ProfileConfig {
     std::string subDir;       // In-file directory, WITHOUT the task dir (e.g. "EtaDependence/")
     std::string profileName;  // e.g., "pRingObservableEtaLeadP"
@@ -64,8 +67,8 @@ struct ProfileConfig {
                               // false -> <task>/<subDir><profileName>            (task-level, e.g. EtaStudy/)
 };
 
-// A set of profiles that share an output folder and the same set of valid transforms.
-// Adding a new observable to the macro means adding an entry here and nothing else.
+/// @brief A set of profiles that share an output folder and the same set of valid transforms.
+/// @note Adding a new observable to the macro means adding an entry here and nothing else.
 struct ObservableGroup {
     std::string groupName;                  // Output folder name, e.g. "EtaProxy"
     std::vector<ProfileConfig> profiles;
@@ -74,10 +77,17 @@ struct ObservableGroup {
                                             // pT, mass, DeltaPhi, ... where folding is nonsense.
 };
 
-// An external reference dataset drawn alongside the in-wagon systematics
-// (MC baseline, pp baseline, Toy Model, ...). Collapsing these into one list removes
-// the previously triplicated "if (pMC) ... if (pPP) ... if (pToy) ..." blocks, and with them
-// the manual index-offset arithmetic that had to be kept in sync by hand.
+/**
+ * @brief An external reference dataset drawn alongside the in-wagon systematics
+ *        (MC baseline, pp baseline, Toy Model, ...).
+ *
+ * Collapsing these into one list removes the previously triplicated
+ * "if (pMC) ... if (pPP) ... if (pToy) ..." blocks, and with them the manual index-offset
+ * arithmetic that had to be kept in sync by hand every time a reference was added.
+ *
+ * @note An empty basePath means "not requested", and the reference is skipped everywhere with
+ *       no further bookkeeping.
+ */
 struct ExternalRef {
     enum Kind {
         kConsumerDir, // basePath is a directory holding ConsumerResults_<suffix>.root
@@ -104,9 +114,15 @@ const std::string DEFAULT_CUT_FOLDER = "Ring";
 // Helper 0: Small ROOT navigation utilities
 // ---------------------------------------------------------
 
-// Returns an existing subdirectory or creates it. Used to keep directory creation lazy:
-// nothing is created until we actually have a canvas to write into it, so consumer files
-// that do not enable a given cut folder do not leave a trail of empty folders behind.
+/**
+ * @brief Returns an existing subdirectory, creating it only if absent.
+ *
+ * Used to keep directory creation lazy: nothing is created until we actually have a canvas to
+ * write into it, so consumer files that do not enable a given cut folder do not leave a trail
+ * of empty folders behind.
+ *
+ * @return The subdirectory, owned by the parent, or nullptr if the parent itself is null.
+ */
 TDirectory* EnsureDir(TDirectory* parent, const std::string& name) {
     if (!parent) return nullptr;
     TDirectory* dir = parent->GetDirectory(name.c_str());
@@ -114,7 +130,12 @@ TDirectory* EnsureDir(TDirectory* parent, const std::string& name) {
     return dir;
 }
 
-// Builds the full in-file path of a profile, honouring the selected cut folder
+/**
+ * @brief Builds the full in-file path of a profile, honouring the selected cut folder.
+ * @param cutFolder Kinematic-cut folder to read from (Ring, JetKinematicCuts, ...). Ignored
+ *                  for profiles whose ProfileConfig marks them as task-level.
+ * @return Path relative to the file root, ready to hand to TFile::Get.
+ */
 std::string BuildProfilePath(const ProfileConfig& profConfig, const std::string& cutFolder) {
     if (profConfig.underCutFolder) {
         return TASK_DIR_IN_FILE + cutFolder + "/" + profConfig.subDir + profConfig.profileName;
@@ -125,15 +146,26 @@ std::string BuildProfilePath(const ProfileConfig& profConfig, const std::string&
 // ---------------------------------------------------------
 // Helper 1: Cached file access
 // ---------------------------------------------------------
-// Every fetch used to open and close the ROOT file again, so the number of opens scaled as
-// (families x observables x variations). With the observable list growing this became a real
-// cost for the macro, and it is pure overhead: the same handful of files is reopened
-// hundreds of times. Each file is now opened once, kept open, and closed at the very end.
-// Failed opens are cached too, so a missing systematic warns once instead of once per observable.
+/**
+ * @brief Opens each input file at most once and keeps it open for the whole run.
+ *
+ * Every fetch used to open and close the ROOT file again, so the number of opens scaled as
+ * (families x observables x variations). With the observable list growing this became a real
+ * cost for the macro, and it is pure overhead: the same handful of files is reopened
+ * hundreds of times.  Each file is now opened once, kept open, and closed at the very end.
+ * Failed opens are cached too, so a missing systematic warns once instead of once per observable.
+ *
+ * @note Objects handed out by FetchClone are detached clones, so they stay valid after CloseAll().
+ */
 class FileCache {
 public:
     ~FileCache() { CloseAll(); }
 
+    /**
+     * @brief Opens a file, or returns the already-open handle.
+     * @return The open file, or nullptr if it could not be opened. A failed path is remembered
+     *         and will keep returning nullptr without retrying or re-warning.
+     */
     TFile* Open(const std::string& path) {
         auto it = fFiles.find(path);
         if (it != fFiles.end()) return it->second; // Includes cached nullptr for known-bad paths
@@ -151,7 +183,12 @@ public:
         return f;
     }
 
-    // Fetches an object and returns a detached clone that survives CloseAll()
+    /**
+     * @brief Fetches an object and returns a detached clone that survives CloseAll().
+     * @param objPath        Path of the object inside the file, as built by BuildProfilePath.
+     * @param warnIfMissing  Set false for genuinely optional objects, to keep the log readable.
+     * @return A clone owned by the caller (delete it), or nullptr if the file or object is missing.
+     */
     template <typename T>
     T* FetchClone(const std::string& filePath, const std::string& objPath, bool warnIfMissing = true) {
         TFile* f = Open(filePath);
@@ -171,6 +208,7 @@ public:
         return clone;
     }
 
+    /// @brief Closes and releases every cached file. Safe to call more than once.
     void CloseAll() {
         for (auto& entry : fFiles) {
             if (entry.second) {
@@ -188,7 +226,14 @@ private:
 // ---------------------------------------------------------
 // Helper 1.1: Fold Profile (Sum Positive and Negative Eta)
 // ---------------------------------------------------------
-// Only valid for axes symmetric about zero. Callers must gate this on ObservableGroup::doFold.
+/**
+ * @brief Folds a profile about x = 0, summing each bin with its mirror image.
+ * @param newName Name for the returned histogram. Must be unique among the objects alive at the
+ *                same time, since several folded copies of the same source coexist.
+ * @return A detached TH1D on the positive half-axis, owned by the caller.
+ * @note Only meaningful for axes symmetric about zero (eta, PVz). Callers must gate this on
+ *       ObservableGroup::doFold, otherwise folding a pT or mass axis produces nonsense.
+ */
 TH1D* FoldProfile(TProfile* pIn, const std::string& newName) {
     if (!pIn) return nullptr;
     
@@ -237,6 +282,17 @@ TH1D* FoldProfile(TProfile* pIn, const std::string& newName) {
 // ---------------------------------------------------------
 // Helper 1.2: Subtract Profiles (Data - Systematics)
 // ---------------------------------------------------------
+/**
+ * @brief Bin-by-bin difference pData - pSys, with the errors added in quadrature.
+ * @param pData Reference (the minuend). Its binning defines the output binning.
+ * @param pSys  Variation to subtract. May have a different binning: see the note below.
+ * @param newName Name for the returned histogram, unique among simultaneously live objects.
+ * @return A detached TH1D holding the difference, owned by the caller.
+ * @note Bins where either input has no entries are set to exactly zero rather than left as
+ *       spurious differences, so empty regions do not masquerade as a signal.
+ * @note If the binnings differ (the Toy Model case) the variation is evaluated by interpolation
+ *       and its error taken from the nearest bin, which is approximate by construction.
+ */
 // (Also handles binning mismatches appropriately)
 //
 // TODO (or at least a warning):
@@ -312,6 +368,10 @@ TH1D* SubtractProfiles(TH1* pData, TH1* pSys, const std::string& newName) {
 // ---------------------------------------------------------
 // Helper 1.3: Integrate Profile (Merge all bins)
 // ---------------------------------------------------------
+/**
+ * @brief Collapses a profile to its single entry-weighted mean over the whole axis.
+ * @return {value, error}. Both are zero for a null input.
+ */
 std::pair<double, double> GetIntegratedProfile(TProfile* pIn) {
     if (!pIn) return {0.0, 0.0};
     
@@ -332,9 +392,21 @@ std::pair<double, double> GetIntegratedProfile(TProfile* pIn) {
 // ---------------------------------------------------------
 // Helper 1.4: Single categorical point
 // ---------------------------------------------------------
-// The integrated summaries draw one point per variation on a labelled axis, which means one
-// single-filled histogram per variation. This used to be written out inline once per reference
-// type; it is identical every time apart from the bin index, so it lives here now.
+/**
+ * @brief Builds a histogram holding a single point, for the labelled-axis summary canvases.
+ *
+ * The integrated summaries draw one point per variation on a shared labelled axis, which means
+ * one single-filled histogram per variation, all sharing the same binning so they can be
+ * overlaid. This used to be written out inline once per reference type; it is identical every
+ * time apart from the bin index, so it lives here now.
+ *
+ * @param name  Object name. Only needs to be unique among simultaneously live objects, since the
+ *              histogram is detached from any directory.
+ * @param idx   Zero-based position of this variation on the categorical axis (bin idx + 1 is filled).
+ * @param nCats Total number of categories on the axis, i.e. the bin count shared by every point
+ *              drawn on the same canvas.
+ * @return A detached TH1D owned by the caller.
+ */
 TH1D* MakeCategoricalPoint(const std::string& name, int idx, int nCats, double value, double error) {
     TH1D* h = new TH1D(name.c_str(), "", nCats, 0, nCats);
     h->SetDirectory(nullptr); // Also silences the "Replacing existing TH1" warnings these used to raise,
@@ -347,6 +419,13 @@ TH1D* MakeCategoricalPoint(const std::string& name, int idx, int nCats, double v
 // ---------------------------------------------------------
 // Helper 1.5: Toy Model Profile Extraction
 // ---------------------------------------------------------
+/**
+ * @brief Fetches the Toy Model counterpart of a consumer profile.
+ * @param filePath    Full path to the single Toy Model file. An empty string skips the fetch.
+ * @param profileName Consumer-side profile name, used only to decide which of the two Toy Model
+ *                    profiles is the right counterpart (see the TODO below).
+ * @return A detached clone owned by the caller, or nullptr if unavailable.
+ */
 TProfile* GetToyModelProfile(FileCache& cache, const std::string& filePath, const std::string& profileName) {
     if (filePath.empty()) return nullptr;
 
@@ -372,12 +451,28 @@ TProfile* GetToyModelProfile(FileCache& cache, const std::string& filePath, cons
 // Helper 2: Draw Comparison Canvas
 // ---------------------------------------------------------
 
-// A temporary struct to bundle a fetched profile/histogram with its styling instructions
+/// @brief Pairs a fetched curve with the styling it should be drawn in.
+/// @note Held as TH1* rather than TProfile* because the folded and subtracted transforms produce
+///       plain TH1Ds, and all three flavours have to flow through the same drawing helpers.
 struct ProfileBundle {
     TH1* profile; // Converted to TH1* which is also the parent type of TProfile* in order to add the R(eta_pos) + R(eta_pos) plots into this structure
     VariationConfig config;
 };
 
+/**
+ * @brief Overlays several profiles on one canvas and writes it to the output file.
+ *
+ * Axis ranges are computed from the data actually present (error bars included), so profiles with
+ * different binnings can safely share a canvas. Whichever bundle is flagged as data is drawn last,
+ * on top of the systematics, and with a thicker line.
+ *
+ * @param bundles      Curves to draw, each with its own styling. Drawn in the given order, so pass
+ *                     the data first for it to head the legend.
+ * @param outDir       Destination directory. Nothing is drawn if this is null.
+ * @param profConfig   Supplies the default axis titles.
+ * @param customXTitle Overrides the x-axis title from profConfig; empty means "use profConfig".
+ * @param customYTitle Overrides the y-axis title from profConfig; empty means "use profConfig".
+ */
 void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
                           const std::string& canvasName,
                           const std::string& canvasTitle,
@@ -506,6 +601,21 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
 // ---------------------------------------------------------
 // Helper 3: Draw Integrated Ring Observable Canvas
 // ---------------------------------------------------------
+/**
+ * @brief Draws one point per variation on a labelled categorical axis.
+ *
+ * Each bundle is expected to be a single-point histogram from MakeCategoricalPoint, all sharing
+ * the same bin count, so that overlaying them produces one point per category.
+ *
+ * @param bundles     One single-filled histogram per category, in axis order.
+ * @param labels      Bin labels, one per category. Its size defines the axis bin count, so it must
+ *                    match the nCats the bundles were built with.
+ * @param outDir      Destination directory. Nothing is drawn if this is null.
+ * @param isSubtracted Marks the canvas as a difference plot: forces zero to stay inside the y-range
+ *                     and draws a dashed line there, so "consistent with zero" is readable at a glance.
+ * @param drawLegend  Adds a legend naming each variation. Needed when the x-axis labels describe
+ *                    something other than the variations themselves (the brute-force summary).
+ */
 void DrawIntegratedCanvas(const std::vector<ProfileBundle>& bundles,
                           const std::vector<std::string>& labels,
                           const std::string& canvasName,
@@ -609,6 +719,19 @@ void DrawIntegratedCanvas(const std::vector<ProfileBundle>& bundles,
 // ---------------------------------------------------------
 // Main Macro 
 // ---------------------------------------------------------
+/**
+ * @brief Builds the cross-configuration summary file for one wagon.
+ *
+ * Reads every ConsumerResults_<suffix>.root found in consumerDir (one per systematic variation),
+ * plus the optional external references, and writes auxiliarySummaryPlots.root beside them.
+ *
+ * @param consumerDir  Directory holding this wagon's ConsumerResults files. Also the output location.
+ * @param mcRefDir     Directory holding the MC baseline's ConsumerResults files. Empty disables the overlay.
+ * @param ppRefDir     Directory holding the pp baseline's ConsumerResults files. Empty disables the overlay.
+ * @param toyModelPath Full path to the single Toy Model file. Empty disables the overlay.
+ * @param cutFolder    Which kinematic-cut folder to read. Only "Ring" is always booked by the consumer;
+ *                     the others are opt-in and produce no output at all when absent from the files.
+ */
 void auxiliarySummaryPlots(const std::string& consumerDir,
                            const std::string& mcRefDir = "",
                            const std::string& ppRefDir = "",
@@ -620,11 +743,24 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
     std::vector<VariationConfig> sysVariations = {
         {"_forceRandJet",                 "Rand Jet",                  kBlue,     1, 20, false}, // Full circle
         {"_forceDatalikeJet",             "Data-like Jet",             kRed,      1, 21, false}, // Square
-        {"_forceDatalikeJet_10resamples", "Data-like Jet (10 resam.)", kRed,      2, 25, false}, // Open square
         {"_forcePerpToJet",               "Perp to Jet",               kGreen+2,  1, 22, false}, // Triangle up
-        {"_forcePerpToJet_10resamples",   "Perp to Jet (10 resam.)",   kGreen+2,  2, 26, false}, // Open triangle up
         {"_forcePreviousJet",             "Prev Jet",                  kOrange+1, 1, 34, false}, // Full cross (bold "+")
-        {"_MixedEventProxies",            "MixedEv Jet",               kGray+1,   1, 24, false}  // Open circle
+        {"_MixedEventProxies",            "MixedEv Jet",               kGray+1,   1, 24, false}, // Open circle
+
+        // Do the artificial proxies survive a minimum-pT gate? The pT of an invented direction is rebuilt from
+        // the original |p| (see gatePtOnArtificialProxies in applyProxyDistortion), so gating on it is a genuine
+        // selection rather than a no-op, and it may sculpt the sample. Same colour as the ungated parent, dashed
+        // line and the open counterpart of its marker, so the pairs read together on a shared canvas.
+        {"_forceRandJet_gatePtOnProxy",   "Rand Jet (pT gated)",       kBlue,     2, 24, false}, // Open circle
+        {"_forcePerpToJet_gatePtOnProxy", "Perp to Jet (pT gated)",    kGreen+2,  2, 26, false}, // Open triangle up
+
+        // Tighter primary-vertex selection. Unrelated to the proxy machinery, so it gets its own colour.
+        {"_5cmZvtx",                      "|Zvtx| < 5 cm",             kPink+7,   1, 23, false}  // Full triangle down
+
+        // Kept for reference: the resampled variations were superseded by the gated ones above.
+        // Uncomment (and re-run the corresponding consumer configs) if they are ever needed again.
+        // {"_forceDatalikeJet_10resamples", "Data-like Jet (10 resam.)", kRed,     2, 25, false}, // Open square
+        // {"_forcePerpToJet_10resamples",   "Perp to Jet (10 resam.)",   kGreen+2, 2, 26, false}  // Open triangle up
     };
 
     VariationConfig dataConfig = {"", "Data", kBlack,  1, 8, true}; // Thick black line. Thickness is controlled by the flag turned "true", essentially
