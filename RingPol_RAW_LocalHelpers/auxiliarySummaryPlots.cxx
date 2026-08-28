@@ -25,13 +25,21 @@
 #include <map>
 #include <cmath>
 #include <algorithm>
+#include <utility>   // std::swap, used when canonicalising the tanh fit parameter signs
 
 #include "TFile.h"
 #include "TProfile.h"
+#include "TProfile2D.h"
 #include "TCanvas.h"
 #include "TPad.h"
 #include "TBox.h"
 #include "TLegend.h"
+#include "TF1.h"
+#include "TFitResult.h"
+#include "TPaveText.h"
+#include "TGraphAsymmErrors.h"
+#include "TStyle.h"
+#include "TMath.h"
 #include "TLine.h"
 #include "TString.h"
 #include "TSystem.h"
@@ -77,6 +85,11 @@ struct ProfileConfig {
     // Name of the matching Toy Model profile inside TOY_SCENARIO_DIR. Empty (the default) means the toy
     // has no counterpart for this observable, and the toy is then skipped for it rather than guessed at.
     std::string toyProfile = "";
+
+    // Fit R(eta) = p0 * tanh(p1 * eta) to this observable, once per variation, plus the cross-variation
+    // parameter summaries. Only meaningful for the fine-binned eta profiles: the coarse ones do not have
+    // enough points across the turn-over for the two parameters to separate.
+    bool doTanhFit = false;
 };
 
 /// @brief A set of profiles that share an output folder and the same set of valid transforms.
@@ -130,6 +143,14 @@ const std::string DEFAULT_CUT_FOLDER = "Ring";
 // WithoutEtaGate exists only to demonstrate why omitting the daughter acceptance gate makes the
 // physics cuts inconsistent), and "All" is the unsplit sample that matches how the consumer fills.
 const std::string TOY_SCENARIO_DIR = "WithEtaGate/BothCuts/All/";
+
+// Toy Model integrated <R>, split by the sign of its (random) jet direction. These three single-bin
+// profiles are the toy counterparts of the first three bins of the EtaStudy cut profiles
+// ("All Lambda", "eta_proxy >= 0", "eta_proxy < 0"), and are the only part of those 9- and 15-bin
+// plots the toy can speak to: it has no hyperon-eta or jet-radius splits.
+const std::string TOY_RING_INTEGRATED = "pRingProxyJet";
+const std::string TOY_RING_ETA_POS    = "pRingProxyJet_JetEtaPos";
+const std::string TOY_RING_ETA_NEG    = "pRingProxyJet_JetEtaNeg";
 
 // ---------------------------------------------------------
 // Toy Model coverage audit (HelicityToyModel, current version)
@@ -392,6 +413,14 @@ TH1D* SubtractProfiles(TH1* pData, TH1* pSys, const std::string& newName) {
     }
     hSub->SetDirectory(nullptr); // Detach before anything else, ProjectionX/Clone attach to gDirectory
     hSub->Reset(); // Clear original contents and errors
+
+    // Carry any categorical bin labels across. Reset() leaves them in place on most ROOT versions, but
+    // ProjectionX does not always reproduce them, and the EtaStudy difference/pull panels are unreadable
+    // without them. Copying explicitly costs nothing and makes the behaviour version-independent.
+    for (int i = 1; i <= hSub->GetNbinsX(); ++i) {
+        const char* label = pData->GetXaxis()->GetBinLabel(i);
+        if (label && label[0] != '\0') hSub->GetXaxis()->SetBinLabel(i, label);
+    }
     
     // Verify if the binning structures are identical
     bool binningMatches = (pData->GetNbinsX() == pSys->GetNbinsX() &&
@@ -583,6 +612,105 @@ TH1D* MakeLowerPadHist(TH1* pData, TH1* pVar, LowerPadMode mode, const std::stri
 }
 
 /**
+ * @brief Builds an empty framing histogram that reproduces a source's categorical bin labels.
+ *
+ * TPad::DrawFrame produces a plain numeric axis, which silently discards the bin labels the consumer
+ * set on the EtaStudy cut profiles. Those labels ARE the axis there, so those canvases get this
+ * instead: same binning, same labels, no content.
+ *
+ * @param src Source whose binning and labels are copied. Unlabelled bins simply stay numeric.
+ * @return A detached, stats-free TH1D owned by the caller.
+ */
+TH1D* MakeLabelledFrame(TH1* src, const std::string& name, double yMin, double yMax) {
+    const int nBins = src->GetNbinsX();
+    TH1D* frame = new TH1D(name.c_str(), "", nBins,
+                           src->GetXaxis()->GetXmin(), src->GetXaxis()->GetXmax());
+    frame->SetDirectory(nullptr);
+    frame->SetStats(0);
+    for (int i = 1; i <= nBins; ++i) {
+        const char* label = src->GetXaxis()->GetBinLabel(i);
+        if (label && label[0] != '\0') frame->GetXaxis()->SetBinLabel(i, label);
+    }
+    frame->SetMinimum(yMin);
+    frame->SetMaximum(yMax);
+    return frame;
+}
+
+/**
+ * @brief A labelled-bin cut-scan profile, whose x-axis is a list of named selections.
+ *
+ * These live at task level (EtaStudy/) rather than inside a kinematic-cut folder, and are booked only
+ * when the consumer's doFakePolDiagnosticsQA switch is on, so they are always fetched defensively.
+ */
+struct CategoricalObservable {
+    std::string subDir;       // In-file directory below the task dir, e.g. "EtaStudy/"
+    std::string profileName;
+    std::string yAxisTitle;
+
+    // Build the three-bin "All / eta_proxy >= 0 / eta_proxy < 0" digest of bins 1-3, which is the only
+    // slice of these plots the Toy Model can be overlaid on. See kToyEtaSign* above.
+    bool doEtaSignSummary = false;
+
+    // Companion TProfile2D of shape (same bins) x (out of peak, in peak), projected into two curves.
+    // Empty means there is none. Only the LeadingP scan has one.
+    std::string massSplitProfile = "";
+};
+
+/**
+ * @brief Copies the first three bins of a cut-scan into a standalone three-bin histogram.
+ *
+ * Bins 1-3 of every EtaStudy scan are "All Lambda", "eta_proxy >= 0" and "eta_proxy < 0". Pulling them
+ * out lets the Toy Model, which only knows those three numbers, be compared against them on an axis
+ * where every source is fully populated, rather than leaving 6 or 12 empty bins on the full scan.
+ *
+ * @return A detached TH1D owned by the caller, or nullptr if the source has fewer than three bins.
+ */
+TH1D* ExtractEtaSignBins(TH1* src, const std::string& name) {
+    if (!src || src->GetNbinsX() < 3) return nullptr;
+
+    TH1D* out = new TH1D(name.c_str(), "", 3, 0, 3);
+    out->SetDirectory(nullptr);
+    out->SetStats(0);
+    for (int i = 1; i <= 3; ++i) {
+        out->SetBinContent(i, src->GetBinContent(i));
+        out->SetBinError(i, src->GetBinError(i));
+        const char* label = src->GetXaxis()->GetBinLabel(i);
+        if (label && label[0] != '\0') out->GetXaxis()->SetBinLabel(i, label);
+    }
+    return out;
+}
+
+/**
+ * @brief Assembles the Toy Model's three eta-sign numbers into a histogram matching ExtractEtaSignBins.
+ *
+ * @param labelSrc Supplies the bin labels, so the toy curve lines up with the data's own wording.
+ * @return A detached TH1D owned by the caller, or nullptr if any of the three toy profiles is missing.
+ */
+TH1D* BuildToyEtaSignHist(FileCache& cache, const std::string& toyFilePath,
+                          TH1* labelSrc, const std::string& name) {
+    if (toyFilePath.empty() || !labelSrc) return nullptr;
+
+    const std::string toyNames[3] = {TOY_RING_INTEGRATED, TOY_RING_ETA_POS, TOY_RING_ETA_NEG};
+
+    TH1D* out = new TH1D(name.c_str(), "", 3, 0, 3);
+    out->SetDirectory(nullptr);
+    out->SetStats(0);
+
+    for (int i = 0; i < 3; ++i) {
+        // Each of these is a single-bin TProfile holding one integrated mean and its error
+        TProfile* pToy = cache.FetchClone<TProfile>(toyFilePath, TOY_SCENARIO_DIR + toyNames[i]);
+        if (!pToy) { delete out; return nullptr; } // Partial toy curves would be misleading: all or nothing
+        out->SetBinContent(i + 1, pToy->GetBinContent(1));
+        out->SetBinError(i + 1, pToy->GetBinError(1));
+        delete pToy;
+
+        const char* label = labelSrc->GetXaxis()->GetBinLabel(i + 1);
+        if (label && label[0] != '\0') out->GetXaxis()->SetBinLabel(i + 1, label);
+    }
+    return out;
+}
+
+/**
  * @brief Overlays several profiles on one canvas and writes it to the output file.
  *
  * Axis ranges are computed from the data actually present (error bars included), so profiles with
@@ -598,6 +726,8 @@ TH1D* MakeLowerPadHist(TH1* pData, TH1* pVar, LowerPadMode mode, const std::stri
  * @param lowerPad     Adds a lower panel comparing every variation against the data. Silently falls
  *                     back to a single pad when the bundle list has no data entry or nothing to
  *                     compare it against, so callers need not special-case single-curve canvases.
+ * @param categorical  Draws a labelled-bin axis copied from the first bundle instead of a numeric one.
+ *                     Needed for the EtaStudy cut profiles, whose x-axis is a list of named selections.
  */
 void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
                           const std::string& canvasName,
@@ -606,7 +736,8 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
                           const ProfileConfig& profConfig,
                           const std::string& customXTitle = "",
                           const std::string& customYTitle = "",
-                          LowerPadMode lowerPad = kNoLowerPad) {
+                          LowerPadMode lowerPad = kNoLowerPad,
+                          bool categorical = false) {
     
     if (bundles.empty() || !outDir) return;
 
@@ -707,8 +838,19 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
     std::string yTitle = customYTitle.empty() ? profConfig.yAxisTitle : customYTitle;
 
     // 3. Draw an empty frame to guarantee proper axes scaling
-    TH1* frame = useLowerPad ? padUpper->DrawFrame(xMin, yMin, xMax, yMax)
-                             : c->DrawFrame(xMin, yMin, xMax, yMax);
+    // In categorical mode the frame is built by hand so the bin labels survive; DrawFrame would
+    // replace them with a numeric axis. Hand-built frames are owned here and deleted after the write.
+    TH1* frame = nullptr;
+    TH1D* ownedUpperFrame = nullptr;
+    if (categorical) {
+        if (useLowerPad) padUpper->cd(); else c->cd();
+        ownedUpperFrame = MakeLabelledFrame(bundles[0].profile, canvasName + "_frameUp", yMin, yMax);
+        ownedUpperFrame->Draw();
+        frame = ownedUpperFrame;
+    } else {
+        frame = useLowerPad ? padUpper->DrawFrame(xMin, yMin, xMax, yMax)
+                            : c->DrawFrame(xMin, yMin, xMax, yMax);
+    }
     frame->SetTitle(canvasTitle.c_str());
     frame->GetXaxis()->SetTitle(useLowerPad ? "" : xTitle.c_str()); // With a lower pad the x-axis is labelled down there
     frame->GetYaxis()->SetTitle(yTitle.c_str());
@@ -757,6 +899,7 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
 
     // 5b. Lower pad: every variation compared against the data
     std::vector<TH1*> lowerToDelete;
+    TH1D* lowerFrameOwned = nullptr; // Only set in categorical mode, where the frame is built by hand
     if (useLowerPad) {
         padLower->cd();
 
@@ -812,7 +955,16 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
             lowMax = std::max(gMax + m, m);
         }
 
-        TH1* lowFrame = padLower->DrawFrame(xMin, lowMin, xMax, lowMax);
+        TH1* lowFrame = nullptr;
+        TH1D* ownedLowerFrame = nullptr;
+        if (categorical) {
+            ownedLowerFrame = MakeLabelledFrame(bundles[0].profile, canvasName + "_frameLo", lowMin, lowMax);
+            ownedLowerFrame->Draw();
+            lowFrame = ownedLowerFrame;
+        } else {
+            lowFrame = padLower->DrawFrame(xMin, lowMin, xMax, lowMax);
+        }
+        lowerFrameOwned = ownedLowerFrame;
         lowFrame->GetXaxis()->SetTitle(xTitle.c_str());
         lowFrame->GetYaxis()->SetTitle(LowerPadYTitle(lowerPad).c_str());
         // Text is scaled by the inverse pad fraction so it matches the upper pad's apparent size
@@ -854,8 +1006,214 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
     
     // Clean up to prevent memory leaks during the loop (object should already have been written)
     for (auto p : lowerToDelete) delete p;
+    delete ownedUpperFrame; // nullptr unless categorical, and deleting nullptr is fine
+    delete lowerFrameOwned;
     delete leg;
     delete c; 
+}
+
+// ---------------------------------------------------------
+// Helper 3.5: tanh fit of the eta dependence
+// ---------------------------------------------------------
+
+/// @brief Outcome of one R(eta) = p0*tanh(p1*eta) fit. Errors are magnitudes, already "sign-canonicalised".
+struct TanhFitResult {
+    bool   valid = false; // Fit converged with a usable covariance and at least one degree of freedom
+    double entries = 0.0;
+    double chi2 = 0.0;
+    int    ndf = 0;
+    double p0 = 0.0, p0Low = 0.0, p0High = 0.0;
+    double p1 = 0.0, p1Low = 0.0, p1High = 0.0;
+};
+
+/**
+ * @brief Fits p0*tanh(p1*eta) to one profile, draws the annotated canvas, and returns the parameters.
+ *
+ * Fit configuration, and why:
+ *  - Unconstrained, then canonicalised. The tanh equation is exactly invariant under (p0,p1) -> (-p0,-p1), so
+ *    leaving both free gives two equivalent minima and makes convergence and errors ill-defined. Hard
+ *    limits would fix that but introduce their own pathologies (Minos behaves badly against a boundary,
+ *    and a limit at p1 >= 0 is hit whenever the distribution is flat). Fitting free and then flipping
+ *    both signs when p1 < 0 removes the redundancy exactly, costs nothing numerically, and leaves p0
+ *    carrying the sign of the slope.
+ *    Note the asymmetric errors swap sides under that flip, which is handled below.
+ *
+ *  - Minos ("E"), which is worth its cost here specifically. For small p1*eta the model degenerates to
+ *    p0*p1*eta, so only the PRODUCT is constrained and the p0/p1 contour becomes a long curved valley.
+ *    Parabolic (Hesse) errors describe that valley badly, which is exactly the regime the data sits in at
+ *    current statistics. Minos maps the real contour instead, and the resulting asymmetry is itself the
+ *    diagnostic that the two parameters have not separated.
+ *
+ *  - "M" (improve) to re-search after convergence, for the same valley reason, and "S" to get the full
+ *    result object back rather than just a status code.
+ *
+ * @param prof       Profile to fit. Empty bins carry zero error and are skipped by the chi2 method.
+ * @param canvasName Name of the canvas written into outDir.
+ * @return The fit outcome. A non-converged fit still reports chi2/ndf and entries, with valid = false.
+ * @note Bins are means with SEM errors, so a chi2 fit with those errors is the correct method here.
+ *       A likelihood option would be wrong: these are not Poisson counts.
+ */
+TanhFitResult FitTanhProfile(TProfile* prof,
+                             const ProfileConfig& profConfig,
+                             const VariationConfig& varConfig,
+                             const std::string& canvasName,
+                             TDirectory* outDir) {
+    TanhFitResult out;
+    if (!prof || !outDir) return out;
+
+    out.entries = prof->GetEntries();
+
+    const double xLo = prof->GetXaxis()->GetXmin();
+    const double xHi = prof->GetXaxis()->GetXmax();
+
+    // Named parameters, so the fit box shows "p0" and "p1" rather than "p0" style indices
+    TF1* fTanh = new TF1((canvasName + "_fn").c_str(), "[p0]*TMath::TanH([p1]*x)", xLo, xHi);
+    fTanh->SetParameters(1.0e-2, 0.5); // Orders of magnitude taken from the Toy Model fits
+    fTanh->SetLineColor(varConfig.color);
+    fTanh->SetLineWidth(2);
+    fTanh->SetNpx(500);
+
+    TFitResultPtr res = prof->Fit(fTanh, "QSEM", "", xLo, xHi);
+
+    // Stat box reduced to the bare minimum: entries, then chi2/ndf and the two parameters with their errors.
+    // OptStat 10 keeps only "Entries"; OptFit 111 keeps chi2/ndf, values and errors while dropping the fit-probability line.
+    gStyle->SetOptStat(10);
+    gStyle->SetOptFit(111);
+    gStyle->SetStatX(0.98);
+    gStyle->SetStatY(0.92);
+    gStyle->SetStatW(0.30);
+    gStyle->SetStatH(0.16);
+
+    TCanvas* c = new TCanvas(canvasName.c_str(), canvasName.c_str(), 800, 600);
+    c->SetLeftMargin(0.12);
+    c->SetBottomMargin(0.12);
+    c->SetGridx();
+    c->SetGridy();
+
+    prof->SetStats(1);
+    prof->SetLineColor(varConfig.color);
+    prof->SetMarkerColor(varConfig.color);
+    prof->SetMarkerStyle(varConfig.markerStyle);
+    prof->SetLineWidth(varConfig.isData ? 3 : 1);
+    prof->GetXaxis()->SetTitle(profConfig.xAxisTitle.c_str());
+    prof->GetYaxis()->SetTitle(profConfig.yAxisTitle.c_str());
+    prof->Draw("PE");
+
+    // Function definition, sitting immediately below the stat box (which spans y = 0.76 to 0.92)
+    TPaveText* fnLabel = new TPaveText(0.68, 0.685, 0.98, 0.755, "NDC");
+    fnLabel->SetFillColor(0);
+    fnLabel->SetFillStyle(0);
+    fnLabel->SetBorderSize(1);
+    fnLabel->SetTextSize(0.030);
+    fnLabel->AddText(("f(" + profConfig.xAxisTitle + ")=[p0]*TMath::TanH([p1]*x)").c_str());
+    fnLabel->Draw();
+
+    outDir->cd();
+    c->Write();
+
+    // Collect the numbers before things get out of scope:
+    if (res.Get()) {
+        out.chi2 = res->Chi2();
+        out.ndf  = res->Ndf();
+        out.valid = res->IsValid() && (out.ndf > 0);
+
+        out.p0 = res->Parameter(0);
+        out.p1 = res->Parameter(1);
+
+        // Minos gives asymmetric errors; fall back to the parabolic one where it did not run.
+        // std::abs guards against the Minuit sign convention for the lower side.
+        out.p0Low  = res->HasMinosError(0) ? std::abs(res->LowerError(0)) : res->ParError(0);
+        out.p0High = res->HasMinosError(0) ? std::abs(res->UpperError(0)) : res->ParError(0);
+        out.p1Low  = res->HasMinosError(1) ? std::abs(res->LowerError(1)) : res->ParError(1);
+        out.p1High = res->HasMinosError(1) ? std::abs(res->UpperError(1)) : res->ParError(1);
+
+        // Canonicalise onto p1 > 0. Flipping a parameter's sign mirrors its error interval, so the
+        // low and high sides swap; the magnitudes themselves are unchanged.
+        if (out.p1 < 0.0) {
+            out.p0 = -out.p0;
+            out.p1 = -out.p1;
+            std::swap(out.p0Low, out.p0High);
+            std::swap(out.p1Low, out.p1High);
+        }
+    }
+
+    delete fnLabel;
+    delete c;
+    delete fTanh;
+    return out;
+}
+
+/// @brief One variation's value on a cross-variation summary axis.
+struct FitSummaryPoint {
+    VariationConfig config;
+    double value = 0.0;
+    double errLow = 0.0;
+    double errHigh = 0.0;
+};
+
+/**
+ * @brief Draws one point per variation on a labelled axis, using asymmetric error bars.
+ *
+ * The counterpart of DrawIntegratedCanvas for quantities whose errors are not symmetric. One
+ * single-point TGraphAsymmErrors per variation, so each keeps its own colour and marker, and no
+ * line is ever drawn between points (they are unordered categories, not a series).
+ *
+ * @param labels Bin labels in axis order. Must be the same length as points.
+ * @param points One entry per label. Pass errors of zero for quantities that have none.
+ */
+void DrawFitSummaryCanvas(const std::vector<std::string>& labels,
+                          const std::vector<FitSummaryPoint>& points,
+                          const std::string& canvasName,
+                          const std::string& canvasTitle,
+                          TDirectory* outDir,
+                          const std::string& yTitle) {
+    if (points.empty() || !outDir || labels.size() != points.size()) return;
+
+    double gMin = 999999., gMax = -999999.;
+    for (const auto& pt : points) {
+        if (pt.value - pt.errLow  < gMin) gMin = pt.value - pt.errLow;
+        if (pt.value + pt.errHigh > gMax) gMax = pt.value + pt.errHigh;
+    }
+    double margin = (gMax - gMin) * 0.1;
+    if (margin < 1e-12) margin = (std::abs(gMax) > 1e-12) ? std::abs(gMax) * 0.1 : 0.05;
+
+    const int nBins = static_cast<int>(labels.size());
+    TCanvas* c = new TCanvas(canvasName.c_str(), canvasTitle.c_str(), std::max(800, nBins * 100), 600);
+    c->SetLeftMargin(0.12);
+    c->SetBottomMargin(0.15);
+    c->SetGridx();
+
+    TH1D* frame = new TH1D((canvasName + "_frame").c_str(), canvasTitle.c_str(), nBins, 0, nBins);
+    frame->SetDirectory(nullptr);
+    for (int i = 0; i < nBins; ++i) frame->GetXaxis()->SetBinLabel(i + 1, labels[i].c_str());
+    frame->GetYaxis()->SetTitle(yTitle.c_str());
+    frame->SetStats(0);
+    frame->GetXaxis()->SetLabelSize(0.045);
+    frame->GetYaxis()->SetTitleSize(0.045);
+    frame->SetMinimum(gMin - margin);
+    frame->SetMaximum(gMax + margin);
+    frame->Draw();
+
+    std::vector<TGraphAsymmErrors*> graphs;
+    for (size_t i = 0; i < points.size(); ++i) {
+        TGraphAsymmErrors* g = new TGraphAsymmErrors(1);
+        g->SetPoint(0, static_cast<double>(i) + 0.5, points[i].value);
+        g->SetPointError(0, 0.0, 0.0, points[i].errLow, points[i].errHigh);
+        g->SetLineColor(points[i].config.color);
+        g->SetMarkerColor(points[i].config.color);
+        g->SetMarkerStyle(points[i].config.markerStyle);
+        g->SetMarkerSize(1.5);
+        g->SetLineWidth(2);
+        g->Draw("P SAME"); // "P" only: never "L", these are categories rather than an ordered series
+        graphs.push_back(g);
+    }
+
+    outDir->cd();
+    c->Write();
+
+    for (auto* g : graphs) delete g;
+    delete frame;
+    delete c;
 }
 
 // ---------------------------------------------------------
@@ -1072,8 +1430,8 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 {"EtaDependence/", "pRingObservableEta2ndJet",          "#eta_{2ndJet}", "R", true, false, "pRingProxyJetVsEtaJet"},
                 // Fine-binned counterparts of the two above. Same axis, finer granularity: these are the
                 // ones that show the tanh-like shape cleanly in the Toy Model.
-                {"EtaDependence/", "pRingObservableEtaJetHighEtaRes",   "#eta_{Jet}",    "R", true, false, "pRingProxyJetVsEtaJet"},
-                {"EtaDependence/", "pRingObservableEtaLeadPHighEtaRes", "#eta_{LeadP}",  "R", true, true,  "pRingProxyJetVsEtaJet"}
+                {"EtaDependence/", "pRingObservableEtaJetHighEtaRes",   "#eta_{Jet}",    "R", true, false, "pRingProxyJetVsEtaJet", true},
+                {"EtaDependence/", "pRingObservableEtaLeadPHighEtaRes", "#eta_{LeadP}",  "R", true, true,  "pRingProxyJetVsEtaJet", true}
             },
             true // Eta axis is symmetric about zero, so folding is meaningful
         },
@@ -1179,6 +1537,21 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
     // same pass over the same bundles, so each overlay gains a "_Diff" and a "_Pull" sibling.
     // Emptying this vector reverts the macro to single-pad canvases only.
     std::vector<LowerPadMode> lowerPadModes = {kDifference, kPull};
+
+    // Used where a full-size standalone difference canvas already exists for exactly the same bundles
+    // (the Subtracted/ folder, and the per-variation Canvas_Subtracted* in Individual_Comparisons).
+    // The pull has no standalone equivalent anywhere, so it is always worth generating.
+    const std::vector<LowerPadMode> kPullOnly = {kPull};
+
+    // 3b. Define the categorical (labelled-bin) cut scans
+    // These are the eta-split closure tests: each bin is a named selection rather than a coordinate,
+    // so they need the labelled-axis drawing path. Booked at task level and only when the consumer's
+    // doFakePolDiagnosticsQA is on, hence fetched defensively like everything else.
+    std::vector<CategoricalObservable> categoricalObservables = {
+        {"EtaStudy/", "pRingEtaCuts",              "R", true, ""},
+        {"EtaStudy/", "pRingEtaCutsSubLeadingJet", "R", true, ""},
+        {"EtaStudy/", "pRingEtaCutsLeadingP",      "R", true, "pRingEtaCutsLeadingP_MassSignalVsBackground"}
+    };
 
     // 4. Create the output file
     std::string outFilePath = consumerDir + "/auxiliarySummaryPlots.root";
@@ -1381,16 +1754,18 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 // Creating the Y-Axis title for the difference plots
                 std::string subYTitle = "#Delta" + profConfig.yAxisTitle + " (Data - Var)";
 
-                // Draws the plain overlay, then one extra canvas per configured lower-pad mode.
+                // Draws the plain overlay, then one extra canvas per requested lower-pad mode.
                 // Canvases without a data curve to compare against fall back to a single pad inside
                 // DrawComparisonCanvas, so this is safe to call on every overlay uniformly.
+                // Callers that already emit a full-size standalone difference canvas for the same bundles
+                // pass kPullOnly, since a squeezed copy of that difference in a 30%-height pad adds nothing.
                 auto drawWithLowerPads = [&](const std::vector<ProfileBundle>& drawBundles,
                                              const std::string& name, const std::string& title,
-                                             TDirectory* dir, const std::string& xT = "",
-                                             const std::string& yT = "") {
+                                             TDirectory* dir, const std::vector<LowerPadMode>& modes,
+                                             const std::string& xT = "", const std::string& yT = "") {
                     DrawComparisonCanvas(drawBundles, name, title, dir, profConfig, xT, yT);
                     if (drawBundles.size() < 2) return; // Nothing to compare: the variants would duplicate the overlay
-                    for (auto mode : lowerPadModes) {
+                    for (auto mode : modes) {
                         DrawComparisonCanvas(drawBundles, name + LowerPadSuffix(mode), title, dir,
                                              profConfig, xT, yT, mode);
                     }
@@ -1404,7 +1779,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     // Variation 1: Data Only
                 DrawComparisonCanvas({{pData, dataConfig}}, "Canvas_DataOnly", fam.familyName + " Data", overlayDir, profConfig);
                     // Variation 2: Systematics (+ Data)
-                drawWithLowerPads(allSystematics, "Canvas_Systematics", fam.familyName + " Systematics", overlayDir);
+                drawWithLowerPads(allSystematics, "Canvas_Systematics", fam.familyName + " Systematics", overlayDir, kPullOnly);
                     // Variation 3+: one canvas per external reference, then the all-in-one
                 std::vector<ProfileBundle> allInOne = allSystematics;
                 for (const auto& ext : presentExternals) {
@@ -1414,13 +1789,13 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     allInOne.push_back(ext.second);
                 }
                 if (!presentExternals.empty()) {
-                    drawWithLowerPads(allInOne, "Canvas_AllInOne", fam.familyName + " All Comparisons", overlayDir);
+                    drawWithLowerPads(allInOne, "Canvas_AllInOne", fam.familyName + " All Comparisons", overlayDir, kPullOnly);
                 }
 
                 // --- 2. Folded Plots ---
                 if (group.doFold) {
                     DrawComparisonCanvas({allFoldedSystematics[0]}, "Canvas_Folded_DataOnly", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Data", foldedDir, profConfig, foldedXTitle);
-                    drawWithLowerPads(allFoldedSystematics, "Canvas_Folded_Systematics", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Systematics", foldedDir, foldedXTitle);
+                    drawWithLowerPads(allFoldedSystematics, "Canvas_Folded_Systematics", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Systematics", foldedDir, lowerPadModes, foldedXTitle);
 
                     std::vector<ProfileBundle> allInOneFolded = allFoldedSystematics; // For folded plots tracking
                     for (size_t i = 0; i < allFoldedExternals.size(); ++i) {
@@ -1430,7 +1805,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         allInOneFolded.push_back(allFoldedExternals[i]);
                     }
                     if (!allFoldedExternals.empty()) {
-                        drawWithLowerPads(allInOneFolded, "Canvas_Folded_AllInOne", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Comparisons", foldedDir, foldedXTitle);
+                        drawWithLowerPads(allInOneFolded, "Canvas_Folded_AllInOne", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Comparisons", foldedDir, lowerPadModes, foldedXTitle);
                     }
                 }
 
@@ -1479,10 +1854,10 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         std::string sysSuffix = allSystematics[i].config.suffix; // e.g., "_forceDatalikeJet"
 
                         // Standard (now also carrying the difference and pull panels underneath)
-                        drawWithLowerPads({allSystematics[0], allSystematics[i]}, "Canvas_Standard" + sysSuffix, fam.familyName + " Data vs " + sysLabel, indivDir);
+                        drawWithLowerPads({allSystematics[0], allSystematics[i]}, "Canvas_Standard" + sysSuffix, fam.familyName + " Data vs " + sysLabel, indivDir, kPullOnly);
                         // Folded
                         if (group.doFold) {
-                            drawWithLowerPads({allFoldedSystematics[0], allFoldedSystematics[i]}, "Canvas_Folded" + sysSuffix, fam.familyName + " Folded vs " + sysLabel, indivDir, foldedXTitle);
+                            drawWithLowerPads({allFoldedSystematics[0], allFoldedSystematics[i]}, "Canvas_Folded" + sysSuffix, fam.familyName + " Folded vs " + sysLabel, indivDir, lowerPadModes, foldedXTitle);
                         }
                         // Subtracted
                         DrawComparisonCanvas({allSubtractedSystematics[0], allSubtractedSystematics[i]}, "Canvas_Subtracted" + sysSuffix, fam.familyName + " Difference vs " + sysLabel, indivDir, profConfig, "", subYTitle);
@@ -1492,9 +1867,9 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     for (size_t i = 0; i < presentExternals.size(); ++i) {
                         const std::string& label = presentExternals[i].second.config.legendLabel;
 
-                        drawWithLowerPads({allSystematics[0], presentExternals[i].second}, "Canvas_Standard_" + SanitizeName(label), fam.familyName + " Data vs " + label, indivDir);
+                        drawWithLowerPads({allSystematics[0], presentExternals[i].second}, "Canvas_Standard_" + SanitizeName(label), fam.familyName + " Data vs " + label, indivDir, kPullOnly);
                         if (group.doFold) {
-                            drawWithLowerPads({allFoldedSystematics[0], allFoldedExternals[i]}, "Canvas_Folded_" + SanitizeName(label), fam.familyName + " Folded vs " + label, indivDir, foldedXTitle);
+                            drawWithLowerPads({allFoldedSystematics[0], allFoldedExternals[i]}, "Canvas_Folded_" + SanitizeName(label), fam.familyName + " Folded vs " + label, indivDir, lowerPadModes, foldedXTitle);
                         }
                         DrawComparisonCanvas({allSubtractedSystematics[0], allSubtractedExternals[i]}, "Canvas_Subtracted_" + SanitizeName(label), fam.familyName + " Difference vs " + label, indivDir, profConfig, "", subYTitle);
                     }
@@ -1603,6 +1978,68 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     DrawIntegratedCanvas(massIntegSubBundles, massIntegLabels, "Canvas_Integrated_Subtracted_MassSelection", fam.familyName + " Mass Selection Integrated Differences", massDir, "#Delta" + profConfig.yAxisTitle + " (Data - Var)", true);
                 }
 
+                // --- 6. tanh fit of the eta dependence ---
+                // Only for the fine-binned eta profiles, where there are enough points across the
+                // turn-over for p0 and p1 to separate at all.
+                if (profConfig.doTanhFit) {
+                    TDirectory* fitDir    = EnsureDir(obsDir, "TanhFit");
+                    TDirectory* perVarDir = EnsureDir(fitDir, "PerVariation");
+
+                    // Fit every variation, then every external reference, in the same axis order used
+                    // by the integrated summaries so the four canvases below line up with them.
+                    std::vector<std::string> fitLabels;
+                    std::vector<TanhFitResult> fitResults;
+                    std::vector<VariationConfig> fitConfigs;
+
+                    for (const auto& bundle : allSystematics) {
+                        TProfile* pFit = dynamic_cast<TProfile*>(bundle.profile);
+                        if (!pFit) continue;
+                        fitLabels.push_back(bundle.config.legendLabel);
+                        fitConfigs.push_back(bundle.config);
+                        fitResults.push_back(FitTanhProfile(pFit, profConfig, bundle.config,
+                                                            "Canvas_TanhFit_" + SanitizeName(bundle.config.legendLabel),
+                                                            perVarDir));
+                    }
+                    for (const auto& ext : presentExternals) {
+                        TProfile* pFit = dynamic_cast<TProfile*>(ext.second.profile);
+                        if (!pFit) continue;
+                        fitLabels.push_back(ext.second.config.legendLabel);
+                        fitConfigs.push_back(ext.second.config);
+                        fitResults.push_back(FitTanhProfile(pFit, profConfig, ext.second.config,
+                                                            "Canvas_TanhFit_" + SanitizeName(ext.second.config.legendLabel),
+                                                            perVarDir));
+                    }
+
+                    // Four cross-variation summaries. Entries and reduced chi2 keep EVERY variation,
+                    // including the ones whose fit did not converge: a wild chi2/ndf is itself the
+                    // quickest way to spot a failed fit. The parameter summaries keep only the
+                    // converged ones, since a non-converged p0 or p1 is not a measurement of anything.
+                    std::vector<std::string> allLabels, okLabels;
+                    std::vector<FitSummaryPoint> entriesPts, chi2Pts, p0Pts, p1Pts;
+
+                    for (size_t i = 0; i < fitResults.size(); ++i) {
+                        const auto& fr = fitResults[i];
+
+                        allLabels.push_back(fitLabels[i]);
+                        entriesPts.push_back({fitConfigs[i], fr.entries, 0.0, 0.0});
+                        chi2Pts.push_back({fitConfigs[i], (fr.ndf > 0) ? fr.chi2 / fr.ndf : 0.0, 0.0, 0.0});
+
+                        if (!fr.valid) continue;
+                        okLabels.push_back(fitLabels[i]);
+                        p0Pts.push_back({fitConfigs[i], fr.p0, fr.p0Low, fr.p0High});
+                        p1Pts.push_back({fitConfigs[i], fr.p1, fr.p1Low, fr.p1High});
+                    }
+
+                    DrawFitSummaryCanvas(allLabels, entriesPts, "Canvas_FitSummary_Entries",
+                                         fam.familyName + " tanh fit: entries", fitDir, "Entries");
+                    DrawFitSummaryCanvas(allLabels, chi2Pts, "Canvas_FitSummary_RedChi2",
+                                         fam.familyName + " tanh fit: reduced #chi^{2}", fitDir, "#chi^{2}/ndf");
+                    DrawFitSummaryCanvas(okLabels, p0Pts, "Canvas_FitSummary_p0",
+                                         fam.familyName + " tanh fit: p0 (amplitude)", fitDir, "p0");
+                    DrawFitSummaryCanvas(okLabels, p1Pts, "Canvas_FitSummary_p1",
+                                         fam.familyName + " tanh fit: p1 (slope scale)", fitDir, "p1");
+                }
+
                 // Cleanup dynamically allocated profiles for this observable iteration
                 for (auto p : integToDelete) delete p;
                 for (auto p : profilesToDelete) delete p;
@@ -1610,6 +2047,158 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 for (auto p : subtractedToDelete) delete p;
             } // end of profiles loop, inside groups loop
         } // end of groups loop, inside families loop
+
+        // ---------------------------------------------------------
+        // Categorical cut scans (the eta-split closure test)
+        // ---------------------------------------------------------
+        // Same fetch/subtract machinery as above, but drawn on a labelled axis. The headline plot here is
+        // the pull panel: after subtracting a fake-signal estimator from the data, a residual consistent
+        // with zero across every eta category is what "the correction closes" actually looks like.
+        for (const auto& catObs : categoricalObservables) {
+
+            const std::string catPath = TASK_DIR_IN_FILE + catObs.subDir + catObs.profileName;
+            const std::string dataFile = consumerDir + "/ConsumerResults_" + fam.dataSuffix + ".root";
+
+            TProfile* pCatData = cache.FetchClone<TProfile>(dataFile, catPath);
+            if (!pCatData) continue; // Not booked in this configuration: nothing is created on disk
+
+            if (!famDir) famDir = EnsureDir(fOut, fam.familyName);
+            TDirectory* etaStudyDir = EnsureDir(famDir, "EtaStudy");
+            TDirectory* catDir      = EnsureDir(etaStudyDir, catObs.profileName);
+            TDirectory* catOverlay  = EnsureDir(catDir, "Overlays");
+            TDirectory* catSubDir   = EnsureDir(catDir, "Subtracted");
+
+            // The labelled axis carries the selection names, so the ProfileConfig titles stay blank
+            ProfileConfig catConfig{catObs.subDir, catObs.profileName, "", catObs.yAxisTitle, false};
+
+            std::vector<ProfileBundle> catBundles;
+            std::vector<TH1*> catToDelete;
+            catBundles.push_back({pCatData, dataConfig});
+            catToDelete.push_back(pCatData);
+
+            for (const auto& sys : sysVariations) {
+                std::string sysFile = consumerDir + "/ConsumerResults_" + fam.dataSuffix + sys.suffix + ".root";
+                TProfile* pSys = cache.FetchClone<TProfile>(sysFile, catPath);
+                if (pSys) { catBundles.push_back({pSys, sys}); catToDelete.push_back(pSys); }
+            }
+            // Consumer-style external references only. The Toy Model cannot fill a 9- or 15-bin cut scan,
+            // so it is handled separately by the three-bin eta-sign summary further below.
+            for (const auto& ext : externals) {
+                if (ext.basePath.empty() || ext.kind == ExternalRef::kToyModel) continue;
+                std::string extFile = ext.basePath + "/ConsumerResults_" + fam.dataSuffix + ".root";
+                TProfile* pExt = cache.FetchClone<TProfile>(extFile, catPath);
+                if (pExt) { catBundles.push_back({pExt, ext.config}); catToDelete.push_back(pExt); }
+            }
+
+            // Overlay, plus the pull closure panel underneath
+            DrawComparisonCanvas(catBundles, "Canvas_AllInOne", fam.familyName + " " + catObs.profileName,
+                                 catOverlay, catConfig, "", "", kNoLowerPad, true);
+            DrawComparisonCanvas(catBundles, "Canvas_AllInOne_Pull", fam.familyName + " " + catObs.profileName,
+                                 catOverlay, catConfig, "", "", kPull, true);
+
+            // Explicit Data - Variation canvases, on the same labelled axis
+            std::vector<ProfileBundle> catSubBundles;
+            TH1D* pCatZero = SubtractProfiles(pCatData, pCatData, std::string(pCatData->GetName()) + "_catZero");
+            for (int i = 1; i <= pCatZero->GetNbinsX(); ++i) pCatZero->SetBinError(i, 0.0);
+            catSubBundles.push_back({pCatZero, dataConfig});
+            catToDelete.push_back(pCatZero);
+
+            for (size_t i = 1; i < catBundles.size(); ++i) {
+                std::string subName = std::string(pCatData->GetName()) + "_catSub_" + std::to_string(i);
+                TH1D* pSub = SubtractProfiles(pCatData, catBundles[i].profile, subName);
+                catSubBundles.push_back({pSub, catBundles[i].config});
+                catToDelete.push_back(pSub);
+            }
+            DrawComparisonCanvas(catSubBundles, "Canvas_Subtracted_AllInOne",
+                                 fam.familyName + " " + catObs.profileName + " difference",
+                                 catSubDir, catConfig, "", "#Delta" + catObs.yAxisTitle + " (Data - Var)",
+                                 kNoLowerPad, true);
+
+            // --- Three-bin eta-sign digest, the one slice the Toy Model can speak to ---
+            if (catObs.doEtaSignSummary) {
+                TDirectory* signDir = EnsureDir(catDir, "EtaSignSummary");
+
+                std::vector<ProfileBundle> signBundles;
+                std::vector<TH1*> signToDelete;
+                for (size_t i = 0; i < catBundles.size(); ++i) {
+                    TH1D* h = ExtractEtaSignBins(catBundles[i].profile,
+                                                 catObs.profileName + "_sign_" + std::to_string(i));
+                    if (!h) continue;
+                    signBundles.push_back({h, catBundles[i].config});
+                    signToDelete.push_back(h);
+                }
+
+                // Toy overlay: all three numbers or none, so a partial curve never misleads
+                for (const auto& ext : externals) {
+                    if (ext.kind != ExternalRef::kToyModel || ext.basePath.empty()) continue;
+                    TH1D* hToy = BuildToyEtaSignHist(cache, ext.basePath, pCatData,
+                                                     catObs.profileName + "_signToy");
+                    if (hToy) {
+                        signBundles.push_back({hToy, ext.config});
+                        signToDelete.push_back(hToy);
+                    }
+                }
+
+                if (!signBundles.empty()) {
+                    DrawComparisonCanvas(signBundles, "Canvas_EtaSign",
+                                         fam.familyName + " " + catObs.profileName + " eta-sign digest",
+                                         signDir, catConfig, "", "", kNoLowerPad, true);
+                    DrawComparisonCanvas(signBundles, "Canvas_EtaSign_Pull",
+                                         fam.familyName + " " + catObs.profileName + " eta-sign digest",
+                                         signDir, catConfig, "", "", kPull, true);
+                }
+                for (auto p : signToDelete) delete p;
+            }
+
+            // --- In-peak vs out-of-peak split of the same scan ---
+            // If the fake signal is geometric it must be identical in the signal region and the sidebands,
+            // which makes this an independent handle on whether what is being subtracted is really detector
+            // response rather than physics. Kept in its own subfolder: useful, but not the headline.
+            if (!catObs.massSplitProfile.empty()) {
+                TDirectory* massSplitDir = EnsureDir(catDir, "MassSignalVsBackground");
+                const std::string massPath = TASK_DIR_IN_FILE + catObs.subDir + catObs.massSplitProfile;
+
+                // Y bin 1 is "out of mass peak", y bin 2 is "in mass peak" (see the consumer's bin labels)
+                const int massYBin[2] = {1, 2};
+                const char* massTag[2] = {"OutOfPeak", "InPeak"};
+
+                for (int m = 0; m < 2; ++m) {
+                    std::vector<ProfileBundle> massBundles;
+                    std::vector<TH1*> massToDelete;
+
+                    // Same variation list as above, projected onto the chosen mass slice
+                    std::vector<std::pair<std::string, VariationConfig>> sources;
+                    sources.push_back({dataFile, dataConfig});
+                    for (const auto& sys : sysVariations)
+                        sources.push_back({consumerDir + "/ConsumerResults_" + fam.dataSuffix + sys.suffix + ".root", sys});
+
+                    for (const auto& src : sources) {
+                        TProfile2D* p2d = cache.FetchClone<TProfile2D>(src.first, massPath, false);
+                        if (!p2d) continue;
+                        TProfile* proj = p2d->ProfileX((catObs.profileName + "_" + massTag[m] + "_" +
+                                                        SanitizeName(src.second.legendLabel)).c_str(),
+                                                       massYBin[m], massYBin[m]);
+                        delete p2d;
+                        if (!proj) continue;
+                        proj->SetDirectory(nullptr);
+                        massBundles.push_back({proj, src.second});
+                        massToDelete.push_back(proj);
+                    }
+
+                    if (massBundles.size() > 1) {
+                        DrawComparisonCanvas(massBundles, std::string("Canvas_") + massTag[m],
+                                             fam.familyName + " " + catObs.profileName + " (" + massTag[m] + ")",
+                                             massSplitDir, catConfig, "", "", kNoLowerPad, true);
+                        DrawComparisonCanvas(massBundles, std::string("Canvas_") + massTag[m] + "_Pull",
+                                             fam.familyName + " " + catObs.profileName + " (" + massTag[m] + ")",
+                                             massSplitDir, catConfig, "", "", kPull, true);
+                    }
+                    for (auto p : massToDelete) delete p;
+                }
+            }
+
+            for (auto p : catToDelete) delete p;
+        } // end of categorical observables loop
 
         // --- 6. Integrated observable Summary (Observable in each variation vs Observable for Data) ---
         // Comparing eta_Jet and eta_Lambda integrations is a way of probing if there were any overflows/underflows
