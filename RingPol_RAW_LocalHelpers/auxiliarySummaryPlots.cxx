@@ -8,6 +8,12 @@
 * (Lambda, AntiLambda, BothHyperons) and their respective systematic 
 * variations (Data-like Jet, Rand Jet, etc.), appropriately scaled.
 *
+* Observables are declared in a single table (see kObservableGroups in the main
+* function): each entry carries its own in-file directory, so profiles living in
+* different folders of the consumer output (EtaDependence/, ProxyPtDependence/,
+* the cut-folder root, or task-level folders such as EtaStudy/) all flow through
+* the same machinery.
+*
 * Usage: root -l -b -q 'auxiliarySummaryPlots.cxx("path/to/wagon/dir", "[optional_MC_ref_path]")'
 * (or just use the bash coordinator script, which properly compiles this into production-level code)
 * ============================================================
@@ -50,48 +56,139 @@ struct FamilyConfig {
 
 // Represents the different 1D TProfiles we want to extract from the files
 struct ProfileConfig {
+    std::string subDir;       // In-file directory, WITHOUT the task dir (e.g. "EtaDependence/")
     std::string profileName;  // e.g., "pRingObservableEtaLeadP"
     std::string xAxisTitle;   // e.g., "#eta_{LeadP}"
     std::string yAxisTitle;   // e.g., "R"
+    bool underCutFolder;      // true  -> <task>/<cutFolder>/<subDir><profileName> (per kinematic-cut family)
+                              // false -> <task>/<subDir><profileName>            (task-level, e.g. EtaStudy/)
+};
+
+// A set of profiles that share an output folder and the same set of valid transforms.
+// Adding a new observable to the macro means adding an entry here and nothing else.
+struct ObservableGroup {
+    std::string groupName;                  // Output folder name, e.g. "EtaProxy"
+    std::vector<ProfileConfig> profiles;
+    bool doFold;                            // Fold about x = 0. Only meaningful for axes that are
+                                            // symmetric around zero (eta, PVz). Must stay false for
+                                            // pT, mass, DeltaPhi, ... where folding is nonsense.
+};
+
+// An external reference dataset drawn alongside the in-wagon systematics
+// (MC baseline, pp baseline, Toy Model, ...). Collapsing these into one list removes
+// the previously triplicated "if (pMC) ... if (pPP) ... if (pToy) ..." blocks, and with them
+// the manual index-offset arithmetic that had to be kept in sync by hand.
+struct ExternalRef {
+    enum Kind {
+        kConsumerDir, // basePath is a directory holding ConsumerResults_<suffix>.root
+        kToyModel     // basePath is the full path to a single Toy Model file
+    };
+
+    VariationConfig config;
+    std::string     basePath; // Empty means "not requested", and the reference is skipped entirely
+    Kind            kind;
 };
 
 // ---------------------------------------------------------
 // Global Definitions
 // ---------------------------------------------------------
-const std::string BASE_DIR_IN_FILE = "lambdajetpolarizationionsderived/Ring/EtaDependence/";
+// The consumer writes everything below this single top-level task directory
+const std::string TASK_DIR_IN_FILE = "lambdajetpolarizationionsderived/";
+
+// Default kinematic-cut folder. The consumer books up to four of these
+// (Ring, RingKinematicCuts, JetKinematicCuts, JetAndLambdaKinematicCuts), but only
+// "Ring" is guaranteed to be enabled, so the others are opt-in via the cutFolder argument.
+const std::string DEFAULT_CUT_FOLDER = "Ring";
 
 // ---------------------------------------------------------
-// Helper 1: Safe Profile Extraction
+// Helper 0: Small ROOT navigation utilities
 // ---------------------------------------------------------
-TProfile* GetProfile(const std::string& filePath, const std::string& profileName) {
-    TFile* fIn = TFile::Open(filePath.c_str(), "READ");
-    if (!fIn || fIn->IsZombie()) {
-        std::cerr << "  [Warning] Could not open file: " << filePath << std::endl;
-        if (fIn) fIn->Close();
-        return nullptr;
-    }
 
-    std::string fullPath = BASE_DIR_IN_FILE + profileName;
-    TProfile* prof = (TProfile*)fIn->Get(fullPath.c_str());
-    
-    if (!prof) {
-        std::cerr << "  [Warning] Profile not found: " << fullPath 
-                  << " in " << filePath << std::endl;
-        fIn->Close();
-        return nullptr;
-    }
-
-    // Clone it so it persists in memory after we close the input file
-    TProfile* pClone = (TProfile*)prof->Clone();
-    pClone->SetDirectory(nullptr); 
-    
-    fIn->Close();
-    return pClone;
+// Returns an existing subdirectory or creates it. Used to keep directory creation lazy:
+// nothing is created until we actually have a canvas to write into it, so consumer files
+// that do not enable a given cut folder do not leave a trail of empty folders behind.
+TDirectory* EnsureDir(TDirectory* parent, const std::string& name) {
+    if (!parent) return nullptr;
+    TDirectory* dir = parent->GetDirectory(name.c_str());
+    if (!dir) dir = parent->mkdir(name.c_str());
+    return dir;
 }
+
+// Builds the full in-file path of a profile, honouring the selected cut folder
+std::string BuildProfilePath(const ProfileConfig& profConfig, const std::string& cutFolder) {
+    if (profConfig.underCutFolder) {
+        return TASK_DIR_IN_FILE + cutFolder + "/" + profConfig.subDir + profConfig.profileName;
+    }
+    return TASK_DIR_IN_FILE + profConfig.subDir + profConfig.profileName;
+}
+
+// ---------------------------------------------------------
+// Helper 1: Cached file access
+// ---------------------------------------------------------
+// Every fetch used to open and close the ROOT file again, so the number of opens scaled as
+// (families x observables x variations). With the observable list growing this became a real
+// cost for the macro, and it is pure overhead: the same handful of files is reopened
+// hundreds of times. Each file is now opened once, kept open, and closed at the very end.
+// Failed opens are cached too, so a missing systematic warns once instead of once per observable.
+class FileCache {
+public:
+    ~FileCache() { CloseAll(); }
+
+    TFile* Open(const std::string& path) {
+        auto it = fFiles.find(path);
+        if (it != fFiles.end()) return it->second; // Includes cached nullptr for known-bad paths
+
+        TFile* f = TFile::Open(path.c_str(), "READ");
+        if (f && f->IsZombie()) {
+            f->Close();
+            delete f;
+            f = nullptr;
+        }
+        if (!f) {
+            std::cerr << "  [Warning] Could not open file: " << path << std::endl;
+        }
+        fFiles[path] = f;
+        return f;
+    }
+
+    // Fetches an object and returns a detached clone that survives CloseAll()
+    template <typename T>
+    T* FetchClone(const std::string& filePath, const std::string& objPath, bool warnIfMissing = true) {
+        TFile* f = Open(filePath);
+        if (!f) return nullptr;
+
+        T* obj = dynamic_cast<T*>(f->Get(objPath.c_str()));
+        if (!obj) {
+            if (warnIfMissing) {
+                std::cerr << "  [Warning] Object not found: " << objPath << " in " << filePath << std::endl;
+            }
+            return nullptr;
+        }
+
+        T* clone = static_cast<T*>(obj->Clone());
+        clone->SetDirectory(nullptr); // Detach immediately: Clone() otherwise attaches to gDirectory,
+                                      // which at this point is the output file
+        return clone;
+    }
+
+    void CloseAll() {
+        for (auto& entry : fFiles) {
+            if (entry.second) {
+                entry.second->Close();
+                delete entry.second;
+            }
+        }
+        fFiles.clear();
+    }
+
+private:
+    std::map<std::string, TFile*> fFiles;
+};
 
 // ---------------------------------------------------------
 // Helper 1.1: Fold Profile (Sum Positive and Negative Eta)
 // ---------------------------------------------------------
+// Only valid for axes symmetric about zero. Callers must gate this on ObservableGroup::doFold.
 TH1D* FoldProfile(TProfile* pIn, const std::string& newName) {
     if (!pIn) return nullptr;
     
@@ -108,6 +205,7 @@ TH1D* FoldProfile(TProfile* pIn, const std::string& newName) {
     }
     
     TH1D* hFolded = new TH1D(newName.c_str(), pIn->GetTitle(), posEdges.size() - 1, posEdges.data());
+    hFolded->SetDirectory(nullptr); // Detach up front so the histogram never lands in the output file
     
     // Map and sum the corresponding bins
     for (int i = 1; i <= hFolded->GetNbinsX(); ++i) {
@@ -133,7 +231,6 @@ TH1D* FoldProfile(TProfile* pIn, const std::string& newName) {
         hFolded->SetBinError(i, std::sqrt(err2));
     }
     
-    hFolded->SetDirectory(nullptr); // Protect memory
     return hFolded;
 }
 
@@ -141,6 +238,17 @@ TH1D* FoldProfile(TProfile* pIn, const std::string& newName) {
 // Helper 1.2: Subtract Profiles (Data - Systematics)
 // ---------------------------------------------------------
 // (Also handles binning mismatches appropriately)
+//
+// TODO (or at least a warning):
+// the error bars below assume Data and the variation are statistically independent, so the
+// combined error is sqrt(eData^2 + eSys^2). That is NOT true here: every variation is computed on the
+// same reconstructed Lambda candidates as the data, differing only in the proxy direction, so the two
+// are strongly positively correlated. Since Var(A-B) = sA^2 + sB^2 - 2*rho*sA*sB, ignoring the
+// covariance OVERESTIMATES the uncertainty, i.e. this is a conservative bound rather than the correct
+// error. Recovering rho is not possible after the fact from two independently-filled histograms: it
+// needs joint per-event accumulators (cross terms sum(r_A*r_B), sum(r_A*n_B), ...) filled in the
+// consumer, or a delete-1 jackknife / bootstrap over events applied directly to the difference.
+// See the "Ring uncertainty estimators (covariance included)" note for the full derivation.
 TH1D* SubtractProfiles(TH1* pData, TH1* pSys, const std::string& newName) {
     if (!pData || !pSys) return nullptr;
     
@@ -151,6 +259,7 @@ TH1D* SubtractProfiles(TH1* pData, TH1* pSys, const std::string& newName) {
     } else {
         hSub = (TH1D*)pData->Clone(newName.c_str());
     }
+    hSub->SetDirectory(nullptr); // Detach before anything else, ProjectionX/Clone attach to gDirectory
     hSub->Reset(); // Clear original contents and errors
     
     // Verify if the binning structures are identical
@@ -197,7 +306,6 @@ TH1D* SubtractProfiles(TH1* pData, TH1* pSys, const std::string& newName) {
         }
     }
     
-    hSub->SetDirectory(nullptr);
     return hSub;
 }
 
@@ -211,6 +319,7 @@ std::pair<double, double> GetIntegratedProfile(TProfile* pIn) {
     // entries (fBinEntries) and correctly propagating the variance.
     // This seemed quicker (and simpler!) than any other solution...
     TProfile* pClone = (TProfile*)pIn->Clone("tmp_integrate");
+    pClone->SetDirectory(nullptr); // Keep the scratch clone out of the output file
     pClone->Rebin(pClone->GetNbinsX()); 
     
     double val = pClone->GetBinContent(1);
@@ -221,21 +330,34 @@ std::pair<double, double> GetIntegratedProfile(TProfile* pIn) {
 }
 
 // ---------------------------------------------------------
-// Helper 1.4: Toy Model Profile Extraction
+// Helper 1.4: Single categorical point
 // ---------------------------------------------------------
-TProfile* GetToyModelProfile(const std::string& filePath, const std::string& profileName) {
+// The integrated summaries draw one point per variation on a labelled axis, which means one
+// single-filled histogram per variation. This used to be written out inline once per reference
+// type; it is identical every time apart from the bin index, so it lives here now.
+TH1D* MakeCategoricalPoint(const std::string& name, int idx, int nCats, double value, double error) {
+    TH1D* h = new TH1D(name.c_str(), "", nCats, 0, nCats);
+    h->SetDirectory(nullptr); // Also silences the "Replacing existing TH1" warnings these used to raise,
+                              // since the same names recur for every observable and family
+    h->SetBinContent(idx + 1, value);
+    h->SetBinError(idx + 1, error);
+    return h;
+}
+
+// ---------------------------------------------------------
+// Helper 1.5: Toy Model Profile Extraction
+// ---------------------------------------------------------
+TProfile* GetToyModelProfile(FileCache& cache, const std::string& filePath, const std::string& profileName) {
     if (filePath.empty()) return nullptr;
-    
-    TFile* fIn = TFile::Open(filePath.c_str(), "READ"); // Open as read-only, of course
-    if (!fIn || fIn->IsZombie()) {
-        std::cerr << "  [Warning] Could not open Toy Model file: " << filePath << std::endl;
-        if (fIn) fIn->Close();
-        return nullptr;
-    }
 
     // Remark: The Toy Model trigger/jet direction is always random and fundamentally for Lambdas (though it wouldn't
     // really make any meaningful distinction for antiLambdas or a case where both hyperons are considered).
     // We map it to LeadP, Jet, 2ndJet, etc., strictly for plotting/comparison purposes!
+    //
+    // TODO: this substring heuristic only covers the eta-dependence observables and will silently pick the
+    // wrong profile for anything else (e.g. "pRingObservableEtaLambdaMinusEtaJet" also contains "Lambda").
+    // Once the Toy Model's own histogram set is revisited, replace this with an explicit per-observable
+    // toy path carried in ProfileConfig, where an empty path means "no toy equivalent, skip".
     std::string internalPath = "WithEtaGate/BothCuts/All/";
     if (profileName.find("Lambda") != std::string::npos) {
         internalPath += "pRingProxyJetVsEta";
@@ -243,17 +365,7 @@ TProfile* GetToyModelProfile(const std::string& filePath, const std::string& pro
         internalPath += "pRingProxyJetVsEtaJet";
     }
 
-    TProfile* prof = (TProfile*)fIn->Get(internalPath.c_str());
-    if (!prof) {
-        std::cerr << "  [Warning] Toy Model Profile not found: " << internalPath << std::endl;
-        fIn->Close();
-        return nullptr;
-    }
-
-    TProfile* pClone = (TProfile*)prof->Clone();
-    pClone->SetDirectory(nullptr); 
-    fIn->Close();
-    return pClone;
+    return cache.FetchClone<TProfile>(filePath, internalPath);
 }
 
 // ---------------------------------------------------------
@@ -274,7 +386,7 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& bundles,
                           const std::string& customXTitle = "",
                           const std::string& customYTitle = "") {
     
-    if (bundles.empty()) return;
+    if (bundles.empty() || !outDir) return;
 
     // Find global Min and Max across all bins and all provided profiles
     double globalMin = 999999.;
@@ -402,7 +514,7 @@ void DrawIntegratedCanvas(const std::vector<ProfileBundle>& bundles,
                           const std::string& yTitle,
                           bool isSubtracted,
                           bool drawLegend = false) {
-    if (bundles.empty()) return;
+    if (bundles.empty() || !outDir) return;
 
     // 1. Find Min/Max to set Y-axis boundaries
     double globalMin = 999999., globalMax = -999999.;
@@ -435,6 +547,7 @@ void DrawIntegratedCanvas(const std::vector<ProfileBundle>& bundles,
 
     // 2. Create a dummy histogram just to draw the custom axes and labels
     TH1D* frame = new TH1D((canvasName + "_frame").c_str(), canvasTitle.c_str(), nBins, 0, nBins);
+    frame->SetDirectory(nullptr);
     for (int i = 0; i < nBins; ++i) {
         frame->GetXaxis()->SetBinLabel(i + 1, labels[i].c_str());
     }
@@ -496,7 +609,11 @@ void DrawIntegratedCanvas(const std::vector<ProfileBundle>& bundles,
 // ---------------------------------------------------------
 // Main Macro 
 // ---------------------------------------------------------
-void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mcRefDir = "", const std::string& ppRefDir = "", const std::string& toyModelPath = "") {
+void auxiliarySummaryPlots(const std::string& consumerDir,
+                           const std::string& mcRefDir = "",
+                           const std::string& ppRefDir = "",
+                           const std::string& toyModelPath = "",
+                           const std::string& cutFolder = DEFAULT_CUT_FOLDER) {
     
     // 1. Define Systematic Variations (the list of all useful variations I would like to track into this plot)
     // The data config (empty suffix) is handled separately in the logic to ensure it is always first
@@ -516,6 +633,14 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
     VariationConfig ppConfig   = {"", "pp Data", kAzure+2, 2, 47, false}; // X shape, something between blue and cyan
     VariationConfig toyConfig  = {"", "Toy Model", kViolet+1, 2, 33, false}; // Diamond shape, purple-ish
 
+    // External reference datasets, in the order they should appear on the categorical axes.
+    // An empty basePath simply drops that reference from every plot, with no index bookkeeping needed.
+    std::vector<ExternalRef> externals = {
+        {mcConfig,  mcRefDir,      ExternalRef::kConsumerDir},
+        {ppConfig,  ppRefDir,      ExternalRef::kConsumerDir},
+        {toyConfig, toyModelPath,  ExternalRef::kToyModel}
+    };
+
     // Define Mass Selection Variations (treated as a separate standalone family to avoid polluting main plots)
     // (We are essentially checking to see if the eta dependency of the ring, the integrated observables and the folded spectra
     //  change whenever considering a ring observable calculated using particles strictly inside a mass window or strictly outside
@@ -534,14 +659,33 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
                                          // naming scheme that was in place for other variations of BothHyperons configurables of the consumer
     };
 
-    // 3. Define the Profiles to Extract
-    std::vector<ProfileConfig> profiles = {
-        {"pRingObservableEtaLeadP",        "#eta_{LeadP}",           "R"},
-        {"pRingObservableEtaJet",          "#eta_{Jet}",             "R"},
-        {"pRingObservableEta2ndJet",       "#eta_{2ndJet}",          "R"},
-        {"pRingObservableEtaLambda",       "#eta_{#Lambda}",         "R"},
-        {"pRingObservableEtaLambda2ndJet", "#eta_{#Lambda(2ndJet)}", "R"},
-        {"pRingObservableEtaLambdaLeadP",  "#eta_{#Lambda(LeadP)}",  "R"}
+    // 3. Define the Observable Groups
+    // Split by what the x-axis actually is: the proxy's own eta, or the hyperon's eta.
+    //
+    // TODO: the consumer's profile naming is not uniform across observables. The leading jet has no infix
+    // in some families (pRingObservableDeltaPhi) but does in others (pRingObservableLeadJetPVz), and the
+    // subleading jet is "2ndJet" everywhere except PVz, where it is "SubLead". That is why every name below
+    // is spelled out instead of being built from a proxy infix. Worth unifying in the consumer at some
+    // point, but it would break other downstream code, so leaving it alone for now.
+    std::vector<ObservableGroup> observableGroups = {
+        {
+            "EtaProxy", // x-axis is the eta of the jet/leading-particle proxy
+            {
+                {"EtaDependence/", "pRingObservableEtaLeadP",  "#eta_{LeadP}",  "R", true},
+                {"EtaDependence/", "pRingObservableEtaJet",    "#eta_{Jet}",    "R", true},
+                {"EtaDependence/", "pRingObservableEta2ndJet", "#eta_{2ndJet}", "R", true}
+            },
+            true // Eta axis is symmetric about zero, so folding is meaningful
+        },
+        {
+            "EtaV0", // x-axis is the eta of the hyperon itself, split by which proxy defined the ring
+            {
+                {"EtaDependence/", "pRingObservableEtaLambda",       "#eta_{#Lambda}",         "R", true},
+                {"EtaDependence/", "pRingObservableEtaLambdaLeadP",  "#eta_{#Lambda(LeadP)}",  "R", true},
+                {"EtaDependence/", "pRingObservableEtaLambda2ndJet", "#eta_{#Lambda(2ndJet)}", "R", true}
+            },
+            true
+        }
     };
 
     // 4. Create the output file
@@ -552,477 +696,404 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
         return;
     }
 
+    // One cache for the whole run: every consumer/MC/pp/toy file is opened at most once
+    FileCache cache;
+
     std::cout << "========================================================\n";
     std::cout << " Generating Auxiliary Plots\n";
-    std::cout << " Output: " << outFilePath << "\n";
+    std::cout << " Output:     " << outFilePath << "\n";
+    std::cout << " Cut folder: " << cutFolder << "\n";
     std::cout << "========================================================\n";
 
     // 5. Main Processing Loops
     for (const auto& fam : families) {
         std::cout << " -> Processing Family: " << fam.familyName << std::endl;
-        
-        // Create a directory for this family in the output ROOT file
-        TDirectory* famDir = fOut->mkdir(fam.familyName.c_str());
+
+        // Directories are created lazily (only once something is actually written into them),
+        // so a consumer file that does not enable the requested cut folder leaves no empty folders.
+        TDirectory* famDir = nullptr;
 
         // Variables to accumulate the integrated observable summary across all variations for this family
         // (a "grand summary" for short)
         std::vector<std::pair<double, double>> grandDataVals;
-        std::vector<std::pair<double, double>> grandMCVals;
-        std::vector<std::pair<double, double>> grandPPVals;
-        std::vector<std::pair<double, double>> grandToyVals;
+        std::vector<std::vector<std::pair<double, double>>> grandExtVals(externals.size());  // One row per external reference
         std::vector<std::vector<std::pair<double, double>>> grandSysVals(sysVariations.size()); // Track all systematic variations
         std::vector<std::string> grandLabels;
 
-        for (const auto& profConfig : profiles) {
-            
-            // Create a subdirectory for the observable to keep things extremely tidy
-            TDirectory* obsDir = famDir->mkdir(profConfig.profileName.c_str());
+        for (const auto& group : observableGroups) {
 
-            // Fetch Data:
-            std::string dataFile = consumerDir + "/ConsumerResults_" + fam.dataSuffix + ".root";
-            TProfile* pData = GetProfile(dataFile, profConfig.profileName);
-            if (!pData) continue; // Skip to next observable if data is missing
+            TDirectory* groupDir = nullptr; // Also created lazily
 
-            // Fetch Systematics Data
-            std::vector<ProfileBundle> allSystematics;
-            allSystematics.push_back({pData, dataConfig}); // Always keep data at index 0 (it is the very first thing in this array)
-            
-            std::vector<TProfile*> profilesToDelete; // Track for memory cleanup
-            profilesToDelete.push_back(pData);
+            for (const auto& profConfig : group.profiles) {
 
-            for (const auto& sys : sysVariations) {
-                std::string sysFile = consumerDir + "/ConsumerResults_" + fam.dataSuffix + sys.suffix + ".root";
-                TProfile* pSys = GetProfile(sysFile, profConfig.profileName);
-                if (pSys) {
-                    allSystematics.push_back({pSys, sys});
-                    profilesToDelete.push_back(pSys);
-                }
-            }
+                const std::string profilePath = BuildProfilePath(profConfig, cutFolder);
 
-            // Fetch MC Base Data (if requested via non-null path)
-            TProfile* pMC = nullptr;
-            if (!mcRefDir.empty()) {
-                std::string mcFile = mcRefDir + "/ConsumerResults_" + fam.dataSuffix + ".root";
-                pMC = GetProfile(mcFile, profConfig.profileName);
-                if (pMC) profilesToDelete.push_back(pMC);
-            }
+                // Fetch Data:
+                std::string dataFile = consumerDir + "/ConsumerResults_" + fam.dataSuffix + ".root";
+                TProfile* pData = cache.FetchClone<TProfile>(dataFile, profilePath);
+                if (!pData) continue; // Skip to next observable if data is missing (nothing is created on disk)
 
-            // Fetch PP Data
-            TProfile* pPP = nullptr;
-            if (!ppRefDir.empty()) {
-                std::string ppFile = ppRefDir + "/ConsumerResults_" + fam.dataSuffix + ".root";
-                pPP = GetProfile(ppFile, profConfig.profileName);
-                if (pPP) profilesToDelete.push_back(pPP);
-            }
+                // Only now that we know there is something to draw do we materialize the directories
+                if (!famDir)   famDir   = EnsureDir(fOut, fam.familyName);
+                if (!groupDir) groupDir = EnsureDir(famDir, group.groupName);
+                TDirectory* obsDir = EnsureDir(groupDir, profConfig.profileName);
 
-            // Fetch Toy Model Data (if requested via non-null path)
-            TProfile* pToy = nullptr;
-            if (!toyModelPath.empty()) {
-                pToy = GetToyModelProfile(toyModelPath, profConfig.profileName);
-                if (pToy) profilesToDelete.push_back(pToy);
-            }
+                // Splitting the three canvas categories into their own subfolders, so the observable
+                // folder stays navigable instead of holding a flat list of differently-flavoured canvases
+                TDirectory* overlayDir = EnsureDir(obsDir, "Overlays");
+                TDirectory* foldedDir  = group.doFold ? EnsureDir(obsDir, "Folded") : nullptr;
+                TDirectory* subDir     = EnsureDir(obsDir, "Subtracted");
 
-            // Fetch Mass Selection Data
-            std::vector<ProfileBundle> allMassSystematics;
-            allMassSystematics.push_back({pData, dataConfig}); // Keep data as baseline
-            
-            for (const auto& mass : massVariations) {
-                std::string massFile = consumerDir + "/ConsumerResults_" + fam.dataSuffix + mass.suffix + ".root";
-                TProfile* pMass = GetProfile(massFile, profConfig.profileName);
-                if (pMass) {
-                    allMassSystematics.push_back({pMass, mass});
-                    profilesToDelete.push_back(pMass); // Track for standard cleanup
-                }
-            }
-
-            // ---------------------------------------------------------
-            // FOLDING THE DATA (Summing Pos and Neg Eta)
-            // ---------------------------------------------------------
-            std::vector<ProfileBundle> allFoldedSystematics;
-            std::vector<TH1*> foldedToDelete;
-            
-            for (const auto& bundle : allSystematics) {
-                // Safely cast to TProfile since we know the original inputs were TProfiles
-                TProfile* pOrig = dynamic_cast<TProfile*>(bundle.profile);
-                std::string foldName = std::string(pOrig->GetName()) + "_Folded_" + bundle.config.suffix;
+                // Fetch Systematics Data
+                std::vector<ProfileBundle> allSystematics;
+                allSystematics.push_back({pData, dataConfig}); // Always keep data at index 0 (it is the very first thing in this array)
                 
-                TH1D* pFolded = FoldProfile(pOrig, foldName);
-                allFoldedSystematics.push_back({pFolded, bundle.config});
-                foldedToDelete.push_back(pFolded);
-            }
+                std::vector<TProfile*> profilesToDelete; // Track for memory cleanup
+                profilesToDelete.push_back(pData);
 
-            TH1D* pMCFolded = nullptr;
-            if (pMC) {
-                pMCFolded = FoldProfile(pMC, std::string(pMC->GetName()) + "_Folded_MC");
-                foldedToDelete.push_back(pMCFolded);
-            }
-
-            TH1D* pPPFolded = nullptr;
-            if (pPP) {
-                pPPFolded = FoldProfile(pPP, std::string(pPP->GetName()) + "_Folded_PP");
-                foldedToDelete.push_back(pPPFolded);
-            }
-
-            TH1D* pToyFolded = nullptr;
-            if (pToy) {
-                pToyFolded = FoldProfile(pToy, std::string(pToy->GetName()) + "_Folded_Toy");
-                foldedToDelete.push_back(pToyFolded);
-            }
-
-            // Fold Mass Selection Data
-            std::vector<ProfileBundle> allFoldedMass;
-            for (const auto& bundle : allMassSystematics) {
-                TProfile* pOrig = dynamic_cast<TProfile*>(bundle.profile);
-                std::string foldName = std::string(pOrig->GetName()) + "_Folded_" + bundle.config.suffix;
-                TH1D* pFolded = FoldProfile(pOrig, foldName);
-                allFoldedMass.push_back({pFolded, bundle.config});
-                foldedToDelete.push_back(pFolded);
-            }
-
-            // Creating the Modulus X-Axis title (e.g. |#eta_{LeadP}|)
-            std::string foldedXTitle = "|" + profConfig.xAxisTitle + "|";
-
-            // ---------------------------------------------------------
-            // SUBTRACTING THE DATA (Data - Variations)
-            // ---------------------------------------------------------
-            std::vector<ProfileBundle> allSubtractedSystematics;
-            std::vector<TH1*> subtractedToDelete;
-
-                // Create a zero-line reference for the Data bundle (could have made this into just a true vertical line,
-            // but in this implementation we actually get some points in the plot, which could look better)
-            TH1D* pDataZero = SubtractProfiles(pData, pData, std::string(pData->GetName()) + "_Subtracted_Data");
-            // Force errors to 0 so the data acts purely as a flat reference line
-            for (int i = 1; i <= pDataZero->GetNbinsX(); ++i) pDataZero->SetBinError(i, 0.0);
-            
-            allSubtractedSystematics.push_back({pDataZero, dataConfig});
-            subtractedToDelete.push_back(pDataZero);
-
-                // Subtract systematics (start loop at 1 to skip the data itself)
-            for (size_t i = 1; i < allSystematics.size(); ++i) {
-                const auto& bundle = allSystematics[i];
-                std::string subName = std::string(pData->GetName()) + "_Subtracted_" + bundle.config.suffix;
-                TH1D* pSub = SubtractProfiles(pData, bundle.profile, subName);
-                
-                allSubtractedSystematics.push_back({pSub, bundle.config});
-                subtractedToDelete.push_back(pSub);
-            }
-
-                // Subtract MC
-            TH1D* pMCSubtracted = nullptr;
-            if (pMC) {
-                pMCSubtracted = SubtractProfiles(pData, pMC, std::string(pMC->GetName()) + "_Subtracted_MC");
-                subtractedToDelete.push_back(pMCSubtracted);
-            }
-
-                // Same for pp data:
-            TH1D* pPPSubtracted = nullptr;
-            if (pPP) {
-                pPPSubtracted = SubtractProfiles(pData, pPP, std::string(pPP->GetName()) + "_Subtracted_PP");
-                subtractedToDelete.push_back(pPPSubtracted);
-            }
-
-                // Subtract for Toy Model
-            TH1D* pToySubtracted = nullptr;
-            if (pToy) {
-                pToySubtracted = SubtractProfiles(pData, pToy, std::string(pToy->GetName()) + "_Subtracted_Toy");
-                subtractedToDelete.push_back(pToySubtracted);
-            }
-
-                // Subtract Mass Selection Data
-            std::vector<ProfileBundle> allSubtractedMass;
-            allSubtractedMass.push_back({pDataZero, dataConfig}); // Re-use the existing zero-line reference
-            
-            for (size_t i = 1; i < allMassSystematics.size(); ++i) {
-                const auto& bundle = allMassSystematics[i];
-                std::string subName = std::string(pData->GetName()) + "_Subtracted_" + bundle.config.suffix;
-                TH1D* pSub = SubtractProfiles(pData, bundle.profile, subName);
-                allSubtractedMass.push_back({pSub, bundle.config});
-                subtractedToDelete.push_back(pSub);
-            }
-
-            // Creating the Y-Axis title for the difference plots
-            std::string subYTitle = "#Delta" + profConfig.yAxisTitle + " (Data - Var)";
-
-            // ---------------------------------------------------------
-            // DRAWING THE VARIATIONS
-            // ---------------------------------------------------------
-            
-            // --- 1. Standard (Unfolded) Plots ---
-                // Variation 1: Data Only
-            DrawComparisonCanvas({{pData, dataConfig}}, "Canvas_DataOnly", fam.familyName + " Data", obsDir, profConfig);
-                // Variation 2: Systematics (+ Data)
-            DrawComparisonCanvas(allSystematics, "Canvas_Systematics", fam.familyName + " Systematics", obsDir, profConfig);
-                // Variation 3: MC Only (if available)
-            std::vector<ProfileBundle> allInOne = allSystematics;
-            if (pMC) {
-                DrawComparisonCanvas({{pMC, mcConfig}}, "Canvas_MCOnly", fam.familyName + " MC", obsDir, profConfig);
-                allInOne.push_back({pMC, mcConfig});
-            }
-                // Variation 4: pp data data (if available)
-            if (pPP) {
-                DrawComparisonCanvas({{pPP, ppConfig}}, "Canvas_PPOnly", fam.familyName + " PP Data", obsDir, profConfig);
-                allInOne.push_back({pPP, ppConfig});
-            }
-                // Variation 5: Toy Model Only (if available)
-            if (pToy) {
-                DrawComparisonCanvas({{pToy, toyConfig}}, "Canvas_ToyOnly", fam.familyName + " Toy Model", obsDir, profConfig);
-                allInOne.push_back({pToy, toyConfig});
-            }
-                // Variation 6: All-in-One (if MC and Toy Model available)
-            if (pMC || pPP || pToy) {
-                DrawComparisonCanvas(allInOne, "Canvas_AllInOne", fam.familyName + " All Comparisons", obsDir, profConfig);
-            }
-
-            // --- 2. Folded Plots ---
-            DrawComparisonCanvas({allFoldedSystematics[0]}, "Canvas_Folded_DataOnly", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Data", obsDir, profConfig, foldedXTitle);
-            DrawComparisonCanvas(allFoldedSystematics, "Canvas_Folded_Systematics", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Systematics", obsDir, profConfig, foldedXTitle);
-            std::vector<ProfileBundle> allInOneFolded = allFoldedSystematics; // For folded plots tracking
-            if (pMCFolded) {
-                DrawComparisonCanvas({{pMCFolded, mcConfig}}, "Canvas_Folded_MCOnly", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) MC", obsDir, profConfig, foldedXTitle);
-                allInOneFolded.push_back({pMCFolded, mcConfig});
-            }
-            if (pPPFolded) {
-                DrawComparisonCanvas({{pPPFolded, ppConfig}}, "Canvas_Folded_PPOnly", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) PP", obsDir, profConfig, foldedXTitle);
-                allInOneFolded.push_back({pPPFolded, ppConfig});
-            }
-            if (pToyFolded) {
-                DrawComparisonCanvas({{pToyFolded, toyConfig}}, "Canvas_Folded_ToyOnly", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Toy Model", obsDir, profConfig, foldedXTitle);
-                allInOneFolded.push_back({pToyFolded, toyConfig});
-            }
-            if (pMCFolded || pPPFolded || pToyFolded) {
-                DrawComparisonCanvas(allInOneFolded, "Canvas_Folded_AllInOne", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Comparisons", obsDir, profConfig, foldedXTitle);
-            }
-
-            // --- 3. Subtracted Data - Systematics ---
-                // Data minus Data Systematics
-            DrawComparisonCanvas(allSubtractedSystematics, "Canvas_Subtracted_Systematics", fam.familyName + " Systematics Difference", obsDir, profConfig, "", subYTitle);
-                // Data minus MC Only
-            std::vector<ProfileBundle> allInOneSubtracted = allSubtractedSystematics;
-            if (pMCSubtracted) {
-                DrawComparisonCanvas({{pDataZero, dataConfig}, {pMCSubtracted, mcConfig}}, "Canvas_Subtracted_MCOnly", fam.familyName + " MC Difference", obsDir, profConfig, "", subYTitle);
-                allInOneSubtracted.push_back({pMCSubtracted, mcConfig});
-            }
-                // Data minus pp data
-            if (pPPSubtracted) {
-                DrawComparisonCanvas({{pDataZero, dataConfig}, {pPPSubtracted, ppConfig}}, "Canvas_Subtracted_PPOnly", fam.familyName + " PP Difference", obsDir, profConfig, "", subYTitle);
-                allInOneSubtracted.push_back({pPPSubtracted, ppConfig});
-            }
-                // Data minus Toy Model Only
-            if (pToySubtracted) {
-                DrawComparisonCanvas({{pDataZero, dataConfig}, {pToySubtracted, toyConfig}}, "Canvas_Subtracted_ToyOnly", fam.familyName + " Toy Difference", obsDir, profConfig, "", subYTitle);
-                allInOneSubtracted.push_back({pToySubtracted, toyConfig});
-            }
-                // All-In-One
-            if (pMCSubtracted || pPPSubtracted || pToySubtracted) {
-                DrawComparisonCanvas(allInOneSubtracted, "Canvas_Subtracted_AllInOne", fam.familyName + " All Comparisons Difference", obsDir, profConfig, "", subYTitle);
-            }
-
-            // --- Mass Selection Proxy Plots ---
-            if (allMassSystematics.size() > 1) { // Only draw if mass files were found
-                TDirectory* massDir = obsDir->mkdir("Mass_Selection");
-                
-                // Standard
-                DrawComparisonCanvas(allMassSystematics, "Canvas_MassSelection", fam.familyName + " Mass Selection", massDir, profConfig);
-                // Folded
-                DrawComparisonCanvas(allFoldedMass, "Canvas_Folded_MassSelection", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Mass Selection", massDir, profConfig, foldedXTitle);
-                // Subtracted
-                DrawComparisonCanvas(allSubtractedMass, "Canvas_Subtracted_MassSelection", fam.familyName + " Mass Selection Difference", massDir, profConfig, "", subYTitle);
-            }
-
-            // --- 4. Individual Comparisons (One-by-One) ---
-            // (condensed all of this into a single block of code because the loops become cleaner!)
-                // Create a sub-directory specifically for the individual comparisons to keep things organized
-            TDirectory* indivDir = obsDir->mkdir("Individual_Comparisons");
-
-            // Loop through all variations (starting at i = 1 to skip the data comparing against itself)
-            for (size_t i = 1; i < allSystematics.size(); ++i) {
-                std::string sysLabel = allSystematics[i].config.legendLabel;
-                std::string sysSuffix = allSystematics[i].config.suffix; // e.g., "_forceDatalikeJet"
-
-                // Standard
-                DrawComparisonCanvas({allSystematics[0], allSystematics[i]}, "Canvas_Standard" + sysSuffix, fam.familyName + " Data vs " + sysLabel, indivDir, profConfig);
-                // Folded
-                DrawComparisonCanvas({allFoldedSystematics[0], allFoldedSystematics[i]}, "Canvas_Folded" + sysSuffix, fam.familyName + " Folded vs " + sysLabel, indivDir, profConfig, foldedXTitle);
-                // Subtracted
-                DrawComparisonCanvas({allSubtractedSystematics[0], allSubtractedSystematics[i]}, "Canvas_Subtracted" + sysSuffix, fam.familyName + " Difference vs " + sysLabel, indivDir, profConfig, "", subYTitle);
-            }
-
-            // Do the same for the MC reference, which was introduced separately
-            if (pMC) {
-                // Standard
-                DrawComparisonCanvas({allSystematics[0], {pMC, mcConfig}}, "Canvas_Standard_MC", fam.familyName + " Data vs MC", indivDir, profConfig);
-                // Folded
-                DrawComparisonCanvas({allFoldedSystematics[0], {pMCFolded, mcConfig}}, "Canvas_Folded_MC", fam.familyName + " Folded vs MC", indivDir, profConfig, foldedXTitle);
-                // Subtracted
-                DrawComparisonCanvas({allSubtractedSystematics[0], {pMCSubtracted, mcConfig}}, "Canvas_Subtracted_MC", fam.familyName + " Difference vs MC", indivDir, profConfig, "", subYTitle);
-            }
-            if (pPP) {
-                DrawComparisonCanvas({allSystematics[0], {pPP, ppConfig}}, "Canvas_Standard_PP", fam.familyName + " Data vs PP", indivDir, profConfig);
-                DrawComparisonCanvas({allFoldedSystematics[0], {pPPFolded, ppConfig}}, "Canvas_Folded_PP", fam.familyName + " Folded vs PP", indivDir, profConfig, foldedXTitle);
-                DrawComparisonCanvas({allSubtractedSystematics[0], {pPPSubtracted, ppConfig}}, "Canvas_Subtracted_PP", fam.familyName + " Difference vs PP", indivDir, profConfig, "", subYTitle);
-            }
-
-
-            // --- 5. Integrated Summaries ---
-            TDirectory* integDir = obsDir->mkdir("Integrated_Summary");
-
-            std::vector<std::string> integLabels;
-            std::vector<ProfileBundle> integBundles;
-            std::vector<ProfileBundle> integSubBundles;
-            std::vector<TH1*> integToDelete;
-
-            int numCats = allSystematics.size() + (pMC ? 1 : 0) + (pPP ? 1 : 0) + (pToy ? 1 : 0);
-            
-                // Compute Integrated Data and save to Grand Summary
-            auto dataInteg = GetIntegratedProfile(pData);
-            grandDataVals.push_back(dataInteg);
-            grandLabels.push_back(profConfig.xAxisTitle);
-            if (pMC) grandMCVals.push_back(GetIntegratedProfile(pMC));
-            if (pPP) grandPPVals.push_back(GetIntegratedProfile(pPP));
-            if (pToy) grandToyVals.push_back(GetIntegratedProfile(pToy));
-
-            // Populate the grand summary for systematics
-            // (allSystematics[0] is the data, so sysVariations[i] corresponds to allSystematics[i+1])
-            for (size_t i = 0; i < sysVariations.size(); ++i) {
-                if (i + 1 < allSystematics.size()) {
-                    auto sysInteg = GetIntegratedProfile(dynamic_cast<TProfile*>(allSystematics[i+1].profile));
-                    grandSysVals[i].push_back(sysInteg);
-                }
-            }
-
-                // Loop over variations and construct isolated categorical bins
-            for (size_t i = 0; i < allSystematics.size(); ++i) {
-                integLabels.push_back(allSystematics[i].config.legendLabel);
-                
-                auto integ = GetIntegratedProfile(dynamic_cast<TProfile*>(allSystematics[i].profile));
-                
-                TH1D* hInt = new TH1D(Form("Integ_%zu", i), "", numCats, 0, numCats);
-                hInt->SetBinContent(i + 1, integ.first);
-                hInt->SetBinError(i + 1, integ.second);
-                
-                // Performing also the subtraction between integrated observables, variation by variation
-                // (error bars are also properly propagated)
-                TH1D* hIntSub = new TH1D(Form("IntegSub_%zu", i), "", numCats, 0, numCats);
-                if (i == 0) {
-                    hIntSub->SetBinContent(i + 1, 0.0);
-                    hIntSub->SetBinError(i + 1, 0.0);
-                } else {
-                    hIntSub->SetBinContent(i + 1, dataInteg.first - integ.first);
-                    hIntSub->SetBinError(i + 1, std::sqrt(dataInteg.second*dataInteg.second + integ.second*integ.second));
-                }
-
-                integBundles.push_back({hInt, allSystematics[i].config});
-                integSubBundles.push_back({hIntSub, allSystematics[i].config});
-                integToDelete.push_back(hInt);
-                integToDelete.push_back(hIntSub);
-            }
-            
-                // Add MC to integrated list (if available)
-            if (pMC) {
-                integLabels.push_back(mcConfig.legendLabel);
-                auto integMC = GetIntegratedProfile(pMC);
-                int idx = allSystematics.size();
-                
-                TH1D* hIntMC = new TH1D("Integ_MC", "", numCats, 0, numCats);
-                hIntMC->SetBinContent(idx + 1, integMC.first);
-                hIntMC->SetBinError(idx + 1, integMC.second);
-                
-                TH1D* hIntSubMC = new TH1D("IntegSub_MC", "", numCats, 0, numCats);
-                hIntSubMC->SetBinContent(idx + 1, dataInteg.first - integMC.first);
-                hIntSubMC->SetBinError(idx + 1, std::sqrt(dataInteg.second*dataInteg.second + integMC.second*integMC.second));
-                
-                integBundles.push_back({hIntMC, mcConfig});
-                integSubBundles.push_back({hIntSubMC, mcConfig});
-                integToDelete.push_back(hIntMC);
-                integToDelete.push_back(hIntSubMC);
-            }
-                // Same for pp data and Toy Model signals
-            if (pPP) {
-                integLabels.push_back(ppConfig.legendLabel);
-                auto integPP = GetIntegratedProfile(pPP);
-                int idx = allSystematics.size() + (pMC ? 1 : 0); // Correctly offsets the X-axis placement
-                
-                TH1D* hIntPP = new TH1D("Integ_PP", "", numCats, 0, numCats);
-                hIntPP->SetBinContent(idx + 1, integPP.first);
-                hIntPP->SetBinError(idx + 1, integPP.second);
-                
-                TH1D* hIntSubPP = new TH1D("IntegSub_PP", "", numCats, 0, numCats);
-                hIntSubPP->SetBinContent(idx + 1, dataInteg.first - integPP.first);
-                hIntSubPP->SetBinError(idx + 1, std::sqrt(dataInteg.second*dataInteg.second + integPP.second*integPP.second));
-                
-                integBundles.push_back({hIntPP, ppConfig});
-                integSubBundles.push_back({hIntSubPP, ppConfig});
-                integToDelete.push_back(hIntPP);
-                integToDelete.push_back(hIntSubPP);
-            }
-
-            if (pToy) {
-                integLabels.push_back(toyConfig.legendLabel);
-                auto integToy = GetIntegratedProfile(pToy);
-                int idx = allSystematics.size() + (pMC ? 1 : 0) + (pPP ? 1 : 0);
-                
-                TH1D* hIntToy = new TH1D("Integ_Toy", "", numCats, 0, numCats);
-                hIntToy->SetBinContent(idx + 1, integToy.first);
-                hIntToy->SetBinError(idx + 1, integToy.second);
-                
-                TH1D* hIntSubToy = new TH1D("IntegSub_Toy", "", numCats, 0, numCats);
-                hIntSubToy->SetBinContent(idx + 1, dataInteg.first - integToy.first);
-                hIntSubToy->SetBinError(idx + 1, std::sqrt(dataInteg.second*dataInteg.second + integToy.second*integToy.second));
-                
-                integBundles.push_back({hIntToy, toyConfig});
-                integSubBundles.push_back({hIntSubToy, toyConfig});
-                integToDelete.push_back(hIntToy);
-                integToDelete.push_back(hIntSubToy);
-            }
-
-            // 4. Draw them using the custom categorical plotter
-            DrawIntegratedCanvas(integBundles, integLabels, "Canvas_Integrated", fam.familyName + " Integrated Summary", integDir, "Integrated " + profConfig.yAxisTitle, false);
-            DrawIntegratedCanvas(integSubBundles, integLabels, "Canvas_Integrated_Subtracted", fam.familyName + " Integrated Differences", integDir, "#Delta" + profConfig.yAxisTitle + " (Data - Var)", true);
-
-            // 5. Draw Mass Selection Integrated Summaries
-            if (allMassSystematics.size() > 1) {
-                std::vector<std::string> massIntegLabels;
-                std::vector<ProfileBundle> massIntegBundles;
-                std::vector<ProfileBundle> massIntegSubBundles;
-                int numMassCats = allMassSystematics.size();
-                
-                for (size_t i = 0; i < allMassSystematics.size(); ++i) {
-                    massIntegLabels.push_back(allMassSystematics[i].config.legendLabel);
-                    auto integ = GetIntegratedProfile(dynamic_cast<TProfile*>(allMassSystematics[i].profile));
-                    
-                    TH1D* hInt = new TH1D(Form("MassInteg_%zu", i), "", numMassCats, 0, numMassCats);
-                    hInt->SetBinContent(i + 1, integ.first);
-                    hInt->SetBinError(i + 1, integ.second);
-                    
-                    TH1D* hIntSub = new TH1D(Form("MassIntegSub_%zu", i), "", numMassCats, 0, numMassCats);
-                    if (i == 0) {
-                        hIntSub->SetBinContent(i + 1, 0.0);
-                        hIntSub->SetBinError(i + 1, 0.0);
-                    } else {
-                        hIntSub->SetBinContent(i + 1, dataInteg.first - integ.first);
-                        hIntSub->SetBinError(i + 1, std::sqrt(dataInteg.second*dataInteg.second + integ.second*integ.second));
+                for (const auto& sys : sysVariations) {
+                    std::string sysFile = consumerDir + "/ConsumerResults_" + fam.dataSuffix + sys.suffix + ".root";
+                    TProfile* pSys = cache.FetchClone<TProfile>(sysFile, profilePath);
+                    if (pSys) {
+                        allSystematics.push_back({pSys, sys});
+                        profilesToDelete.push_back(pSys);
                     }
+                }
+
+                // Fetch the external references (MC base, pp base, Toy Model, ...)
+                // presentExternals keeps the original index so the grand summary rows stay aligned
+                std::vector<std::pair<size_t, ProfileBundle>> presentExternals;
+                for (size_t iExt = 0; iExt < externals.size(); ++iExt) {
+                    const auto& ext = externals[iExt];
+                    if (ext.basePath.empty()) continue;
+
+                    TProfile* pExt = nullptr;
+                    if (ext.kind == ExternalRef::kToyModel) {
+                        pExt = GetToyModelProfile(cache, ext.basePath, profConfig.profileName);
+                    } else {
+                        std::string extFile = ext.basePath + "/ConsumerResults_" + fam.dataSuffix + ".root";
+                        pExt = cache.FetchClone<TProfile>(extFile, profilePath);
+                    }
+
+                    if (pExt) {
+                        presentExternals.push_back({iExt, {pExt, ext.config}});
+                        profilesToDelete.push_back(pExt);
+                    }
+                }
+
+                // Fetch Mass Selection Data
+                std::vector<ProfileBundle> allMassSystematics;
+                allMassSystematics.push_back({pData, dataConfig}); // Keep data as baseline
+                
+                for (const auto& mass : massVariations) {
+                    std::string massFile = consumerDir + "/ConsumerResults_" + fam.dataSuffix + mass.suffix + ".root";
+                    TProfile* pMass = cache.FetchClone<TProfile>(massFile, profilePath);
+                    if (pMass) {
+                        allMassSystematics.push_back({pMass, mass});
+                        profilesToDelete.push_back(pMass); // Track for standard cleanup
+                    }
+                }
+
+                // ---------------------------------------------------------
+                // FOLDING THE DATA (Summing Pos and Neg Eta)
+                // ---------------------------------------------------------
+                // Gated on the group flag: folding about zero is only meaningful for symmetric axes
+                std::vector<ProfileBundle> allFoldedSystematics;
+                std::vector<ProfileBundle> allFoldedExternals;
+                std::vector<ProfileBundle> allFoldedMass;
+                std::vector<TH1*> foldedToDelete;
+
+                if (group.doFold) {
+                    for (const auto& bundle : allSystematics) {
+                        // Safely cast to TProfile since we know the original inputs were TProfiles
+                        TProfile* pOrig = dynamic_cast<TProfile*>(bundle.profile);
+                        std::string foldName = std::string(pOrig->GetName()) + "_Folded_" + bundle.config.suffix;
+                        
+                        TH1D* pFolded = FoldProfile(pOrig, foldName);
+                        allFoldedSystematics.push_back({pFolded, bundle.config});
+                        foldedToDelete.push_back(pFolded);
+                    }
+
+                    for (const auto& ext : presentExternals) {
+                        TProfile* pOrig = dynamic_cast<TProfile*>(ext.second.profile);
+                        std::string foldName = std::string(pOrig->GetName()) + "_Folded_Ext" + std::to_string(ext.first);
+                        TH1D* pFolded = FoldProfile(pOrig, foldName);
+                        allFoldedExternals.push_back({pFolded, ext.second.config});
+                        foldedToDelete.push_back(pFolded);
+                    }
+
+                    // Fold Mass Selection Data
+                    for (const auto& bundle : allMassSystematics) {
+                        TProfile* pOrig = dynamic_cast<TProfile*>(bundle.profile);
+                        std::string foldName = std::string(pOrig->GetName()) + "_FoldedMass_" + bundle.config.suffix;
+                        TH1D* pFolded = FoldProfile(pOrig, foldName);
+                        allFoldedMass.push_back({pFolded, bundle.config});
+                        foldedToDelete.push_back(pFolded);
+                    }
+                }
+
+                // Creating the Modulus X-Axis title (e.g. |#eta_{LeadP}|)
+                std::string foldedXTitle = "|" + profConfig.xAxisTitle + "|";
+
+                // ---------------------------------------------------------
+                // SUBTRACTING THE DATA (Data - Variations)
+                // ---------------------------------------------------------
+                std::vector<ProfileBundle> allSubtractedSystematics;
+                std::vector<ProfileBundle> allSubtractedExternals;
+                std::vector<TH1*> subtractedToDelete;
+
+                    // Create a zero-line reference for the Data bundle (could have made this into just a true vertical line,
+                // but in this implementation we actually get some points in the plot, which could look better)
+                TH1D* pDataZero = SubtractProfiles(pData, pData, std::string(pData->GetName()) + "_Subtracted_Data");
+                // Force errors to 0 so the data acts purely as a flat reference line
+                for (int i = 1; i <= pDataZero->GetNbinsX(); ++i) pDataZero->SetBinError(i, 0.0);
+                
+                allSubtractedSystematics.push_back({pDataZero, dataConfig});
+                subtractedToDelete.push_back(pDataZero);
+
+                    // Subtract systematics (start loop at 1 to skip the data itself)
+                for (size_t i = 1; i < allSystematics.size(); ++i) {
+                    const auto& bundle = allSystematics[i];
+                    std::string subName = std::string(pData->GetName()) + "_Subtracted_" + bundle.config.suffix;
+                    TH1D* pSub = SubtractProfiles(pData, bundle.profile, subName);
                     
-                    massIntegBundles.push_back({hInt, allMassSystematics[i].config});
-                    massIntegSubBundles.push_back({hIntSub, allMassSystematics[i].config});
+                    allSubtractedSystematics.push_back({pSub, bundle.config});
+                    subtractedToDelete.push_back(pSub);
+                }
+
+                    // Subtract the external references
+                for (const auto& ext : presentExternals) {
+                    std::string subName = std::string(pData->GetName()) + "_Subtracted_Ext" + std::to_string(ext.first);
+                    TH1D* pSub = SubtractProfiles(pData, ext.second.profile, subName);
+                    allSubtractedExternals.push_back({pSub, ext.second.config});
+                    subtractedToDelete.push_back(pSub);
+                }
+
+                    // Subtract Mass Selection Data
+                std::vector<ProfileBundle> allSubtractedMass;
+                allSubtractedMass.push_back({pDataZero, dataConfig}); // Re-use the existing zero-line reference
+                
+                for (size_t i = 1; i < allMassSystematics.size(); ++i) {
+                    const auto& bundle = allMassSystematics[i];
+                    std::string subName = std::string(pData->GetName()) + "_SubtractedMass_" + bundle.config.suffix;
+                    TH1D* pSub = SubtractProfiles(pData, bundle.profile, subName);
+                    allSubtractedMass.push_back({pSub, bundle.config});
+                    subtractedToDelete.push_back(pSub);
+                }
+
+                // Creating the Y-Axis title for the difference plots
+                std::string subYTitle = "#Delta" + profConfig.yAxisTitle + " (Data - Var)";
+
+                // ---------------------------------------------------------
+                // DRAWING THE VARIATIONS
+                // ---------------------------------------------------------
+                
+                // --- 1. Standard (Unfolded) Plots ---
+                    // Variation 1: Data Only
+                DrawComparisonCanvas({{pData, dataConfig}}, "Canvas_DataOnly", fam.familyName + " Data", overlayDir, profConfig);
+                    // Variation 2: Systematics (+ Data)
+                DrawComparisonCanvas(allSystematics, "Canvas_Systematics", fam.familyName + " Systematics", overlayDir, profConfig);
+                    // Variation 3+: one canvas per external reference, then the all-in-one
+                std::vector<ProfileBundle> allInOne = allSystematics;
+                for (const auto& ext : presentExternals) {
+                    const std::string& label = ext.second.config.legendLabel;
+                    DrawComparisonCanvas({ext.second}, "Canvas_Only_" + externals[ext.first].config.legendLabel,
+                                         fam.familyName + " " + label, overlayDir, profConfig);
+                    allInOne.push_back(ext.second);
+                }
+                if (!presentExternals.empty()) {
+                    DrawComparisonCanvas(allInOne, "Canvas_AllInOne", fam.familyName + " All Comparisons", overlayDir, profConfig);
+                }
+
+                // --- 2. Folded Plots ---
+                if (group.doFold) {
+                    DrawComparisonCanvas({allFoldedSystematics[0]}, "Canvas_Folded_DataOnly", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Data", foldedDir, profConfig, foldedXTitle);
+                    DrawComparisonCanvas(allFoldedSystematics, "Canvas_Folded_Systematics", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Systematics", foldedDir, profConfig, foldedXTitle);
+
+                    std::vector<ProfileBundle> allInOneFolded = allFoldedSystematics; // For folded plots tracking
+                    for (size_t i = 0; i < allFoldedExternals.size(); ++i) {
+                        const std::string& label = allFoldedExternals[i].config.legendLabel;
+                        DrawComparisonCanvas({allFoldedExternals[i]}, "Canvas_Folded_Only_" + label,
+                                             fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) " + label, foldedDir, profConfig, foldedXTitle);
+                        allInOneFolded.push_back(allFoldedExternals[i]);
+                    }
+                    if (!allFoldedExternals.empty()) {
+                        DrawComparisonCanvas(allInOneFolded, "Canvas_Folded_AllInOne", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Comparisons", foldedDir, profConfig, foldedXTitle);
+                    }
+                }
+
+                // --- 3. Subtracted Data - Systematics ---
+                    // Data minus Data Systematics
+                DrawComparisonCanvas(allSubtractedSystematics, "Canvas_Subtracted_Systematics", fam.familyName + " Systematics Difference", subDir, profConfig, "", subYTitle);
+                    // Data minus each external reference
+                std::vector<ProfileBundle> allInOneSubtracted = allSubtractedSystematics;
+                for (size_t i = 0; i < allSubtractedExternals.size(); ++i) {
+                    const std::string& label = allSubtractedExternals[i].config.legendLabel;
+                    DrawComparisonCanvas({{pDataZero, dataConfig}, allSubtractedExternals[i]}, "Canvas_Subtracted_Only_" + label,
+                                         fam.familyName + " " + label + " Difference", subDir, profConfig, "", subYTitle);
+                    allInOneSubtracted.push_back(allSubtractedExternals[i]);
+                }
+                    // All-In-One
+                if (!allSubtractedExternals.empty()) {
+                    DrawComparisonCanvas(allInOneSubtracted, "Canvas_Subtracted_AllInOne", fam.familyName + " All Comparisons Difference", subDir, profConfig, "", subYTitle);
+                }
+
+                // --- Mass Selection Proxy Plots ---
+                TDirectory* massDir = nullptr;
+                if (allMassSystematics.size() > 1) { // Only draw if mass files were found
+                    massDir = EnsureDir(obsDir, "Mass_Selection");
                     
-                    integToDelete.push_back(hInt);     // Now safely in scope!
+                    // Standard
+                    DrawComparisonCanvas(allMassSystematics, "Canvas_MassSelection", fam.familyName + " Mass Selection", massDir, profConfig);
+                    // Folded
+                    if (group.doFold) {
+                        DrawComparisonCanvas(allFoldedMass, "Canvas_Folded_MassSelection", fam.familyName + " (R(#eta_{pos})+R(#eta_{neg})) Mass Selection", massDir, profConfig, foldedXTitle);
+                    }
+                    // Subtracted
+                    DrawComparisonCanvas(allSubtractedMass, "Canvas_Subtracted_MassSelection", fam.familyName + " Mass Selection Difference", massDir, profConfig, "", subYTitle);
+                }
+
+                // --- 4. Individual Comparisons (One-by-One) ---
+                // (condensed all of this into a single block of code because the loops become cleaner!)
+                    // Create a sub-directory specifically for the individual comparisons to keep things organized
+                TDirectory* indivDir = EnsureDir(obsDir, "Individual_Comparisons");
+
+                // Loop through all variations (starting at i = 1 to skip the data comparing against itself)
+                for (size_t i = 1; i < allSystematics.size(); ++i) {
+                    std::string sysLabel = allSystematics[i].config.legendLabel;
+                    std::string sysSuffix = allSystematics[i].config.suffix; // e.g., "_forceDatalikeJet"
+
+                    // Standard
+                    DrawComparisonCanvas({allSystematics[0], allSystematics[i]}, "Canvas_Standard" + sysSuffix, fam.familyName + " Data vs " + sysLabel, indivDir, profConfig);
+                    // Folded
+                    if (group.doFold) {
+                        DrawComparisonCanvas({allFoldedSystematics[0], allFoldedSystematics[i]}, "Canvas_Folded" + sysSuffix, fam.familyName + " Folded vs " + sysLabel, indivDir, profConfig, foldedXTitle);
+                    }
+                    // Subtracted
+                    DrawComparisonCanvas({allSubtractedSystematics[0], allSubtractedSystematics[i]}, "Canvas_Subtracted" + sysSuffix, fam.familyName + " Difference vs " + sysLabel, indivDir, profConfig, "", subYTitle);
+                }
+
+                // Do the same for every external reference, which are introduced separately
+                for (size_t i = 0; i < presentExternals.size(); ++i) {
+                    const std::string& label = presentExternals[i].second.config.legendLabel;
+
+                    DrawComparisonCanvas({allSystematics[0], presentExternals[i].second}, "Canvas_Standard_" + label, fam.familyName + " Data vs " + label, indivDir, profConfig);
+                    if (group.doFold) {
+                        DrawComparisonCanvas({allFoldedSystematics[0], allFoldedExternals[i]}, "Canvas_Folded_" + label, fam.familyName + " Folded vs " + label, indivDir, profConfig, foldedXTitle);
+                    }
+                    DrawComparisonCanvas({allSubtractedSystematics[0], allSubtractedExternals[i]}, "Canvas_Subtracted_" + label, fam.familyName + " Difference vs " + label, indivDir, profConfig, "", subYTitle);
+                }
+
+                // --- 5. Integrated Summaries ---
+                TDirectory* integDir = EnsureDir(obsDir, "Integrated_Summary");
+
+                std::vector<std::string> integLabels;
+                std::vector<ProfileBundle> integBundles;
+                std::vector<ProfileBundle> integSubBundles;
+                std::vector<TH1*> integToDelete;
+
+                int numCats = allSystematics.size() + presentExternals.size();
+                
+                    // Compute Integrated Data and save to Grand Summary
+                auto dataInteg = GetIntegratedProfile(pData);
+                grandDataVals.push_back(dataInteg);
+                grandLabels.push_back(profConfig.xAxisTitle);
+
+                // Populate the grand summary for systematics
+                // (allSystematics[0] is the data, so sysVariations[i] corresponds to allSystematics[i+1])
+                for (size_t i = 0; i < sysVariations.size(); ++i) {
+                    if (i + 1 < allSystematics.size()) {
+                        auto sysInteg = GetIntegratedProfile(dynamic_cast<TProfile*>(allSystematics[i+1].profile));
+                        grandSysVals[i].push_back(sysInteg);
+                    }
+                }
+                // ... and for the external references, indexed by their position in the externals list
+                for (const auto& ext : presentExternals) {
+                    grandExtVals[ext.first].push_back(GetIntegratedProfile(dynamic_cast<TProfile*>(ext.second.profile)));
+                }
+
+                    // Loop over variations and construct isolated categorical bins
+                for (size_t i = 0; i < allSystematics.size(); ++i) {
+                    integLabels.push_back(allSystematics[i].config.legendLabel);
+                    
+                    auto integ = GetIntegratedProfile(dynamic_cast<TProfile*>(allSystematics[i].profile));
+                    
+                    TH1D* hInt = MakeCategoricalPoint(Form("Integ_%zu", i), i, numCats, integ.first, integ.second);
+                    
+                    // Performing also the subtraction between integrated observables, variation by variation
+                    // (error bars are also properly propagated)
+                    TH1D* hIntSub = (i == 0)
+                        ? MakeCategoricalPoint(Form("IntegSub_%zu", i), i, numCats, 0.0, 0.0)
+                        : MakeCategoricalPoint(Form("IntegSub_%zu", i), i, numCats,
+                                               dataInteg.first - integ.first,
+                                               std::sqrt(dataInteg.second*dataInteg.second + integ.second*integ.second));
+
+                    integBundles.push_back({hInt, allSystematics[i].config});
+                    integSubBundles.push_back({hIntSub, allSystematics[i].config});
+                    integToDelete.push_back(hInt);
                     integToDelete.push_back(hIntSub);
                 }
                 
-                TDirectory* massDir = (TDirectory*)obsDir->Get("Mass_Selection");
-                if (massDir) {
+                    // Add the external references to the integrated list, continuing the same bin numbering
+                for (size_t i = 0; i < presentExternals.size(); ++i) {
+                    const auto& extBundle = presentExternals[i].second;
+                    integLabels.push_back(extBundle.config.legendLabel);
+
+                    auto integExt = GetIntegratedProfile(dynamic_cast<TProfile*>(extBundle.profile));
+                    int idx = static_cast<int>(allSystematics.size() + i); // No manual offset bookkeeping any more
+
+                    TH1D* hIntExt = MakeCategoricalPoint(Form("Integ_Ext%zu", i), idx, numCats, integExt.first, integExt.second);
+                    TH1D* hIntSubExt = MakeCategoricalPoint(Form("IntegSub_Ext%zu", i), idx, numCats,
+                                                            dataInteg.first - integExt.first,
+                                                            std::sqrt(dataInteg.second*dataInteg.second + integExt.second*integExt.second));
+
+                    integBundles.push_back({hIntExt, extBundle.config});
+                    integSubBundles.push_back({hIntSubExt, extBundle.config});
+                    integToDelete.push_back(hIntExt);
+                    integToDelete.push_back(hIntSubExt);
+                }
+
+                // 4. Draw them using the custom categorical plotter
+                DrawIntegratedCanvas(integBundles, integLabels, "Canvas_Integrated", fam.familyName + " Integrated Summary", integDir, "Integrated " + profConfig.yAxisTitle, false);
+                DrawIntegratedCanvas(integSubBundles, integLabels, "Canvas_Integrated_Subtracted", fam.familyName + " Integrated Differences", integDir, "#Delta" + profConfig.yAxisTitle + " (Data - Var)", true);
+
+                // 5. Draw Mass Selection Integrated Summaries
+                if (allMassSystematics.size() > 1 && massDir) {
+                    std::vector<std::string> massIntegLabels;
+                    std::vector<ProfileBundle> massIntegBundles;
+                    std::vector<ProfileBundle> massIntegSubBundles;
+                    int numMassCats = allMassSystematics.size();
+                    
+                    for (size_t i = 0; i < allMassSystematics.size(); ++i) {
+                        massIntegLabels.push_back(allMassSystematics[i].config.legendLabel);
+                        auto integ = GetIntegratedProfile(dynamic_cast<TProfile*>(allMassSystematics[i].profile));
+                        
+                        TH1D* hInt = MakeCategoricalPoint(Form("MassInteg_%zu", i), i, numMassCats, integ.first, integ.second);
+                        
+                        TH1D* hIntSub = (i == 0)
+                            ? MakeCategoricalPoint(Form("MassIntegSub_%zu", i), i, numMassCats, 0.0, 0.0)
+                            : MakeCategoricalPoint(Form("MassIntegSub_%zu", i), i, numMassCats,
+                                                   dataInteg.first - integ.first,
+                                                   std::sqrt(dataInteg.second*dataInteg.second + integ.second*integ.second));
+                        
+                        massIntegBundles.push_back({hInt, allMassSystematics[i].config});
+                        massIntegSubBundles.push_back({hIntSub, allMassSystematics[i].config});
+                        
+                        integToDelete.push_back(hInt);     // Now safely in scope!
+                        integToDelete.push_back(hIntSub);
+                    }
+                    
                     DrawIntegratedCanvas(massIntegBundles, massIntegLabels, "Canvas_Integrated_MassSelection", fam.familyName + " Mass Selection Integrated", massDir, "Integrated " + profConfig.yAxisTitle, false);
                     DrawIntegratedCanvas(massIntegSubBundles, massIntegLabels, "Canvas_Integrated_Subtracted_MassSelection", fam.familyName + " Mass Selection Integrated Differences", massDir, "#Delta" + profConfig.yAxisTitle + " (Data - Var)", true);
                 }
-            }
 
-            // Cleanup dynamically allocated profiles for this observable iteration
-            for (auto p : integToDelete) delete p;
-            for (auto p : profilesToDelete) delete p;
-            for (auto p : foldedToDelete) delete p;
-            for (auto p : subtractedToDelete) delete p;
-        } // end of profiles loop, inside families loop
+                // Cleanup dynamically allocated profiles for this observable iteration
+                for (auto p : integToDelete) delete p;
+                for (auto p : profilesToDelete) delete p;
+                for (auto p : foldedToDelete) delete p;
+                for (auto p : subtractedToDelete) delete p;
+            } // end of profiles loop, inside groups loop
+        } // end of groups loop, inside families loop
 
         // --- 6. Integrated observable Summary (Observable in each variation vs Observable for Data) ---
         // Comparing eta_Jet and eta_Lambda integrations is a way of probing if there were any overflows/underflows
@@ -1030,12 +1101,13 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
         // The single-bin integrated observables from other scripts were impervious to this problem though, so good news!),
         // or even other possible problems lingering in the code (none found after the aformentioned fix!)
         int nGrand = grandLabels.size();
-        if (nGrand > 0) {
+        if (nGrand > 0 && famDir) {
             std::vector<ProfileBundle> grandBundles;
             std::vector<TH1*> grandToDelete; // For memory cleanup
             
             // Add Data
             TH1D* hGrandData = new TH1D("GrandData", "", nGrand, 0, nGrand);
+            hGrandData->SetDirectory(nullptr);
             for(int i = 0; i < nGrand; ++i) {
                 hGrandData->SetBinContent(i + 1, grandDataVals[i].first);
                 hGrandData->SetBinError(i + 1, grandDataVals[i].second);
@@ -1047,6 +1119,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
             for (size_t sysIdx = 0; sysIdx < sysVariations.size(); ++sysIdx) {
                 if (grandSysVals[sysIdx].size() == (size_t)nGrand) {
                     TH1D* hGrandSys = new TH1D(Form("GrandSys_%zu", sysIdx), "", nGrand, 0, nGrand);
+                    hGrandSys->SetDirectory(nullptr);
                     for (int i = 0; i < nGrand; ++i) {
                         hGrandSys->SetBinContent(i + 1, grandSysVals[sysIdx][i].first);
                         hGrandSys->SetBinError(i + 1, grandSysVals[sysIdx][i].second);
@@ -1056,37 +1129,19 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
                 }
             }
 
-            // Add MC (if available)
-            if (!mcRefDir.empty() && grandMCVals.size() == (size_t)nGrand) { 
-                TH1D* hGrandMC = new TH1D("GrandMC", "", nGrand, 0, nGrand);
-                for(int i = 0; i < nGrand; ++i) {
-                    hGrandMC->SetBinContent(i + 1, grandMCVals[i].first);
-                    hGrandMC->SetBinError(i + 1, grandMCVals[i].second);
-                }
-                grandBundles.push_back({hGrandMC, mcConfig});
-                grandToDelete.push_back(hGrandMC);
-            }
+            // Add every external reference that was present for all observables
+            for (size_t extIdx = 0; extIdx < externals.size(); ++extIdx) {
+                if (externals[extIdx].basePath.empty()) continue;
+                if (grandExtVals[extIdx].size() != (size_t)nGrand) continue;
 
-            // Add pp data data (if available)
-            if (!ppRefDir.empty() && grandPPVals.size() == (size_t)nGrand) { 
-                TH1D* hGrandPP = new TH1D("GrandPP", "", nGrand, 0, nGrand);
-                for(int i = 0; i < nGrand; ++i) {
-                    hGrandPP->SetBinContent(i + 1, grandPPVals[i].first);
-                    hGrandPP->SetBinError(i + 1, grandPPVals[i].second);
+                TH1D* hGrandExt = new TH1D(Form("GrandExt_%zu", extIdx), "", nGrand, 0, nGrand);
+                hGrandExt->SetDirectory(nullptr);
+                for (int i = 0; i < nGrand; ++i) {
+                    hGrandExt->SetBinContent(i + 1, grandExtVals[extIdx][i].first);
+                    hGrandExt->SetBinError(i + 1, grandExtVals[extIdx][i].second);
                 }
-                grandBundles.push_back({hGrandPP, ppConfig});
-                grandToDelete.push_back(hGrandPP);
-            }
-
-            // Add Toy Model (if available)
-            if (!toyModelPath.empty() && grandToyVals.size() == (size_t)nGrand) { 
-                TH1D* hGrandToy = new TH1D("GrandToy", "", nGrand, 0, nGrand);
-                for(int i = 0; i < nGrand; ++i) {
-                    hGrandToy->SetBinContent(i + 1, grandToyVals[i].first);
-                    hGrandToy->SetBinError(i + 1, grandToyVals[i].second);
-                }
-                grandBundles.push_back({hGrandToy, toyConfig});
-                grandToDelete.push_back(hGrandToy);
+                grandBundles.push_back({hGrandExt, externals[extIdx].config});
+                grandToDelete.push_back(hGrandExt);
             }
             
             // Draw the Brute Force Canvas
@@ -1096,6 +1151,8 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
         }
     } // end of families loop
 
+    cache.CloseAll(); // Release every input file before closing the output
+
     fOut->Close();
     delete fOut;
     std::cout << " Done!\n";
@@ -1104,16 +1161,17 @@ void auxiliarySummaryPlots(const std::string& consumerDir, const std::string& mc
 // To be able to run this both as a compiled C++ macro or a ROOT script:
 #ifndef __CINT__
 int main(int argc, char** argv) {
-    if (argc < 2) { // Check is argc < 2 because this is the bare minimum. mcRefDir, ppRefDir and toyModelPath are all optionals
-        std::cerr << "Usage: " << argv[0] << " <consumerDir> [mcRefDir] [ppRefDir] [toyModelPath]\n";
+    if (argc < 2) { // Check is argc < 2 because this is the bare minimum. mcRefDir, ppRefDir, toyModelPath and cutFolder are all optionals
+        std::cerr << "Usage: " << argv[0] << " <consumerDir> [mcRefDir] [ppRefDir] [toyModelPath] [cutFolder]\n";
         return 1;
     }
     std::string consumerDir = argv[1];
     std::string mcRefDir = (argc > 2) ? argv[2] : "";
     std::string ppRefDir = (argc > 3) ? argv[3] : "";
     std::string toyModelPath = (argc > 4) ? argv[4] : "";
+    std::string cutFolder = (argc > 5) ? argv[5] : DEFAULT_CUT_FOLDER;
     
-    auxiliarySummaryPlots(consumerDir, mcRefDir, ppRefDir, toyModelPath);
+    auxiliarySummaryPlots(consumerDir, mcRefDir, ppRefDir, toyModelPath, cutFolder);
     return 0;
 }
 #endif
