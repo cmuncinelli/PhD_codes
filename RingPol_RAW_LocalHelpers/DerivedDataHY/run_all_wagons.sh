@@ -78,7 +78,9 @@ DEFAULT_CONFIGS_DIR="/home/users/cicerodm/RingPol/consumer_configs"
 MC_REF_DIR="/home/users/cicerodm/RingPol/LHC25h3c/ITSandTPC_min3ITS/results_consumer"
 
 # Same thing, but for the pp baseline dataset:
-PP_REF_DIR="/home/users/cicerodm/RingPol/LHC23_pass4_Thin_small/ITSandTPC_min3ITS/results_consumer"
+# PP_REF_DIR="/home/users/cicerodm/RingPol/LHC23_pass4_Thin_small/ITSandTPC_min3ITS/results_consumer"
+PP_REF_DIR="/home/users/cicerodm/RingPol/LHC23_pass4_Thin_medium/ITSandTPC-pp/results_consumer"
+
 
 # Absolute path to the Toy Model ROOT file for Auxiliary Plots (chose the Toy Model representative whose configurations are 
 # closest to what an actual data selection would do in data processing, as an attempt to keep everything consistent)
