@@ -37,8 +37,10 @@
 #include <TTree.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -91,6 +93,57 @@ static double localGridStep(double value, int keptBits)
   }
   return std::ldexp(1.0, std::ilogb(std::fabs(value)) - keptBits);
 }
+
+// ============================================================================
+// SECTION 1b -- Progress reporting
+//
+// Logs are redirected to a file by the coordinator, so every line is flushed:
+// a half-written buffer is indistinguishable from a hung process, which is
+// exactly the ambiguity this reporting exists to remove.
+// ============================================================================
+
+using ForensicsClock = std::chrono::steady_clock;
+static ForensicsClock::time_point gWorkerStart;
+
+/// \brief Seconds elapsed since a reference point.
+static double secondsSince(ForensicsClock::time_point start)
+{
+  return std::chrono::duration<double>(ForensicsClock::now() - start).count();
+}
+
+/// \brief Compact h:mm:ss for durations, so long runs stay readable.
+static std::string formatDuration(double seconds)
+{
+  if (seconds < 0.0 || !std::isfinite(seconds)) {
+    return "--:--:--";
+  }
+  const long total = static_cast<long>(seconds + 0.5);
+  char buffer[32];
+  std::snprintf(buffer, sizeof(buffer), "%ld:%02ld:%02ld",
+                total / 3600, (total / 60) % 60, total % 60);
+  return std::string(buffer);
+}
+
+/// \brief One progress line, stamped with the worker's own elapsed time.
+static void logProgress(const std::string& message)
+{
+  std::cout << "[" << formatDuration(secondsSince(gWorkerStart)) << "] " << message << std::endl;
+}
+
+/// \brief Timings and row counts for one dataframe, reported as it completes.
+struct DataframeStats {
+  long long nCollisions = 0;
+  long long nJets = 0;
+  long long nLeadPs = 0;
+  long long nV0s = 0;
+  double secRead = 0.0;
+  double secColumns = 0.0;
+  double secFingerprints = 0.0;
+  double secIntegrity = 0.0;
+  double secProxyColumns = 0.0;
+  double secMixingPool = 0.0;
+  bool ok = false;
+};
 
 // ============================================================================
 // SECTION 2 -- Configuration
@@ -742,13 +795,17 @@ static void analyseMixingPool(const std::vector<float>& zvtx,
 // ============================================================================
 
 /// \brief Runs every module on one DF_* directory.
-static void processDataframe(TDirectory* dataframe, ForensicsHistograms& histos)
+/// \return per-stage timings and row counts, for the progress log.
+static DataframeStats processDataframe(TDirectory* dataframe, ForensicsHistograms& histos)
 {
+  DataframeStats stats;
+  ForensicsClock::time_point stageStart = ForensicsClock::now();
+
   TTree* collisionTree = nullptr;
   dataframe->GetObject("O2ringcollision", collisionTree);
   if (collisionTree == nullptr) {
     histos.hIntegrityViolations->Fill(4); // "collision tree missing"
-    return;
+    return stats;
   }
 
   // --- Read every collision column once.
@@ -777,6 +834,9 @@ static void processDataframe(TDirectory* dataframe, ForensicsHistograms& histos)
     }
   }
   collisionTree->ResetBranchAddresses();
+  stats.nCollisions = nCollisions;
+  stats.secRead = secondsSince(stageStart);
+  stageStart = ForensicsClock::now();
 
   histos.hCollisionsPerDataframe->Fill(static_cast<double>(nCollisions));
   for (const float z : collisionColumns[0]) {
@@ -790,8 +850,13 @@ static void processDataframe(TDirectory* dataframe, ForensicsHistograms& histos)
     }
   }
 
+  stats.secColumns = secondsSince(stageStart);
+  stageStart = ForensicsClock::now();
+
   // --- Cumulative fingerprint test.
   analyseFingerprints(collisionColumns, columnPresent, histos);
+  stats.secFingerprints = secondsSince(stageStart);
+  stageStart = ForensicsClock::now();
 
   // --- Indexed tables: integrity plus the proxy values the mixing pool needs.
   const int nCollisionsInt = static_cast<int>(nCollisions);
@@ -819,7 +884,13 @@ static void processDataframe(TDirectory* dataframe, ForensicsHistograms& histos)
 
     const int contentPattern = (nJets > 0 ? 1 : 0) | (nLeadP > 0 ? 2 : 0) | (nV0s > 0 ? 4 : 0);
     histos.hCollisionContentPattern->Fill(contentPattern);
+
+    stats.nJets += nJets;
+    stats.nLeadPs += nLeadP;
+    stats.nV0s += nV0s;
   }
+  stats.secIntegrity = secondsSince(stageStart);
+  stageStart = ForensicsClock::now();
 
   // --- Jet and leading-particle columns, analysed as their own populations.
   for (int column = nCollisionColumns; column < static_cast<int>(kColumns.size()); ++column) {
@@ -847,22 +918,50 @@ static void processDataframe(TDirectory* dataframe, ForensicsHistograms& histos)
     analyseColumn(values, column, histos);
   }
 
+  stats.secProxyColumns = secondsSince(stageStart);
+  stageStart = ForensicsClock::now();
+
   // --- Mixing-pool occupancy, once per proxy type.
   analyseMixingPool(collisionColumns[0], collisionColumns[1], leadPScan.firstValuePerCollision,
                     histos.hMixBinOccupancyLeadP, histos.hMixPoolOutcomeLeadP);
   analyseMixingPool(collisionColumns[0], collisionColumns[1], jetScan.firstValuePerCollision,
                     histos.hMixBinOccupancyLeadJet, histos.hMixPoolOutcomeLeadJet);
+  stats.secMixingPool = secondsSince(stageStart);
+
+  stats.ok = true;
+  return stats;
+}
+
+/// \brief Basename of a path, for log lines that would otherwise be unreadable.
+static std::string shortName(const std::string& path)
+{
+  const size_t slash = path.find_last_of('/');
+  return (slash == std::string::npos) ? path : path.substr(slash + 1);
 }
 
 /// \brief Opens one AO2D and runs every DF_* directory through processDataframe.
 /// \return number of dataframes processed, or -1 if the file could not be opened.
-static int processFile(const std::string& path, ForensicsHistograms& histos)
+/// \param collisionsSeen incremented by the collisions read from this file
+static int processFile(const std::string& path, ForensicsHistograms& histos,
+                       long long& collisionsSeen)
 {
   TFile* input = TFile::Open(path.c_str(), "READ");
   if (input == nullptr || input->IsZombie()) {
-    std::cerr << "  could not open " << path << std::endl;
+    logProgress("  ERROR: could not open " + path);
     delete input;
     return -1;
+  }
+
+  // Counted up front so each dataframe line can report its position.
+  int nDataframesInFile = 0;
+  {
+    TIter countKeys(input->GetListOfKeys());
+    TKey* countKey = nullptr;
+    while ((countKey = static_cast<TKey*>(countKeys())) != nullptr) {
+      if (TString(countKey->GetName()).BeginsWith("DF_")) {
+        ++nDataframesInFile;
+      }
+    }
   }
 
   int nDataframes = 0;
@@ -878,8 +977,30 @@ static int processFile(const std::string& path, ForensicsHistograms& histos)
     if (dataframe == nullptr) {
       continue;
     }
-    processDataframe(dataframe, histos);
+
+    // Announced BEFORE the work starts: if the process hangs, the last line in
+    // the log names the dataframe it hung on.
     ++nDataframes;
+    logProgress("    DF " + std::to_string(nDataframes) + "/" + std::to_string(nDataframesInFile) +
+                " " + std::string(name.Data()) + " ...");
+
+    const DataframeStats stats = processDataframe(dataframe, histos);
+    collisionsSeen += stats.nCollisions;
+
+    if (!stats.ok) {
+      logProgress("    DF " + std::to_string(nDataframes) + " SKIPPED (no collision tree)");
+      continue;
+    }
+    char summary[512];
+    std::snprintf(summary, sizeof(summary),
+                  "    DF %d done: %lld coll, %lld jets, %lld leadP, %lld V0 | "
+                  "read %.2fs cols %.2fs fprint %.2fs integ %.2fs proxy %.2fs pool %.2fs | total %.2fs",
+                  nDataframes, stats.nCollisions, stats.nJets, stats.nLeadPs, stats.nV0s,
+                  stats.secRead, stats.secColumns, stats.secFingerprints,
+                  stats.secIntegrity, stats.secProxyColumns, stats.secMixingPool,
+                  stats.secRead + stats.secColumns + stats.secFingerprints +
+                    stats.secIntegrity + stats.secProxyColumns + stats.secMixingPool);
+    logProgress(summary);
   }
 
   input->Close();
@@ -922,24 +1043,58 @@ static int runWorker(const std::string& manifestPath, const std::string& outputP
   ForensicsHistograms histos;
   histos.book(output);
 
+  logProgress("Worker started.");
+  logProgress("  manifest : " + manifestPath);
+  logProgress("  output   : " + outputPath);
+  logProgress("  files    : " + std::to_string(files.size()));
+
   int nDataframes = 0;
   int nFailures = 0;
-  for (const std::string& file : files) {
-    const int result = processFile(file, histos);
+  long long nCollisions = 0;
+  const int nFiles = static_cast<int>(files.size());
+
+  for (int fileIndex = 0; fileIndex < nFiles; ++fileIndex) {
+    const ForensicsClock::time_point fileStart = ForensicsClock::now();
+    logProgress("[" + std::to_string(fileIndex + 1) + "/" + std::to_string(nFiles) + "] " +
+                shortName(files[fileIndex]));
+
+    const long long collisionsBefore = nCollisions;
+    const int result = processFile(files[fileIndex], histos, nCollisions);
     if (result < 0) {
       ++nFailures;
     } else {
       nDataframes += result;
     }
+
+    // ETA extrapolates from the mean time per file so far. Files vary in size,
+    // so treat it as an order of magnitude rather than a deadline.
+    const double elapsed = secondsSince(gWorkerStart);
+    const double remaining = (fileIndex + 1 > 0)
+                               ? elapsed / (fileIndex + 1) * (nFiles - fileIndex - 1)
+                               : 0.0;
+    char summary[512];
+    std::snprintf(summary, sizeof(summary),
+                  "[%d/%d] done in %.1fs (%lld collisions) | elapsed %s | ETA %s",
+                  fileIndex + 1, nFiles, secondsSince(fileStart),
+                  nCollisions - collisionsBefore,
+                  formatDuration(elapsed).c_str(), formatDuration(remaining).c_str());
+    logProgress(summary);
   }
 
+  logProgress("Writing histograms to " + outputPath + " ...");
   output->Write();
   output->Close();
   delete output;
 
-  std::cout << "Processed " << files.size() << " files, " << nDataframes
-            << " dataframes, " << nFailures << " unreadable." << std::endl;
-  return (nFailures == static_cast<int>(files.size())) ? 1 : 0;
+  char finalLine[512];
+  std::snprintf(finalLine, sizeof(finalLine),
+                "Worker finished: %d files, %d dataframes, %lld collisions, "
+                "%d unreadable | wall %s",
+                nFiles, nDataframes, nCollisions, nFailures,
+                formatDuration(secondsSince(gWorkerStart)).c_str());
+  logProgress(finalLine);
+
+  return (nFailures == nFiles) ? 1 : 0;
 }
 
 /// \brief Divides one additive counter pair into a ratio histogram.
@@ -958,6 +1113,7 @@ static void writeRatio(TDirectory* directory, const char* numeratorName,
     return;
   }
 
+  logProgress(std::string("  writing ") + ratioName);
   TH1D* ratio = static_cast<TH1D*>(numerator->Clone(ratioName));
   ratio->SetTitle(ratioTitle);
   ratio->SetDirectory(directory);
@@ -976,6 +1132,7 @@ static void writeRatio(TDirectory* directory, const char* numeratorName,
 
 static int runFinalize(const std::string& mergedPath)
 {
+  logProgress("Finalizing " + mergedPath + " (dividing the additive counter pairs) ...");
   TFile* merged = TFile::Open(mergedPath.c_str(), "UPDATE");
   if (merged == nullptr || merged->IsZombie()) {
     std::cerr << "Could not open merged file: " << mergedPath << std::endl;
@@ -1005,7 +1162,7 @@ static int runFinalize(const std::string& mergedPath)
 
   merged->Close();
   delete merged;
-  std::cout << "Finalized " << mergedPath << std::endl;
+  logProgress("Finalize complete: " + mergedPath);
   return 0;
 }
 
@@ -1015,6 +1172,8 @@ static int runFinalize(const std::string& mergedPath)
 
 int main(int argc, char** argv)
 {
+  gWorkerStart = ForensicsClock::now();
+
   if (argc == 3 && std::strcmp(argv[1], "--finalize") == 0) {
     return runFinalize(argv[2]);
   }

@@ -227,6 +227,13 @@ if [ ! -d "$CONSUMER_CONFIGS_DIR" ]; then
   exit 1
 fi
 
+# GNU parallel is preferred for Step 7: it runs in the foreground, so Ctrl+C
+# propagates to the workers normally, and it provides an ETA.
+USE_PARALLEL=0
+if command -v parallel >/dev/null 2>&1; then
+  USE_PARALLEL=1
+fi
+
 # Collect consumer config files
 shopt -s nullglob
 CONFIG_FILES=("${CONSUMER_CONFIGS_DIR}"/dpl-config-DerivedConsumer-*.json)
@@ -285,7 +292,7 @@ echo "  Configs      : ${#CONFIG_FILES[@]}"
 echo "  Configs Dir  : ${CONSUMER_CONFIGS_DIR}"
 echo "  Toy Model    : ${TOY_MODEL_PATH:-None}"
 echo "  Mode         : $( [ $POST_PROCESS_ONLY -eq 1 ] && echo 'POST-PROCESS ONLY' || echo 'FULL CHAIN' )$( [ $SKIP_SIG_EXTRACT -eq 1 ] && echo ' [SKIP SIG EXTRACT]' )$( [ $SKIP_FORENSICS -eq 1 ] && echo ' [SKIP FORENSICS]' )"
-echo "  Forensics    : $( [ $SKIP_FORENSICS -eq 1 ] && echo 'skipped' || echo "${FORENSICS_JOBS} parallel workers" )"
+echo "  Forensics    : $( [ $SKIP_FORENSICS -eq 1 ] && echo 'skipped' || echo "${FORENSICS_JOBS} workers$( [ $USE_PARALLEL -eq 1 ] && echo ' (GNU parallel, with ETA)' || echo ' (bash fallback)' )" )"
 echo "========================================================"
 echo ""
 
@@ -457,7 +464,7 @@ for LINE in "${WAGON_LINES[@]}"; do
     echo "  -> OK"
   fi
 
-    # ------------------------------------------------------------------
+  # ------------------------------------------------------------------
   # Step 7: zvtxBitForensics (AO2D bit-level and integrity QA)
   # ------------------------------------------------------------------
   # Runs once per wagon on the raw AO2Ds, independently of the consumer output.
@@ -479,44 +486,63 @@ for LINE in "${WAGON_LINES[@]}"; do
     AOD_FILES=("${FORENSICS_DIR}"/AO2D_*.root)
     shopt -u nullglob
 
+    # EDGE CASE 1: 0 Files
     if [ ${#AOD_FILES[@]} -eq 0 ]; then
-      # Not a failure: the AO2Ds may legitimately have been deleted after the
-      # consumer produced its derived output.
       echo "  -> SKIPPED (no AO2Ds in ${FORENSICS_DIR})"
     else
-      # One worker per batch, never more workers than files.
-      NJOBS=$FORENSICS_JOBS
-      if [ ${#AOD_FILES[@]} -lt $NJOBS ]; then
-        NJOBS=${#AOD_FILES[@]}
+      # More batches than workers: parallel then has something to schedule,
+      # which gives both load balancing and a usable ETA. Capped so the number
+      # of partial .root files stays modest for hadd.
+      NBATCHES=$(( FORENSICS_JOBS * 4 ))
+      
+      # EDGE CASE 2: Fewer files than max batches (e.g., 1 file -> 1 batch)
+      if [ ${#AOD_FILES[@]} -lt $NBATCHES ]; then
+        NBATCHES=${#AOD_FILES[@]}
       fi
 
       FORENSICS_TMP_DIR="${WORK_DIR}/results_consumer/.forensics_batches_$$"
       mkdir -p "$FORENSICS_TMP_DIR"
 
-      # Round-robin rather than contiguous chunks: AO2D sizes vary, and this
-      # spreads large files across workers instead of loading one batch.
       IDX=0
       for AOD_FILE in "${AOD_FILES[@]}"; do
-        echo "$AOD_FILE" >> "${FORENSICS_TMP_DIR}/batch_$((IDX % NJOBS)).txt"
+        echo "$AOD_FILE" >> "${FORENSICS_TMP_DIR}/batch_$((IDX % NBATCHES)).txt"
         IDX=$((IDX + 1))
       done
 
-      # Each worker logs to its own file; they are concatenated afterwards so
-      # parallel writes cannot interleave inside the wagon log.
       : > "$FORENSICS_LOG"
-      FORENSICS_PIDS=()
-      for ((B = 0; B < NJOBS; B++)); do
-        BATCH_MANIFEST="${FORENSICS_TMP_DIR}/batch_${B}.txt"
-        [ -f "$BATCH_MANIFEST" ] || continue
-        "$FORENSICS_EXE" "$BATCH_MANIFEST" "${FORENSICS_TMP_DIR}/zvtxForensics_batch_${B}.root" \
-          > "${FORENSICS_TMP_DIR}/batch_${B}.log" 2>&1 &
-        FORENSICS_PIDS+=($!)
-      done
-
       FORENSICS_EXIT=0
-      for PID in "${FORENSICS_PIDS[@]}"; do
-        wait "$PID" || FORENSICS_EXIT=1
-      done
+
+      if [ $USE_PARALLEL -eq 1 ]; then
+        # parallel runs in the foreground, so Ctrl+C reaches it and its children
+        # through the normal foreground process group. Worker stdout goes to
+        # per-batch logs; --eta writes progress to the terminal.
+        export FORENSICS_EXE FORENSICS_TMP_DIR
+        parallel --will-cite --eta -j "$FORENSICS_JOBS" \
+          '"$FORENSICS_EXE" {} "$FORENSICS_TMP_DIR/zvtxForensics_batch_{#}.root" > "$FORENSICS_TMP_DIR/batch_{#}.log" 2>&1' \
+          ::: "${FORENSICS_TMP_DIR}"/batch_*.txt
+        # parallel exits with the number of failed jobs (255 = its own error).
+        [ $? -eq 0 ] || FORENSICS_EXIT=1
+      else
+        # Fallback: background jobs have SIGINT set to SIG_IGN by bash, so the
+        # PIDs are recorded and the trap SIGTERMs them explicitly.
+        B=0
+        for BATCH_MANIFEST in "${FORENSICS_TMP_DIR}"/batch_*.txt; do
+          "$FORENSICS_EXE" "$BATCH_MANIFEST" "${FORENSICS_TMP_DIR}/zvtxForensics_batch_${B}.root" \
+            > "${FORENSICS_TMP_DIR}/batch_${B}.log" 2>&1 &
+          FORENSICS_PIDS+=($!)
+          B=$((B + 1))
+          
+          # Throttle to FORENSICS_JOBS concurrent workers.
+          while [ "$(jobs -rp | wc -l)" -ge "$FORENSICS_JOBS" ]; do
+            sleep 0.2
+          done
+        done
+        for PID in "${FORENSICS_PIDS[@]}"; do
+          wait "$PID" || FORENSICS_EXIT=1
+        done
+        FORENSICS_PIDS=()
+      fi
+
       cat "${FORENSICS_TMP_DIR}"/batch_*.log >> "$FORENSICS_LOG" 2>/dev/null
 
       # Merge, then finalize. Both must succeed for the step to count as OK.
@@ -524,12 +550,17 @@ for LINE in "${WAGON_LINES[@]}"; do
         shopt -s nullglob
         BATCH_ROOTS=("${FORENSICS_TMP_DIR}"/zvtxForensics_batch_*.root)
         shopt -u nullglob
+        
         if [ ${#BATCH_ROOTS[@]} -eq 0 ]; then
           FORENSICS_EXIT=1
+        # EDGE CASE 3: Exactly 1 output file. Skip hadd and just move it.
+        elif [ ${#BATCH_ROOTS[@]} -eq 1 ]; then
+          mv "${BATCH_ROOTS[0]}" "$FORENSICS_OUT" || FORENSICS_EXIT=1
         else
           hadd -f "$FORENSICS_OUT" "${BATCH_ROOTS[@]}" >> "$FORENSICS_LOG" 2>&1 || FORENSICS_EXIT=1
         fi
       fi
+      
       if [ $FORENSICS_EXIT -eq 0 ]; then
         "$FORENSICS_EXE" --finalize "$FORENSICS_OUT" >> "$FORENSICS_LOG" 2>&1 || FORENSICS_EXIT=1
       fi
