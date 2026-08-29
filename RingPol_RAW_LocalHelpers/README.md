@@ -25,7 +25,7 @@ mode, Lambda-only, AntiLambda-only, and full QA with permissive pT cuts.
 
 | File | Description |
 |---|---|
-| `signalExtractionRing.cxx` | Main signal extraction code for the ring polarization observable. Extracts the ring signal from invariant mass spectra across the (pT, centrality, Δφ) analysis bins. |
+| `signalExtractionRing.cxx` | Main signal extraction code for the ring polarization observable. Extracts the ring signal from invariant mass spectra across the (pT, centrality, Delta phi) analysis bins. |
 | `signalExtractionRingTest.cxx` | Test and development version of the signal extraction code. |
 | `extractDeltaErrors.cxx` | Extracts and propagates statistical uncertainties using the Delta Method, which more accurately preserves the covariance terms to avoid SEM mathematical pitfalls. (Did not improve by much though) |
 | `makeCumulativeDCAdauProfile.cxx` | Evaluates the robustness of the ring observable against varying Distance of Closest Approach (DCA) cuts, specially the DCA of the daughter particles wrt the PV. Condenses 2D/3D differential QA profiles into unified cumulative distributions. |
@@ -191,7 +191,7 @@ as its own unit; parallelism comes from distributing whole *files*, which is the
 | `hMultiplicity_<col>` | How many rows share each distinct stored value | Long tail is expected wherever the density is high. Compare its integral against `Counters/` rather than eyeballing it. |
 | `hLogSpacing_<col>` | `log10` of the gap between adjacent distinct values | Spans many decades because sparse tails leave many empty grid cells between populated ones. Mostly superseded by the next row. |
 | `hSpacingOverGridStep_<col>` | Gap divided by the **local** grid step | The strong evidence. Dividing out the magnitude dependence makes a true quantisation grid appear as a **picket fence of peaks at 1, 2, 3, ...**. If that fence is there, the grid is confirmed. A smooth continuum with nothing at small integers falsifies the grid hypothesis. |
-| `hDuplicateRowGap_<col>` | `log10` of the row separation of value-sharing pairs | Broad and featureless for chance coincidences. A **spike at small gaps** points at split vertices or double-written rows. |
+| `hDuplicateRowGap_<col>` | `log10` of the row separation between **consecutive** value-sharing entries, in table order | Broad and featureless for chance coincidences. A **spike at small gaps** points at split vertices or double-written rows. See [section 6.1](#61-why-row-gaps-are-consecutive-rather-than-all-pairs) for why this is not an all-pairs enumeration. |
 | `pMultiplicityVsValue_<col>` | Mean multiplicity vs value | Should track `p(z) * q(z)`: highest where the distribution is dense. |
 
 ### `Counters/` (additive; ratios appear after `--finalize`)
@@ -218,7 +218,7 @@ collision pairs agreeing bit-for-bit on the *first k* columns.
 | `hObservedFingerprintPairs` | **Read the shape, not the value.** Chance coincidences fall steeply with each added column. A genuinely duplicated row matches on *everything*, so real duplicates make the curve **plateau at a nonzero floor**. Steady falloff = healthy. Plateau = duplicated collision rows. |
 | `hExpectedFingerprintPairs` | Chance expectation assuming column independence. The three centrality columns are all multiplicity-derived and therefore **mutually correlated**, so this product is a **lower bound** on the true chance rate, never an upper bound. Treat it as a reference curve, not a threshold. |
 | `hFingerprintGroupSize` | Size of each full-fingerprint group. **Should be empty** on healthy data. |
-| `hFingerprintRowGap` | Row separation of full-fingerprint pairs, linear from 0. A spike at `|dRow| = 1` is consecutive duplicated rows -- the signature of a split vertex or a double write. |
+| `hFingerprintRowGap` | Row separation between consecutive members of a full-fingerprint group, linear from 0. A spike at `|dRow| = 1` is consecutive duplicated rows -- the signature of a split vertex or a double write. |
 
 The cumulative construction is what removes the need for an independence model: the plateau-versus-
 falloff reading is assumption-free, which matters precisely because the centrality columns are
@@ -268,7 +268,65 @@ reports what each collision could possibly mix with.
 If 1-4 all pass, the AO2Ds are clean and any residual mixing problem lives in the consumer, not in
 its input.
 
+### 5.1 Progress and logging
+
+Each worker writes a timestamped progress log to
+`results_consumer/logs/forensics_logs/batch_<N>.log`, flushed line by line so the
+file is always current and `tail -f` works during a run:
+
+```
+[0:00:00] Worker started.
+[0:00:00]   files    : 12
+[0:00:00] [1/12] AO2D_7.root
+[0:00:00]     DF 1/8 DF_2300474821381920 ...
+[0:00:09]     DF 1 done: 9812 coll, 41233 jets, 8901 leadP, 22104 V0 | read 0.31s cols 7.94s fprint 0.28s integ 0.44s proxy 0.19s pool 0.03s | total 9.19s
+[0:01:14] [1/12] done in 74.2s (78411 collisions) | elapsed 0:01:14 | ETA 0:13:36
+```
+
+The `DF n/m ...` line is printed **before** that dataframe is processed, so if a
+worker hangs, the last line of its log names what it hung on. The per-stage
+timings double as a profiler: `cols` covers the truncation and duplicate
+analysis, `fprint` the fingerprint scan, `integ` the index validation, `proxy`
+the jet and leading-particle columns, `pool` the mixing-bin occupancy.
+
+Per-file lines carry a running ETA extrapolated from the mean time per file so
+far. AO2D sizes vary, so treat it as an order of magnitude rather than a
+deadline.
+
 ## 6. Design constraints worth preserving
+
+### 6.1 Why row gaps are consecutive rather than all-pairs
+
+The row-separation histograms record the gap between **consecutive** members of
+a value-sharing group after sorting that group by row, not the gap of every
+pair inside it. There are two independent reasons, and both matter.
+
+**Cost.** All-pairs enumeration is `O(m^2)` in the group size. `fInteractionRate`
+is a timeframe-level quantity and is effectively constant within a dataframe, so
+it forms a single group containing every collision. At 10k collisions per
+dataframe that is `5e7` pairs, each with a `log10` and a histogram fill, for one
+column in one dataframe. Measured against the consecutive-gap alternative:
+
+| group size | all pairs | consecutive gaps | speedup |
+| --- | --- | --- | --- |
+| 1 000 | 3.7 ms | 0.018 ms | ~200x |
+| 5 000 | 86 ms | 0.086 ms | ~1000x |
+| 10 000 | 339 ms | 0.184 ms | ~1800x |
+
+(Benchmarked with a plain array increment in place of `TH1D::Fill`, so the
+all-pairs column is a lower bound on its real cost.)
+
+**Statistics.** The question the histogram asks is whether value-sharing entries
+sit *adjacent* in the table. Consecutive gaps answer that directly. All-pairs is
+dominated by the trivial combinatorics of large groups -- a group of `m` entries
+contributes `m(m-1)/2` mostly-large separations -- which buries the small-gap
+signal the plot exists to expose. The linear version is therefore the sharper
+statistic as well as the affordable one.
+
+> **This changed the contents of `hDuplicateRowGap_*` and `hFingerprintRowGap`.**
+> Their normalisation and shape are not comparable with output produced before
+> this change.
+
 
 - **Additivity.** Workers write only summable quantities. Ratios exist only after `--finalize`.
 - **Fixed axes.** Every histogram axis is fixed at book time. Auto-ranging (`TH1(name, title, n,
@@ -282,6 +340,17 @@ its input.
 - **Truncation measured per dataframe.** The grid step is needed during the same pass that uses it.
   With thousands of entries per dataframe the minimum saturates; the pooled distribution remains
   recoverable from `hTrailingZeros` after merging.
+- **Each tree is read once.** `scanIndexedTree()` returns the full proxy branch
+  alongside the per-collision counts, so `O2ringjet` and `O2ringleadp` are not
+  reopened for the column-wise analysis. Do not reintroduce a second read.
+- **`__builtin_ctz` for the trailing-zero count.** It compiles to a single TZCNT
+  and is bit-identical to the shift loop it replaced, which needed up to 23
+  iterations.
+- **Fingerprint keys stay exact.** The cumulative scan keys on the concatenated
+  bit patterns themselves (`std::map<std::vector<uint32_t>, ...>`), not on a
+  hash. A 64-bit hash would be roughly twice as fast but would admit a small
+  false-match probability, and a tool whose entire purpose is exactness about
+  bit patterns should not carry one.
 
 ## 7. Known limitations and TODOs
 

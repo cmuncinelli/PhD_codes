@@ -73,13 +73,17 @@ static int countTrailingZeroMantissaBits(float value)
   if (mantissa == 0u) {
     return -1;
   }
-  int trailingZeros = 0;
-  uint32_t work = mantissa;
-  while ((work & 1u) == 0u) {
-    work >>= 1;
-    ++trailingZeros;
-  }
-  return trailingZeros;
+  // int trailingZeros = 0;
+  // uint32_t work = mantissa;
+  // while ((work & 1u) == 0u) {
+  //   work >>= 1;
+  //   ++trailingZeros;
+  // }
+  // return trailingZeros;
+
+  // Compiles to a single TZCNT on this architecture. Replaces a shift loop that
+  // could take up to 23 iterations; the result is bit-identical.
+  return __builtin_ctz(mantissa);
 }
 
 /// \brief Spacing between adjacent representable values at a given magnitude,
@@ -193,6 +197,18 @@ static const double kAxisPVzHigh = 10.0;
 static const int kAxisPVzBins = 60;
 static const std::vector<double> kAxisCentralityEdges = {0.0, 20.0, 50.0, 100.0};
 static const std::vector<double> kAxisJetPtEdges = {0, 2, 4, 6, 8, 10, 15, 20, 30, 40, 60, 80, 120, 160, 200};
+
+/// \brief Position of a column in kColumns, or -1 when it is not listed.
+static int findColumnIndex(const char* treeName, const char* branchName)
+{
+  for (size_t i = 0; i < kColumns.size(); ++i) {
+    if (std::strcmp(kColumns[i].treeName, treeName) == 0 &&
+        std::strcmp(kColumns[i].branchName, branchName) == 0) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
 
 /// \brief Bin index for a value on a variable-width axis, or -1 when outside.
 static int findVariableBin(const std::vector<double>& edges, double value)
@@ -522,14 +538,23 @@ static void analyseColumn(const std::vector<float>& values, int columnIndex, For
     histos.hMultiplicity[columnIndex]->Fill(multiplicity);
     histos.pMultiplicityVsValue[columnIndex]->Fill(sorted[i].first, multiplicity);
 
-    // Row separation of every value-sharing pair inside this group.
+    // Row separation of value-sharing entries, as consecutive gaps in row order.
+    // Enumerating all pairs would be O(m^2), which explodes on a column that is
+    // constant within a dataframe (fInteractionRate is, being a timeframe-level
+    // quantity). Consecutive gaps are also the sharper statistic: all-pairs is
+    // dominated by the combinatorics of large groups, which buries the adjacency
+    // signal this histogram exists to expose.
     if (multiplicity > 1) {
-      for (int a = i; a < j; ++a) {
-        for (int b = a + 1; b < j; ++b) {
-          const int rowGap = std::abs(sorted[a].second - sorted[b].second);
-          if (rowGap > 0) {
-            histos.hDuplicateRowGap[columnIndex]->Fill(std::log10(static_cast<double>(rowGap)));
-          }
+      // The group spans equal values, so reordering it by row changes nothing
+      // except making the consecutive differences meaningful.
+      std::sort(sorted.begin() + i, sorted.begin() + j,
+                [](const std::pair<float, int>& a, const std::pair<float, int>& b) {
+                  return a.second < b.second;
+                });
+      for (int a = i + 1; a < j; ++a) {
+        const int rowGap = sorted[a].second - sorted[a - 1].second;
+        if (rowGap > 0) {
+          histos.hDuplicateRowGap[columnIndex]->Fill(std::log10(static_cast<double>(rowGap)));
         }
       }
     }
@@ -657,10 +682,10 @@ static void analyseFingerprints(const std::vector<std::vector<float>>& columnVal
       // duplicated rows.
       if (k == nUsableColumns - 1) {
         histos.hFingerprintGroupSize->Fill(groupSize);
-        for (int a = 0; a < groupSize; ++a) {
-          for (int b = a + 1; b < groupSize; ++b) {
-            histos.hFingerprintRowGap->Fill(std::abs(group.second[b] - group.second[a]));
-          }
+        // Consecutive gaps, as in analyseColumn. The collision indices were
+        // appended in increasing order, so the group is already row-sorted.
+        for (int a = 1; a < groupSize; ++a) {
+          histos.hFingerprintRowGap->Fill(group.second[a] - group.second[a - 1]);
         }
       }
     }
@@ -679,7 +704,8 @@ static void analyseFingerprints(const std::vector<std::vector<float>>& columnVal
 /// \brief Per-collision row counts collected from one indexed table.
 struct IndexScanResult {
   std::vector<int> rowsPerCollision;
-  std::vector<float> firstValuePerCollision; //! first proxy value seen, for the mixing pool
+  std::vector<float> firstValuePerCollision; //! highest proxy value seen, for the mixing pool
+  std::vector<float> proxyColumn;            //! every row of the proxy branch, in table order
   bool treePresent = false;
 };
 
@@ -687,6 +713,8 @@ struct IndexScanResult {
 ///        collision count and recording per-collision row multiplicities.
 /// \param proxyBranch optional branch whose maximum per collision is kept
 ///                    (jet or leading-particle pT); pass nullptr to skip.
+/// \note  Also returns the proxy branch in full, so the tree is read exactly
+///        once: the column-wise analysis reuses this instead of reopening it.
 static IndexScanResult scanIndexedTree(TDirectory* dataframe, const char* treeName,
                                        int nCollisions, int tableIndex,
                                        const char* proxyBranch, ForensicsHistograms& histos)
@@ -721,8 +749,17 @@ static IndexScanResult scanIndexedTree(TDirectory* dataframe, const char* treeNa
 
   int previousIndex = -1;
   const Long64_t nRows = tree->GetEntries();
+  if (haveProxy) {
+    result.proxyColumn.reserve(nRows);
+  }
   for (Long64_t row = 0; row < nRows; ++row) {
     tree->GetEntry(row);
+
+    // Recorded before the index validation: the column-wise analysis wants every
+    // stored row, whether or not its index turns out to be usable.
+    if (haveProxy) {
+      result.proxyColumn.push_back(proxyValue);
+    }
 
     if (collisionIndex < 0) {
       histos.hIntegrityViolations->Fill(0);
@@ -893,29 +930,15 @@ static DataframeStats processDataframe(TDirectory* dataframe, ForensicsHistogram
   stageStart = ForensicsClock::now();
 
   // --- Jet and leading-particle columns, analysed as their own populations.
-  for (int column = nCollisionColumns; column < static_cast<int>(kColumns.size()); ++column) {
-    TTree* tree = nullptr;
-    dataframe->GetObject(kColumns[column].treeName, tree);
-    if (tree == nullptr) {
-      continue;
-    }
-    tree->SetBranchStatus("*", 0);
-    if (tree->GetBranch(kColumns[column].branchName) == nullptr) {
-      continue;
-    }
-    tree->SetBranchStatus(kColumns[column].branchName, 1);
-    float value = 0.f;
-    tree->SetBranchAddress(kColumns[column].branchName, &value);
-
-    const Long64_t nRows = tree->GetEntries();
-    std::vector<float> values;
-    values.reserve(nRows);
-    for (Long64_t row = 0; row < nRows; ++row) {
-      tree->GetEntry(row);
-      values.push_back(value);
-    }
-    tree->ResetBranchAddresses();
-    analyseColumn(values, column, histos);
+  // The values already came back from scanIndexedTree above, so neither tree is
+  // reopened or re-decompressed here.
+  const int jetPtColumn = findColumnIndex("O2ringjet", "fJetPt");
+  if (jetPtColumn >= 0 && !jetScan.proxyColumn.empty()) {
+    analyseColumn(jetScan.proxyColumn, jetPtColumn, histos);
+  }
+  const int leadPPtColumn = findColumnIndex("O2ringleadp", "fLeadParticlePt");
+  if (leadPPtColumn >= 0 && !leadPScan.proxyColumn.empty()) {
+    analyseColumn(leadPScan.proxyColumn, leadPPtColumn, histos);
   }
 
   stats.secProxyColumns = secondsSince(stageStart);

@@ -99,6 +99,7 @@ the registry: one folder per dataset, one subfolder per wagon configuration.
 |       |   |-- auxiliarySummaryPlots.root  # auto-generated (cross-config, per wagon)
 |       |   |-- zvtxBitForensics.root       # auto-generated (AO2D QA, per wagon)
 |       |   |-- logs/                       # consumer wrapper/batch logs + the two per-wagon logs
+|       |   |   +-- forensics_logs/         # one live progress log per Step 7 worker
 |       |   +-- used_configs/
 |       |-- results_SigExtract/             # signalExtractionRing.cxx output + logs/
 |       |-- results_DeltaErr/               # extractDeltaErrors.cxx output + logs/
@@ -575,12 +576,23 @@ runs the following steps:
 > `--post-process-only`. It is skipped, not failed, when that folder is missing
 > or empty.
 >
-> The work is split across `FORENSICS_JOBS` parallel workers (default 24, set at
-> the top of the script). Each worker writes a partial `.root` into a temporary
+> The work is split across `FORENSICS_JOBS` parallel workers (set at the top of
+> the script). Each worker writes a partial `.root` into a temporary
 > `results_consumer/.forensics_batches_<PID>/` folder; `hadd` merges them and a
 > final `--finalize` pass on the merged file completes the output. The temporary
 > folder is removed on completion and on interrupt (Ctrl+C). If a run is killed
 > in a way that bypasses the trap, that folder is safe to delete by hand.
+>
+> Each worker logs its own progress to
+> `results_consumer/logs/forensics_logs/batch_<N>.log`, written live and flushed
+> line by line. To watch a run in flight:
+>
+> ```bash
+> tail -f <WAGON_DIR>/results_consumer/logs/forensics_logs/batch_*.log
+> ```
+>
+> These logs persist after the run; unlike the batch `.root` files, they are not
+> in the temporary folder and are not deleted.
 >
 > What the output contains and how to read it is documented in the parent
 > [`RingPol_RAW_LocalHelpers/README.md`](../README.md).

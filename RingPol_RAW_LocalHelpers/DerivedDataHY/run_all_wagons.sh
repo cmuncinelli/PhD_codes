@@ -468,14 +468,16 @@ for LINE in "${WAGON_LINES[@]}"; do
   # Step 7: zvtxBitForensics (AO2D bit-level and integrity QA)
   # ------------------------------------------------------------------
   # Runs once per wagon on the raw AO2Ds, independently of the consumer output.
-  # Files are distributed round-robin across FORENSICS_JOBS workers, each writing
-  # its own partial .root; hadd merges them and a --finalize pass turns the
-  # additive numerator/denominator counters into ratio histograms. Ratios cannot
-  # be produced before the merge because hadd can only sum.
+  # Files are distributed round-robin across NBATCHES manifests, processed by
+  # FORENSICS_JOBS concurrent workers, each writing its own partial .root; hadd
+  # merges them and a --finalize pass turns the additive numerator/denominator
+  # counters into ratio histograms. Ratios cannot be produced before the merge
+  # because hadd can only sum.
   FORENSICS_DIR="${WORK_DIR}/AO2Ds"
   FORENSICS_OUT="${WORK_DIR}/results_consumer/zvtxBitForensics.root"
   FORENSICS_LOG="${WORK_DIR}/results_consumer/logs/zvtxBitForensics.log"
-  mkdir -p "${WORK_DIR}/results_consumer/logs"
+  FORENSICS_LOG_DIR="${WORK_DIR}/results_consumer/logs/forensics_logs"
+  mkdir -p "${WORK_DIR}/results_consumer/logs" "$FORENSICS_LOG_DIR"
 
   echo -n "  [7/7] zvtxBitForensics       : (AO2D integrity QA)"
 
@@ -494,7 +496,7 @@ for LINE in "${WAGON_LINES[@]}"; do
       # which gives both load balancing and a usable ETA. Capped so the number
       # of partial .root files stays modest for hadd.
       NBATCHES=$(( FORENSICS_JOBS * 4 ))
-      
+
       # EDGE CASE 2: Fewer files than max batches (e.g., 1 file -> 1 batch)
       if [ ${#AOD_FILES[@]} -lt $NBATCHES ]; then
         NBATCHES=${#AOD_FILES[@]}
@@ -502,6 +504,10 @@ for LINE in "${WAGON_LINES[@]}"; do
 
       FORENSICS_TMP_DIR="${WORK_DIR}/results_consumer/.forensics_batches_$$"
       mkdir -p "$FORENSICS_TMP_DIR"
+
+      # The batch count varies between runs, so logs from a previous, larger run
+      # would otherwise linger here and be misread as belonging to this one.
+      rm -f "${FORENSICS_LOG_DIR}"/batch_*.log
 
       IDX=0
       for AOD_FILE in "${AOD_FILES[@]}"; do
@@ -516,22 +522,35 @@ for LINE in "${WAGON_LINES[@]}"; do
         # parallel runs in the foreground, so Ctrl+C reaches it and its children
         # through the normal foreground process group. Worker stdout goes to
         # per-batch logs; --eta writes progress to the terminal.
-        export FORENSICS_EXE FORENSICS_TMP_DIR
+        #
+        # The command string is single-quoted and expanded by a FRESH shell, so
+        # every variable it names must be exported -- an unexported one silently
+        # becomes the empty string.
+        #
+        # {/.} is the manifest basename without extension (batch_0.txt -> batch_0),
+        # keeping manifest, partial .root and log names in agreement. {#} would not:
+        # it is the 1-based job sequence number, so batch_0.txt would produce
+        # batch_1.log.
+        export FORENSICS_EXE FORENSICS_TMP_DIR FORENSICS_LOG_DIR
         parallel --will-cite --eta -j "$FORENSICS_JOBS" \
-          '"$FORENSICS_EXE" {} "$FORENSICS_TMP_DIR/zvtxForensics_batch_{#}.root" > "$FORENSICS_TMP_DIR/batch_{#}.log" 2>&1' \
+          '"$FORENSICS_EXE" {} "$FORENSICS_TMP_DIR/zvtxForensics_{/.}.root" > "$FORENSICS_LOG_DIR/{/.}.log" 2>&1' \
           ::: "${FORENSICS_TMP_DIR}"/batch_*.txt
-        # parallel exits with the number of failed jobs (255 = its own error).
-        [ $? -eq 0 ] || FORENSICS_EXIT=1
+        # Captured immediately: parallel exits with the number of failed jobs.
+        PARALLEL_EXIT=$?
+        [ $PARALLEL_EXIT -eq 0 ] || FORENSICS_EXIT=1
       else
         # Fallback: background jobs have SIGINT set to SIG_IGN by bash, so the
         # PIDs are recorded and the trap SIGTERMs them explicitly.
-        B=0
+        #
+        # The tag comes from the manifest name, not a counter: the glob expands
+        # lexically (batch_0, batch_1, batch_10, batch_2, ...), so a counter would
+        # pair each log with the wrong manifest.
         for BATCH_MANIFEST in "${FORENSICS_TMP_DIR}"/batch_*.txt; do
-          "$FORENSICS_EXE" "$BATCH_MANIFEST" "${FORENSICS_TMP_DIR}/zvtxForensics_batch_${B}.root" \
-            > "${FORENSICS_TMP_DIR}/batch_${B}.log" 2>&1 &
+          BATCH_TAG=$(basename "$BATCH_MANIFEST" .txt)
+          "$FORENSICS_EXE" "$BATCH_MANIFEST" "${FORENSICS_TMP_DIR}/zvtxForensics_${BATCH_TAG}.root" \
+            > "${FORENSICS_LOG_DIR}/${BATCH_TAG}.log" 2>&1 &
           FORENSICS_PIDS+=($!)
-          B=$((B + 1))
-          
+
           # Throttle to FORENSICS_JOBS concurrent workers.
           while [ "$(jobs -rp | wc -l)" -ge "$FORENSICS_JOBS" ]; do
             sleep 0.2
@@ -543,14 +562,12 @@ for LINE in "${WAGON_LINES[@]}"; do
         FORENSICS_PIDS=()
       fi
 
-      cat "${FORENSICS_TMP_DIR}"/batch_*.log >> "$FORENSICS_LOG" 2>/dev/null
-
       # Merge, then finalize. Both must succeed for the step to count as OK.
       if [ $FORENSICS_EXIT -eq 0 ]; then
         shopt -s nullglob
         BATCH_ROOTS=("${FORENSICS_TMP_DIR}"/zvtxForensics_batch_*.root)
         shopt -u nullglob
-        
+
         if [ ${#BATCH_ROOTS[@]} -eq 0 ]; then
           FORENSICS_EXIT=1
         # EDGE CASE 3: Exactly 1 output file. Skip hadd and just move it.
@@ -560,7 +577,7 @@ for LINE in "${WAGON_LINES[@]}"; do
           hadd -f "$FORENSICS_OUT" "${BATCH_ROOTS[@]}" >> "$FORENSICS_LOG" 2>&1 || FORENSICS_EXIT=1
         fi
       fi
-      
+
       if [ $FORENSICS_EXIT -eq 0 ]; then
         "$FORENSICS_EXE" --finalize "$FORENSICS_OUT" >> "$FORENSICS_LOG" 2>&1 || FORENSICS_EXIT=1
       fi
