@@ -634,7 +634,24 @@ log now lives under its own `results_*/logs/` folder, alongside that step's own 
 (e.g. `results_DeltaErr/logs/extractDeltaErr_<SUFFIX>.log`), except for the consumer's own
 wrapper/batch logs and the two wagon-level logs (`auxSummaryPlots.log` and
 `zvtxBitForensics.log`), which stay under `results_consumer/logs/`.
-A failure summary table is printed at the end of the run.
+
+Two summary tables are printed at the end of a run, and they mean different things:
+
+| Table | Meaning |
+| --- | --- |
+| **FAILURES** | A step returned non-zero or crashed. Needs investigating; the log path is printed. |
+| **SKIPPED** | A step had nothing to work on. Not an error, and only printed when non-empty. |
+
+The common source of skips is running with `-p` against a wagon whose consumer has never been run. That is detected **once per wagon**, before the config loop, rather than once per (config x step) -- which previously turned a single unprocessed wagon into a couple of dozen failure rows and buried the genuine failures underneath them. Step 6 likewise skips, rather than fails, when there is no consumer output to aggregate.
+
+> **Note on the macros' own logs:** a consumer config need not enable all four kinematic-cut families (only `Ring` is always booked). Macros that iterate those folders resolve which are present once, up front, and report it on a single line:
+>
+> ```
+>  Families present : Ring, JetKinematicCuts
+>  Families absent  : RingKinematicCuts, JetAndLambdaKinematicCuts  (optional, not enabled in this config)
+> ```
+>
+> A `WARNING` further down therefore always means something genuinely unexpected. See the parent [`RingPol_RAW_LocalHelpers/README.md`](../README.md) for the full convention.
 
 ---
 
