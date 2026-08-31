@@ -68,19 +68,29 @@
 // (Signatures mirror the same-named helpers in plotHelicityEfficiency.cxx)
 // ==========================================================================
 
-static TObject* SafeGet(TDirectory* dir, const char* name)
+// warnIfMissing is a functionality to avoid printing warnings in some cases. It is not always an anomaly to have some plots
+// missing: the consumer may book only some of the kinematic cut families at once, so this is expected behavior in most cases.
+// Pass false when the caller is doing the probing and will report the outcome itself.
+// Leave it true when the object is genuinely expected to be there.
+static TObject* SafeGet(TDirectory* dir, const char* name, bool warnIfMissing = true)
 {
-    if (!dir) { printf("WARNING: SafeGet called with null directory for '%s'\n", name); return nullptr; }
+    if (!dir) {
+        if (warnIfMissing) printf("WARNING: SafeGet called with null directory for '%s'\n", name);
+        return nullptr;
+    }
     TObject* obj = dir->Get(name);
-    if (!obj) printf("WARNING: '%s' not found in directory '%s'\n", name, dir->GetName());
+    if (!obj && warnIfMissing) printf("WARNING: '%s' not found in directory '%s'\n", name, dir->GetName());
     return obj;
 }
 
-static TDirectory* GetDir(TDirectory* parent, const char* name)
+static TDirectory* GetDir(TDirectory* parent, const char* name, bool warnIfMissing = true)
 {
-    if (!parent) { printf("WARNING: GetDir called with null parent for '%s'\n", name); return nullptr; }
+    if (!parent) {
+        if (warnIfMissing) printf("WARNING: GetDir called with null parent for '%s'\n", name);
+        return nullptr;
+    }
     TDirectory* dir = static_cast<TDirectory*>(parent->Get(name));
-    if (!dir) printf("WARNING: directory '%s' not found in '%s'\n", name, parent->GetName());
+    if (!dir && warnIfMissing) printf("WARNING: directory '%s' not found in '%s'\n", name, parent->GetName());
     return dir;
 }
 
@@ -341,23 +351,73 @@ static void DrawSymmetricColz(TProfile2D* hSrc, const char* title, double minEnt
 // ==========================================================================
 // Folder registry: the four kinematic-cut scenarios booked by lambdaJetPolarizationIonsDerived.cxx's
 // addRingObservableFamily() lambda (Ring, RingKinematicCuts, JetKinematicCuts, JetAndLambdaKinematicCuts).
-// If the consumer ever receives another folder, you can just add it here! At the same time,
-// if the consumer switch is off for any of these three families in the source .root file, safeGet() and
-// GetDir() will make the program fallback into a non-fatal crash (i.e., it just ignores these families).
+// If the consumer ever receives another folder, you can just add it here!
+//
+// Only "Ring" is generally booked in all executions. 
+// The absence of the other three is a design feature, so it is resolved ONCE by ScanPresentFolders() below and reported as a single line,
+// rather than being rediscovered (and re-warned about) by every drawing section in turn (this was polluting the logs way too much!).
 // ==========================================================================
 struct FolderSpec {
-    const char* name;  ///< O2 histogram-registry folder name (matches addRingObservableFamily(...) argument)
-    const char* label; ///< Human-readable label used in canvas titles
+    const char* name;      ///< O2 histogram-registry folder name (matches addRingObservableFamily(...) argument in the consumer)
+    const char* label;     ///< Human-readable label used in canvas titles
+    bool        mandatory; ///< true -> its absence means the input file is broken, not merely trimmed
 };
 
 static const std::vector<FolderSpec> kFolders = {
-    {"Ring",                      "Ring (no kinematic cuts)"},
-    {"RingKinematicCuts",         "Ring, #Lambda kinematic cuts"},
-    {"JetKinematicCuts",          "Ring, jet kinematic cuts"},
-    {"JetAndLambdaKinematicCuts", "Ring, jet & #Lambda kinematic cuts"},
+    {"Ring",                      "Ring (no kinematic cuts)",           true },
+    {"RingKinematicCuts",         "Ring, #Lambda kinematic cuts",       false},
+    {"JetKinematicCuts",          "Ring, jet kinematic cuts",           false},
+    {"JetAndLambdaKinematicCuts", "Ring, jet & #Lambda kinematic cuts", false},
 };
 
 static const char* kTaskDir = "lambdajetpolarizationionsderived"; // My O2Physics task name
+
+// ==========================================================================
+/**
+ * @brief Resolves which of the kFolders members actually exist in the input file.
+ *
+ * Probes quietly (warnIfMissing = false) and prints one "present / absent" summary line, so that a
+ * config enabling only some families costs two lines of log instead of one warning cascade per
+ * drawing section. Every section afterwards iterates the returned vector and can therefore treat any
+ * further missing object as a genuine anomaly worth a loud WARNING if needed.
+ *
+ * @param taskDir Top-level task TDirectory.
+ * @param ok      Set to false when a mandatory folder is absent -- left untouched otherwise.
+ * @return The subset of kFolders present in the file, in registry order, inside a vector.
+ */
+// ==========================================================================
+static std::vector<FolderSpec> ScanPresentFolders(TDirectory* taskDir, bool& ok)
+{
+    std::vector<FolderSpec> present;
+    std::string absentList;
+
+    for (const auto& f : kFolders) {
+        if (GetDir(taskDir, f.name, false)) {
+            present.push_back(f);
+            continue;
+        }
+        if (f.mandatory) {
+            printf("ERROR: mandatory folder '%s' not found in '%s'\n", f.name, kTaskDir);
+            ok = false;
+            continue;
+        }
+        if (!absentList.empty()) absentList += ", ";
+        absentList += f.name;
+    }
+
+    // Built from the vector rather than from kFolders so the two lines cannot disagree:
+    std::string presentList;
+    for (const auto& f : present) {
+        if (!presentList.empty()) presentList += ", ";
+        presentList += f.name;
+    }
+
+    printf(" Families present : %s\n", presentList.empty() ? "(none)" : presentList.c_str());
+    if (!absentList.empty())
+        printf(" Families absent  : %s  (optional, not enabled in this config)\n", absentList.c_str());
+
+    return present;
+}
 // ==========================================================================
 /**
  * @brief One canvas per folder: X-Y plane and Z-X plane polarization vector
@@ -375,6 +435,8 @@ static const char* kTaskDir = "lambdajetpolarizationionsderived"; // My O2Physic
 // ==========================================================================
 static void MakeVectorFieldCanvas(TDirectory* taskDir, TDirectory* outDir, const FolderSpec& f)
 {
+    // f is guaranteed present: main() only iterates the folders ScanPresentFolders() resolved.
+    // Anything missing from here on is therefore unexpected and warns loudly.
     TDirectory* qaDir = GetDir(GetDir(taskDir, f.name), "QA");
     if (!qaDir) { printf("WARNING: skipping vector-field canvas for '%s' (QA dir missing)\n", f.name); return; }
 
@@ -430,6 +492,7 @@ static void MakeVectorFieldCanvas(TDirectory* taskDir, TDirectory* outDir, const
 static void MakeRingObservable2DCanvas(TDirectory* taskDir, TDirectory* outDir, const FolderSpec& f, 
                                        const char* histPrefix, const char* canvasPrefix, const char* mainTitle)
 {
+    // As in MakeVectorFieldCanvas: f is already known to exist, so this is a defensive check only.
     TDirectory* dir = GetDir(taskDir, f.name);
     if (!dir) { printf("WARNING: skipping ring-observable canvas for '%s' (folder missing)\n", f.name); return; }
 
@@ -545,23 +608,35 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    // --- Resolve which kinematic-cut families this config actually produced ---
+    // Done once, before any drawing, so an absent optional family costs one summary line instead of
+    // one warning per drawing section. A missing MANDATORY family is fatal: the input file is not the
+    // consumer output it claims to be, and drawing from it would be meaningless rather than merely partial.
+    bool foldersOk = true;
+    const std::vector<FolderSpec> folders = ScanPresentFolders(taskDir, foldersOk);
+    if (!foldersOk) {
+        std::cerr << " ERROR: mandatory kinematic-cut family missing in " << inPath << std::endl;
+        fOut->Close(); fIn->Close();
+        return 1;
+    }
+
     // --- Create organized output subfolders ---
     TDirectory* dirVectorField = fOut->mkdir("VectorField_Canvases");
     TDirectory* dirRingObs2D   = fOut->mkdir("RingObservable2D_Canvases");
 
     // 1. Polarization vector-field canvases (one per folder)
     std::cout << " -> Drawing vector-field canvases...\n";
-    for (const auto& f : kFolders)
+    for (const auto& f : folders)
         MakeVectorFieldCanvas(taskDir, dirVectorField, f);
 
     // 2. Ring-observable 2D scalar canvases (FastJet Proxy)
     std::cout << " -> Drawing ring-observable 2D canvases...\n";
-    for (const auto& f : kFolders)
+    for (const auto& f : folders)
         MakeRingObservable2DCanvas(taskDir, dirRingObs2D, f, "p2dRingObservable", "cRingObservable2D", "Ring observable <#it{R}>");
 
     // 3. Ring-observable 2D scalar canvases (Leading Particle Proxy)
     std::cout << " -> Drawing ring-observable (Leading Particle) 2D canvases...\n";
-    for (const auto& f : kFolders)
+    for (const auto& f : folders)
         MakeRingObservable2DCanvas(taskDir, dirRingObs2D, f, "p2dRingObservableLeadP", "cRingObservableLeadP2D", "Ring observable <#it{R}>_{LeadP}");
 
     // ===========================================================
@@ -574,7 +649,8 @@ int main(int argc, char** argv)
     // cross-config/wagon-level aggregation that auxiliarySummaryPlots.cxx
     // handles. Follow the same pattern as sections 1-2 above:
     //   - a FolderSpec-style loop if the new plot is booked per
-    //     kinematic-cut folder (reuse kFolders if so),
+    //     kinematic-cut folder -- iterate the resolved `folders` vector,
+    //     NOT kFolders, so absent optional families stay silent,
     //   - a dedicated TDirectory in fOut via fOut->mkdir(...),
     //   - a Make...Canvas(taskDir, outDir, ...) function defined above
     //     main(), called from a loop right here.

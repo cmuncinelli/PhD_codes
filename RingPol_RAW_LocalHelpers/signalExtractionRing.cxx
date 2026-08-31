@@ -2758,26 +2758,61 @@ int main(int argc, char** argv) {
     std::cout << "\n[Step 3] Looping over variations and fetching histograms..." << std::endl;
     
     std::string baseFolder = "lambdajetpolarizationionsderived"; // All results of the derived data consumer are stored inside a folder related to the task name
-    std::vector<std::string> variations = {
-        "Ring", 
-        "RingKinematicCuts", 
-        "JetKinematicCuts", 
-        "JetAndLambdaKinematicCuts"
+
+    // Only "Ring" is generally booked by the consumer.
+    // The other three families have their switches turned off in most cases.
+    struct VariationSpec { std::string name; bool mandatory; };
+    const std::vector<VariationSpec> variations = {
+        {"Ring",                      true },
+        {"RingKinematicCuts",         false},
+        {"JetKinematicCuts",          false},
+        {"JetAndLambdaKinematicCuts", false}
     };
 
-    for (const auto& var : variations){
+    // --- Resolve which variations are actually present, once, before any work starts ---
+    // Doing this up front buys two things: the absent ones are reported on a single line instead of
+    // one warning per variation deep inside the loop, and no empty <Variation>/ directory is written
+    // to the output file for a variation that was never produced. Previously mkdir() ran before the
+    // existence check, so a trimmed run and a complete one looked identical in a TBrowser.
+    std::vector<std::string> presentVariations;
+    std::string presentList, absentList;
+    for (const auto& v : variations) {
+        if (inFile->Get((baseFolder + "/" + v.name).c_str())) {
+            presentVariations.push_back(v.name);
+            if (!presentList.empty()) presentList += ", ";
+            presentList += v.name;
+        } else if (v.mandatory) {
+            std::cerr << "  Error: mandatory variation '" << v.name << "' not found in the input file.\n";
+            outFile->Close();
+            inFile->Close();
+            return 1;
+        } else {
+            if (!absentList.empty()) absentList += ", ";
+            absentList += v.name;
+        }
+    }
+
+    std::cout << "  Variations present : " << (presentList.empty() ? "(none)" : presentList) << std::endl;
+    if (!absentList.empty())
+        std::cout << "  Variations absent  : " << absentList << "  (optional, not enabled in this config)" << std::endl;
+
+    for (const auto& var : presentVariations){
         std::cout << "\n#########################################" << std::endl;
         std::cout << "-> Processing variation: " << var << std::endl;
         std::cout << "#########################################\n" << std::endl;
-        
-        // Step 3.1: Output file should have these 4 cases as subfolders
-        TDirectory* outDirVar = outFile->mkdir(var.c_str());
-        
+
         std::string fullFolderPath = baseFolder + "/" + var;
         TDirectory* inDir = (TDirectory*)inFile->Get(fullFolderPath.c_str());
-        
-        if (!inDir){
+
+        if (!inDir){ // Defensive only: the presence scan above should already have resolved this!
             std::cerr << "  Warning: Directory " << fullFolderPath << " not found in input file! Skipping." << std::endl;
+            continue;
+        }
+
+        // Step 3.1: Output file gets one subfolder per PRESENT variation
+        TDirectory* outDirVar = outFile->mkdir(var.c_str());
+        if (!outDirVar){
+            std::cerr << "  Warning: Could not create output directory '" << var << "'. Skipping." << std::endl;
             continue;
         }
 

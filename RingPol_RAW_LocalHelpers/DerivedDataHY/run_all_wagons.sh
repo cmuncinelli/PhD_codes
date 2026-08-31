@@ -175,6 +175,28 @@ CONSUMER_CONFIGS_DIR="${POSITIONAL_ARGS[1]:-$DEFAULT_CONFIGS_DIR}"
 #   Killing this script by PID from another terminal would only hit this
 #   process; in that case child traps do not fire automatically.
 
+# Prints one "WAGON | CONFIG | STEP" table.
+#   $1        : heading for the third column ("FAILED STEP", "SKIPPED STEP", ...)
+#   $2 .. $n  : the entries, each a "WAGON | CONFIG | STEP" string
+# Factored out because the identical block was previously duplicated between the interrupt
+# handler and the end-of-run summary, and there are now two tables to print in each place.
+print_report_table() {
+  local STEP_HEADER="$1"
+  shift
+  printf "  %-45s  %-40s  %-20s\n" "WAGON" "CONFIG" "$STEP_HEADER"
+  printf "  %-45s  %-40s  %-20s\n" \
+    "---------------------------------------------" \
+    "----------------------------------------" \
+    "--------------------"
+  local ENTRY WAGON_COL CONF_COL STEP_COL
+  for ENTRY in "$@"; do
+    WAGON_COL=$(echo "$ENTRY" | awk -F'|' '{gsub(/^ +| +$/,"",$1); print $1}')
+    CONF_COL=$(  echo "$ENTRY" | awk -F'|' '{gsub(/^ +| +$/,"",$2); print $2}')
+    STEP_COL=$(  echo "$ENTRY" | awk -F'|' '{gsub(/^ +| +$/,"",$3); print $3}')
+    printf "  %-45s  %-40s  %-20s\n" "$WAGON_COL" "$CONF_COL" "$STEP_COL"
+  done
+}
+
 handle_interrupt() {
   echo ""
   echo "!!! INTERRUPT DETECTED (Ctrl+C) !!!"
@@ -183,17 +205,13 @@ handle_interrupt() {
   if [ ${#FAILURES[@]} -eq 0 ]; then
     echo "  No failures recorded before interrupt."
   else
-    printf "  %-45s  %-40s  %-20s\n" "WAGON" "CONFIG" "FAILED STEP"
-    printf "  %-45s  %-40s  %-20s\n" \
-      "---------------------------------------------" \
-      "----------------------------------------" \
-      "--------------------"
-    for ENTRY in "${FAILURES[@]}"; do
-      WAGON_COL=$(echo "$ENTRY" | awk -F'|' '{gsub(/^ +| +$/,"",$1); print $1}')
-      CONF_COL=$(  echo "$ENTRY" | awk -F'|' '{gsub(/^ +| +$/,"",$2); print $2}')
-      STEP_COL=$(  echo "$ENTRY" | awk -F'|' '{gsub(/^ +| +$/,"",$3); print $3}')
-      printf "  %-45s  %-40s  %-20s\n" "$WAGON_COL" "$CONF_COL" "$STEP_COL"
-    done
+    print_report_table "FAILED STEP" "${FAILURES[@]}"
+  fi
+  if [ ${#SKIPPED[@]} -gt 0 ]; then
+    echo ""
+    echo "  Skipped before interrupt (nothing to process -- not errors):"
+    echo ""
+    print_report_table "SKIPPED STEP" "${SKIPPED[@]}"
   fi
   echo "========================================================"
   exit 130
@@ -299,6 +317,15 @@ echo ""
 # Failure log: each entry is "WAGON_SHORTNAME | CONFIG_SUFFIX | STAGE"
 FAILURES=()
 
+# Skip log, same format.
+# This is deliberately NOT the failure log: it records steps that had nothing to work on -- e.g.,
+# a wagon whose consumer has not been run yet, encountered under --post-process-only.
+# Those used to be recorded as failures, which buried the real failures under a
+# table of entries that had simply not ran the consumer yet.
+## In other words, this is a simple convenience to not clutter my CLI every single time I am
+## running on a newly downloaded dataset!!!
+SKIPPED=()
+
 # ==============================================================================
 # MAIN LOOP
 # ==============================================================================
@@ -313,7 +340,28 @@ for LINE in "${WAGON_LINES[@]}"; do
   echo "  Wagon: ${DATASET_NAME}/${WAGON_SHORTNAME}"
   echo "--------------------------------------------------------"
 
-  for CONFIG_FILE in "${CONFIG_FILES[@]}"; do
+  # ------------------------------------------------------------------
+  # Has this wagon been processed at all?
+  # ------------------------------------------------------------------
+  # Under --post-process-only there is nothing to post-process in a wagon whose consumer workflow has never been run.
+  # If we reporeted that once per config (times five macro steps, plus Step 6) we would get a failure
+  # table long enough to hide the genuine failures in it. It is now one "skip" entry for the wagon.
+  # In FULL CHAIN mode this is not checked: Step 1 is what creates those files, so they should be present and whatever
+  # propagates further down is truly an error!
+  shopt -s nullglob # Convenient command for checking for file existence: "if a glob matches nothing, remove it entirely rather than leaving the pattern literally".
+  EXISTING_RESULTS=("${WORK_DIR}/results_consumer"/ConsumerResults_*.root)
+  shopt -u nullglob # Return to usual wildcard resolution behavior
+
+  # Emptying the list is what skips the loop below, so the loop itself stays a plain iteration:
+  ACTIVE_CONFIGS=("${CONFIG_FILES[@]}")
+  if [ $POST_PROCESS_ONLY -eq 1 ] && [ ${#EXISTING_RESULTS[@]} -eq 0 ]; then
+    echo "  [1-6/7] SKIPPED: no ConsumerResults_*.root found (wagon not processed yet)"
+    echo ""
+    SKIPPED+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ALL_CONFIGS | not processed yet")
+    ACTIVE_CONFIGS=()
+  fi
+
+  for CONFIG_FILE in "${ACTIVE_CONFIGS[@]}"; do
 
     # Derive the output suffix the consumer will use, e.g. "JustLambda"
     CONFIG_BASENAME=$(basename "$CONFIG_FILE" .json)
@@ -372,11 +420,15 @@ for LINE in "${WAGON_LINES[@]}"; do
       fi
       echo "  -> OK"
     else
-      # Post-process only mode: verify file exists
+      # Post-process only mode: verify file exists beforehand:
+        # A config the consumer was never run for is not a failure -- we interpret that as just asking
+        # to post-process whatever already exists, and this config simply is not part of it.
+        # Recorded as a "skip" so it is still visible at the logs without competing with real failures for our attention.
+        # Just a convenience workaround, in other words.
       echo -n "  [1/7] consumer        : ${CONS_SUFFIX} (SKIPPED)"
       if [ ! -f "$CONSUMER_RESULT" ]; then
-        echo "  -> FAILED  (File missing)"
-        FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | missing_consumer_result")
+        echo "  -> SKIPPED (no ConsumerResults file for this config)"
+        SKIPPED+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | missing_consumer_result")
         continue
       fi
       echo "  -> OK (Found file)"
@@ -452,16 +504,28 @@ for LINE in "${WAGON_LINES[@]}"; do
   # We run this ONCE per wagon, passing the wagon's base working dir
   AUX_LOG="${WORK_DIR}/results_consumer/logs/auxSummaryPlots.log" # Saves a single log, to the root of the logs folder, because there will be only one single log for a given wagon
   echo -n "  [6/7] auxiliarySummaryPlots  : (Cross-config summary)"
-  
-  # Forwarding the consumer results directory, the MC reference, and now the Toy Model path:
-  "$AUXILIARY_PLOTS_EXE" "${WORK_DIR}/results_consumer" "${MC_REF_DIR}" "${PP_REF_DIR}" "${TOY_MODEL_PATH}" > "$AUX_LOG" 2>&1
-  AUX_EXIT=$?
 
-  if [ $AUX_EXIT -ne 0 ]; then
-    echo "  -> FAILED  (log: ${AUX_LOG})"
-    FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ALL_CONFIGS | auxiliarySummaryPlots")
+  # Re-globbed rather than reusing the pre-loop result: in FULL CHAIN mode Step 1 is what creates
+  # these files, so the earlier check was taken before they existed.
+  shopt -s nullglob
+  SUMMARY_INPUTS=("${WORK_DIR}/results_consumer"/ConsumerResults_*.root)
+  shopt -u nullglob
+
+  if [ ${#SUMMARY_INPUTS[@]} -eq 0 ]; then
+    # Nothing to aggregate across. Not a failure: there is simply no input.
+    echo "  -> SKIPPED (no ConsumerResults files to aggregate)"
+    SKIPPED+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ALL_CONFIGS | auxiliarySummaryPlots")
   else
-    echo "  -> OK"
+    # Forwarding the consumer results directory, the MC reference, and now the Toy Model path:
+    "$AUXILIARY_PLOTS_EXE" "${WORK_DIR}/results_consumer" "${MC_REF_DIR}" "${PP_REF_DIR}" "${TOY_MODEL_PATH}" > "$AUX_LOG" 2>&1
+    AUX_EXIT=$?
+
+    if [ $AUX_EXIT -ne 0 ]; then
+      echo "  -> FAILED  (log: ${AUX_LOG})"
+      FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ALL_CONFIGS | auxiliarySummaryPlots")
+    else
+      echo "  -> OK"
+    fi
   fi
 
   # ------------------------------------------------------------------
@@ -607,20 +671,20 @@ if [ ${#FAILURES[@]} -eq 0 ]; then
 else
   echo "  FAILURES (${#FAILURES[@]} total)"
   echo ""
-  # Column headers
-  printf "  %-45s  %-40s  %-20s\n" "WAGON" "CONFIG" "FAILED STEP"
-  printf "  %-45s  %-40s  %-20s\n" \
-    "---------------------------------------------" \
-    "----------------------------------------" \
-    "--------------------"
-  for ENTRY in "${FAILURES[@]}"; do
-    WAGON_COL=$(echo "$ENTRY" | awk -F'|' '{gsub(/^ +| +$/,"",$1); print $1}')
-    CONF_COL=$(  echo "$ENTRY" | awk -F'|' '{gsub(/^ +| +$/,"",$2); print $2}')
-    STEP_COL=$(  echo "$ENTRY" | awk -F'|' '{gsub(/^ +| +$/,"",$3); print $3}')
-    printf "  %-45s  %-40s  %-20s\n" "$WAGON_COL" "$CONF_COL" "$STEP_COL"
-  done
+  print_report_table "FAILED STEP" "${FAILURES[@]}"
   echo "  (Each step's log lives under its own results_*/logs/ folder inside the wagon"
   echo "   directory -- e.g. results_DeltaErr/logs/, results_SigExtract/logs/, etc. -- except"
   echo "   the consumer and auxiliarySummaryPlots logs, which stay under results_consumer/logs/)"
+fi
+
+# Printed separately and only when non-empty, so it never competes with the failure table above.
+# Everything here ran to completion or had nothing to run on: none of it should need investigating.
+if [ ${#SKIPPED[@]} -gt 0 ]; then
+  echo "--------------------------------------------------------"
+  echo "  SKIPPED (${#SKIPPED[@]} total) -- simply nothing to process, not an error per-se."
+  echo ""
+  print_report_table "SKIPPED STEP" "${SKIPPED[@]}"
+  echo "  (Typically a wagon whose consumer has not been run yet, seen under"
+  echo "   --post-process-only. Run without -p, or drop the wagon from the registry.)"
 fi
 echo "========================================================"

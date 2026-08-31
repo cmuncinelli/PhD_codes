@@ -37,6 +37,10 @@
 // Helper 1: Core TProfile2D Processing (Outputs 2D)
 // ---------------------------------------------------------
 TProfile2D* MakeCumulativeProfile2D(TProfile2D* pDiff, const char* outName, const char* outTitle) {  
+    // Null input is a legitimate outcome upstream (a projection that could not be built), so this
+    // returns nullptr rather than dereferencing it. Callers must check the result before writing.
+    if (!pDiff) return nullptr;
+
     // Create a cleaned version of the outName without the "pFakePolSignalJet_" string cluttering it
     std::string cleanName = outName;
     std::string pattern = "pFakePolSignalJet_";
@@ -98,6 +102,9 @@ TProfile2D* MakeCumulativeProfile2D(TProfile2D* pDiff, const char* outName, cons
 // Helper 2: Core TProfile2D Processing to 1D (Integrated over phi*)
 // ---------------------------------------------------------
 TProfile* MakeCumulativeProfile1D(TProfile2D* pDiff, const char* outName, const char* outTitle) {
+    // Same contract as MakeCumulativeProfile2D: if nullptr in, then nullptr out.
+    if (!pDiff) return nullptr;
+
     // Create a cleaned version of the outName without the "pFakePolSignalJet_" string cluttering it
     // (mirrors MakeCumulativeProfile2D, so 1D and 2D outputs share the same naming convention
     // regardless of whether the caller already pre-cleaned the name it passed in)
@@ -200,21 +207,32 @@ void ProcessProfile3D(TProfile3D* p3D, TDirectory* dir2D, TDirectory* dir1D, con
 
     // Pass "yx" so the 2D projection maintains native mapping (X = phi*, Y = DCA)
     // We assign names manually afterward.
-    
+    //
+    // Project3DProfile returns nullptr on a rejected option string or an unusable axis range, so each result is checked before it is named:
+    // (Dereferencing it blind turns a recoverable ROOT complaint into a segfault, which the coordinator can only report as an opaque crash)
+        // Thus, we create a small lambda to encapsulate everything:
+    auto project = [&](int zLo, int zHi, const char* tag) -> TProfile2D* {
+        p3D->GetZaxis()->SetRange(zLo, zHi);
+        TProfile2D* p2D = p3D->Project3DProfile("yx");
+        if (!p2D) {
+            std::cerr << "    [Warning] Project3DProfile(\"yx\") failed for " << cleanName
+                      << " (" << tag << "). Skipping this eta slice.\n";
+            return nullptr;
+        }
+        p2D->SetName(Form("%s_xy_%s", cleanName.c_str(), tag));
+        return p2D;
+    };
+
     // 1. All Eta (Project across all Z bins)
-    p3D->GetZaxis()->SetRange(1, p3D->GetNbinsZ());
-    TProfile2D* p2D_all = p3D->Project3DProfile("yx");
-    p2D_all->SetName(Form("%s_xy_all", cleanName.c_str()));
-    
+    TProfile2D* p2D_all = project(1, p3D->GetNbinsZ(), "all");
     // 2. Negative Eta (Z bin 1: -0.9 to 0)
-    p3D->GetZaxis()->SetRange(1, 1);
-    TProfile2D* p2D_neg = p3D->Project3DProfile("yx");
-    p2D_neg->SetName(Form("%s_xy_neg", cleanName.c_str()));
-    
+    TProfile2D* p2D_neg = project(1, 1, "neg");
     // 3. Positive Eta (Z bin 2: 0 to 0.9)
-    p3D->GetZaxis()->SetRange(2, 2);
-    TProfile2D* p2D_pos = p3D->Project3DProfile("yx");
-    p2D_pos->SetName(Form("%s_xy_pos", cleanName.c_str()));
+    TProfile2D* p2D_pos = project(2, 2, "pos");
+
+    // Restore the full Z range: the caller's TProfile3D is shared, and leaving it clipped to bin 2
+    // would silently bias anything that reads the same histogram afterwards (if we ever intend to use it afterwards).
+    p3D->GetZaxis()->SetRange(1, p3D->GetNbinsZ());
 
     // Resolve Precise DCA Label
     std::string dcaLabel = "min DCA";
@@ -232,8 +250,20 @@ void ProcessProfile3D(TProfile3D* p3D, TDirectory* dir2D, TDirectory* dir1D, con
     TProfile* hCumul1D_neg = MakeCumulativeProfile1D(p2D_neg, Form("hCumul1D_%s_NegEta", cleanName.c_str()), Form("Integrated Cumul. %s (Eta < 0); %s; Integrated <R>", cleanName.c_str(), dcaLabel.c_str()));
     TProfile* hCumul1D_pos = MakeCumulativeProfile1D(p2D_pos, Form("hCumul1D_%s_PosEta", cleanName.c_str()), Form("Integrated Cumul. %s (Eta > 0); %s; Integrated <R>", cleanName.c_str(), dcaLabel.c_str()));
 
-    if (dir2D) { dir2D->cd(); hCumul2D_all->Write(); hCumul2D_neg->Write(); hCumul2D_pos->Write(); }
-    if (dir1D) { dir1D->cd(); hCumul1D_all->Write(); hCumul1D_neg->Write(); hCumul1D_pos->Write(); }
+    // Written individually: a failed projection leaves its cumulative null, and the other two slices
+    // are still perfectly good output.
+    if (dir2D) {
+        dir2D->cd();
+        if (hCumul2D_all) hCumul2D_all->Write();
+        if (hCumul2D_neg) hCumul2D_neg->Write();
+        if (hCumul2D_pos) hCumul2D_pos->Write();
+    }
+    if (dir1D) {
+        dir1D->cd();
+        if (hCumul1D_all) hCumul1D_all->Write();
+        if (hCumul1D_neg) hCumul1D_neg->Write();
+        if (hCumul1D_pos) hCumul1D_pos->Write();
+    }
 
     delete p2D_all; delete p2D_neg; delete p2D_pos;
     delete hCumul2D_all; delete hCumul2D_neg; delete hCumul2D_pos;
@@ -481,7 +511,15 @@ int main(int argc, char** argv) {
     }
 
     TFile* fOut = TFile::Open(outFileStr.c_str(), "RECREATE");
-    
+    // Checking output file before closing:
+    if (!fOut || fOut->IsZombie()) {
+        std::cerr << " ERROR: cannot create " << outFileStr << std::endl;
+        if (fOut) { fOut->Close(); delete fOut; }
+        fIn->Close();
+        delete fIn;
+        return 1;
+    }
+
     // --- Create Organized Subfolders ---
     TDirectory* dirCounts   = fOut->mkdir("Cumulative_Counts");
     TDirectory* dir2D       = fOut->mkdir("Cumulative_2D");

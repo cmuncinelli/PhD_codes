@@ -37,6 +37,7 @@
 #include <cmath>
 #include <algorithm>
 
+#include "TArrayD.h"
 #include "TFile.h"
 #include "TH1D.h"
 #include "TH2D.h"
@@ -74,9 +75,19 @@ bool ComputeDeltaError(double sum_r, double sum_n, double sum_r2, double sum_n2,
 TH1D* Process2DTo1D(TH2D* h2d, const std::string& newName) {
     if (!h2d) return nullptr;
 
-    // Create a TH1D using the X-axis of the 2D histogram
-    TH1D* h1d = new TH1D(newName.c_str(), h2d->GetTitle(), 
-                         h2d->GetNbinsX(), h2d->GetXaxis()->GetXbins()->GetArray());
+    // Create a TH1D using the X-axis of the 2D histogram.
+    //
+    // The variable- and uniform-binning cases MUST be split. For a uniform axis ROOT stores no edge
+    // array at all, so GetXbins()->GetArray() is a null pointer -- and TH1's variable-binning
+    // constructor silently accepts that, falling back to fXaxis.Set(nbins, 0, 1). The result is a
+    // histogram whose X axis runs 0..1 regardless of the source axis, with no error reported.
+    const TArrayD* xBins = h2d->GetXaxis()->GetXbins();
+    TH1D* h1d = nullptr;
+    if (xBins && xBins->GetSize() > 0) { // Variable binning: copy the edge array verbatim
+        h1d = new TH1D(newName.c_str(), h2d->GetTitle(), h2d->GetNbinsX(), xBins->GetArray());
+    } else { // Uniform binning: reproduce it from the axis limits
+        h1d = new TH1D(newName.c_str(), h2d->GetTitle(), h2d->GetNbinsX(), h2d->GetXaxis()->GetXmin(), h2d->GetXaxis()->GetXmax());
+    }
     h1d->GetXaxis()->SetTitle(h2d->GetXaxis()->GetTitle());
     h1d->GetYaxis()->SetTitle("<#it{R}>");
 
@@ -156,9 +167,23 @@ int main(int argc, char** argv) {
     }
 
     TFile* outFile = TFile::Open(outFileStr.c_str(), "RECREATE");
-    
-    std::vector<std::string> families = {
-        "Ring", "RingKinematicCuts", "JetKinematicCuts", "JetAndLambdaKinematicCuts"
+    // Checking the output file's existence before use (e.g., to prevent full-disk errors before they happen):
+    if (!outFile || outFile->IsZombie()) {
+        std::cerr << "Error: Could not create output file " << outFileStr << std::endl;
+        if (outFile) { outFile->Close(); delete outFile; }
+        inFile->Close();
+        delete inFile;
+        return 1;
+    }
+
+    // Only "Ring" is generally booked by the consumer. The other three families have their switches turned off
+    // in most cases. "bool mandatory" marks that distinction.
+    struct FamilySpec { const char* name; bool mandatory; };
+    const std::vector<FamilySpec> families = {
+        {"Ring",                      true },
+        {"RingKinematicCuts",         false},
+        {"JetKinematicCuts",          false},
+        {"JetAndLambdaKinematicCuts", false}
     };
 
     std::vector<std::string> vars2D = {
@@ -172,21 +197,60 @@ int main(int argc, char** argv) {
     hRingCutsDelta->GetXaxis()->SetBinLabel(3, "|Jet_{#eta}|<0.5");
     hRingCutsDelta->GetXaxis()->SetBinLabel(4, "#Lambda + Jet cuts");
 
+    // The O2 task's top-level directory:
+    const std::string taskDir = "lambdajetpolarizationionsderived/";
+
+    // --- Resolve which families this config actually produced ---
+    // Done once, up front, so an absent optional family is reported on a single line instead of once
+    // per accumulator it fails to supply:
+    std::vector<size_t> presentFamilies; // Indices into families, preserving the summary-bin mapping
+    std::string presentList, absentList;
+    for (size_t iFam = 0; iFam < families.size(); ++iFam) {
+        const bool found = (inFile->Get((taskDir + families[iFam].name).c_str()) != nullptr);
+        if (found) {
+            presentFamilies.push_back(iFam);
+            if (!presentList.empty()) presentList += ", ";
+            presentList += families[iFam].name;
+        } else if (families[iFam].mandatory) {
+            std::cerr << "Error: mandatory family '" << families[iFam].name
+                      << "' not found in " << inPath << std::endl;
+            outFile->Close(); delete outFile;
+            inFile->Close();  delete inFile;
+            return 1;
+        } else {
+            if (!absentList.empty()) absentList += ", ";
+            absentList += families[iFam].name;
+        }
+    }
+
     std::cout << "\n=======================================================\n";
     std::cout << " Starting Delta Method Post-Processing\n";
     std::cout << "=======================================================\n";
+    std::cout << " Families present : " << (presentList.empty() ? "(none)" : presentList) << "\n";
+    if (!absentList.empty())
+        std::cout << " Families absent  : " << absentList << "  (optional, not enabled in this config)\n";
 
-    // The O2 task creates a top-level directory for all its outputs
-    const std::string taskDir = "lambdajetpolarizationionsderived/";
-
-    for (size_t iFam = 0; iFam < families.size(); ++iFam) {
-        const auto& fam = families[iFam];
+    for (size_t iPresent = 0; iPresent < presentFamilies.size(); ++iPresent) {
+        // iFam indexes the ORIGINAL registry, so the summary histogram keeps its fixed bin labels:
+        // bin (iFam + 1) always means the same cut family whether or not its neighbours were produced.
+        const size_t iFam = presentFamilies[iPresent];
+        const std::string fam = families[iFam].name;
         std::cout << "\n---> Processing Family: " << fam << std::endl;
 
-        // Create directory structure in output file
+        // Create directory structure in output file.
+        // TDirectoryFile::mkdir returns nullptr when a key of that name already exists, so the chain
+        // is checked rather than dereferenced blind.
         TDirectory* dirFam = outFile->mkdir(fam.c_str());
+        if (!dirFam) {
+            std::cerr << "  [Warning] Could not create output directory '" << fam << "'. Skipping family.\n";
+            continue;
+        }
         TDirectory* dirDelta = dirFam->mkdir("DeltaMethod_err");
         TDirectory* dirSEM = dirFam->mkdir("SEM_method_err");
+        if (!dirDelta || !dirSEM) {
+            std::cerr << "  [Warning] Could not create sub-directories under '" << fam << "'. Skipping family.\n";
+            continue;
+        }
 
         // ---------------------------------------------------------------------
         // 1. Process Integrated Observable
@@ -204,7 +268,7 @@ int main(int argc, char** argv) {
 
             double R = 0, errR = 0;
             if (ComputeDeltaError(sum_r, sum_n, sum_r2, sum_n2, sum_rn, R, errR)) {
-                std::cout << "  [Integrated] <R> = " << R << " ± " << errR << std::endl;
+                std::cout << "  [Integrated] <R> = " << R << " +/- " << errR << std::endl;
                 // Fill the summary histogram (Bins are 1-indexed)
                 hRingCutsDelta->SetBinContent(iFam + 1, R);
                 hRingCutsDelta->SetBinError(iFam + 1, errR);
@@ -225,8 +289,12 @@ int main(int argc, char** argv) {
                 // Remove "VsDeltaComp" from the new name for clarity
                 std::string baseName = var.substr(0, var.find("VsDeltaComp"));
                 TH1D* h1d = Process2DTo1D(h2d, baseName + "_DeltaErr");
-                h1d->Write();
-                std::cout << "  [Differential] Processed " << var << " -> " << h1d->GetName() << std::endl;
+                if (h1d) { // Adding a check before writing
+                    h1d->Write();
+                    std::cout << "  [Differential] Processed " << var << " -> " << h1d->GetName() << std::endl;
+                } else {
+                    std::cerr << "  [Warning] Conversion to 1D failed for " << var << std::endl;
+                }
             }
         }
 
