@@ -21,13 +21,20 @@
 #   Config : <WORK_DIR>/results_consumer/used_configs/consumer-config_<CONS_SUFFIX>.json
 #
 # Usage:
-#   ./runDerivedDataConsumer_HY.sh <WORK_DIR> <consumer_config.json>
+#   ./runDerivedDataConsumer_HY.sh <WORK_DIR> <consumer_config.json> [NUMA_NODE]
 #
 # Arguments:
 #   $1 : WORK_DIR          -- absolute path to the per-wagon working directory
 #                             (e.g. /home/users/cicerodm/RingPol/LHC25ae_pass2/ITSandTPC_min3ITS)
 #   $2 : consumer_config   -- path to the consumer dpl-config JSON file
 #                             (e.g. dpl-config-DerivedConsumer-JustLambda.json)
+#   $3 : NUMA_NODE         -- optional NUMA node index. When given, the whole O2
+#                             workflow (all THREADS pipeline devices plus the reader)
+#                             is bound to that node with --cpunodebind and --membind.
+#                             Binding the workflow as a unit is deliberate: splitting
+#                             the pipeline across sockets was measured at roughly a
+#                             5x slowdown on this machine, all of it inter-socket
+#                             traffic. Omit the argument to run unbound.
 #
 # Example:
 #   ./runDerivedDataConsumer_HY.sh \
@@ -42,7 +49,7 @@
 FILES_PER_BATCH=30          # Number of AO2D files per batch. Reduce if DPL
                             # still reports scheduling stalls on this machine.
 SHM_SIZE="64000000000"      # Shared memory: 64 GB
-MEM_RATE_LIMIT="12000000000" # AOD memory rate limit: 8 GB/s
+MEM_RATE_LIMIT="12000000000" # AOD memory rate limit: 12 GB/s
 THREADS=32                  # Pipeline threads for the consumer task
 # READERS=5                   # Parallel AOD reader threads
 
@@ -51,6 +58,7 @@ THREADS=32                  # Pipeline threads for the consumer task
 # ==============================================================================
 WORK_DIR="$1"
 JSON_CONSUMER_CONFIG="$2"
+NUMA_NODE="$3" # Optional. Empty means "do not bind".
 
 if [ -z "$WORK_DIR" ] || [ -z "$JSON_CONSUMER_CONFIG" ]; then
   echo "Usage: $0 <WORK_DIR> <consumer_config.json>"
@@ -71,6 +79,22 @@ fi
 if [ ! -f "$JSON_CONSUMER_CONFIG" ]; then
   echo "Error: Consumer config not found: ${JSON_CONSUMER_CONFIG}"
   exit 1
+fi
+
+# Built as an array so the empty case expands to nothing at all, rather than to an
+# empty string that the shell would then try to execute.
+NUMA_PREFIX=()
+if [ -n "$NUMA_NODE" ]; then
+  if [ -d "/sys/devices/system/node/node${NUMA_NODE}" ]; then
+    # membind rather than preferred: preferred silently spills to the other socket once
+    # the node fills, which is exactly the remote-access penalty we are trying to avoid.
+    # Nearly all of a filled node here is reclaimable page cache, so membind reclaims
+    # instead of failing.
+    NUMA_PREFIX=(numactl --cpunodebind="$NUMA_NODE" --membind="$NUMA_NODE")
+  else
+    echo "Warning: NUMA node ${NUMA_NODE} not found. Running unbound."
+    NUMA_NODE=""
+  fi
 fi
 
 AOD_DIR="${WORK_DIR}/AO2Ds"
@@ -99,7 +123,10 @@ CONS_SUFFIX="${CONS_BASENAME#dpl-config-DerivedConsumer-}"
 CONSUMER_RESULTS="${WORK_DIR}/results_consumer"
 CONSUMER_LOGS="${CONSUMER_RESULTS}/logs/batches" # Now organizing into small subfolders to keep everything tidy
 CONSUMER_CONFIGS="${CONSUMER_RESULTS}/used_configs"
-CONSUMER_TEMP="${WORK_DIR}/temp_consumer_stage"
+# Staging area is per-config, not per-wagon: several configs of the same wagon now run
+# concurrently, and a shared staging path would have them deleting each other's batch
+# splits, merge lists and per-batch results at startup and on exit.
+CONSUMER_TEMP="${WORK_DIR}/temp_consumer_stage_${CONS_SUFFIX}"
 
 mkdir -p "$CONSUMER_RESULTS"
 mkdir -p "$CONSUMER_LOGS"
@@ -165,6 +192,7 @@ echo "  WORK_DIR         : ${WORK_DIR}"
 echo "  Consumer suffix  : ${CONS_SUFFIX}"
 echo "  Total AOD files  : ${TOTAL_FILES}"
 echo "  Files per batch  : ${FILES_PER_BATCH}"
+echo "  NUMA binding     : ${NUMA_NODE:-none (unbound)}"
 echo "  Number of batches: ${NUM_BATCHES}"
 echo "  Final output     : ${CONSUMER_RESULTS}/ConsumerResults_${CONS_SUFFIX}.root"
 echo "========================================================"
@@ -216,6 +244,7 @@ for BATCH_FILE in $(find "$CONSUMER_TEMP" -maxdepth 1 -name "batch_*" | sort); d
   #     --shm-segment-size "$SHM_SIZE" \
   #     > "$BATCH_LOG" 2>&1
   time \
+  "${NUMA_PREFIX[@]}" \
   o2-analysis-lf-lambdajetpolarizationionsderived \
       -b \
       --configuration "json://${JSON_CONSUMER_CONFIG}" \

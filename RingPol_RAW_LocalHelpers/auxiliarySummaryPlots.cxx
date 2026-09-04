@@ -1789,12 +1789,279 @@ void DrawIntegratedCanvas(const std::vector<ProfileBundle>& bundles,
  *                     already carry the same comparisons. Per-observable opt-in still applies on top of
  *                     this, so turning it on enables it only for the profiles flagged in the table.
  */
+// =================================================================================================
+// SIGNAL-EXTRACTED INTEGRATED OBSERVABLES
+// =================================================================================================
+// Everything below reads the output of signalExtractionRing.cxx, which is a DIFFERENT file per
+// consumer configuration:
+//     <sigExtractDir>/signalExtractionRing_<dataSuffix><sysSuffix>.root
+// and, inside it,
+//     <cutFolder>/IntegratedSummary/<proxy>/<histogram>
+//
+// WHY THIS IS NOT JUST ANOTHER ObservableGroup. Every other group in this macro integrates a
+// TProfile over its x-axis with GetIntegratedProfile. These quantities arrive ALREADY integrated,
+// as single-bin histograms, and two of them (<R>_S and <R>_B) cannot be obtained from a consumer
+// profile at all: they only exist once a sideband subtraction has been done. So they get their own
+// small table and fetch path, and then rejoin the shared drawers -- MakeCategoricalPoint,
+// DrawIntegratedCanvas and DrawOffsetSeriesCanvas do all the drawing, with no new plotting code.
+//
+// WHY THE DIFFERENCES ARE READ FROM FILE RATHER THAN COMPUTED HERE. <R>_measured, <R>_S and <R>_B
+// are three functions of the same four primitives (peak counts, peak Sum_R, sideband counts,
+// sideband Sum_R) and are strongly correlated. SubtractProfiles adds errors in quadrature, which
+// for these is not a conservative approximation but simply wrong, in both directions: on a
+// representative set of primitives it overstates the error on <R>_meas - <R>_S by about 60% and
+// UNDERSTATES the one on <R>_S - <R>_B by about 20%. The extraction macro computes all three
+// differences where the primitives and their covariance are still in scope, and this code plots the
+// numbers it is handed. Do not be tempted to re-derive them here.
+// =================================================================================================
+
+/// @brief One signal-extracted quantity, i.e. one histogram name under IntegratedSummary/<proxy>/.
+struct SigExtractQuantity {
+    std::string histName;   // Without the "_<proxy>" suffix the extraction macro appends
+    std::string legendLabel;
+    std::string yAxisTitle;
+    int color;
+    int markerStyle;
+    bool isData;            // Draws thick, like the Data column elsewhere in this macro
+};
+
+/// @brief One proxy folder inside IntegratedSummary/.
+/// @note These are the three genuinely independent measurements. The angular extractions
+///       (DeltaPhi, DeltaTheta) integrate over the SAME candidates and would only repeat one
+///       another, which is why signalExtractionRing no longer publishes them here at all.
+struct SigExtractProxy {
+    std::string folderName; // "LeadJet", "LeadP", "SubJet"
+    std::string legendLabel;
+};
+
+/// @brief A value with its uncertainty, plus whether it was actually found.
+struct SigExtractPoint {
+    double value = 0.0;
+    double error = 0.0;
+    bool   found = false;
+};
+
+/**
+ * @brief Reads one single-bin histogram out of a signalExtractionRing output file.
+ *
+ * @param cache         Shared file cache; the extraction files are opened at most once each.
+ * @param sigExtractDir Directory holding the signalExtractionRing_*.root files.
+ * @param fileSuffix    <dataSuffix><sysSuffix>, exactly as in the consumer file names.
+ * @param cutFolder     Top-level variation folder inside the extraction file ("Ring", ...).
+ * @param proxy         Folder under IntegratedSummary/.
+ * @param histName      Histogram stem; "_<proxy>" is appended, matching the extraction macro.
+ * @param requireValid  When true, hExtractionStatus must report a valid extraction. Guards against
+ *                      the failure mode where a fit did not converge: a zero-filled single-bin
+ *                      histogram is visually indistinguishable from a genuine measurement of zero,
+ *                      which is exactly why the extraction macro writes that status flag.
+ * @return The point, with found = false when anything is missing or the extraction was invalid.
+ */
+SigExtractPoint FetchSigExtractPoint(FileCache& cache,
+                                     const std::string& sigExtractDir,
+                                     const std::string& fileSuffix,
+                                     const std::string& cutFolder,
+                                     const std::string& proxy,
+                                     const std::string& histName,
+                                     bool requireValid = true) {
+    SigExtractPoint out;
+    if (sigExtractDir.empty()) return out;
+
+    const std::string filePath = sigExtractDir + "/signalExtractionRing_" + fileSuffix + ".root";
+    const std::string dirPath = cutFolder + "/IntegratedSummary/" + proxy + "/";
+
+    if (requireValid) {
+        TH1D* hStatus = cache.FetchClone<TH1D>(filePath, dirPath + "hExtractionStatus_" + proxy, false);
+        if (!hStatus) return out;           // No status object at all: treat as not extracted
+        const bool valid = hStatus->GetBinContent(1) > 0.5; // Bin 1 is labelled "valid"
+        delete hStatus;
+        if (!valid) return out;
+    }
+
+    TH1D* h = cache.FetchClone<TH1D>(filePath, dirPath + histName + "_" + proxy, false);
+    if (!h) return out;
+    if (h->GetNbinsX() >= 1) {
+        out.value = h->GetBinContent(1);
+        out.error = h->GetBinError(1);
+        out.found = true;
+    }
+    delete h;
+    return out;
+}
+
+/**
+ * @brief Builds the "components" canvases: <R>_measured, <R>_S and <R>_B side by side.
+ *
+ * One categorical axis with three entries, in the style of the Integrated_summary plots, plus a
+ * self-pull lower panel so the value and its distance from zero are read off the same canvas.
+ * The subtracted companion shows the two differences against <R>_measured, taken from file with
+ * their correlations intact (see the header note above).
+ */
+void DrawSigExtractComponents(FileCache& cache,
+                              const std::string& sigExtractDir,
+                              const std::string& fileSuffix,
+                              const std::string& cutFolder,
+                              const SigExtractProxy& proxy,
+                              const std::string& familyName,
+                              TDirectory* outDir) {
+    if (!outDir) return;
+
+    // Order matters: measured first, so it occupies the "Data" slot the eye expects.
+    const std::vector<SigExtractQuantity> components = {
+        {"hIntegratedRMeas", "Measured", "Integrated <R>", kBlack,    8,  true },
+        {"hIntegratedRSig",  "Signal",   "Integrated <R>", kRed + 1,  21, false},
+        {"hIntegratedRBkg",  "Background","Integrated <R>", kBlue + 1, 22, false}
+    };
+
+    std::vector<std::string> labels;
+    std::vector<ProfileBundle> bundles;
+    std::vector<TH1*> toDelete;
+
+    for (size_t i = 0; i < components.size(); ++i) {
+        SigExtractPoint p = FetchSigExtractPoint(cache, sigExtractDir, fileSuffix, cutFolder,
+                                                 proxy.folderName, components[i].histName);
+        if (!p.found) return; // All three come from one extraction: if one is absent, so are the rest
+        labels.push_back(components[i].legendLabel);
+    }
+
+    const int nCats = static_cast<int>(components.size());
+    for (int i = 0; i < nCats; ++i) {
+        SigExtractPoint p = FetchSigExtractPoint(cache, sigExtractDir, fileSuffix, cutFolder,
+                                                 proxy.folderName, components[i].histName);
+        TH1D* h = MakeCategoricalPoint(Form("SigComp_%s_%d", proxy.folderName.c_str(), i),
+                                       i, nCats, p.value, p.error);
+        VariationConfig vc{"", components[i].legendLabel, components[i].color, 1,
+                           components[i].markerStyle, components[i].isData};
+        bundles.push_back({h, vc});
+        toDelete.push_back(h);
+    }
+
+    DrawIntegratedCanvas(bundles, labels, "Canvas_Components",
+                         familyName + " " + proxy.legendLabel + ": measured, signal and background",
+                         outDir, "Integrated <R>", false, true, true);
+
+    // --- Subtracted companion ------------------------------------------------------------------
+    // The measured bin is left empty rather than removed, so the axis and labels stay identical to
+    // the canvas above it. Same convention as the existing Integrated_Subtracted plots.
+    const std::vector<std::pair<std::string, int>> diffs = {
+        {"hIntegratedDiffMeasMinusSig", 1},
+        {"hIntegratedDiffMeasMinusBkg", 2}
+    };
+
+    std::vector<ProfileBundle> subBundles;
+    for (const auto& d : diffs) {
+        SigExtractPoint p = FetchSigExtractPoint(cache, sigExtractDir, fileSuffix, cutFolder,
+                                                 proxy.folderName, d.first);
+        if (!p.found) continue;
+        TH1D* h = MakeCategoricalPoint(Form("SigCompSub_%s_%d", proxy.folderName.c_str(), d.second),
+                                       d.second, nCats, p.value, p.error);
+        subBundles.push_back({h, {"", components[d.second].legendLabel, components[d.second].color,
+                                  1, components[d.second].markerStyle, false}});
+        toDelete.push_back(h);
+    }
+
+    if (!subBundles.empty()) {
+        DrawIntegratedCanvas(subBundles, labels, "Canvas_Components_Subtracted",
+                             familyName + " " + proxy.legendLabel +
+                                 ": measured minus each component",
+                             outDir, "#Delta<R> (Measured - Component)", true, true, true);
+    }
+
+    for (auto q : toDelete) delete q;
+}
+
+/**
+ * @brief Builds the systematics canvases for one signal-extracted quantity.
+ *
+ * Directly imitates Integrated_summary: one categorical axis whose entries are Data followed by
+ * every systematic variation, drawn from the extraction file belonging to each variation.
+ *
+ * The subtracted companion is Y = <quantity>_data - <quantity>_variation, computed here rather
+ * than read from file. That IS legitimate quadrature, unlike the component differences above:
+ * these come from statistically independent consumer configurations, not from shared primitives.
+ * The one caveat is that the proxy-distortion variations reuse the same underlying candidates, so
+ * the difference errors are conservative for those -- the same approximation the rest of this
+ * macro already makes for every other systematic difference.
+ *
+ * @return The Data value, so the caller can accumulate it for the cross-family comparison.
+ */
+SigExtractPoint DrawSigExtractSystematics(FileCache& cache,
+                                          const std::string& sigExtractDir,
+                                          const std::string& dataSuffix,
+                                          const std::vector<VariationConfig>& sysVariations,
+                                          const VariationConfig& dataConfig,
+                                          const std::string& cutFolder,
+                                          const SigExtractProxy& proxy,
+                                          const SigExtractQuantity& quantity,
+                                          const std::string& familyName,
+                                          TDirectory* outDir) {
+    SigExtractPoint dataPoint;
+    if (!outDir) return dataPoint;
+
+    dataPoint = FetchSigExtractPoint(cache, sigExtractDir, dataSuffix, cutFolder,
+                                     proxy.folderName, quantity.histName);
+    if (!dataPoint.found) return dataPoint;
+
+    std::vector<std::string> labels{dataConfig.legendLabel};
+    std::vector<VariationConfig> configs{dataConfig};
+    std::vector<SigExtractPoint> points{dataPoint};
+
+    for (const auto& sys : sysVariations) {
+        SigExtractPoint p = FetchSigExtractPoint(cache, sigExtractDir, dataSuffix + sys.suffix,
+                                                 cutFolder, proxy.folderName, quantity.histName);
+        if (!p.found) continue; // A variation whose extraction failed drops off the axis entirely
+        labels.push_back(sys.legendLabel);
+        configs.push_back(sys);
+        points.push_back(p);
+    }
+
+    if (labels.size() < 2) return dataPoint; // Data alone is not a systematics plot
+
+    const int nCats = static_cast<int>(labels.size());
+    std::vector<ProfileBundle> bVal, bSub;
+    std::vector<TH1*> toDelete;
+
+    for (int i = 0; i < nCats; ++i) {
+        TH1D* hV = MakeCategoricalPoint(Form("SigSysVal_%s_%s_%d", proxy.folderName.c_str(),
+                                             quantity.histName.c_str(), i),
+                                        i, nCats, points[i].value, points[i].error);
+        bVal.push_back({hV, configs[i]});
+        toDelete.push_back(hV);
+
+        if (i == 0) continue; // Data bin stays empty on the difference canvas, as elsewhere
+
+        const double diff = points[0].value - points[i].value;
+        const double ediff = std::sqrt(points[0].error * points[0].error +
+                                       points[i].error * points[i].error);
+        TH1D* hS = MakeCategoricalPoint(Form("SigSysSub_%s_%s_%d", proxy.folderName.c_str(),
+                                             quantity.histName.c_str(), i),
+                                        i, nCats, diff, ediff);
+        bSub.push_back({hS, configs[i]});
+        toDelete.push_back(hS);
+    }
+
+    DrawIntegratedCanvas(bVal, labels, "Canvas_Integrated",
+                         familyName + " " + proxy.legendLabel + " " + quantity.legendLabel,
+                         outDir, quantity.yAxisTitle, false, false, true);
+
+    if (!bSub.empty()) {
+        DrawIntegratedCanvas(bSub, labels, "Canvas_Integrated_Subtracted",
+                             familyName + " " + proxy.legendLabel + " " + quantity.legendLabel +
+                                 " difference",
+                             outDir, "#Delta" + quantity.yAxisTitle + " (Data - Var)",
+                             true, false, true);
+    }
+
+    for (auto q : toDelete) delete q;
+    return dataPoint;
+}
+
 void auxiliarySummaryPlots(const std::string& consumerDir,
                            const std::string& mcRefDir = "",
                            const std::string& ppRefDir = "",
                            const std::string& toyModelPath = "",
                            const std::string& cutFolder = DEFAULT_CUT_FOLDER,
-                           bool doIndividualComparisons = false) {
+                           bool doIndividualComparisons = false,
+                           const std::string& sigExtractDir = "") {
     
     // 1. Define Systematic Variations (the list of all useful variations I would like to track into this plot)
     // The data config (empty suffix) is handled separately in the logic to ensure it is always first
@@ -2027,6 +2294,28 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         {"", "AntiLambda",   kRed,   1, 21, false},
         {"", "BothHyperons", kBlack, 1, 8,  true}
     };
+
+    // The three proxy folders written by signalExtractionRing, in the same order as
+    // proxyRepresentatives above so the two cross-family blocks line up.
+    const std::vector<SigExtractProxy> sigExtractProxies = {
+        {"LeadP",   "Leading particle"},
+        {"LeadJet", "Leading jet"},
+        {"SubJet",  "Subleading jet"}
+    };
+
+    // The two signal-extracted quantities that get a full systematics treatment. <R>_measured is
+    // deliberately NOT here: it already has a counterpart in the ordinary Integrated_summary plots,
+    // and repeating it would invite the two to be read as independent measurements.
+    const std::vector<SigExtractQuantity> sigExtractQuantities = {
+        {"hIntegratedRSig", "Signal",     "Integrated <R>_{S}", kRed + 1,  21, false},
+        {"hIntegratedRBkg", "Background", "Integrated <R>_{B}", kBlue + 1, 22, false}
+    };
+
+    // sigExtractCrossFamily[quantity][proxy][family] = the Data value from each extraction file
+    std::vector<std::vector<std::vector<SigExtractPoint>>> sigExtractCrossFamily(
+        sigExtractQuantities.size(),
+        std::vector<std::vector<SigExtractPoint>>(sigExtractProxies.size(),
+                                                  std::vector<SigExtractPoint>(families.size())));
 
     // crossFamilyVals[proxy][family] = one integrated value per variation, in allSystematics order
     std::vector<std::vector<std::vector<std::pair<double, double>>>>
@@ -2739,6 +3028,100 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         // Comparing the eta_Jet and eta_Lambda entries is also a way of probing for overflow/underflow
         // problems (there were some! The eta axis range in the consumer was fixed after this was spotted).
         int nGrand = grandLabels.size();
+        // -----------------------------------------------------------------------------------
+        // Signal-extracted integrated observables
+        // -----------------------------------------------------------------------------------
+        // Fed by signalExtractionRing rather than by the consumer, so this whole block is skipped
+        // when no extraction directory was given. Directories are created lazily, exactly as
+        // everywhere else here, so a run without extraction output leaves no empty folders.
+        if (!sigExtractDir.empty()) {
+            TDirectory* sigExtractGroupDir = nullptr;
+
+            for (size_t iProxy = 0; iProxy < sigExtractProxies.size(); ++iProxy) {
+                const auto& proxy = sigExtractProxies[iProxy];
+
+                // Is there anything at all for this proxy? Probing one histogram avoids creating a
+                // folder for a proxy whose extraction never ran or did not converge.
+                SigExtractPoint probe = FetchSigExtractPoint(cache, sigExtractDir, fam.dataSuffix,
+                                                             cutFolder, proxy.folderName,
+                                                             "hIntegratedRSig");
+                if (!probe.found) continue;
+
+                if (!famDir) famDir = EnsureDir(fOut, fam.familyName);
+                if (!sigExtractGroupDir) sigExtractGroupDir = EnsureDir(famDir, "SignalExtraction");
+                TDirectory* proxyDir = EnsureDir(sigExtractGroupDir, proxy.folderName);
+
+                // (a) The three components side by side, plus their correlated differences
+                DrawSigExtractComponents(cache, sigExtractDir, fam.dataSuffix, cutFolder,
+                                         proxy, fam.familyName,
+                                         EnsureDir(proxyDir, "Components"));
+
+                // (b) One systematics canvas pair per quantity, imitating Integrated_summary
+                for (size_t iQ = 0; iQ < sigExtractQuantities.size(); ++iQ) {
+                    const auto& quantity = sigExtractQuantities[iQ];
+                    SigExtractPoint dataVal = DrawSigExtractSystematics(
+                        cache, sigExtractDir, fam.dataSuffix, sysVariations, dataConfig,
+                        cutFolder, proxy, quantity, fam.familyName,
+                        EnsureDir(proxyDir, SanitizeName(quantity.legendLabel)));
+                    sigExtractCrossFamily[iQ][iProxy][famIdx] = dataVal;
+                }
+
+                // (c) Signal and background as two series over the systematics axis, so the two are
+                //     read against each other directly instead of on facing canvases. This is the
+                //     comparison that matters: an artificial-proxy variation that moves <R>_S and
+                //     <R>_B together is saying something quite different from one that moves only
+                //     the signal.
+                std::vector<std::string> sysLabels{dataConfig.legendLabel};
+                std::vector<std::vector<SigExtractPoint>> seriesPts(sigExtractQuantities.size());
+                for (size_t iQ = 0; iQ < sigExtractQuantities.size(); ++iQ) {
+                    seriesPts[iQ].push_back(FetchSigExtractPoint(cache, sigExtractDir,
+                                                                 fam.dataSuffix, cutFolder,
+                                                                 proxy.folderName,
+                                                                 sigExtractQuantities[iQ].histName));
+                }
+                for (const auto& sys : sysVariations) {
+                    std::vector<SigExtractPoint> row;
+                    bool complete = true;
+                    for (const auto& quantity : sigExtractQuantities) {
+                        SigExtractPoint p = FetchSigExtractPoint(cache, sigExtractDir,
+                                                                 fam.dataSuffix + sys.suffix,
+                                                                 cutFolder, proxy.folderName,
+                                                                 quantity.histName);
+                        if (!p.found) { complete = false; break; }
+                        row.push_back(p);
+                    }
+                    if (!complete) continue; // Keep the two series on a common axis
+                    sysLabels.push_back(sys.legendLabel);
+                    for (size_t iQ = 0; iQ < row.size(); ++iQ) seriesPts[iQ].push_back(row[iQ]);
+                }
+
+                if (sysLabels.size() >= 2) {
+                    const int nSys = static_cast<int>(sysLabels.size());
+                    std::vector<ProfileBundle> series;
+                    std::vector<TH1*> seriesToDelete;
+                    for (size_t iQ = 0; iQ < sigExtractQuantities.size(); ++iQ) {
+                        TH1D* h = new TH1D(Form("SigSeries_%s_%zu", proxy.folderName.c_str(), iQ),
+                                           "", nSys, 0, nSys);
+                        h->SetDirectory(nullptr);
+                        for (int i = 0; i < nSys; ++i) {
+                            h->SetBinContent(i + 1, seriesPts[iQ][i].value);
+                            h->SetBinError(i + 1, seriesPts[iQ][i].error);
+                        }
+                        VariationConfig vc{"", sigExtractQuantities[iQ].legendLabel,
+                                           sigExtractQuantities[iQ].color, 1,
+                                           sigExtractQuantities[iQ].markerStyle, false};
+                        series.push_back({h, vc});
+                        seriesToDelete.push_back(h);
+                    }
+                    DrawOffsetSeriesCanvas(sysLabels, series, "Canvas_SignalVsBackground",
+                                           fam.familyName + " " + proxy.legendLabel +
+                                               ": <R>_{S} and <R>_{B} across systematics",
+                                           proxyDir, "Integrated <R>", 0.5, true);
+                    for (auto q : seriesToDelete) delete q;
+                }
+            }
+        }
+
         if (nGrand > 0 && famDir) {
             TDirectory* integDir = EnsureDir(famDir, "BruteForce");
 
@@ -2906,6 +3289,61 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         }
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Cross-family comparison of the signal-extracted values
+    // ---------------------------------------------------------------------------------------
+    // Same shape as the block above, but the series are the two extracted quantities and the axis
+    // is the hyperon selection. This is where a Lambda / AntiLambda asymmetry would show up in the
+    // signal rather than in the raw measurement: the background is largely combinatorial and has
+    // little reason to know which species it is sitting under, so <R>_B tracking <R>_S across the
+    // families would point at something common to both rather than at a physics asymmetry.
+    if (!sigExtractDir.empty()) {
+        TDirectory* xFamSigDir = nullptr;
+
+        for (size_t iProxy = 0; iProxy < sigExtractProxies.size(); ++iProxy) {
+            std::vector<std::string> famLabels;
+            std::vector<int> famIndices;
+            for (size_t f = 0; f < families.size(); ++f) {
+                bool anyFound = false;
+                for (size_t iQ = 0; iQ < sigExtractQuantities.size(); ++iQ)
+                    if (sigExtractCrossFamily[iQ][iProxy][f].found) anyFound = true;
+                if (!anyFound) continue;
+                famLabels.push_back(families[f].familyName);
+                famIndices.push_back(static_cast<int>(f));
+            }
+            if (famLabels.size() < 2) continue; // A single family is not a cross-family plot
+
+            const int nFam = static_cast<int>(famLabels.size());
+            std::vector<ProfileBundle> series;
+            std::vector<TH1*> toDelete;
+            for (size_t iQ = 0; iQ < sigExtractQuantities.size(); ++iQ) {
+                TH1D* h = new TH1D(Form("XFamSig_%zu_%zu", iQ, iProxy), "", nFam, 0, nFam);
+                h->SetDirectory(nullptr);
+                for (int i = 0; i < nFam; ++i) {
+                    const auto& pt = sigExtractCrossFamily[iQ][iProxy][famIndices[i]];
+                    h->SetBinContent(i + 1, pt.value);
+                    h->SetBinError(i + 1, pt.error);
+                }
+                VariationConfig vc{"", sigExtractQuantities[iQ].legendLabel,
+                                   sigExtractQuantities[iQ].color, 1,
+                                   sigExtractQuantities[iQ].markerStyle, false};
+                series.push_back({h, vc});
+                toDelete.push_back(h);
+            }
+
+            if (!xFamSigDir)
+                xFamSigDir = EnsureDir(EnsureDir(fOut, "CrossFamily_Integrated"), "SigExtracted");
+
+            const std::string proxyName = sigExtractProxies[iProxy].folderName;
+            DrawOffsetSeriesCanvas(famLabels, series,
+                                   "Canvas_CrossFamily_SigExtracted_" + proxyName,
+                                   "Signal-extracted integrated <R> by hyperon selection (" +
+                                       proxyName + " proxy)",
+                                   xFamSigDir, "Integrated <R>", 0.5, true);
+            for (auto q : toDelete) delete q;
+        }
+    }
+
     cache.CloseAll(); // Release every input file before closing the output
 
     fOut->Close();
@@ -2917,7 +3355,11 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
 #ifndef __CINT__
 int main(int argc, char** argv) {
     if (argc < 2) { // Check is argc < 2 because this is the bare minimum. mcRefDir, ppRefDir, toyModelPath and cutFolder are all optionals
-        std::cerr << "Usage: " << argv[0] << " <consumerDir> [mcRefDir] [ppRefDir] [toyModelPath] [cutFolder] [doIndividualComparisons]\n";
+        std::cerr << "Usage: " << argv[0]
+                  << " <consumerDir> [mcRefDir] [ppRefDir] [toyModelPath] [cutFolder]"
+                     " [doIndividualComparisons] [sigExtractDir]\n"
+                     "  sigExtractDir defaults to <consumerDir>/../results_SigExtract;"
+                     " pass \"none\" to skip the signal-extraction plots.\n";
         return 1;
     }
     std::string consumerDir = argv[1];
@@ -2925,6 +3367,11 @@ int main(int argc, char** argv) {
     std::string ppRefDir = (argc > 3) ? argv[3] : "";
     std::string toyModelPath = (argc > 4) ? argv[4] : "";
     std::string cutFolder = (argc > 5) ? argv[5] : DEFAULT_CUT_FOLDER;
+    // signalExtractionRing writes next to the consumer output, so the default follows the pipeline
+    // layout (<workDir>/results_consumer and <workDir>/results_SigExtract) and can be overridden.
+    // Passing "none" disables the signal-extraction plots entirely.
+    std::string sigExtractDir = (argc > 7) ? argv[7] : (consumerDir + "/../results_SigExtract");
+    if (sigExtractDir == "none") sigExtractDir = "";
     // Accepts 1/0, true/false, yes/no. Anything else (including an absent argument) leaves it off.
     bool doIndividual = false;
     if (argc > 6) {
@@ -2932,7 +3379,8 @@ int main(int argc, char** argv) {
         doIndividual = (flag == "1" || flag == "true" || flag == "yes" || flag == "on");
     }
 
-    auxiliarySummaryPlots(consumerDir, mcRefDir, ppRefDir, toyModelPath, cutFolder, doIndividual);
+    auxiliarySummaryPlots(consumerDir, mcRefDir, ppRefDir, toyModelPath, cutFolder, doIndividual,
+                          sigExtractDir);
     return 0;
 }
 #endif

@@ -129,8 +129,8 @@ the registry: one folder per dataset, one subfolder per wagon configuration.
 | [`download_files_without_timeout.sh`](download_files_without_timeout.sh) | Called by orchestrator | Generic `alien_cp` downloader; skips already-present files |
 | [`merge_analysis_results.sh`](merge_analysis_results.sh) | Called by orchestrator | Runs `hadd` on staged `AnalysisResults_*.root`; deletes temp folder |
 | [`gen_input_paths.sh`](gen_input_paths.sh) | Called by orchestrator | Writes `input_data_storage.txt` with `file:` prefixed paths for O2 |
-| [`runDerivedDataConsumer_HY.sh`](runDerivedDataConsumer_HY.sh) | Yes | Runs the O2 consumer task; stages output into `results_consumer/` |
-| [`run_all_wagons.sh`](run_all_wagons.sh) | Optional | Runs consumer + ROOT macros for every wagon x config combination, then a per-wagon AO2D QA pass |
+| [`runDerivedDataConsumer_HY.sh`](runDerivedDataConsumer_HY.sh) | Yes | Runs the O2 consumer task; stages output into `results_consumer/`. Optionally pins the whole workflow to one NUMA node |
+| [`run_all_wagons.sh`](run_all_wagons.sh) | Optional | Runs consumer + ROOT macros for every wagon x config combination, three species lanes at a time, then a per-wagon AO2D QA pass |
 | [`convert_list_of_paths_XML_legacy.sh`](convert_list_of_paths_XML_legacy.sh) | Legacy | Extracts LFNs from MonALISA XML files (old XML-based workflow) |
 
 ---
@@ -505,8 +505,21 @@ AliEN grid LFNs.
 ### [`runDerivedDataConsumer_HY.sh`](runDerivedDataConsumer_HY.sh)
 
 ```bash
-./runDerivedDataConsumer_HY.sh <WORK_DIR> <consumer_config.json>
+./runDerivedDataConsumer_HY.sh <WORK_DIR> <consumer_config.json> [NUMA_NODE]
 ```
+
+The optional third argument is a NUMA node index. When given, the entire O2
+workflow -- the AOD reader and all `THREADS` pipeline devices -- is launched under
+`numactl --cpunodebind=<N> --membind=<N>`, so it stays on one socket. This matters:
+letting a single workflow straddle two sockets was measured at roughly a **5x
+slowdown** on this machine, essentially all of it inter-socket traffic. Omit the
+argument to run unbound. `run_all_wagons.sh` passes it automatically, one node per
+lane; you only need it by hand when calling this script directly.
+
+`membind` is used rather than `preferred` on purpose: `preferred` silently spills to
+the other socket once the node fills, which is precisely the remote-access penalty
+being avoided. Almost all of a "full" node here is reclaimable page cache from the
+AO2Ds, so `membind` reclaims instead of failing.
 
 Runs `o2-analysis-lf-lambdajetpolarizationionsderived` on all
 `AO2Ds/AO2D_*.root` files in batches to avoid overwhelming the DPL
@@ -519,11 +532,11 @@ Key tuning knobs at the top of the script:
 
 | Variable | Default | Description |
 |---|---|---|
-| `FILES_PER_BATCH` | 50 | AO2D files per batch; reduce if stalls persist |
-| `SHM_SIZE` | 128 GB | DPL shared memory segment |
-| `MEM_RATE_LIMIT` | 4 GB/s | AOD reader rate cap |
-| `THREADS` | 32 | Consumer pipeline threads |
-| `READERS` | 8 | Parallel AOD reader threads |
+| `FILES_PER_BATCH` | 30 | AO2D files per batch; reduce if stalls persist |
+| `SHM_SIZE` | 64 GB | DPL shared memory segment. A sparse reservation, not an allocation: actual `/dev/shm` use stays in the single-GB range per workflow, so several concurrent lanes fit comfortably |
+| `MEM_RATE_LIMIT` | 12 GB/s | AOD reader rate cap |
+| `THREADS` | 32 | Consumer pipeline devices (`--pipeline`). DPL forks one process per device, so a workflow occupies ~32 cores plus the reader. Keep `THREADS` x (lanes per socket) under the 84 physical cores of one node |
+| `READERS` | -- | Parallel AOD reader threads. Currently commented out: the reader is not the bottleneck |
 
 Each batch produces a `ConsumerResults_<SUFFIX>_<BATCH_ID>.root` file.
 After all batches finish, `hadd` merges them into the final output and
@@ -536,8 +549,11 @@ reported at the end; the merged file covers successful batches only.
 | `results_consumer/logs/batch_<ID>_<SUFFIX>.log` | Per-batch O2 stdout/stderr |
 | `results_consumer/used_configs/consumer-config_<SUFFIX>.json` | Config snapshot |
 
-O2 scratch files are written to `temp_consumer_stage/` inside `WORK_DIR`
-and cleaned up automatically on exit.
+O2 scratch files are written to `temp_consumer_stage_<SUFFIX>/` inside `WORK_DIR`
+and cleaned up automatically on exit. The staging area is keyed by config suffix
+rather than shared per wagon: several configs of the same wagon now run at the same
+time, and a shared path would have concurrent instances deleting each other's batch
+splits, merge lists and per-batch results.
 
 ---
 
@@ -553,6 +569,7 @@ and cleaned up automatically on exit.
 | `-p`, `--post-process-only` | Skip Step 1 and run only the ROOT macros on existing output |
 | `-s`, `--skip-sig-extract` | Skip Step 3 (signal extraction) |
 | `-f`, `--skip-forensics` | Skip Step 7 (AO2D forensics) |
+| `--cleanup` | Remove the compiled macro executables and exit immediately |
 
 The master script for full local chain execution. Reads `train_registry.conf` to enumerate all
 wagons, then for every `dpl-config-DerivedConsumer-*.json` found in
@@ -566,6 +583,76 @@ runs the following steps:
 5. `auxiliaryPerConfigPlots.cxx` (ROOT) -- Once per config. Outputs to `results_AuxPerConfig/AuxiliaryPerConfigPlots_<SUFFIX>.root`.
 6. `auxiliarySummaryPlots.cxx` (ROOT) -- (Run once per wagon, after all configs) Cross-config aggregation plotting for systematic comparisons, outputting a single `auxiliarySummaryPlots.root` to `results_consumer/`.
 7. `zvtxBitForensics.cxx` (ROOT) -- (Run once per wagon) Bit-level and integrity QA of the raw AO2Ds in `AO2Ds/`, outputting a single `zvtxBitForensics.root` to `results_consumer/`.
+
+#### Concurrency -- species lanes
+
+Steps 1 to 5 no longer run one config at a time. Configs are grouped into **lanes by
+species token**, and all lanes run at once:
+
+| Lane | Matches | Configs |
+| --- | --- | --- |
+| `BothHyperons` | `BothHyperons` and `BothHyperons_*` | 12 |
+| `JustLambda` | `JustLambda` and `JustLambda_*` | 12 |
+| `JustAntiLambda` | `JustAntiLambda` and `JustAntiLambda_*` | 12 |
+| `Unclassified` | anything matching no token | catch-all, normally empty |
+
+The species list lives in `LANE_SPECIES` at the top of the script. Matching is
+anchored on the exact token or the token followed by `_`, so `JustLambda` cannot
+swallow `JustAntiLambda`, and **new configs join their lane automatically** -- adding
+a variation needs no edit here. A config whose suffix matches no token still runs, in
+the catch-all lane, so nothing is silently dropped. The startup banner prints each
+lane's config count and NUMA node, which is the quickest way to confirm a new config
+landed where you expected.
+
+Within a lane, configs run in alphabetical order **except** that
+`_MixedEventProxies` is always placed last (`LANE_TAIL_PATTERN`). Event mixing costs
+roughly 60x a regular config, so with all lanes shaped identically, every lane
+finishes its fast configs at about the same time and all three enter their mixing job
+together. The alternative orderings are both worse: mixing first delays every quick
+result you actually want to look at, and mixing scattered mid-lane leaves two thirds
+of the machine idle while one long job tails out.
+
+Lanes are assigned to NUMA nodes round-robin, and a lane never straddles sockets. On
+a two-node machine the three lanes land on nodes 0, 1, 0 -- so 64 pipeline devices on
+node 0's 84 physical cores and 32 on node 1's.
+
+**Steps 6 and 7 are barriers.** Both aggregate across every config of a wagon, so the
+script `wait`s for all lanes to finish before running them. Running them per lane
+would mean three processes writing the same output file from an incomplete input set.
+
+Because three lanes share one terminal, progress is printed as one complete
+lane-tagged line per step:
+
+```
+  [JustAntiLambda] [3/7] sigExtract      : JustAntiLambda_5cmZvtx  -> OK
+  [BothHyperons] [1/7] consumer        : BothHyperons_excludeInPeak  -> OK
+```
+
+Lines from different lanes interleave freely; a single line never does.
+
+Each lane closes with a line reporting how many configs it actually ran:
+
+```
+  [BothHyperons] lane finished (12 configs).
+```
+
+That count is worth a glance -- it should match the banner. A lane finishing early
+with a smaller number means configs were skipped, not that they succeeded quickly.
+
+> **Note on stdin:** every child launched by a lane gets `< /dev/null`, and lane
+> lists are read into an array rather than streamed into a `while read` loop. O2/DPL
+> reads stdin for its control interface and a child inherits whatever the enclosing
+> loop is reading from, so a streaming loop has its own list eaten by the first
+> consumer it launches -- the lane then exits after one config having silently
+> skipped the rest, with every step still reporting OK. Keep the `< /dev/null` if you
+> add steps here.
+
+> **Note on adding lanes:** the ceiling is one socket's worth of cores, not the
+> config list. At `THREADS=32` a node fits two lanes comfortably (64 of 84 cores) and
+> three only by borrowing SMT siblings. Before adding a fourth lane, check whether
+> per-batch wall time is still flat -- if it rises, you have hit shared memory
+> bandwidth rather than a shortage of cores, and `ps -o pcpu` will not show it
+> (that column is a lifetime average, so use `pidstat` or `top -b -n1` instead).
 
 > **Note on Reference Overlay Data:**
 > Step 6 aggregates all successful configs for a given wagon at the very end, and optionally overlays Monte Carlo and Helicity Toy Model data. **The paths to the MC reference (`MC_REF_DIR`) and the Toy Model (`TOY_MODEL_PATH`) are hardcoded at the top of this bash script.** You must update them directly inside `run_all_wagons.sh` if your local storage layout changes.
@@ -618,6 +705,14 @@ by hand beforehand.
 
 All macros are compiled Ahead-of-Time (AoT) into native executables for performance and stability. All macro paths are derived from `REPO_DIR` at the top of the script -- the only variable to update if the repository moves.
 
+Compilation happens **once per run, in the parent, before any lane starts**, and the
+executables are **no longer deleted on exit**. They used to be, which meant two
+concurrent runs of this script would delete each other's binaries mid-flight. `g++`
+rebuilds unconditionally on every invocation -- it has no notion of an up-to-date
+target -- so a stale binary can never be picked up, and keeping them costs a few tens
+of MB. Use `--cleanup` when you want them gone. Add `*.exe` to `.gitignore` if it is
+not there already.
+
 The ROOT macro paths it uses:
 
 | Variable | Default |
@@ -641,6 +736,12 @@ Two summary tables are printed at the end of a run, and they mean different thin
 | --- | --- |
 | **FAILURES** | A step returned non-zero or crashed. Needs investigating; the log path is printed. |
 | **SKIPPED** | A step had nothing to work on. Not an error, and only printed when non-empty. |
+
+Both logs are collected in temporary files under a per-run `mktemp -d` folder rather
+than in bash arrays: lanes run as background subshells, and a subshell cannot append
+to its parent's arrays, so lane failures would otherwise be lost. Entries are single
+short lines appended with `>>`, which the kernel writes atomically, so concurrent
+lanes cannot interleave halfway through an entry. The printed tables are unchanged.
 
 The common source of skips is running with `-p` against a wagon whose consumer has never been run. That is detected **once per wagon**, before the config loop, rather than once per (config x step) -- which previously turned a single unprocessed wagon into a couple of dozen failure rows and buried the genuine failures underneath them. Step 6 likewise skips, rather than fails, when there is no consumer output to aggregate.
 

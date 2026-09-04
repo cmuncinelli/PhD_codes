@@ -39,6 +39,20 @@
 #   -s, --skip-sig-extract     Skip Step 3 (signal extraction) during execution.
 #   -f, --skip-forensics       Skip Step 7 (AO2D bit forensics). Useful when the
 #                              AO2Ds have already been checked or deleted.
+#       --cleanup              Remove the compiled macro executables and exit.
+#                              They are no longer deleted automatically: g++ always
+#                              rebuilds from source on every run, so a stale binary
+#                              can never be picked up, and keeping them costs a few
+#                              tens of MB.
+#
+# Concurrency:
+#   Steps 1-5 of a wagon are run by one lane per species (BothHyperons, JustLambda,
+#   JustAntiLambda), all lanes at once, each bound to a single NUMA node. Within a
+#   lane the MixedEventProxies config runs last: it costs roughly 60x a regular
+#   config, so every lane reaches its mixing job at about the same time and the
+#   machine stays occupied instead of tailing out on one long job. Steps 6 and 7
+#   aggregate across all configs of a wagon, so they run serially after the lanes
+#   have joined.
 #
 # Arguments:
 #   REGISTRY (optional):
@@ -124,12 +138,22 @@ FORENSICS_JOBS=24
 # Set by Step 7 so the EXIT trap can remove the batch folder after an interrupt.
 FORENSICS_TMP_DIR=""
 
+# Species tokens that define the lanes. A config joins a lane when its suffix is the
+# token itself or starts with "<token>_", so new configs are picked up with no edit
+# here. Anything matching no token still runs, in the catch-all lane below.
+LANE_SPECIES=("BothHyperons" "JustLambda" "JustAntiLambda")
+LANE_OTHER_TAG="Unclassified"
+
+# Config that goes last in every lane (see the concurrency note in the header).
+LANE_TAIL_PATTERN="_MixedEventProxies"
+
 # ==============================================================================
 # ARGUMENT PARSING
 # ==============================================================================
 POST_PROCESS_ONLY=0
 SKIP_SIG_EXTRACT=0
 SKIP_FORENSICS=0
+CLEANUP_ONLY=0
 REGISTRY_ARG=""
 CONFIGS_DIR_ARG=""
 
@@ -156,6 +180,10 @@ while [[ $# -gt 0 ]]; do
             SKIP_FORENSICS=1
             shift
             ;;
+        --cleanup)
+            CLEANUP_ONLY=1
+            shift
+            ;;
         -*)
             echo "Unknown option: $1. Use --help for usage." >&2
             exit 1
@@ -173,6 +201,24 @@ done
 REGISTRY="${1:-$DEFAULT_REGISTRY}"
 REGISTRY="${POSITIONAL_ARGS[0]:-$DEFAULT_REGISTRY}"
 CONSUMER_CONFIGS_DIR="${POSITIONAL_ARGS[1]:-$DEFAULT_CONFIGS_DIR}"
+
+# ==============================================================================
+# SHARED RUN STATE
+# ==============================================================================
+# Failure and skip logs used to be bash arrays. Lanes run as background subshells and
+# a subshell cannot write back into its parent's arrays, so both logs now live in
+# files that every lane appends to. Each entry is a single short line written with
+# ">>", which the kernel appends atomically, so concurrent lanes cannot interleave
+# halfway through a line.
+# Format is unchanged: "WAGON_SHORTNAME | CONFIG_SUFFIX | STAGE".
+RUN_TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/run_all_wagons.XXXXXX")
+FAILURES_FILE="${RUN_TMP_DIR}/failures.txt"
+SKIPPED_FILE="${RUN_TMP_DIR}/skipped.txt"
+: > "$FAILURES_FILE"
+: > "$SKIPPED_FILE"
+
+record_failure() { echo "$1" >> "$FAILURES_FILE"; }
+record_skip()    { echo "$1" >> "$SKIPPED_FILE"; }
 
 # ==============================================================================
 # SIGNAL HANDLING
@@ -210,8 +256,15 @@ print_report_table() {
 handle_interrupt() {
   echo ""
   echo "!!! INTERRUPT DETECTED (Ctrl+C) !!!"
+  # Ctrl+C reaches the whole foreground process group, so the lanes and their O2
+  # workflows are already shutting down. Waiting on them here is what lets FairMQ
+  # release its shared-memory segments -- without it, /dev/shm fills up fast.
+  echo "    Waiting for the lanes and the O2 framework to shut down gracefully..."
+  wait
   echo "    Stopping. Partial failure report:"
   echo ""
+  mapfile -t FAILURES < "$FAILURES_FILE"
+  mapfile -t SKIPPED  < "$SKIPPED_FILE"
   if [ ${#FAILURES[@]} -eq 0 ]; then
     echo "  No failures recorded before interrupt."
   else
@@ -228,16 +281,32 @@ handle_interrupt() {
 }
 
 cleanup() {
-  # Removing the compiled binaries after usage:
-  rm -f "$EXTRACT_DELTA_EXE" "$SIGNAL_EXTRACT_EXE" "$CUMUL_DCA_EXE" "$AUX_PERCONFIG_EXE" "$AUXILIARY_PLOTS_EXE" "$FORENSICS_EXE"
+  # The compiled binaries are deliberately NOT removed here. They used to be, which
+  # meant three concurrent instances would delete each other's executables mid-run.
+  # g++ rebuilds them unconditionally on every invocation, so a stale binary can
+  # never be picked up; use --cleanup when you actually want them gone.
   # Step 7's batch folder is temporary by design; remove it even on interrupt.
   if [ -n "$FORENSICS_TMP_DIR" ] && [ -d "$FORENSICS_TMP_DIR" ]; then
     rm -rf "$FORENSICS_TMP_DIR"
   fi
+  if [ -n "$RUN_TMP_DIR" ] && [ -d "$RUN_TMP_DIR" ]; then
+    rm -rf "$RUN_TMP_DIR"
+  fi
+}
+
+remove_executables() {
+  rm -f "$EXTRACT_DELTA_EXE" "$SIGNAL_EXTRACT_EXE" "$CUMUL_DCA_EXE" "$AUX_PERCONFIG_EXE" "$AUXILIARY_PLOTS_EXE" "$FORENSICS_EXE"
 }
 
 trap cleanup EXIT
 trap handle_interrupt INT TERM
+
+if [ $CLEANUP_ONLY -eq 1 ]; then
+  echo "Removing compiled macro executables..."
+  remove_executables
+  echo "Done."
+  exit 0
+fi
 
 # ==============================================================================
 # PRE-FLIGHT CHECKS
@@ -271,6 +340,54 @@ if [ ${#CONFIG_FILES[@]} -eq 0 ]; then
   echo "Error: no dpl-config-DerivedConsumer-*.json files found in: ${CONSUMER_CONFIGS_DIR}"
   exit 1
 fi
+
+# ==============================================================================
+# LANE CONSTRUCTION
+# ==============================================================================
+# One lane per species token, each lane a plain list of config paths on disk. A file
+# per lane rather than a bash array because bash has no arrays of arrays, and because
+# the lane subshells read it directly.
+LANE_TAGS=()
+for TAG in "${LANE_SPECIES[@]}" "$LANE_OTHER_TAG"; do
+  : > "${RUN_TMP_DIR}/lane_${TAG}.list"
+done
+
+for CONFIG_FILE in "${CONFIG_FILES[@]}"; do
+  CFG_BASENAME=$(basename "$CONFIG_FILE" .json)
+  CFG_SUFFIX="${CFG_BASENAME#dpl-config-DerivedConsumer-}"
+  MATCHED_TAG="$LANE_OTHER_TAG"
+  for TAG in "${LANE_SPECIES[@]}"; do
+    # Exact token, or token followed by "_": "JustLambda" must not swallow
+    # "JustAntiLambda", and it does not, but the anchoring is what guarantees it.
+    if [ "$CFG_SUFFIX" = "$TAG" ] || [ "${CFG_SUFFIX#${TAG}_}" != "$CFG_SUFFIX" ]; then
+      MATCHED_TAG="$TAG"
+      break
+    fi
+  done
+  echo "$CONFIG_FILE" >> "${RUN_TMP_DIR}/lane_${MATCHED_TAG}.list"
+done
+
+# Order within each lane: everything else first, the long mixing config last.
+# Empty lanes are dropped so the catch-all costs nothing when it matches nothing.
+for TAG in "${LANE_SPECIES[@]}" "$LANE_OTHER_TAG"; do
+  LANE_LIST="${RUN_TMP_DIR}/lane_${TAG}.list"
+  [ -s "$LANE_LIST" ] || continue
+  {
+    grep -v -- "$LANE_TAIL_PATTERN" "$LANE_LIST" | sort
+    grep    -- "$LANE_TAIL_PATTERN" "$LANE_LIST" | sort
+  } > "${LANE_LIST}.ordered"
+  mv "${LANE_LIST}.ordered" "$LANE_LIST"
+  LANE_TAGS+=("$TAG")
+done
+
+# NUMA nodes available, in order. Lanes are assigned round-robin over them, and a
+# lane never straddles two: the whole O2 workflow of a config stays on one socket.
+NUMA_NODES=()
+for NODE_PATH in /sys/devices/system/node/node[0-9]*; do
+  [ -d "$NODE_PATH" ] || continue
+  NODE_BASENAME=$(basename "$NODE_PATH")
+  NUMA_NODES+=("${NODE_BASENAME#node}")
+done
 
 # Collect wagon entries from registry (skip comments and blanks)
 WAGON_LINES=()
@@ -317,6 +434,16 @@ echo "========================================================"
 echo "  run_all_wagons.sh"
 echo "  Wagons       : ${#WAGON_LINES[@]}"
 echo "  Configs      : ${#CONFIG_FILES[@]}"
+echo "  NUMA nodes   : ${NUMA_NODES[*]:-none detected (running unbound)}"
+LANE_IDX=0
+for TAG in "${LANE_TAGS[@]}"; do
+  LANE_NODE_REPORT="unbound"
+  if [ ${#NUMA_NODES[@]} -gt 0 ]; then
+    LANE_NODE_REPORT="node ${NUMA_NODES[$(( LANE_IDX % ${#NUMA_NODES[@]} ))]}"
+  fi
+  printf "  Lane %-16s : %2d configs, %s\n" "$TAG" "$(wc -l < "${RUN_TMP_DIR}/lane_${TAG}.list")" "$LANE_NODE_REPORT"
+  LANE_IDX=$((LANE_IDX + 1))
+done
 echo "  Configs Dir  : ${CONSUMER_CONFIGS_DIR}"
 echo "  Toy Model    : ${TOY_MODEL_PATH:-None}"
 echo "  Aux always-on folder : ${AUX_ALWAYS_ON_FOLDER}"
@@ -326,17 +453,177 @@ echo "  Forensics    : $( [ $SKIP_FORENSICS -eq 1 ] && echo 'skipped' || echo "$
 echo "========================================================"
 echo ""
 
-# Failure log: each entry is "WAGON_SHORTNAME | CONFIG_SUFFIX | STAGE"
-FAILURES=()
-
-# Skip log, same format.
+# Failure and skip logs are the files set up in SHARED RUN STATE above, appended to
+# through record_failure() and record_skip().
+#
+# Skip log rationale, unchanged from when both were arrays:
 # This is deliberately NOT the failure log: it records steps that had nothing to work on -- e.g.,
 # a wagon whose consumer has not been run yet, encountered under --post-process-only.
 # Those used to be recorded as failures, which buried the real failures under a
 # table of entries that had simply not ran the consumer yet.
 ## In other words, this is a simple convenience to not clutter my CLI every single time I am
 ## running on a newly downloaded dataset!!!
-SKIPPED=()
+
+# ==============================================================================
+# PER-CONFIG WORK (Steps 1-5) AND LANE DRIVER
+# ==============================================================================
+# The body below used to be inlined in the wagon loop. It is a function now because
+# each lane runs it in a background subshell, one lane per species, all concurrently.
+#
+# Two consequences of running concurrently, both handled here:
+#   - Progress is printed as one complete line per step, never with "echo -n" plus a
+#     later "-> OK". Partial lines from three lanes would interleave into nonsense;
+#     a single short echo is written atomically.
+#   - Failures and skips go through record_failure/record_skip (files), because a
+#     subshell cannot append to the parent's arrays.
+#
+# Arguments: $1 DATASET_NAME  $2 WAGON_SHORTNAME  $3 WORK_DIR  $4 CONFIG_FILE
+#            $5 NUMA_NODE (may be empty)  $6 LANE_TAG
+run_config_steps() {
+  local DATASET_NAME="$1"
+  local WAGON_SHORTNAME="$2"
+  local WORK_DIR="$3"
+  local CONFIG_FILE="$4"
+  local NUMA_NODE="$5"
+  local LANE_TAG="$6"
+
+  # Derive the output suffix the consumer will use, e.g. "JustLambda"
+  local CONFIG_BASENAME CONS_SUFFIX CONSUMER_RESULT
+  CONFIG_BASENAME=$(basename "$CONFIG_FILE" .json)
+  CONS_SUFFIX="${CONFIG_BASENAME#dpl-config-DerivedConsumer-}"
+
+  CONSUMER_RESULT="${WORK_DIR}/results_consumer/ConsumerResults_${CONS_SUFFIX}.root"
+
+  # Tag every printed line with the lane, since three lanes share one terminal.
+  local PREFIX="  [${LANE_TAG}]"
+
+  # Defining folders for each post-processing step:
+  local SIGNAL_EXTRACT_DIR="${WORK_DIR}/results_SigExtract"
+  local DELTA_ERR_DIR="${WORK_DIR}/results_DeltaErr"
+  local CUMUL_DIR="${WORK_DIR}/results_CumulativePlots"
+  local AUX_PERCONFIG_DIR="${WORK_DIR}/results_AuxPerConfig"
+
+  # Logging Setup
+  # Each step's log lives under its own "results_*/logs/" folder
+  # Only the consumer's own wrapper/batch logs (and the wagon-level auxiliarySummaryPlots
+  # log, see Step 6 below) remain under results_consumer/logs/.
+  local LOG_DIR="${WORK_DIR}/results_consumer/logs"
+  local DELTA_LOG_DIR="${DELTA_ERR_DIR}/logs"
+  local SIG_LOG_DIR="${SIGNAL_EXTRACT_DIR}/logs"
+  local CUMUL_LOG_DIR="${CUMUL_DIR}/logs"
+  local AUX_PERCONFIG_LOG_DIR="${AUX_PERCONFIG_DIR}/logs"
+
+  mkdir -p "${LOG_DIR}"
+    # Creating smaller log folders to keep everything tidy (it was getting really messy!)
+  mkdir -p "${LOG_DIR}/wrappers/"
+  mkdir -p "${LOG_DIR}/batches/"
+  mkdir -p "${DELTA_LOG_DIR}"
+  mkdir -p "${SIG_LOG_DIR}"
+  mkdir -p "${CUMUL_LOG_DIR}"
+  mkdir -p "${AUX_PERCONFIG_LOG_DIR}"
+  local WRAPPER_LOG="${LOG_DIR}/wrappers/wrapper_${CONS_SUFFIX}.log"
+  local DELTA_LOG="${DELTA_LOG_DIR}/extractDeltaErr_${CONS_SUFFIX}.log"
+  local SIG_LOG="${SIG_LOG_DIR}/sigExtract_${CONS_SUFFIX}.log"
+  local CUMUL_LOG="${CUMUL_LOG_DIR}/cumulDCA_${CONS_SUFFIX}.log"
+  local AUX_PERCONFIG_LOG="${AUX_PERCONFIG_LOG_DIR}/auxPerConfig_${CONS_SUFFIX}.log"
+
+  # ------------------------------------------------------------------
+  # Step 1: consumer
+  # ------------------------------------------------------------------
+  local CONSUMER_EXIT
+  if [ $POST_PROCESS_ONLY -eq 0 ]; then
+    # NUMA binding is the launcher's job now: it has to wrap the O2 command itself so
+    # that the reader and all THREADS pipeline devices land on the same socket.
+    "$CONSUMER_SCRIPT" "$WORK_DIR" "$CONFIG_FILE" "$NUMA_NODE" > "$WRAPPER_LOG" 2>&1 < /dev/null
+    CONSUMER_EXIT=$?
+
+    if [ $CONSUMER_EXIT -ne 0 ] || [ ! -f "$CONSUMER_RESULT" ]; then
+      echo "${PREFIX} [1/7] consumer        : ${CONS_SUFFIX}  -> FAILED  (log: ${WRAPPER_LOG})"
+      record_failure "${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | consumer"
+      return 0
+    fi
+    echo "${PREFIX} [1/7] consumer        : ${CONS_SUFFIX}  -> OK"
+  else
+    # Post-process only mode: verify file exists beforehand:
+      # A config the consumer was never run for is not a failure -- we interpret that as just asking
+      # to post-process whatever already exists, and this config simply is not part of it.
+      # Recorded as a "skip" so it is still visible at the logs without competing with real failures for our attention.
+      # Just a convenience workaround, in other words.
+    if [ ! -f "$CONSUMER_RESULT" ]; then
+      echo "${PREFIX} [1/7] consumer        : ${CONS_SUFFIX} (SKIPPED)  -> SKIPPED (no ConsumerResults file for this config)"
+      record_skip "${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | missing_consumer_result"
+      return 0
+    fi
+    echo "${PREFIX} [1/7] consumer        : ${CONS_SUFFIX} (SKIPPED)  -> OK (Found file)"
+  fi
+
+  # ------------------------------------------------------------------
+  # Step 2: extractDeltaErrors
+  # ------------------------------------------------------------------
+  if "$EXTRACT_DELTA_EXE" "${CONSUMER_RESULT}" "${DELTA_ERR_DIR}/" > "$DELTA_LOG" 2>&1 < /dev/null; then
+    echo "${PREFIX} [2/7] extractDeltaErr : ${CONS_SUFFIX}  -> OK"
+  else
+    echo "${PREFIX} [2/7] extractDeltaErr : ${CONS_SUFFIX}  -> FAILED  (log: ${DELTA_LOG})"
+    record_failure "${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | extractDeltaErrors"
+  fi
+
+  # ------------------------------------------------------------------
+  # Step 3: signalExtractionRing
+  # ------------------------------------------------------------------
+  if [ $SKIP_SIG_EXTRACT -eq 0 ]; then
+    if "$SIGNAL_EXTRACT_EXE" "${CONSUMER_RESULT}" "${SIGNAL_EXTRACT_DIR}/" > "$SIG_LOG" 2>&1 < /dev/null; then
+      echo "${PREFIX} [3/7] sigExtract      : ${CONS_SUFFIX}  -> OK"
+    else
+      echo "${PREFIX} [3/7] sigExtract      : ${CONS_SUFFIX}  -> FAILED  (log: ${SIG_LOG})"
+      record_failure "${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | signalExtractionRing"
+    fi
+  else
+    echo "${PREFIX} [3/7] sigExtract      : ${CONS_SUFFIX} (SKIPPED)"
+  fi
+
+  # ------------------------------------------------------------------
+  # Step 4: makeCumulativeDCAdauProfile
+  # ------------------------------------------------------------------
+  if "$CUMUL_DCA_EXE" "${CONSUMER_RESULT}" "${CUMUL_DIR}/" > "$CUMUL_LOG" 2>&1 < /dev/null; then
+    echo "${PREFIX} [4/7] cumulDCA        : ${CONS_SUFFIX}  -> OK"
+  else
+    echo "${PREFIX} [4/7] cumulDCA        : ${CONS_SUFFIX}  -> FAILED  (log: ${CUMUL_LOG})"
+    record_failure "${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | makeCumulDCA"
+  fi
+
+  # ------------------------------------------------------------------
+  # Step 5: auxiliaryPerConfigPlots
+  # ------------------------------------------------------------------
+  if "$AUX_PERCONFIG_EXE" "${CONSUMER_RESULT}" "${AUX_PERCONFIG_DIR}/" > "$AUX_PERCONFIG_LOG" 2>&1 < /dev/null; then
+    echo "${PREFIX} [5/7] auxPerConfig    : ${CONS_SUFFIX}  -> OK"
+  else
+    echo "${PREFIX} [5/7] auxPerConfig    : ${CONS_SUFFIX}  -> FAILED  (log: ${AUX_PERCONFIG_LOG})"
+    record_failure "${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | auxPerConfigPlots"
+  fi
+}
+
+# Runs every config of one lane, in the order the lane list already fixes.
+# Arguments: $1 DATASET_NAME  $2 WAGON_SHORTNAME  $3 WORK_DIR  $4 LANE_TAG  $5 NUMA_NODE
+#
+# The lane list is read into an array up front rather than streamed into a
+# "while read ... done < list" loop, and every child below is given its own stdin.
+# Both are deliberate: O2/DPL reads stdin for its control interface, and a child
+# inherits whatever the enclosing loop is reading from. A streaming loop therefore has
+# its own input file eaten by the first consumer it launches -- "read" then hits EOF
+# and the lane exits after a single config, having silently skipped the rest. The
+# </dev/null on each exe closes the same hole for every other child, and stops three
+# concurrent lanes from fighting over the terminal.
+run_lane() {
+  local DATASET_NAME="$1" WAGON_SHORTNAME="$2" WORK_DIR="$3" LANE_TAG="$4" NUMA_NODE="$5"
+  local LANE_CONFIGS=()
+  mapfile -t LANE_CONFIGS < "${RUN_TMP_DIR}/lane_${LANE_TAG}.list"
+  local CONFIG_FILE
+  for CONFIG_FILE in "${LANE_CONFIGS[@]}"; do
+    [ -n "$CONFIG_FILE" ] || continue
+    run_config_steps "$DATASET_NAME" "$WAGON_SHORTNAME" "$WORK_DIR" "$CONFIG_FILE" "$NUMA_NODE" "$LANE_TAG"
+  done
+  echo "  [${LANE_TAG}] lane finished (${#LANE_CONFIGS[@]} configs)."
+}
 
 # ==============================================================================
 # MAIN LOOP
@@ -369,146 +656,33 @@ for LINE in "${WAGON_LINES[@]}"; do
   if [ $POST_PROCESS_ONLY -eq 1 ] && [ ${#EXISTING_RESULTS[@]} -eq 0 ]; then
     echo "  [1-6/7] SKIPPED: no ConsumerResults_*.root found (wagon not processed yet)"
     echo ""
-    SKIPPED+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ALL_CONFIGS | not processed yet")
+    record_skip "${DATASET_NAME}/${WAGON_SHORTNAME} | ALL_CONFIGS | not processed yet"
     ACTIVE_CONFIGS=()
   fi
 
-  for CONFIG_FILE in "${ACTIVE_CONFIGS[@]}"; do
-
-    # Derive the output suffix the consumer will use, e.g. "JustLambda"
-    CONFIG_BASENAME=$(basename "$CONFIG_FILE" .json)
-    CONS_SUFFIX="${CONFIG_BASENAME#dpl-config-DerivedConsumer-}"
-
-    CONSUMER_RESULT="${WORK_DIR}/results_consumer/ConsumerResults_${CONS_SUFFIX}.root"
-
-    # Defining folders for each post-processing step:
-    SIGNAL_EXTRACT_DIR="${WORK_DIR}/results_SigExtract"
-    DELTA_ERR_DIR="${WORK_DIR}/results_DeltaErr"
-    CUMUL_DIR="${WORK_DIR}/results_CumulativePlots"
-    AUX_PERCONFIG_DIR="${WORK_DIR}/results_AuxPerConfig"
-
-    # Logging Setup
-    # Each step's log lives under its own "results_*/logs/" folder
-    # Only the consumer's own wrapper/batch logs (and the wagon-level auxiliarySummaryPlots
-    # log, see Step 6 below) remain under results_consumer/logs/.
-    LOG_DIR="${WORK_DIR}/results_consumer/logs"
-    DELTA_LOG_DIR="${DELTA_ERR_DIR}/logs"
-    SIG_LOG_DIR="${SIGNAL_EXTRACT_DIR}/logs"
-    CUMUL_LOG_DIR="${CUMUL_DIR}/logs"
-    AUX_PERCONFIG_LOG_DIR="${AUX_PERCONFIG_DIR}/logs"
-
-    mkdir -p "${LOG_DIR}"
-      # Creating smaller log folders to keep everything tidy (it was getting really messy!)
-    mkdir -p "${LOG_DIR}/wrappers/"
-    mkdir -p "${LOG_DIR}/batches/"
-    mkdir -p "${DELTA_LOG_DIR}"
-    mkdir -p "${SIG_LOG_DIR}"
-    mkdir -p "${CUMUL_LOG_DIR}"
-    mkdir -p "${AUX_PERCONFIG_LOG_DIR}"
-    WRAPPER_LOG="${LOG_DIR}/wrappers/wrapper_${CONS_SUFFIX}.log"
-    DELTA_LOG="${DELTA_LOG_DIR}/extractDeltaErr_${CONS_SUFFIX}.log"
-    SIG_LOG="${SIG_LOG_DIR}/sigExtract_${CONS_SUFFIX}.log"
-    CUMUL_LOG="${CUMUL_LOG_DIR}/cumulDCA_${CONS_SUFFIX}.log"
-    AUX_PERCONFIG_LOG="${AUX_PERCONFIG_LOG_DIR}/auxPerConfig_${CONS_SUFFIX}.log"
-
-    # ------------------------------------------------------------------
-    # Step 1: consumer
-    # ------------------------------------------------------------------
-    if [ $POST_PROCESS_ONLY -eq 0 ]; then
-      echo -n "  [1/7] consumer        : ${CONS_SUFFIX}"
-      # Consumer output goes to a per-config log file so failures are inspectable.
-      if [ -d /sys/devices/system/node/node1 ]; then
-        # Binding consumer to the NUMA node1 (just convenience: producers are running in node 0 on jarvis15 right now)
-          numactl --cpunodebind=1 --preferred=1  "$CONSUMER_SCRIPT" "$WORK_DIR" "$CONFIG_FILE" > "$WRAPPER_LOG" 2>&1
-      else # If does not have more than one node, just revert to usual behavior!
-          "$CONSUMER_SCRIPT" "$WORK_DIR" "$CONFIG_FILE" > "$WRAPPER_LOG" 2>&1
+  # ------------------------------------------------------------------
+  # Steps 1-5: one lane per species, all lanes concurrent
+  # ------------------------------------------------------------------
+  # Lanes are joined before Steps 6 and 7 because both aggregate across every config
+  # of the wagon: running them while lanes are still producing would read an
+  # incomplete set, and running one copy per lane would have three processes writing
+  # the same output file.
+  if [ ${#ACTIVE_CONFIGS[@]} -gt 0 ]; then
+    LANE_PIDS=()
+    LANE_IDX=0
+    for TAG in "${LANE_TAGS[@]}"; do
+      LANE_NODE=""
+      if [ ${#NUMA_NODES[@]} -gt 0 ]; then
+        LANE_NODE="${NUMA_NODES[$(( LANE_IDX % ${#NUMA_NODES[@]} ))]}"
       fi
-      CONSUMER_EXIT=$?
-
-      if [ $CONSUMER_EXIT -ne 0 ] || [ ! -f "$CONSUMER_RESULT" ]; then
-        echo "  -> FAILED  (log: ${WRAPPER_LOG})"
-        FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | consumer")
-        continue
-      fi
-      echo "  -> OK"
-    else
-      # Post-process only mode: verify file exists beforehand:
-        # A config the consumer was never run for is not a failure -- we interpret that as just asking
-        # to post-process whatever already exists, and this config simply is not part of it.
-        # Recorded as a "skip" so it is still visible at the logs without competing with real failures for our attention.
-        # Just a convenience workaround, in other words.
-      echo -n "  [1/7] consumer        : ${CONS_SUFFIX} (SKIPPED)"
-      if [ ! -f "$CONSUMER_RESULT" ]; then
-        echo "  -> SKIPPED (no ConsumerResults file for this config)"
-        SKIPPED+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | missing_consumer_result")
-        continue
-      fi
-      echo "  -> OK (Found file)"
-    fi
-
-    # ------------------------------------------------------------------
-    # Step 2: extractDeltaErrors
-    # ------------------------------------------------------------------
-    echo -n "  [2/7] extractDeltaErr : ${CONS_SUFFIX}"
-    "$EXTRACT_DELTA_EXE" "${CONSUMER_RESULT}" "${DELTA_ERR_DIR}/" > "$DELTA_LOG" 2>&1
-    DELTA_EXIT=$?
-
-    if [ $DELTA_EXIT -ne 0 ]; then
-      echo "  -> FAILED  (log: ${DELTA_LOG})"
-      FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | extractDeltaErrors")
-    else
-      echo "  -> OK"
-    fi
-
-    # ------------------------------------------------------------------
-    # Step 3: signalExtractionRing
-    # ------------------------------------------------------------------
-    if [ $SKIP_SIG_EXTRACT -eq 0 ]; then
-      echo -n "  [3/7] sigExtract      : ${CONS_SUFFIX}"
-      "$SIGNAL_EXTRACT_EXE" "${CONSUMER_RESULT}" "${SIGNAL_EXTRACT_DIR}/" > "$SIG_LOG" 2>&1
-      SIG_EXIT=$?
-
-      if [ $SIG_EXIT -ne 0 ]; then
-        echo "  -> FAILED  (log: ${SIG_LOG})"
-        FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | signalExtractionRing")
-      else
-        echo "  -> OK"
-      fi
-    else
-      echo "  [3/7] sigExtract      : ${CONS_SUFFIX} (SKIPPED)"
-    fi
-
-    # ------------------------------------------------------------------
-    # Step 4: makeCumulativeDCAdauProfile
-    # ------------------------------------------------------------------
-    echo -n "  [4/7] cumulDCA        : ${CONS_SUFFIX}"
-    "$CUMUL_DCA_EXE" "${CONSUMER_RESULT}" "${CUMUL_DIR}/" > "$CUMUL_LOG" 2>&1
-    CUMUL_EXIT=$?
-
-    if [ $CUMUL_EXIT -ne 0 ]; then
-      echo "  -> FAILED  (log: ${CUMUL_LOG})"
-      FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | makeCumulDCA")
-    else
-      echo "  -> OK"
-    fi
-
-    # ------------------------------------------------------------------
-    # Step 5: auxiliaryPerConfigPlots
-    # ------------------------------------------------------------------
-    echo -n "  [5/7] auxPerConfig    : ${CONS_SUFFIX}"
-    "$AUX_PERCONFIG_EXE" "${CONSUMER_RESULT}" "${AUX_PERCONFIG_DIR}/" > "$AUX_PERCONFIG_LOG" 2>&1
-    AUX_PERCONFIG_EXIT=$?
-
-    if [ $AUX_PERCONFIG_EXIT -ne 0 ]; then
-      echo "  -> FAILED  (log: ${AUX_PERCONFIG_LOG})"
-      FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ${CONS_SUFFIX} | auxPerConfigPlots")
-    else
-      echo "  -> OK"
-    fi
-
+      run_lane "$DATASET_NAME" "$WAGON_SHORTNAME" "$WORK_DIR" "$TAG" "$LANE_NODE" &
+      LANE_PIDS+=($!)
+      LANE_IDX=$((LANE_IDX + 1))
+    done
+    wait "${LANE_PIDS[@]}"
     echo ""
+  fi
 
-  done  # configs
 
   # ------------------------------------------------------------------
   # Step 6: auxiliarySummaryPlots (Cross-configuration aggregation)
@@ -526,15 +700,15 @@ for LINE in "${WAGON_LINES[@]}"; do
   if [ ${#SUMMARY_INPUTS[@]} -eq 0 ]; then
     # Nothing to aggregate across. Not a failure: there is simply no input.
     echo "  -> SKIPPED (no ConsumerResults files to aggregate)"
-    SKIPPED+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ALL_CONFIGS | auxiliarySummaryPlots")
+    record_skip "${DATASET_NAME}/${WAGON_SHORTNAME} | ALL_CONFIGS | auxiliarySummaryPlots"
   else
     # Forwarding the consumer results directory, the MC reference, and now the Toy Model path:
-    "$AUXILIARY_PLOTS_EXE" "${WORK_DIR}/results_consumer" "${MC_REF_DIR}" "${PP_REF_DIR}" "${TOY_MODEL_PATH}" "${AUX_ALWAYS_ON_FOLDER}" "${AUX_DO_INDIVIDUAL_COMPARISONS}" > "$AUX_LOG" 2>&1
+    "$AUXILIARY_PLOTS_EXE" "${WORK_DIR}/results_consumer" "${MC_REF_DIR}" "${PP_REF_DIR}" "${TOY_MODEL_PATH}" "${AUX_ALWAYS_ON_FOLDER}" "${AUX_DO_INDIVIDUAL_COMPARISONS}" > "$AUX_LOG" 2>&1 < /dev/null
     AUX_EXIT=$?
 
     if [ $AUX_EXIT -ne 0 ]; then
       echo "  -> FAILED  (log: ${AUX_LOG})"
-      FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ALL_CONFIGS | auxiliarySummaryPlots")
+      record_failure "${DATASET_NAME}/${WAGON_SHORTNAME} | ALL_CONFIGS | auxiliarySummaryPlots"
     else
       echo "  -> OK"
     fi
@@ -663,7 +837,7 @@ for LINE in "${WAGON_LINES[@]}"; do
 
       if [ $FORENSICS_EXIT -ne 0 ]; then
         echo "  -> FAILED  (log: ${FORENSICS_LOG})"
-        FAILURES+=("${DATASET_NAME}/${WAGON_SHORTNAME} | ALL_CONFIGS | zvtxBitForensics")
+        record_failure "${DATASET_NAME}/${WAGON_SHORTNAME} | ALL_CONFIGS | zvtxBitForensics"
       else
         echo "  -> OK"
       fi
@@ -678,6 +852,8 @@ done  # wagons
 # FAILURE SUMMARY TABLE
 # ==============================================================================
 echo "========================================================"
+mapfile -t FAILURES < "$FAILURES_FILE"
+mapfile -t SKIPPED  < "$SKIPPED_FILE"
 if [ ${#FAILURES[@]} -eq 0 ]; then
   echo "  All steps completed successfully."
 else
