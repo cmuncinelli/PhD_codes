@@ -1,0 +1,3 @@
+A simple collection of tools that may come in hand before creating a PR (see (PRs/)[PRs/]) or for shared memory cleanup if O2Physics is being stubborn with memory management (that shouldn't be the case in newer versions of the framework, nor of my own bash scripts that call it and now wait for graceful exits after Ctrl+C is issued).
+
+Just a collection of convenient tools when using O2Physics in your own machine.

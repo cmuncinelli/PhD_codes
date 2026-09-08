@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+exec > >(tee -i /home/users/cicerodm/RingPol/logBashCoordinator.log) 2>&1 # You can go ahead and edit this. I am making it my default.
+echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
+
 ###############################################################################
 # Script name:
 #   run_all_wagons.sh
@@ -156,6 +159,7 @@ SKIP_FORENSICS=0
 CLEANUP_ONLY=0
 REGISTRY_ARG=""
 CONFIGS_DIR_ARG=""
+STAT_FRACTION=1.0
 
 print_help() {
     awk '/^# Usage:/,/^#+$/' "$0" | head -n -1 | sed 's/^#//'
@@ -183,6 +187,10 @@ while [[ $# -gt 0 ]]; do
         --cleanup)
             CLEANUP_ONLY=1
             shift
+            ;;
+        --fraction|-frac)
+            STAT_FRACTION="$2"
+            shift 2
             ;;
         -*)
             echo "Unknown option: $1. Use --help for usage." >&2
@@ -216,6 +224,10 @@ FAILURES_FILE="${RUN_TMP_DIR}/failures.txt"
 SKIPPED_FILE="${RUN_TMP_DIR}/skipped.txt"
 : > "$FAILURES_FILE"
 : > "$SKIPPED_FILE"
+
+# Global tracking of PIDs to prevent bare 'wait' deadlocks with background logging like 'tee'
+LANE_PIDS=()
+FORENSICS_PIDS=()
 
 record_failure() { echo "$1" >> "$FAILURES_FILE"; }
 record_skip()    { echo "$1" >> "$SKIPPED_FILE"; }
@@ -260,7 +272,14 @@ handle_interrupt() {
   # workflows are already shutting down. Waiting on them here is what lets FairMQ
   # release its shared-memory segments -- without it, /dev/shm fills up fast.
   echo "    Waiting for the lanes and the O2 framework to shut down gracefully..."
-  wait
+  
+  if [ ${#LANE_PIDS[@]} -gt 0 ]; then
+    wait "${LANE_PIDS[@]}" 2>/dev/null
+  fi
+  if [ ${#FORENSICS_PIDS[@]} -gt 0 ]; then
+    wait "${FORENSICS_PIDS[@]}" 2>/dev/null
+  fi
+  
   echo "    Stopping. Partial failure report:"
   echo ""
   mapfile -t FAILURES < "$FAILURES_FILE"
@@ -486,6 +505,7 @@ run_config_steps() {
   local CONFIG_FILE="$4"
   local NUMA_NODE="$5"
   local LANE_TAG="$6"
+  local STAT_FRACTION="$7"
 
   # Derive the output suffix the consumer will use, e.g. "JustLambda"
   local CONFIG_BASENAME CONS_SUFFIX CONSUMER_RESULT
@@ -534,7 +554,7 @@ run_config_steps() {
   if [ $POST_PROCESS_ONLY -eq 0 ]; then
     # NUMA binding is the launcher's job now: it has to wrap the O2 command itself so
     # that the reader and all THREADS pipeline devices land on the same socket.
-    "$CONSUMER_SCRIPT" "$WORK_DIR" "$CONFIG_FILE" "$NUMA_NODE" > "$WRAPPER_LOG" 2>&1 < /dev/null
+    "$CONSUMER_SCRIPT" "$WORK_DIR" "$CONFIG_FILE" "$NUMA_NODE" "$STAT_FRACTION" > "$WRAPPER_LOG" 2>&1 < /dev/null
     CONSUMER_EXIT=$?
 
     if [ $CONSUMER_EXIT -ne 0 ] || [ ! -f "$CONSUMER_RESULT" ]; then
@@ -614,13 +634,13 @@ run_config_steps() {
 # </dev/null on each exe closes the same hole for every other child, and stops three
 # concurrent lanes from fighting over the terminal.
 run_lane() {
-  local DATASET_NAME="$1" WAGON_SHORTNAME="$2" WORK_DIR="$3" LANE_TAG="$4" NUMA_NODE="$5"
+  local DATASET_NAME="$1" WAGON_SHORTNAME="$2" WORK_DIR="$3" LANE_TAG="$4" NUMA_NODE="$5" STAT_FRACTION="$6"
   local LANE_CONFIGS=()
   mapfile -t LANE_CONFIGS < "${RUN_TMP_DIR}/lane_${LANE_TAG}.list"
   local CONFIG_FILE
   for CONFIG_FILE in "${LANE_CONFIGS[@]}"; do
     [ -n "$CONFIG_FILE" ] || continue
-    run_config_steps "$DATASET_NAME" "$WAGON_SHORTNAME" "$WORK_DIR" "$CONFIG_FILE" "$NUMA_NODE" "$LANE_TAG"
+    run_config_steps "$DATASET_NAME" "$WAGON_SHORTNAME" "$WORK_DIR" "$CONFIG_FILE" "$NUMA_NODE" "$LANE_TAG" "$STAT_FRACTION"
   done
   echo "  [${LANE_TAG}] lane finished (${#LANE_CONFIGS[@]} configs)."
 }
@@ -675,7 +695,7 @@ for LINE in "${WAGON_LINES[@]}"; do
       if [ ${#NUMA_NODES[@]} -gt 0 ]; then
         LANE_NODE="${NUMA_NODES[$(( LANE_IDX % ${#NUMA_NODES[@]} ))]}"
       fi
-      run_lane "$DATASET_NAME" "$WAGON_SHORTNAME" "$WORK_DIR" "$TAG" "$LANE_NODE" &
+      run_lane "$DATASET_NAME" "$WAGON_SHORTNAME" "$WORK_DIR" "$TAG" "$LANE_NODE" "$STAT_FRACTION" &
       LANE_PIDS+=($!)
       LANE_IDX=$((LANE_IDX + 1))
     done
@@ -795,6 +815,7 @@ for LINE in "${WAGON_LINES[@]}"; do
         # The tag comes from the manifest name, not a counter: the glob expands
         # lexically (batch_0, batch_1, batch_10, batch_2, ...), so a counter would
         # pair each log with the wrong manifest.
+        FORENSICS_PIDS=()
         for BATCH_MANIFEST in "${FORENSICS_TMP_DIR}"/batch_*.txt; do
           BATCH_TAG=$(basename "$BATCH_MANIFEST" .txt)
           "$FORENSICS_EXE" "$BATCH_MANIFEST" "${FORENSICS_TMP_DIR}/zvtxForensics_${BATCH_TAG}.root" \

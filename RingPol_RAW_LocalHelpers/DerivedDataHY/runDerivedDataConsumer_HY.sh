@@ -46,11 +46,11 @@
 # ==============================================================================
 # TUNING KNOBS
 # ==============================================================================
-FILES_PER_BATCH=30          # Number of AO2D files per batch. Reduce if DPL
-                            # still reports scheduling stalls on this machine.
-SHM_SIZE="64000000000"      # Shared memory: 64 GB
+FILES_PER_BATCH=30           # Number of AO2D files per batch. Reduce if DPL
+                             # still reports scheduling stalls on this machine.
+SHM_SIZE="64000000000"       # Shared memory: 64 GB
 MEM_RATE_LIMIT="12000000000" # AOD memory rate limit: 12 GB/s
-THREADS=32                  # Pipeline threads for the consumer task
+THREADS=24                   # Pipeline threads for the consumer task
 # READERS=5                   # Parallel AOD reader threads
 
 # ==============================================================================
@@ -59,6 +59,16 @@ THREADS=32                  # Pipeline threads for the consumer task
 WORK_DIR="$1"
 JSON_CONSUMER_CONFIG="$2"
 NUMA_NODE="$3" # Optional. Empty means "do not bind".
+STAT_FRACTION="${4:-1.0}" # Optional. Defaults to 1.0 (100% of files)
+
+# Safety check: If $3 is a float/fraction and $4 is empty, the user omitted the NUMA node
+if [[ "$NUMA_NODE" =~ ^[0-9]*\.[0-9]+$ ]] || [[ "$NUMA_NODE" =~ ^[0-9]+$ && -z "$STAT_FRACTION" ]]; then
+  STAT_FRACTION="$NUMA_NODE"
+  NUMA_NODE=""
+fi
+
+# Apply default if still empty:
+STAT_FRACTION="${STAT_FRACTION:-1.0}"
 
 if [ -z "$WORK_DIR" ] || [ -z "$JSON_CONSUMER_CONFIG" ]; then
   echo "Usage: $0 <WORK_DIR> <consumer_config.json>"
@@ -179,6 +189,19 @@ if [ "$TOTAL_FILES" -eq 0 ]; then
   exit 1
 fi
 
+if [ "$STAT_FRACTION" != "1.0" ] && [ "$STAT_FRACTION" != "1" ]; then
+  # Calculate subset. If the fraction yields < 1 but we have files, force it to 1.
+  # Force LC_NUMERIC=C so awk doesn't fail on locales expecting a comma (e.g. pt_BR, but it should never be the case...)
+  FILES_TO_KEEP=$(LC_NUMERIC=C awk -v t="$TOTAL_FILES" -v f="$STAT_FRACTION" '
+    BEGIN { val = int(t * f); if (val < 1 && t > 0) val = 1; print val }
+  ')
+  
+  head -n "$FILES_TO_KEEP" "$FULL_LIST" > "${FULL_LIST}.tmp"
+  mv "${FULL_LIST}.tmp" "$FULL_LIST"
+  
+  TOTAL_FILES=$(wc -l < "$FULL_LIST")
+fi
+
 # Split into batch files: batch_00, batch_01, ...
 # Each batch file contains at most FILES_PER_BATCH paths (no "file:" prefix
 # yet; that is added per-batch when building the O2 input list below).
@@ -190,7 +213,7 @@ echo "========================================================"
 echo "  HY Derived Data Consumer (batched)"
 echo "  WORK_DIR         : ${WORK_DIR}"
 echo "  Consumer suffix  : ${CONS_SUFFIX}"
-echo "  Total AOD files  : ${TOTAL_FILES}"
+echo "  Total AOD files  : ${TOTAL_FILES} (Fraction used: ${STAT_FRACTION})"
 echo "  Files per batch  : ${FILES_PER_BATCH}"
 echo "  NUMA binding     : ${NUMA_NODE:-none (unbound)}"
 echo "  Number of batches: ${NUM_BATCHES}"

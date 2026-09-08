@@ -126,7 +126,8 @@ constexpr int kNHypothesisCuts = 11; // Cuts per mass hypothesis, in one contigu
 // ended up needing the same fix in three separate places. The three pieces that are genuinely
 // identical now live here exactly once:
 //   FitMassPeak()             -- locate the peak (mu, sigma) with a gaus + pol2 fit
-//   BuildSidebandGraph()      -- collect the sideband points outside the exclusion zone
+//   BuildSidebandGraph()      -- collect the counts-density sideband points
+//   BuildRingSidebandGraph()  -- collect the <R>(m) sideband points
 //   ComputePeakWindowYields() -- count, subtract the background, and propagate every uncertainty
 //
 // What is NOT unified is the orchestration around them. The four workflows really do differ in
@@ -134,7 +135,7 @@ constexpr int kNHypothesisCuts = 11; // Cuts per mass hypothesis, in one contigu
 // switches that hide the differences rather than document them. Each caller therefore keeps a
 // thin, readable sequence of calls into the helpers above.
 //
-// THE NUMERATOR IS OPTIONAL. Pass hNumSum = nullptr (and bkgNumFit = nullptr) to run in
+// THE NUMERATOR IS OPTIONAL. Pass hNumSum = nullptr (and ringBkgFit = nullptr) to run in
 // "denominator only" mode: the mass spectrum is fitted, the background is subtracted, and the
 // yields, purity and significance come out exactly as usual -- only the ring-observable quantities
 // (R_peak, R_B, R_S) are left untouched, with hasNumerator = false to say so. That is what lets
@@ -202,11 +203,17 @@ struct SidebandConfig {
     // spectrum with real curvature, while the NUMERATOR is Sum_R against mass, whose background is
     // close to featureless. A pol2 there fits noise and then extrapolates it under the peak, which
     // is the worst place for a spurious quadratic to land.
-    int bkgPolOrder;    // Counts sideband
-    int bkgNumPolOrder; // Numerator (Sum_R) sideband
+    int bkgPolOrder;     // Counts sideband, fitted as a density in (m - muInitGuess)
+    int ringBkgPolOrder; // <R>_bkg(m) in the sidebands. NOT a density: <R> is intensive.
 
     // --- Sideband collection ----------------------------------------------------------------
     bool requirePositiveSidebandBins; // Skip empty / zero-error bins when building the graph
+};
+
+/// @brief How ExtractObservable2D reduces its angular bins to one integrated number.
+enum class IntegralMode {
+    ProjectThenExtract, // Project the 2D inputs onto mass, extract once. Legacy path.
+    CombinePerBin       // Skip the projection entirely; combine the per-bin extractions instead.
 };
 
 // ------------------------------------------------------------------------------------------------
@@ -222,7 +229,7 @@ SidebandConfig MakeSharedSidebandConfig()
     c.minEntries = 50.0;
     c.minIntegral = 30.0;
     c.minSidebandCounts = 8.0; // Below this, the matrix inversion floods Minuit with errors
-    c.minSidebandPoints = 0;   // 0 means "derive from bkgPolOrder"; resolved in ResolveDerivedFields
+    c.minSidebandPoints = 4;   // 0 means "derive from bkgPolOrder"; resolved in ResolveDerivedFields
 
     // Peak-finding fit. ShapeEstimated gives the Gaussian only the excess above an estimated
     // background level instead of the raw maximum, which is the behaviour that survives a
@@ -247,11 +254,17 @@ SidebandConfig MakeSharedSidebandConfig()
 
     // Region definitions.
     c.nSigmaPeak = 2.0; // Historic value: 4.0
-    c.nSigmaExclusion = 4.0; // Historic value: 6.0
+    c.nSigmaExclusion = 5.0; // Historic value: 6.0
     c.nSigmaExclusionOuter = 7.0; // Historic value: -1.0
 
+    // These two order parameters should be kept at the same values for the hNumExtBinDensity fits
+    // For the density fit, we are fitting <R>*dN/dm (i.e., <R>_meas * (N_sig + N_bkg) = (<R>_sig * N_sig + <R>_bkg * N_bkg)), from <R>_meas = (<R>_sig * N_sig + <R>_bkg * N_bkg)/(N_sig + N_bkg)
+    // Thus, the shape is conditioned to the dN/dm format and we should have the same pol2 estimating both of them.
     c.bkgPolOrder = 2;    // The Lambda combinatorial background is almost linear, with a little curvature
-    c.bkgNumPolOrder = 1; // <R> against mass is flat to linear across the sidebands
+    // pol0 says exactly what sideband subtraction has always assumed -- that <R> in the sidebands
+    // does not depend on mass. Raising it to 1 is the natural systematic variation, and the QA
+    // canvas shows directly whether the flat assumption holds.
+    c.ringBkgPolOrder = 0;
     c.requirePositiveSidebandBins = true;
 
     return c;
@@ -264,7 +277,7 @@ void ResolveDerivedFields(SidebandConfig& c)
     // the minimum at which the covariance matrix TF1::IntegralError needs is worth anything.
     // Driven by the HIGHER of the two orders, since both fits run on the same set of points.
     if (c.minSidebandPoints <= 0)
-        c.minSidebandPoints = std::max(c.bkgPolOrder, c.bkgNumPolOrder) + 3;
+        c.minSidebandPoints = std::max(c.bkgPolOrder, c.ringBkgPolOrder) + 3;
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -354,6 +367,77 @@ TDirectory* EnsureDir(TDirectory* parent, const char* name)
 // Every canvas title, axis label and legend entry that mentions a region is built from these, which
 // is the whole point: the strings used to be typed out as "#pm4#sigma" and "6#sigma excl." next to
 // code that read the number from a variable, so changing the variable quietly made the plots lie.
+/// @brief A polN written in (x - shift) rather than in x.
+///
+/// @note The {1, x, x^2} basis is nearly degenerate over a 70 MeV range centred on 1.115: the three
+/// columns are almost parallel, the fitted coefficients come out around 1e12 with alternating
+/// signs, and the value at the peak is a cancellation down to about 1e9. Double precision absorbs
+/// the value, but the PARAMETER COVARIANCE does not survive it -- TF1::IntegralError integrates a
+/// gradient built from that matrix and was returning "cannot reach tolerance because of roundoff error"
+/// with an integral error of several thousand counts. Var(bkgCounts) feeds every downstream
+/// uncertainty, so this was a correctness problem and not merely cosmetic.
+///
+/// Recentring on the peak makes the basis {1, dm, dm^2} with dm of order 1e-2, the coefficients
+/// come out at the scale of the density itself, and the cancellation disappears.
+TString PolShifted(int order, double shift)
+{
+    TString f = "[0]";
+    for (int k = 1; k <= order; ++k) {
+        TString term = Form("[%d]", k);
+        for (int p = 0; p < k; ++p) term += Form("*(x-%.6f)", shift);
+        f += "+" + term;
+    }
+    return f;
+}
+
+/// @brief Sideband graph of the ring observable itself, <R>(m), rather than of Sum_R.
+///
+/// WHY NOT Sum_R. In the sidebands d(Sum_R)/dm = <R>_bkg(m) * dN_bkg/dm. With dN_bkg/dm modelled as
+/// a pol2 and <R>_bkg roughly constant, that product is a pol2 as well -- so fitting Sum_R with a
+/// pol1 asserted that a quadratic times a constant is linear, and the fit absorbed the mismatch by
+/// forcing <R>_bkg(m) = pol1(m)/pol2(m). That ratio has a pole wherever the denominator crosses
+/// zero, which is what made the drawn background look like nothing physical.
+///
+/// Fitting <R> directly removes the misspecification entirely. <R> is INTENSIVE, so unlike counts
+/// and unlike Sum_R it must NOT be divided by the bin width: it does not scale with binning.
+/// A pol0 then says exactly what sideband subtraction always assumed, and the assumption becomes
+/// visible on the QA canvas instead of being buried in a ratio of two fits.
+///
+/// @param hCounts Candidate counts vs mass (raw, not a density).
+/// @param hNumSum Sum_R vs mass (raw, not a density). <R> = hNumSum/hCounts bin by bin.
+TGraphErrors* BuildRingSidebandGraph(TH1D* hCounts, TH1D* hNumSum, double mu, double sigma,
+                                     double massMin, double massMax, const SidebandConfig& cfg,
+                                     TString grName)
+{
+    if (!hCounts || !hNumSum) return nullptr;
+
+    const bool boundedOuter = (cfg.nSigmaExclusionOuter > 0.0);
+    const double xInnerLow = mu - cfg.nSigmaExclusion * sigma;
+    const double xInnerHigh = mu + cfg.nSigmaExclusion * sigma;
+    const double xOuterLow = boundedOuter ? std::max(massMin, mu - cfg.nSigmaExclusionOuter * sigma) : massMin;
+    const double xOuterHigh = boundedOuter ? std::min(massMax, mu + cfg.nSigmaExclusionOuter * sigma) : massMax;
+
+    TGraphErrors* gr = new TGraphErrors();
+    gr->SetName(grName);
+
+    int ptIdx = 0;
+    for (int jBin = 1; jBin <= hCounts->GetNbinsX(); ++jBin) {
+        const double x = hCounts->GetBinCenter(jBin);
+        const bool inLeft = (x >= xOuterLow && x <= xInnerLow);
+        const bool inRight = (x >= xInnerHigh && x <= xOuterHigh);
+        if (!inLeft && !inRight) continue;
+
+        const double n = hCounts->GetBinContent(jBin);
+        const double errSum = hNumSum->GetBinError(jBin);
+        if (!(n > 0.0) || !(errSum > 0.0)) continue; // Content may be zero or negative; the error may not
+
+        gr->SetPoint(ptIdx, x, hNumSum->GetBinContent(jBin) / n);
+        gr->SetPointError(ptIdx, 0.0, errSum / n); // errSum = sigma_R*sqrt(N), so this is the SEM
+        ptIdx++;
+    }
+    return gr;
+}
+
 TString SignalWindowLabel(const SidebandConfig& cfg)
 {
     return TString(Form("#mu#pm%.3g#sigma", cfg.nSigmaPeak));
@@ -584,8 +668,8 @@ TGraphErrors* BuildSidebandGraph(TH1D* hSource, double mu, double sigma,
 // This is the single place in the file where the extraction arithmetic lives. Every formula below
 // is derived once, here, and every caller inherits it.
 //
-// The numerator arguments (hNumSum, bkgNumFit, rBkgNum) are OPTIONAL: pass nullptr for hNumSum and
-// bkgNumFit to run in denominator-only mode. Yields, purity and significance are produced either
+// The numerator arguments (hNumSum, ringBkgFit, rRingBkg) are OPTIONAL: pass nullptr for hNumSum
+// and ringBkgFit to run in denominator-only mode. Yields, purity and significance are produced either
 // way; R_peak, R_B and R_S are filled only when a numerator was supplied, flagged by hasNumerator.
 struct PeakWindowYields {
     bool valid = false;
@@ -628,66 +712,22 @@ struct PeakWindowYields {
     double diffSigMinusBkg = 0.0, errDiffSigMinusBkg = 0.0;
 };
 
-PeakWindowYields ComputePeakWindowYields(TH1D* hMassCounts, TH1D* hNumSum,
-                                         double mu, double sigma, double nSigmaPeak,
-                                         TF1* bkgFit, TFitResultPtr rBkg,
-                                         TF1* bkgNumFit, TFitResultPtr rBkgNum)
+// ------------------------------------------------------------------------------------------------
+// FinalizeDerivedQuantities -- everything that follows from the four primitives.
+// ------------------------------------------------------------------------------------------------
+// Takes a PeakWindowYields whose primitives (totCounts, totNum, bkgCounts, bkgNum and their
+// variances) are already filled, and computes every derived quantity from them: yields, purity,
+// significance, the three ring observables and the three correlated differences.
+//
+// It was split out of ComputePeakWindowYields so that the ANGLE-COMBINED result can reuse it. Two
+// independent angular bins have independent primitives, so summing the primitives and running this
+// on the totals is algebraically identical to a single extraction over the union of the bins --
+// which means the combined result is guaranteed to use exactly the same error propagation as the
+// per-bin one, rather than a second implementation that could drift away from it.
+//
+// Sets y.valid on success, or y.failStage on rejection.
+void FinalizeDerivedQuantities(PeakWindowYields& y)
 {
-    PeakWindowYields y;
-    if (!hMassCounts || !bkgFit) return y;
-
-    y.hasNumerator = (hNumSum != nullptr && bkgNumFit != nullptr);
-
-    // --- Signal window, snapped to bin edges ---
-    y.firstBin = hMassCounts->FindBin(mu - nSigmaPeak * sigma);
-    y.lastBin = hMassCounts->FindBin(mu + nSigmaPeak * sigma);
-    y.xLow = hMassCounts->GetBinLowEdge(y.firstBin);
-    y.xHigh = hMassCounts->GetBinLowEdge(y.lastBin) + hMassCounts->GetBinWidth(y.lastBin);
-    if (sigma > 0.0) {
-        y.nSigmaAchievedLow = (mu - y.xLow) / sigma;
-        y.nSigmaAchievedHigh = (y.xHigh - mu) / sigma;
-    }
-    y.coverage = GaussianWindowCoverage(y.xLow, y.xHigh, mu, sigma);
-
-    // --- Raw sums over the window ---
-    // Bins inside the peak are independent, so their errors add in quadrature.
-    for (int jBin = y.firstBin; jBin <= y.lastBin; ++jBin) {
-        y.totCounts += hMassCounts->GetBinContent(jBin);
-        y.totCountsErrSq += std::pow(hMassCounts->GetBinError(jBin), 2);
-        if (y.hasNumerator) {
-            y.totNum += hNumSum->GetBinContent(jBin); // Accumulate Sum_R_i
-            // hNumSum->GetBinError is sigma_R * sqrt(N_bin), the correct error on the sum
-            y.totNumErrSq += std::pow(hNumSum->GetBinError(jBin), 2);
-        }
-    }
-
-    if (y.totCounts <= 0) { y.failStage = 1; return y; }
-
-    /*
-    * MEDIUM COMMENT: BACKGROUND INTEGRATION AND COVARIANCE
-    * ----------------------------------------------------------------------------------
-    * The background must be integrated in one step using the full covariance matrix
-    * because polynomial parameters are highly correlated.
-    * Performing per-bin integrations and summing the errors in quadrature incorrectly
-    * assumes independent uncertainties between bins. This artificial inflation of the
-    * background error severely overestimates the final signal uncertainty.
-    * TF1::IntegralError correctly uses the Jacobian of the integral with respect to
-    * the parameters and the full parameter covariance matrix.
-    *
-    * The pol2 was fitted to a DENSITY (counts per unit mass), so TF1::Integral over the window
-    * already returns counts -- exactly as integrating dN/dpT over a pT window returns counts.
-    * No division by bin width is needed anywhere below.
-    */
-    y.bkgCounts = bkgFit->Integral(y.xLow, y.xHigh);
-    y.errBkgCounts = bkgFit->IntegralError(y.xLow, y.xHigh, rBkg->GetParams(),
-                                           rBkg->GetCovarianceMatrix().GetMatrixArray());
-
-    if (y.hasNumerator) {
-        y.bkgNum = bkgNumFit->Integral(y.xLow, y.xHigh);
-        y.errBkgNum = bkgNumFit->IntegralError(y.xLow, y.xHigh, rBkgNum->GetParams(),
-                                               rBkgNum->GetCovarianceMatrix().GetMatrixArray());
-    }
-
     // --- Signal yield ---
     // totCounts and bkgCounts are independent: bkgCounts comes from a fit to the SIDEBANDS only,
     // while totCounts counts the peak window, and the two mass regions are disjoint (hence disjoint
@@ -695,7 +735,7 @@ PeakWindowYields ComputePeakWindowYields(TH1D* hMassCounts, TH1D* hNumSum,
     y.sigCounts = y.totCounts - y.bkgCounts;
     y.errSigCounts = std::sqrt(y.totCountsErrSq + y.errBkgCounts * y.errBkgCounts);
 
-    if (y.sigCounts <= 0) { y.failStage = 2; return y; }
+    if (y.sigCounts <= 0) { y.failStage = 2; return; }
 
     y.fB = y.bkgCounts / y.totCounts;
     y.fS = y.sigCounts / y.totCounts; // Equivalent to 1 - fB
@@ -726,7 +766,7 @@ PeakWindowYields ComputePeakWindowYields(TH1D* hMassCounts, TH1D* hNumSum,
                                      / (4.0 * std::pow(y.totCounts, 3))
                                  + y.errBkgCounts * y.errBkgCounts / y.totCounts);
 
-    if (!y.hasNumerator) { y.valid = true; return y; }
+    if (!y.hasNumerator) { y.valid = true; return; }
 
     // --- Ring observable ---
     y.R_peak = y.totNum / y.totCounts;
@@ -849,7 +889,235 @@ PeakWindowYields ComputePeakWindowYields(TH1D* hMassCounts, TH1D* hNumSum,
                                      + std::pow(1.0 / S + 1.0 / B, 2) * varNumBkg);
 
     y.valid = true;
+}
+
+PeakWindowYields ComputePeakWindowYields(TH1D* hMassCounts, TH1D* hNumSum,
+                                         double mu, double sigma, double nSigmaPeak,
+                                         TF1* bkgFit, TFitResultPtr rBkg,
+                                         TF1* ringBkgFit, TFitResultPtr rRingBkg)
+{
+    PeakWindowYields y;
+    if (!hMassCounts || !bkgFit) return y;
+
+    y.hasNumerator = (hNumSum != nullptr && ringBkgFit != nullptr);
+
+    // --- Signal window, snapped to bin edges ---
+    y.firstBin = hMassCounts->FindBin(mu - nSigmaPeak * sigma);
+    y.lastBin = hMassCounts->FindBin(mu + nSigmaPeak * sigma);
+    y.xLow = hMassCounts->GetBinLowEdge(y.firstBin);
+    y.xHigh = hMassCounts->GetBinLowEdge(y.lastBin) + hMassCounts->GetBinWidth(y.lastBin);
+    if (sigma > 0.0) {
+        y.nSigmaAchievedLow = (mu - y.xLow) / sigma;
+        y.nSigmaAchievedHigh = (y.xHigh - mu) / sigma;
+    }
+    y.coverage = GaussianWindowCoverage(y.xLow, y.xHigh, mu, sigma);
+
+    // --- Raw sums over the window ---
+    // Bins inside the peak are independent, so their errors add in quadrature.
+    for (int jBin = y.firstBin; jBin <= y.lastBin; ++jBin) {
+        y.totCounts += hMassCounts->GetBinContent(jBin);
+        y.totCountsErrSq += std::pow(hMassCounts->GetBinError(jBin), 2);
+        if (y.hasNumerator) {
+            y.totNum += hNumSum->GetBinContent(jBin); // Accumulate Sum_R_i
+            // hNumSum->GetBinError is sigma_R * sqrt(N_bin), the correct error on the sum
+            y.totNumErrSq += std::pow(hNumSum->GetBinError(jBin), 2);
+        }
+    }
+
+    if (y.totCounts <= 0) { y.failStage = 1; return y; }
+
+    /*
+    * MEDIUM COMMENT: BACKGROUND INTEGRATION AND COVARIANCE
+    * ----------------------------------------------------------------------------------
+    * The background must be integrated in one step using the full covariance matrix
+    * because polynomial parameters are highly correlated.
+    * Performing per-bin integrations and summing the errors in quadrature incorrectly
+    * assumes independent uncertainties between bins. This artificial inflation of the
+    * background error severely overestimates the final signal uncertainty.
+    * TF1::IntegralError correctly uses the Jacobian of the integral with respect to
+    * the parameters and the full parameter covariance matrix.
+    *
+    * The pol2 was fitted to a DENSITY (counts per unit mass), so TF1::Integral over the window
+    * already returns counts -- exactly as integrating dN/dpT over a pT window returns counts.
+    * No division by bin width is needed anywhere below.
+    */
+    y.bkgCounts = bkgFit->Integral(y.xLow, y.xHigh);
+    y.errBkgCounts = bkgFit->IntegralError(y.xLow, y.xHigh, rBkg->GetParams(),
+                                           rBkg->GetCovarianceMatrix().GetMatrixArray());
+
+    if (y.hasNumerator) {
+        // --- Background numerator, from the fitted <R>_bkg(m) ---------------------------------
+        // M = Integral over the window of R(m) * b(m) dm, where b is the counts density fitted
+        // above. Writing it as the b-WEIGHTED AVERAGE of R over the window,
+        //     R_B_eff = Integral R(m) b(m) dm / Integral b(m) dm  =  M / B,
+        // makes M = R_B_eff * B by construction, which is exactly the relation the covariance
+        // structure downstream already assumes (Cov(M,B) = R_B * Var(B)). It also makes the
+        // conditional error trivial to get right: R_B_eff is a LINEAR functional of the fitted
+        // coefficients,
+        //     R_B_eff = sum_k p_k * w_k,   w_k = Integral (m-shift)^k b(m) dm / B,
+        // so its variance is w^T Cov(p) w exactly, with no gradient integration and therefore none
+        // of the roundoff failures that TF1::IntegralError was reporting.
+        const int nPar = ringBkgFit->GetNpar();
+
+        // Weights, by Simpson quadrature on a smooth polynomial: cheap, and exact enough that the
+        // quadrature error is orders of magnitude below the fit error.
+        const int nSteps = 400; // even, for Simpson
+        const double h = (y.xHigh - y.xLow) / nSteps;
+        std::vector<double> w(nPar, 0.0);
+        double norm = 0.0;
+        for (int i = 0; i <= nSteps; ++i) {
+            const double m = y.xLow + i * h;
+            const double coef = (i == 0 || i == nSteps) ? 1.0 : ((i % 2) ? 4.0 : 2.0);
+            const double bVal = bkgFit->Eval(m);
+            norm += coef * bVal;
+            // The k-th basis function of ringBkgFit evaluated at m, obtained by unit-poking the
+            // parameters. This keeps the weights correct whatever basis PolShifted used.
+            for (int k = 0; k < nPar; ++k) {
+                std::vector<double> unit(nPar, 0.0);
+                unit[k] = 1.0;
+                w[k] += coef * bVal * ringBkgFit->EvalPar(&m, unit.data());
+            }
+        }
+        if (norm > 0.0) {
+            for (int k = 0; k < nPar; ++k) w[k] /= norm;
+
+            double rEff = 0.0;
+            for (int k = 0; k < nPar; ++k) rEff += ringBkgFit->GetParameter(k) * w[k];
+
+            double varREff = 0.0;
+            const TMatrixDSym& cov = rRingBkg->GetCovarianceMatrix();
+            for (int j = 0; j < nPar; ++j)
+                for (int k = 0; k < nPar; ++k) varREff += w[j] * w[k] * cov(j, k);
+
+            y.bkgNum = rEff * y.bkgCounts;
+            // Conditional on bkgCounts, exactly as the propagation downstream expects.
+            y.errBkgNum = y.bkgCounts * std::sqrt(std::max(varREff, 0.0));
+        } else {
+            y.hasNumerator = false;
+        }
+    }
+
+    FinalizeDerivedQuantities(y);
     return y;
+}
+
+// ================================================================================================
+// COMBINING ANGULAR BINS
+// ================================================================================================
+// Two genuinely different ways to reduce a set of per-bin extractions to one number, and the
+// DIFFERENCE between them is itself the measurement this folder exists to make.
+//
+//   SIGNAL-WEIGHTED. Sum the primitives across bins and extract from the totals:
+//       <R>_S = sum_i (N_i - M_i) / sum_i (T_i - B_i)
+//   which is the signal-yield weighted mean, sum_i S_i R_i / sum_i S_i. This is what "the mean of R
+//   over all candidates" means, and it is therefore the ACCEPTANCE-WEIGHTED answer: the weights S_i
+//   are exactly the non-uniform occupancies that the azimuthal efficiency effect produces.
+//
+//   FLAT-ACCEPTANCE. The unweighted bin average, (1/n) sum_i R_i. Bins are equal width in the
+//   angular variable and hold disjoint candidates, so this is a plain independent average and its
+//   error really is quadrature over n. This is what would be measured with uniform acceptance.
+//
+// Their difference is the effect. Neither number alone shows it.
+//
+// WHY NOT PROJECT AND EXTRACT ONCE. Projecting the 2D histograms onto the mass axis and running a
+// single extraction gives the signal-weighted answer too, but it fits ONE sideband polynomial to
+// the angle-summed numerator. Where <R> changes sign across the angular variable -- which is the
+// entire reason for splitting on phi_Lambda - phi_p* -- that sum is a mixture of opposite-sign
+// contributions with different slopes, and it is under no obligation to be linear. Splitting first
+// and combining afterwards keeps every fit in the regime where a low-order sideband model is
+// defensible. Combining is also legitimate: different angular bins hold disjoint candidates, so
+// their primitives are independent and simply add.
+// ================================================================================================
+
+/// @brief Signal-weighted combination: sums the primitives, then reuses the standard algebra.
+/// @note Independent bins, so variances add. Passing the totals through FinalizeDerivedQuantities
+///       means the combined errors come from the same code as the per-bin ones, correlations and
+///       all, instead of a parallel derivation that could quietly diverge from it.
+PeakWindowYields CombineYieldsSignalWeighted(const std::vector<PeakWindowYields>& perBin)
+{
+    PeakWindowYields agg;
+    if (perBin.empty()) return agg;
+
+    agg.hasNumerator = perBin.front().hasNumerator;
+    for (const auto& y : perBin) {
+        if (!y.valid) continue;
+        agg.totCounts += y.totCounts;
+        agg.totCountsErrSq += y.totCountsErrSq;
+        agg.totNum += y.totNum;
+        agg.totNumErrSq += y.totNumErrSq;
+        agg.bkgCounts += y.bkgCounts;
+        agg.errBkgCounts += y.errBkgCounts * y.errBkgCounts; // Accumulate variance, root it below
+        agg.bkgNum += y.bkgNum;
+        agg.errBkgNum += y.errBkgNum * y.errBkgNum;
+        agg.hasNumerator = agg.hasNumerator && y.hasNumerator;
+    }
+    if (agg.totCounts <= 0.0) return agg;
+
+    agg.errBkgCounts = std::sqrt(agg.errBkgCounts);
+    agg.errBkgNum = std::sqrt(agg.errBkgNum);
+
+    FinalizeDerivedQuantities(agg);
+    return agg;
+}
+
+/// @brief One flat-acceptance average and its error.
+struct FlatAverage {
+    double value = 0.0, error = 0.0;
+    int    nBins = 0;
+    bool   valid = false;
+};
+
+/// @brief Unweighted mean over independent angular bins, error = sqrt(sum sigma_i^2) / n.
+FlatAverage AverageOverBins(const std::vector<double>& vals, const std::vector<double>& errs)
+{
+    FlatAverage out;
+    if (vals.empty() || vals.size() != errs.size()) return out;
+    double sum = 0.0, varSum = 0.0;
+    for (size_t i = 0; i < vals.size(); ++i) { sum += vals[i]; varSum += errs[i] * errs[i]; }
+    out.nBins = static_cast<int>(vals.size());
+    out.value = sum / out.nBins;
+    out.error = std::sqrt(varSum) / out.nBins;
+    out.valid = true;
+    return out;
+}
+
+/// @brief Signal-weighted minus flat-acceptance, with the shared candidates accounted for.
+///
+/// Both are linear combinations of the SAME independent per-bin values R_i, so quadrature between
+/// them is wrong -- they are strongly positively correlated and it would badly overstate the error.
+/// Writing D = sum_i (w_i - 1/n) R_i with w_i = S_i / sum_j S_j, the R_i are independent across
+/// bins and the propagation collapses to
+///     Var(D) = sum_i (w_i - 1/n)^2 * Var(R_i).
+///
+/// @note The weights are treated as fixed. They are ratios of signal yields, determined far more
+///       precisely than the R_i themselves, and the neglected term is suppressed by
+///       (R_i - R_weighted) / sum_j S_j. Worth revisiting only if the bin yields become comparable
+///       to their own uncertainties.
+/// @param vals   Per-bin R_i.
+/// @param errs   Per-bin sigma(R_i).
+/// @param sigCts Per-bin signal yields S_i, used for the weights.
+FlatAverage WeightedMinusFlat(const std::vector<double>& vals, const std::vector<double>& errs,
+                              const std::vector<double>& sigCts)
+{
+    FlatAverage out;
+    const size_t n = vals.size();
+    if (n == 0 || errs.size() != n || sigCts.size() != n) return out;
+
+    double sumS = 0.0;
+    for (double s : sigCts) sumS += s;
+    if (sumS <= 0.0) return out;
+
+    double diff = 0.0, var = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        const double coeff = sigCts[i] / sumS - 1.0 / static_cast<double>(n);
+        diff += coeff * vals[i];
+        var += coeff * coeff * errs[i] * errs[i];
+    }
+    out.value = diff;
+    out.error = std::sqrt(var);
+    out.nBins = static_cast<int>(n);
+    out.valid = true;
+    return out;
 }
 
 // ================================================================================================
@@ -1558,14 +1826,14 @@ SimFitResult PerformSimultaneousFitQA(TH1D* hMassDensity, TH1D* hNumDensity, dou
 void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* parentDir,
                          TString extractionName, TString axisTitle, double massMin, double massMax,
                          const SidebandConfig& cfg, const SidebandConfig& cfgInt,
+                         IntegralMode integralMode = IntegralMode::ProjectThenExtract,
                          bool printHeader = true){
     if (printHeader) std::cout << "\n[ExtractObservable2D] Starting extraction: " << extractionName << std::endl;
     // Create subdirectories for organized output
     TDirectory* dirBase = parentDir->mkdir(extractionName);
     TDirectory* dirFits = dirBase->mkdir("MassFits");
-    TDirectory* dirQARingMass = dirBase->mkdir("QA_RingObservable_vs_Mass");
+    TDirectory* dirRingMass = dirBase->mkdir("RingObservable_vs_Mass");
     // TDirectory* dirBkgFits = dirBase->mkdir("BackgroundFits");
-    TDirectory* dirBkgNumFits = dirBase->mkdir("BkgNumFits");
     TDirectory* dirResults = dirBase->mkdir("Results");
     TDirectory* dirResultsSim = dirBase->mkdir("ResultsCombinedFit");
     TDirectory* dirDiagnostics = dirBase->mkdir("Diagnostics");
@@ -1642,6 +1910,20 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
                                         axisTitle.Data(), axisTitle.Data()));
     dirResults->cd();
 
+    // <R>_S - <R>_B in each angular bin. Stored rather than left to be subtracted downstream,
+    // because the two share the sideband primitives (M and B) and are strongly correlated: naive
+    // quadrature UNDERSTATES this particular difference, which is the dangerous direction.
+    dirResults->cd();
+    TH1D* hRSigMinusRBkg = (TH1D*)hSigYield->Clone(Form("hRSigMinusRBkg_%s", extractionName.Data()));
+    hRSigMinusRBkg->SetTitle(Form("<R>_{S} - <R>_{B} vs %s;%s;<R>_{S} - <R>_{B}",
+                                  axisTitle.Data(), axisTitle.Data()));
+
+    // Per-bin results kept for the angle combination below. Only filled when the extraction
+    // succeeded, so a rejected bin simply does not contribute rather than contributing a zero.
+    std::vector<PeakWindowYields> perBinYields;
+    std::vector<double> perBinRSig, perBinRSigErr, perBinRBkg, perBinRBkgErr;
+    std::vector<double> perBinRMeas, perBinRMeasErr, perBinSigCounts;
+
     // Running summary for the one log line printed after the loop.
     int    nBinsExtracted = 0, nSidebandStarved = 0;
     double achievedLowMin = 1e9, achievedLowMax = -1e9;
@@ -1714,16 +1996,6 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
         TH1D* hNumProj = h2dNum->ProjectionY(Form("hNumExtBin,Angle[%.2f,%.2f),Bin%d", xLow, xHigh, iBin), iBin, iBin, "e");
         hNumProj->SetDirectory(nullptr); // Local to this iteration
 
-        // 3. <R>(m) QA plot
-        TH1D* hQARing = (TH1D*)hNumProj->Clone(Form("hQARingVsMass_Bin%d", iBin));
-        hQARing->SetDirectory(nullptr);  // Temporary: written below, then deleted
-        hQARing->SetTitle(Form("<R> vs Mass for Bin %d;M_{p#pi} (GeV/c^{2});<R>", iBin));
-        hQARing->Divide(hNumProj, hMassProj, 1.0, 1.0, "B"); // Binomial errors might be tricky here, standard divide is okay for now as it's weighted
-
-        dirQARingMass->cd();
-        hQARing->Write();
-        delete hQARing;
-
         // 4. Density versions of both spectra.
         // It is actually just way more natural to fit the density histogram! Easier to perform QA
         // later on too, and it makes the fit insensitive to the variable bin widths.
@@ -1735,7 +2007,10 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
         // (changed to a density for proper normalization over variable bin widths. Notice that
         //  because <R>(m) = sum_i R_i(m) / N_Lambda(m) is a ratio, we can do this bin width
         //  scaling without much worry)
-        TH1D* hNumProjDensity = (TH1D*)hNumProj->Clone(Form("hNumExtBinDensity,Angle[%.2f,%.2f),Bin%d", xLow, xHigh, iBin));
+        // Named for what it is: d(Sum_R)/dm. Sum_R is EXTENSIVE, like counts, so scaling it by the
+        // bin width is meaningful. It exists only to feed the simultaneous-fit QA; the sideband
+        // background is no longer fitted to it.
+        TH1D* hNumProjDensity = (TH1D*)hNumProj->Clone(Form("hSumRDensity_Bin%d", iBin));
         hNumProjDensity->SetDirectory(nullptr);
         hNumProjDensity->Scale(1.0, "width");
 
@@ -1767,10 +2042,10 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
                                                  Form("grBkg_Bin%d", iBin));
         grBkg->SetTitle(Form("Sideband Bkg Bin %d;M_{p#pi} (GeV/c^{2});Counts/BinWidth", iBin));
 
-        TGraphErrors* grBkgNum = BuildSidebandGraph(hNumProj, mu, sigma, massMin, massMax, cfg,
-                                                    SidebandGraphKind::Numerator, nullptr,
-                                                    Form("grBkgNum_Bin%d", iBin));
-        grBkgNum->SetTitle(Form("Numerator Sidebands Bin %d;M_{p#pi} (GeV/c^{2});#Sigma r_{i}/BinWidth", iBin));
+        TGraphErrors* grRingBkg = BuildRingSidebandGraph(hMassProj, hNumProj, mu, sigma,
+                                                         massMin, massMax, cfg,
+                                                         Form("grRingBkg_Bin%d", iBin));
+        grRingBkg->SetTitle(Form("<R> sideband points, bin %d;M_{p#pi} (GeV/c^{2});<R>_{bkg}", iBin));
 
         // --- STABILITY CHECK 1: Enough points for a pol2? ---
         // Adding some stability checks because the 3D histogram projections have much smaller
@@ -1779,10 +2054,10 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
         // If the background counts sum to (nearly) zero the matrix inversion fails and we get a
         // looooot of Minuit errors. spanBkg.rawCounts holds the RAW counts, which is what this
         // check needs: the graph's own Y values are densities now, so they cannot be summed here.
-        if (grBkg->GetN() < cfg.minSidebandPoints || grBkgNum->GetN() < cfg.minSidebandPoints ||
+        if (grBkg->GetN() < cfg.minSidebandPoints || grRingBkg->GetN() < cfg.minSidebandPoints ||
             (cfg.minSidebandCounts > 0.0 && spanBkg.rawCounts <= cfg.minSidebandCounts)) {
             nSidebandStarved++;
-            delete grBkg; delete grBkgNum;
+            delete grBkg; delete grRingBkg;
             delete hMassProjDensity; delete hNumProjDensity; delete hNumProj; delete hMassProj;
             continue;
         }
@@ -1790,18 +2065,22 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
         // Fit the discontinuous graphs with a polN, to cover the small curvature in Lambda background.
         // From QA plots you can see that the background is almost linear, maybe a bit quadratic,
         // when studying <R>(m_Lambda). Thus, regular signal extraction should work!
-        TF1* bkgFitFunc = new TF1(Form("bkgFit_Bin%d", iBin), Form("pol%d", cfg.bkgPolOrder), massMin, massMax);
+        TF1* bkgFitFunc = new TF1(Form("bkgFit_Bin%d", iBin),
+                                  PolShifted(cfg.bkgPolOrder, cfg.muInitGuess),
+                                  massMin, massMax);
         TFitResultPtr rBkg = grBkg->Fit(bkgFitFunc, "Q 0 S"); // "Q" = quiet, "0" = don't draw, "S" = return TFitResultPtr
 
-        TF1* bkgNumFitFunc = new TF1(Form("bkgNumFit_Bin%d", iBin), Form("pol%d", cfg.bkgNumPolOrder), massMin, massMax);
-        TFitResultPtr rBkgNum = grBkgNum->Fit(bkgNumFitFunc, "Q 0 S");
+        TF1* ringBkgFitFunc = new TF1(Form("ringBkgFit_Bin%d", iBin),
+                                     PolShifted(cfg.ringBkgPolOrder, cfg.muInitGuess),
+                                     massMin, massMax);
+        TFitResultPtr rRingBkg = grRingBkg->Fit(ringBkgFitFunc, "Q 0 S");
 
         // --- STABILITY CHECK 2: Did the fits converge properly? ---
-        if (!rBkg->IsValid() || !rBkgNum->IsValid()) {
+        if (!rBkg->IsValid() || !rRingBkg->IsValid()) {
             // Here you still need to delete the TF1s manually, as they have not yet been taken
             // ownership of by ROOT through an "Add()" call!
-            delete bkgFitFunc; delete bkgNumFitFunc;
-            delete grBkg; delete grBkgNum;
+            delete bkgFitFunc; delete ringBkgFitFunc;
+            delete grBkg; delete grRingBkg;
             delete hMassProjDensity; delete hNumProjDensity; delete hNumProj; delete hMassProj;
             continue;
         }
@@ -1810,21 +2089,32 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
         grBkg->GetListOfFunctions()->Add(bkgFitFunc); // Attach fit for viewing in TBrowser
         grBkg->Write();
 
-        // Writing bkgNum histograms in a specific folder for QA:
-        dirBkgNumFits->cd();
-        grBkgNum->GetListOfFunctions()->Add(bkgNumFitFunc); // Attach the fit function to the graph for easy viewing in TBrowser
-        grBkgNum->Write();
-        // hNumProj->Write(); // Save the corrected-error numerator for visual QA
-        hNumProjDensity->Write(); // Save density to actually cross-check the fit!
+        // --- <R>(m) with the fitted sideband background drawn on it ---------------------------
+        // Built here rather than earlier so the fitted function can be attached to it: this is the
+        // one plot that shows whether the flat-<R> assumption behind sideband subtraction actually
+        // holds in this angular bin. The fit is CLONED because the graph below takes ownership of
+        // the original.
+        TH1D* hRingVsMass = (TH1D*)hNumProj->Clone(Form("hRingVsMass_Bin%d", iBin));
+        hRingVsMass->SetDirectory(nullptr);
+        hRingVsMass->SetTitle(Form("<R> vs mass, bin %d [%.4f,%.4f);M_{p#pi} (GeV/c^{2});<R>",
+                                   iBin, xLow, xHigh));
+        hRingVsMass->Divide(hNumProj, hMassProj, 1.0, 1.0, "B");
+        hRingVsMass->GetListOfFunctions()->Add((TF1*)ringBkgFitFunc->Clone());
+
+        dirRingMass->cd();
+        hRingVsMass->Write();
+        grRingBkg->GetListOfFunctions()->Add(ringBkgFitFunc); // Graph takes ownership
+        grRingBkg->Write();
+        delete hRingVsMass;
 
         // 7. Signal extraction. Every count, subtraction and uncertainty lives in this one call.
         PeakWindowYields y = ComputePeakWindowYields(hMassProj, hNumProj, mu, sigma, cfg.nSigmaPeak,
-                                                     bkgFitFunc, rBkg, bkgNumFitFunc, rBkgNum);
+                                                     bkgFitFunc, rBkg, ringBkgFitFunc, rRingBkg);
 
         if (!y.valid) {
             // failStage 1 = no counts in the window at all, 2 = background exceeded the peak
             if (y.failStage == 2) std::cout << "    Bin " << iBin << ": non-positive signal, skipped.\n";
-            delete grBkg; delete grBkgNum;
+            delete grBkg; delete grRingBkg;
             delete hMassProjDensity; delete hNumProjDensity; delete hNumProj; delete hMassProj;
             continue;
         }
@@ -1860,6 +2150,15 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
         hSidebandPointsLeft->SetBinError(iBin, 0.0);
         hSidebandPointsRight->SetBinContent(iBin, spanBkg.nPointsRight);
         hSidebandPointsRight->SetBinError(iBin, 0.0);
+
+        hRSigMinusRBkg->SetBinContent(iBin, y.diffSigMinusBkg);
+        hRSigMinusRBkg->SetBinError(iBin, y.errDiffSigMinusBkg);
+
+        perBinYields.push_back(y);
+        perBinRSig.push_back(y.R_S);       perBinRSigErr.push_back(y.errR_S);
+        perBinRBkg.push_back(y.R_B);       perBinRBkgErr.push_back(y.errR_B);
+        perBinRMeas.push_back(y.R_peak);   perBinRMeasErr.push_back(y.errR_peak);
+        perBinSigCounts.push_back(y.sigCounts);
 
         nBinsExtracted++;
         achievedLowMin = std::min(achievedLowMin, y.nSigmaAchievedLow);
@@ -1900,11 +2199,11 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
             hSigStat_Sim->SetBinError(iBin, qaResult.err_Significance);
         }
 
-        // Note: we do NOT delete bkgFitFunc or bkgNumFitFunc here, because ROOT took ownership of
+        // Note: we do NOT delete bkgFitFunc or ringBkgFitFunc here, because ROOT took ownership of
         // them when they were added to the graphs' lists of functions. Deleting them would crash!
         // Likewise, peak.fit is owned by hMassProjDensity.
         delete grBkg;
-        delete grBkgNum;
+        delete grRingBkg;
         delete hNumProjDensity;
         delete hMassProjDensity;
         delete hNumProj;
@@ -1947,6 +2246,9 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
     hSidebandPointsRight->Write();
 
     dirResults->cd();
+    hRSigMinusRBkg->Write();
+    delete hRSigMinusRBkg;
+
     // Resetting stats boxes to get an estimate of Signal vs Background Lambda counts:
     hSigYield->ResetStats();
     hBkgYield->ResetStats();
@@ -1969,6 +2271,100 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
     hRBkg_Sim->Write();
     hPurity_Sim->Write();
     hSigStat_Sim->Write();
+
+    // =========================================================================================
+    // Step 7.9: Angle-COMBINED results, built from the per-bin extractions
+    // =========================================================================================
+    // Produced whenever there is more than one usable angular bin. See the header block on
+    // CombineYieldsSignalWeighted for why combining beats projecting, and for what the two flavours
+    // mean. In CombinePerBin mode these REPLACE Steps 8 and 9 rather than sitting beside them.
+    if (perBinYields.size() >= 2) {
+        TDirectory* dirCombined = EnsureDir(dirBase, "IntegratedCombined");
+
+        PeakWindowYields aggSW = CombineYieldsSignalWeighted(perBinYields);
+
+        FlatAverage flatSig = AverageOverBins(perBinRSig, perBinRSigErr);
+        FlatAverage flatBkg = AverageOverBins(perBinRBkg, perBinRBkgErr);
+        FlatAverage flatMeas = AverageOverBins(perBinRMeas, perBinRMeasErr);
+
+        FlatAverage aeeSig = WeightedMinusFlat(perBinRSig, perBinRSigErr, perBinSigCounts);
+        FlatAverage aeeBkg = WeightedMinusFlat(perBinRBkg, perBinRBkgErr, perBinSigCounts);
+        FlatAverage aeeMeas = WeightedMinusFlat(perBinRMeas, perBinRMeasErr, perBinSigCounts);
+
+        auto scalarOut = [&](const char* stem, const char* yTitle, double v, double e) {
+            TH1D* h = new TH1D(Form("%s_%s", stem, extractionName.Data()),
+                               Form("%s; ;%s", extractionName.Data(), yTitle), 1, 0, 1);
+            h->SetDirectory(nullptr);
+            h->SetBinContent(1, v);
+            h->SetBinError(1, e);
+            dirCombined->cd();
+            h->Write();
+            delete h;
+        };
+
+        if (aggSW.valid) {
+            scalarOut("hCombinedRMeas_SignalWeighted", "<R>_{measured}", aggSW.R_peak, aggSW.errR_peak);
+            scalarOut("hCombinedRSig_SignalWeighted", "<R>_{S}", aggSW.R_S, aggSW.errR_S);
+            scalarOut("hCombinedRBkg_SignalWeighted", "<R>_{B}", aggSW.R_B, aggSW.errR_B);
+            scalarOut("hCombinedDiffSigMinusBkg_SignalWeighted", "<R>_{S} - <R>_{B}",
+                      aggSW.diffSigMinusBkg, aggSW.errDiffSigMinusBkg);
+            scalarOut("hCombinedDiffMeasMinusSig_SignalWeighted", "<R>_{measured} - <R>_{S}",
+                      aggSW.diffPeakMinusSig, aggSW.errDiffPeakMinusSig);
+            scalarOut("hCombinedDiffMeasMinusBkg_SignalWeighted", "<R>_{measured} - <R>_{B}",
+                      aggSW.diffPeakMinusBkg, aggSW.errDiffPeakMinusBkg);
+            scalarOut("hCombinedPurity_SignalWeighted", "S/(S+B)", aggSW.purity, aggSW.errPurity);
+            scalarOut("hCombinedSignificance_SignalWeighted", "S/#sqrt{S+B}",
+                      aggSW.significance, aggSW.errSignificance);
+        }
+        if (flatMeas.valid) scalarOut("hCombinedRMeas_Flat", "<R>_{measured}", flatMeas.value, flatMeas.error);
+        if (flatSig.valid)  scalarOut("hCombinedRSig_Flat", "<R>_{S}", flatSig.value, flatSig.error);
+        if (flatBkg.valid)  scalarOut("hCombinedRBkg_Flat", "<R>_{B}", flatBkg.value, flatBkg.error);
+
+        // Azimuthal Efficiency Effect: signal-weighted minus flat, per quantity.
+        if (aeeMeas.valid) scalarOut("hAEE_RMeas", "<R>_{measured}: weighted - flat", aeeMeas.value, aeeMeas.error);
+        if (aeeSig.valid)  scalarOut("hAEE_RSig", "<R>_{S}: weighted - flat", aeeSig.value, aeeSig.error);
+        if (aeeBkg.valid)  scalarOut("hAEE_RBkg", "<R>_{B}: weighted - flat", aeeBkg.value, aeeBkg.error);
+
+        // Bookkeeping, so a combined number can always be traced back to how many bins fed it.
+        TH1D* hNUsed = new TH1D(Form("hCombinedBinsUsed_%s", extractionName.Data()),
+                                Form("%s; ;Angular bins", extractionName.Data()), 2, 0, 2);
+        hNUsed->SetDirectory(nullptr);
+        hNUsed->GetXaxis()->SetBinLabel(1, "used");
+        hNUsed->GetXaxis()->SetBinLabel(2, "total");
+        hNUsed->SetBinContent(1, static_cast<double>(perBinYields.size()));
+        hNUsed->SetBinContent(2, static_cast<double>(nBins));
+        dirCombined->cd();
+        hNUsed->Write();
+        delete hNUsed;
+
+        if (printHeader && aggSW.valid) {
+            std::cout << Form("  -> Combined [%s] over %d/%d angular bins:",
+                              extractionName.Data(), (int)perBinYields.size(), nBins) << std::endl;
+            std::cout << Form("       signal-weighted: <R>_S = %+.6f +/- %.6f, <R>_B = %+.6f +/- %.6f",
+                              aggSW.R_S, aggSW.errR_S, aggSW.R_B, aggSW.errR_B) << std::endl;
+            if (flatSig.valid && flatBkg.valid)
+                std::cout << Form("       flat acceptance: <R>_S = %+.6f +/- %.6f, <R>_B = %+.6f +/- %.6f",
+                                  flatSig.value, flatSig.error, flatBkg.value, flatBkg.error) << std::endl;
+            if (aeeSig.valid)
+                std::cout << Form("       AEE (weighted - flat): <R>_S %+.6f +/- %.6f, <R>_B %+.6f +/- %.6f",
+                                  aeeSig.value, aeeSig.error, aeeBkg.value, aeeBkg.error) << std::endl;
+        }
+    }
+
+    if (integralMode == IntegralMode::CombinePerBin) {
+        // Steps 8 and 9 both collapse every angular bin onto the mass axis before extracting, which
+        // is precisely what the angular split exists to avoid. Where <R> changes sign across the
+        // angular variable, that projection mixes opposite-sign numerator backgrounds into one
+        // spectrum and then asks a low-order polynomial to describe it. The combined results above
+        // are the same measurement done in the order that keeps every fit well conditioned, so the
+        // projected versions are not merely redundant here -- they would be worse.
+        if (printHeader)
+            std::cout << "  -> Steps 8 and 9 skipped: the angle-integrated result comes from "
+                         "IntegratedCombined/, not from a projection over the angular bins."
+                      << std::endl;
+        delete h2dNum;
+        return;
+    }
 
     // =========================================================================================
     // Step 8: Calculate the Angle-Integrated Ring Observable
@@ -2053,24 +2449,26 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
             TGraphErrors* grBkgInt = BuildSidebandGraph(hMassInt, muInt, sigmaInt, massMin, massMax,
                                                         cfgInt, SidebandGraphKind::Counts, &spanInt,
                                                         Form("grBkgInt_%s", extractionName.Data()));
-            TGraphErrors* grBkgNumInt = BuildSidebandGraph(hNumInt, muInt, sigmaInt, massMin, massMax,
-                                                           cfgInt, SidebandGraphKind::Numerator, nullptr,
-                                                           Form("grBkgNumInt_%s", extractionName.Data()));
+            TGraphErrors* grRingBkgInt = BuildRingSidebandGraph(hMassInt, hNumInt, muInt, sigmaInt,
+                                                               massMin, massMax, cfgInt,
+                                                               Form("grRingBkgInt_%s", extractionName.Data()));
 
-            if (grBkgInt->GetN() >= cfgInt.minSidebandPoints && grBkgNumInt->GetN() >= cfgInt.minSidebandPoints) {
-                TF1* bkgFitInt = new TF1(Form("bkgFitInt_%s", extractionName.Data()), Form("pol%d", cfgInt.bkgPolOrder), massMin, massMax);
-                TF1* bkgNumFitInt = new TF1(Form("bkgNumFitInt_%s", extractionName.Data()), Form("pol%d", cfgInt.bkgNumPolOrder), massMin, massMax);
+            if (grBkgInt->GetN() >= cfgInt.minSidebandPoints && grRingBkgInt->GetN() >= cfgInt.minSidebandPoints) {
+                TF1* bkgFitInt = new TF1(Form("bkgFitInt_%s", extractionName.Data()),
+                                         PolShifted(cfgInt.bkgPolOrder, cfgInt.muInitGuess), massMin, massMax);
+                TF1* ringBkgFitInt = new TF1(Form("ringBkgFitInt_%s", extractionName.Data()),
+                                            PolShifted(cfgInt.ringBkgPolOrder, cfgInt.muInitGuess), massMin, massMax);
 
                 TFitResultPtr rBkgInt = grBkgInt->Fit(bkgFitInt, "Q 0 S");
-                TFitResultPtr rBkgNumInt = grBkgNumInt->Fit(bkgNumFitInt, "Q 0 S");
+                TFitResultPtr rRingBkgInt = grRingBkgInt->Fit(ringBkgFitInt, "Q 0 S");
 
-                if (rBkgInt->IsValid() && rBkgNumInt->IsValid()) {
+                if (rBkgInt->IsValid() && rRingBkgInt->IsValid()) {
                     // 3. Global integration and error propagation -- the very same helper used by
                     //    the per-bin loop, so the two paths can never drift apart again.
                     PeakWindowYields yInt = ComputePeakWindowYields(hMassInt, hNumInt, muInt, sigmaInt,
                                                                     cfgInt.nSigmaPeak,
                                                                     bkgFitInt, rBkgInt,
-                                                                    bkgNumFitInt, rBkgNumInt);
+                                                                    ringBkgFitInt, rRingBkgInt);
                     if (yInt.valid) {
                         hIntegratedRSig->SetBinContent(1, yInt.R_S);
                         hIntegratedRSig->SetBinError(1, yInt.errR_S);
@@ -2128,15 +2526,15 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
                         }
                     }
                 }
-                delete bkgFitInt; delete bkgNumFitInt;
+                delete bkgFitInt; delete ringBkgFitInt;
             }
             else if (printHeader) {
                 std::cout << Form("  -> WARNING [%s]: integrated sidebands have only %d/%d points "
                                   "(need >= %d). No integrated result produced.",
-                                  extractionName.Data(), grBkgInt->GetN(), grBkgNumInt->GetN(),
+                                  extractionName.Data(), grBkgInt->GetN(), grRingBkgInt->GetN(),
                                   cfgInt.minSidebandPoints) << std::endl;
             }
-            delete grBkgInt; delete grBkgNumInt;
+            delete grBkgInt; delete grRingBkgInt;
         }
         delete peakInt.fit; // Never attached to a histogram here, so we own it
     } // end of step 8 conditionals
@@ -2279,7 +2677,7 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
             // PerformSimultaneousFitQA expects from a pure pol2 at par[0..2].
             // (PerformSimultaneousFitQA takes a pol2 function as input!)
             TF1* bkgInitGuessFunc = new TF1(Form("bkgInitGuess_%s", extractionName.Data()),
-                                            Form("pol%d", cfgInt.bkgPolOrder), massMin, massMax);
+                                            PolShifted(cfgInt.bkgPolOrder, cfgInt.muInitGuess), massMin, massMax);
             bkgInitGuessFunc->SetParameter(0, preFit->GetParameter(3)); // c0
             bkgInitGuessFunc->SetParameter(1, preFit->GetParameter(4)); // c1
             bkgInitGuessFunc->SetParameter(2, preFit->GetParameter(5)); // c2
@@ -2493,7 +2891,9 @@ TH1D* CountsFromProfile(TProfile* prof, const char* name)
         h->SetBinContent(i, n);
         h->SetBinError(i, std::sqrt(std::max(n, 0.0)));
     }
-    h->SetEntries(prof->GetEntries());
+    // ResetStats rather than SetEntries: it recomputes the statistics from the bin contents,
+    // so GetEntries() reports the candidate count the extraction gates on, not the profile's fill count.
+    h->ResetStats();
     return h;
 }
 
@@ -2565,7 +2965,13 @@ void DrawFitQACanvas(TH1* h, TF1* fit, const char* canvasName, const char* canva
 {
     if (!h || !outDir) return;
 
-    gStyle->SetOptStat(10);  // Entries only
+    // OptStat is deliberately OFF here. TPaveStats lives in the histogram's function list and is
+    // carried across by Clone(), so a cloned histogram inherits the box of whatever it was cloned
+    // from and c->Update() reuses it rather than rebuilding. That is how these canvases came to
+    // show an entry count belonging to a different object -- billions where the profile held
+    // hundreds of millions. The count is now written into the TPaveText below, from a source that
+    // cannot be inherited by accident.
+    gStyle->SetOptStat(0);
     gStyle->SetOptFit(111);  // chi2/ndf, values and errors; no probability line
 
     TCanvas* c = new TCanvas(canvasName, canvasTitle, 900, 650);
@@ -2604,7 +3010,7 @@ void DrawFitQACanvas(TH1* h, TF1* fit, const char* canvasName, const char* canva
     if (stats) {
         // Set the options ON THE OBJECT, not only on gStyle, so they are serialised with the
         // canvas and survive whatever global style the reader happens to have active.
-        stats->SetOptStat(10);
+        stats->SetOptStat(0);
         stats->SetOptFit(111);
         stats->SetX1NDC(0.60); stats->SetX2NDC(0.90);
         stats->SetY1NDC(0.58); stats->SetY2NDC(0.90);
@@ -2663,8 +3069,8 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
     hStatus->GetXaxis()->SetBinLabel(4, "sidebandPoints");
     hStatus->GetXaxis()->SetBinLabel(5, "bkgPolOrder");
     hStatus->SetBinContent(5, cfg.bkgPolOrder);
-    hStatus->GetXaxis()->SetBinLabel(6, "bkgNumPolOrder");
-    hStatus->SetBinContent(6, cfg.bkgNumPolOrder);
+    hStatus->GetXaxis()->SetBinLabel(6, "ringBkgPolOrder");
+    hStatus->SetBinContent(6, cfg.ringBkgPolOrder);
 
     auto bail = [&](const char* why) {
         std::cout << Form("  [Integrated %s] NO RESULT: %s", spec.label, why) << std::endl;
@@ -2727,40 +3133,42 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
     TGraphErrors* grBkg = BuildSidebandGraph(hCounts, peak.mu, peak.sigma, massMin, massMax, cfg,
                                              SidebandGraphKind::Counts, &span,
                                              Form("grBkgInt_%s", spec.name));
-    TGraphErrors* grBkgNum = BuildSidebandGraph(hNum, peak.mu, peak.sigma, massMin, massMax, cfg,
-                                                SidebandGraphKind::Numerator, nullptr,
-                                                Form("grBkgNumInt_%s", spec.name));
+    TGraphErrors* grRingBkg = BuildRingSidebandGraph(hCounts, hNum, peak.mu, peak.sigma,
+                                                    massMin, massMax, cfg,
+                                                    Form("grRingBkg_%s", spec.name));
     hStatus->SetBinContent(4, span.nPointsLeft + span.nPointsRight);
 
     std::cout << Form("    sidebands: %s -> %d left + %d right = %d points (need >= %d; counts pol%d, "
-                      "numerator pol%d)",
+                      "<R>_bkg pol%d)",
                       SidebandBandLabel(cfg).Data(), span.nPointsLeft, span.nPointsRight,
-                      grBkg->GetN(), cfg.minSidebandPoints, cfg.bkgPolOrder, cfg.bkgNumPolOrder) << std::endl;
+                      grBkg->GetN(), cfg.minSidebandPoints, cfg.bkgPolOrder, cfg.ringBkgPolOrder) << std::endl;
 
-    if (grBkg->GetN() < cfg.minSidebandPoints || grBkgNum->GetN() < cfg.minSidebandPoints) {
+    if (grBkg->GetN() < cfg.minSidebandPoints || grRingBkg->GetN() < cfg.minSidebandPoints) {
         bail("too few sideband points for the background polynomial");
-        delete grBkg; delete grBkgNum; delete hPeakSource; delete hCounts; delete hNum;
+        delete grBkg; delete grRingBkg; delete hPeakSource; delete hCounts; delete hNum;
         return;
     }
 
-    TF1* bkgFit = new TF1(Form("bkgFitInt_%s", spec.name), Form("pol%d", cfg.bkgPolOrder), massMin, massMax);
-    TF1* bkgNumFit = new TF1(Form("bkgNumFitInt_%s", spec.name), Form("pol%d", cfg.bkgNumPolOrder), massMin, massMax);
+    TF1* bkgFit = new TF1(Form("bkgFitInt_%s", spec.name),
+                          PolShifted(cfg.bkgPolOrder, cfg.muInitGuess), massMin, massMax);
+    TF1* ringBkgFit = new TF1(Form("ringBkgFitInt_%s", spec.name),
+                             PolShifted(cfg.ringBkgPolOrder, cfg.muInitGuess), massMin, massMax);
     TFitResultPtr rBkg = grBkg->Fit(bkgFit, "Q 0 S");
-    TFitResultPtr rBkgNum = grBkgNum->Fit(bkgNumFit, "Q 0 S");
+    TFitResultPtr rRingBkg = grRingBkg->Fit(ringBkgFit, "Q 0 S");
 
-    if (!rBkg->IsValid() || !rBkgNum->IsValid()) {
+    if (!rBkg->IsValid() || !rRingBkg->IsValid()) {
         bail(Form("a sideband fit failed (counts status %d, numerator status %d)",
-                  rBkg->Status(), rBkgNum->Status()));
-        delete bkgFit; delete bkgNumFit; delete grBkg; delete grBkgNum;
+                  rBkg->Status(), rRingBkg->Status()));
+        delete bkgFit; delete ringBkgFit; delete grBkg; delete grRingBkg;
         delete hPeakSource; delete hCounts; delete hNum;
         return;
     }
 
     PeakWindowYields y = ComputePeakWindowYields(hCounts, hNum, peak.mu, peak.sigma, cfg.nSigmaPeak,
-                                                 bkgFit, rBkg, bkgNumFit, rBkgNum);
+                                                 bkgFit, rBkg, ringBkgFit, rRingBkg);
     if (!y.valid) {
         bail("the yield computation rejected the result (signal counts are non-positive)");
-        delete bkgFit; delete bkgNumFit; delete grBkg; delete grBkgNum;
+        delete bkgFit; delete ringBkgFit; delete grBkg; delete grRingBkg;
         delete hPeakSource; delete hCounts; delete hNum;
         return;
     }
@@ -2824,7 +3232,15 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
 
     // --- QA canvases ---------------------------------------------------------------------------
     TF1* fPeakDraw = peak.fit;
+    // Candidate counts stated explicitly rather than left to a TPaveStats. The sum of the profile's
+    // own bin entries is the number that actually fed the extraction; TH1::GetEntries() is a fill
+    // counter that can drift from it, and on a clone it may not even belong to this histogram.
+    double profCandidates = 0.0;
+    for (int i = 1; i <= prof->GetNbinsX(); ++i) profCandidates += prof->GetBinEntries(i);
+    double peakSrcCandidates = hPeakSource->Integral();
+
     std::vector<TString> massLines = {
+        Form("candidates in the spectrum: %.0f", peakSrcCandidates),
         Form("#mu = %.5f, #sigma = %.5f GeV/c^{2} (%.3f MeV)", peak.mu, peak.sigma, peak.sigma * 1000.0),
         Form("signal window [%.5f, %.5f] = [-%.2f, +%.2f] #sigma", y.xLow, y.xHigh,
              y.nSigmaAchievedLow, y.nSigmaAchievedHigh),
@@ -2838,10 +3254,11 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
                     massLines, y.xLow, y.xHigh, dirQA);
 
     std::vector<TString> ringLines;
+    ringLines.push_back(Form("candidates in this profile: %.0f", profCandidates));
     ringLines.push_back(Form("sideband band: %s, %d + %d points",
                              SidebandBandLabel(cfg).Data(), span.nPointsLeft, span.nPointsRight));
-    for (int ip = 0; ip <= cfg.bkgNumPolOrder; ++ip)
-        ringLines.push_back(Form("p%d = %+.6e #pm %.3e", ip, bkgNumFit->GetParameter(ip), bkgNumFit->GetParError(ip)));
+    for (int ip = 0; ip <= cfg.ringBkgPolOrder; ++ip)
+        ringLines.push_back(Form("p%d = %+.6e #pm %.3e", ip, ringBkgFit->GetParameter(ip), ringBkgFit->GetParError(ip)));
     ringLines.push_back(Form("<R>_{meas} = %+.6f #pm %.6f", y.R_peak, y.errR_peak));
     ringLines.push_back(Form("<R>_{S} = %+.6f #pm %.6f", y.R_S, y.errR_S));
     ringLines.push_back(Form("<R>_{B} = %+.6f #pm %.6f", y.R_B, y.errR_B));
@@ -2851,30 +3268,22 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
     profDraw->SetTitle(Form("%s: <R> vs mass;m_{p#pi} (GeV/c^{2});<R>", spec.label));
     // The numerator background is fitted as a DENSITY of Sum_R, so dividing by the counts density
     // is what turns it into the <R> the profile shows. Drawn over the profile's own range only.
-    // Built as an explicit ratio of the two fitted polynomials rather than a capturing lambda:
-    // the TF1 lambda constructor is ambiguous on some ROOT versions, and a formula string keeps the
-    // function self-describing when the canvas is reopened.
-    TString ringBkgFormula = "(";
-    for (int ip = 0; ip <= cfg.bkgNumPolOrder; ++ip)
-        ringBkgFormula += Form("%+.10e*pow(x,%d)", bkgNumFit->GetParameter(ip), ip);
-    ringBkgFormula += ")/(";
-    for (int ip = 0; ip <= cfg.bkgPolOrder; ++ip)
-        ringBkgFormula += Form("%+.10e*pow(x,%d)", bkgFit->GetParameter(ip), ip);
-    ringBkgFormula += ")";
-    TF1* fRingBkg = new TF1(Form("fRingBkg_%s", spec.name), ringBkgFormula, massMin, massMax);
+    // <R>_bkg(m) is now fitted DIRECTLY, so this is simply that function -- no longer a ratio of
+    // two polynomials, which is what used to give it poles and a shape with no physical meaning.
+    TF1* fRingBkg = (TF1*)ringBkgFit->Clone(Form("fRingBkg_%s", spec.name));
     DrawFitQACanvas(profDraw, fRingBkg,
                     Form("cRingVsMass_%s", spec.name),
                     Form("%s: <R> vs mass with the sideband background", spec.label),
-                    Form("<R>_{bkg}(m) = pol%d_{num}(m) / pol%d_{counts}(m)",
-                         cfg.bkgNumPolOrder, cfg.bkgPolOrder),
+                    Form("<R>_{bkg}(m) = pol%d in (m - %.5f), fitted to the sidebands",
+                         cfg.ringBkgPolOrder, cfg.muInitGuess),
                     ringLines, y.xLow, y.xHigh, dirQA);
 
     // Keep the sideband graphs and the fitted functions, so the QA canvases can be re-derived.
     dirQA->cd();
     grBkg->Write(Form("grSidebandCounts_%s", spec.name));
-    grBkgNum->Write(Form("grSidebandNumerator_%s", spec.name));
+    grRingBkg->Write(Form("grSidebandRingObservable_%s", spec.name));
     bkgFit->Write(Form("fBkgCounts_%s", spec.name));
-    bkgNumFit->Write(Form("fBkgNumerator_%s", spec.name));
+    ringBkgFit->Write(Form("fRingBkgFit_%s", spec.name));
 
     dirProxy->cd();
     for (auto* h : outputs) { h->Write(); delete h; }
@@ -2884,7 +3293,7 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
 
     delete hYields; delete hWindow; delete hStatus;
     delete fRingBkg; delete profDraw;
-    delete bkgFit; delete bkgNumFit; delete grBkg; delete grBkgNum;
+    delete bkgFit; delete ringBkgFit; delete grBkg; delete grRingBkg;
     delete hPeakSource; delete hCounts; delete hNum;
     delete peak.fit;
 }
@@ -2975,7 +3384,7 @@ void PerformDenominatorQA(TH1D* hMassSigExtract, TDirectory* outDir,
     // pol2 background fit (same degree as in ExtractObservable2D)
     TF1* fitBkg = new TF1(
         Form("fDenomQA_Bkg_%s", qaName.Data()),
-        Form("pol%d", cfg.bkgPolOrder), massMin, massMax
+        PolShifted(cfg.bkgPolOrder, cfg.muInitGuess), massMin, massMax
     );
     fitBkg->SetLineColor(kGreen + 2);
     fitBkg->SetLineWidth(2);
@@ -3350,7 +3759,7 @@ void PerformSelectionCutFlowExtraction(TH2D* h2dSelectionMass,
         }
 
         TF1* bkgFitFunc = new TF1(Form("bkgFit_%s_Cut%02d", tag.Data(), iCut),
-                                  Form("pol%d", cfg.bkgPolOrder), massMin, massMax);
+                                  PolShifted(cfg.bkgPolOrder, cfg.muInitGuess), massMin, massMax);
         TFitResultPtr rBkg = grBkg->Fit(bkgFitFunc, "Q 0 S");
 
         if (!rBkg->IsValid()) {
@@ -3585,8 +3994,8 @@ void PrintUsage(const char* exeName)
         << "                              <= 0 means the edges of the mass axis        [" << d.nSigmaExclusionOuter << "]\n"
         << "  --bkgPolOrder=<n>           Order of the polN fitted to the counts\n"
         << "                              sideband                                     [" << d.bkgPolOrder << "]\n"
-        << "  --bkgNumPolOrder=<n>        Order of the polN fitted to the numerator\n"
-        << "                              (Sum_R) sideband                             [" << d.bkgNumPolOrder << "]\n"
+        << "  --ringBkgPolOrder=<n>       Order of the polN fitted to <R>_bkg(m) in\n"
+        << "                              the sidebands (0 = flat)                     [" << d.ringBkgPolOrder << "]\n"
         << "  --minSidebandPoints=<n>     Points required before fitting a sideband;\n"
         << "                              <= 0 derives it as bkgPolOrder + 3           [" << d.minSidebandPoints << "]\n"
         << "  --minSidebandCounts=<x>     Raw counts required in the sidebands         [" << d.minSidebandCounts << "]\n"
@@ -3636,7 +4045,7 @@ bool ParseCommandLine(int argc, char** argv, ExtractionConfigSet& configs, bool&
         else if (key == "nSigmaExclusion")      applyToAll([](SidebandConfig& c, double v){ c.nSigmaExclusion = v; }, val);
         else if (key == "nSigmaExclusionOuter") applyToAll([](SidebandConfig& c, double v){ c.nSigmaExclusionOuter = v; }, val);
         else if (key == "bkgPolOrder")          applyToAll([](SidebandConfig& c, double v){ c.bkgPolOrder = int(v); c.minSidebandPoints = 0; }, val);
-        else if (key == "bkgNumPolOrder")       applyToAll([](SidebandConfig& c, double v){ c.bkgNumPolOrder = int(v); c.minSidebandPoints = 0; }, val);
+        else if (key == "ringBkgPolOrder")      applyToAll([](SidebandConfig& c, double v){ c.ringBkgPolOrder = int(v); c.minSidebandPoints = 0; }, val);
         else if (key == "minSidebandPoints")    applyToAll([](SidebandConfig& c, double v){ c.minSidebandPoints = int(v); }, val);
         else if (key == "minSidebandCounts")    applyToAll([](SidebandConfig& c, double v){ c.minSidebandCounts = v; }, val);
         else if (key == "minEntries")           applyToAll([](SidebandConfig& c, double v){ c.minEntries = v; }, val);
@@ -3743,9 +4152,9 @@ int main(int argc, char** argv) {
         std::cout << "  Extraction windows:" << std::endl;
         std::cout << Form("    signal   : %s", SignalWindowLabel(c).Data()) << std::endl;
         std::cout << Form("    sidebands: %s", SidebandBandLabel(c).Data()) << std::endl;
-        std::cout << Form("    bkg model: counts pol%d, numerator pol%d, needing >= %d points "
+        std::cout << Form("    bkg model: counts pol%d, <R>_bkg pol%d, needing >= %d points "
                           "and > %.1f raw counts",
-                          c.bkgPolOrder, c.bkgNumPolOrder, c.minSidebandPoints, c.minSidebandCounts) << std::endl;
+                          c.bkgPolOrder, c.ringBkgPolOrder, c.minSidebandPoints, c.minSidebandCounts) << std::endl;
         std::cout << Form("    gates    : >= %.0f entries and > %.0f integral per spectrum",
                           c.minEntries, c.minIntegral) << std::endl;
         std::cout << Form("    peak fit : mu init %.5f +/- %.3f, sigma init %.5f in [%.4f, %.4f]",
@@ -3981,9 +4390,13 @@ int main(int argc, char** argv) {
                           << prof->GetXaxis()->GetNbins() << " angular bins, "
                           << prof->GetEntries() << " entries)..." << std::endl;
 
+                // CombinePerBin: no projection over phi_Lambda - phi_p*. See the note at the top
+                // of the combination helpers -- projecting first would undo the entire reason this
+                // folder splits on an angular variable across which <R> changes sign.
                 ExtractObservable2D(counts, prof, aeeOut, spec.outName, spec.axisTitle,
                                     aeeMassMin, aeeMassMax,
-                                    configs.perBin, configs.integrated);
+                                    configs.perBin, configs.integrated,
+                                    IntegralMode::CombinePerBin);
                 delete counts;
                 nDone++;
             }
@@ -4295,7 +4708,8 @@ int main(int argc, char** argv) {
             TProfile2D* p2dPhi_Lpt = ConvertToProfile2D(h2dCorrErrNumPhi_Lpt, h2dCountsPhi_Lpt, Form("p2dPhi_Lpt_%s", ptStr.Data()));
 
             // Send to helper!
-            ExtractObservable2D(h2dCountsPhi_Lpt, p2dPhi_Lpt, dir3D_LambdaPt, Form("DeltaPhi_%s", ptStr.Data()), "#Delta#phi", massMin, massMax, configs.perBin, configs.integrated, false);
+            ExtractObservable2D(h2dCountsPhi_Lpt, p2dPhi_Lpt, dir3D_LambdaPt, Form("DeltaPhi_%s", ptStr.Data()), "#Delta#phi", massMin, massMax, configs.perBin, configs.integrated,
+                            IntegralMode::ProjectThenExtract, false);
             delete p2dPhi_Lpt;          // We own all three now
             delete h2dCountsPhi_Lpt;
             delete h2dCorrErrNumPhi_Lpt;
@@ -4314,7 +4728,8 @@ int main(int argc, char** argv) {
             TProfile2D* p2dTheta_Lpt = ConvertToProfile2D(h2dNumCorrErrTheta_Lpt, h2dCountsTheta_Lpt, Form("p2dTheta_Lpt_%s", ptStr.Data()));
 
             // Send to helper!
-            ExtractObservable2D(h2dCountsTheta_Lpt, p2dTheta_Lpt, dir3D_LambdaPt, Form("DeltaTheta_%s", ptStr.Data()), "#Delta#theta", massMin, massMax, configs.perBin, configs.integrated, false);
+            ExtractObservable2D(h2dCountsTheta_Lpt, p2dTheta_Lpt, dir3D_LambdaPt, Form("DeltaTheta_%s", ptStr.Data()), "#Delta#theta", massMin, massMax, configs.perBin, configs.integrated,
+                            IntegralMode::ProjectThenExtract, false);
             delete p2dTheta_Lpt;
             delete h2dCountsTheta_Lpt;
             delete h2dNumCorrErrTheta_Lpt;
@@ -4345,7 +4760,8 @@ int main(int argc, char** argv) {
 
             // Convert the TH2D with corrected error bars into a TProfile2D so ExtractObservable2D can keep its TProfile2D signature:
             TProfile2D* p2dPhi_Jpt = ConvertToProfile2D(h2dNumCorrErrPhi_Jpt, h2dCountsPhi_Jpt, Form("p2dPhi_Jpt_%s", ptStr.Data()));
-            ExtractObservable2D(h2dCountsPhi_Jpt, p2dPhi_Jpt, dir3D_LeadJetPt, Form("DeltaPhi_%s", ptStr.Data()), "#Delta#phi", massMin, massMax, configs.perBin, configs.integrated, false);
+            ExtractObservable2D(h2dCountsPhi_Jpt, p2dPhi_Jpt, dir3D_LeadJetPt, Form("DeltaPhi_%s", ptStr.Data()), "#Delta#phi", massMin, massMax, configs.perBin, configs.integrated,
+                            IntegralMode::ProjectThenExtract, false);
             delete p2dPhi_Jpt;
             delete h2dCountsPhi_Jpt;
             delete h2dNumCorrErrPhi_Jpt;
@@ -4361,7 +4777,8 @@ int main(int argc, char** argv) {
 
             // Convert the TH2D with corrected error bars into a TProfile2D so ExtractObservable2D can keep its TProfile2D signature:
             TProfile2D* p2dTheta_Jpt = ConvertToProfile2D(h2dNumCorrErrTheta_Jpt, h2dCountsTheta_Jpt, Form("p2dTheta_Jpt_%s", ptStr.Data()));
-            ExtractObservable2D(h2dCountsTheta_Jpt, p2dTheta_Jpt, dir3D_LeadJetPt, Form("DeltaTheta_%s", ptStr.Data()), "#Delta#theta", massMin, massMax, configs.perBin, configs.integrated, false);
+            ExtractObservable2D(h2dCountsTheta_Jpt, p2dTheta_Jpt, dir3D_LeadJetPt, Form("DeltaTheta_%s", ptStr.Data()), "#Delta#theta", massMin, massMax, configs.perBin, configs.integrated,
+                            IntegralMode::ProjectThenExtract, false);
             delete p2dTheta_Jpt;
             delete h2dCountsTheta_Jpt;
             delete h2dNumCorrErrTheta_Jpt;
