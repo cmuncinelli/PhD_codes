@@ -50,12 +50,8 @@ echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
 #
 # Concurrency:
 #   Steps 1-5 of a wagon are run by one lane per species (BothHyperons, JustLambda,
-#   JustAntiLambda), all lanes at once, each bound to a single NUMA node. Within a
-#   lane the MixedEventProxies config runs last: it costs roughly 60x a regular
-#   config, so every lane reaches its mixing job at about the same time and the
-#   machine stays occupied instead of tailing out on one long job. Steps 6 and 7
-#   aggregate across all configs of a wagon, so they run serially after the lanes
-#   have joined.
+#   JustAntiLambda), all lanes at once, each bound to a single NUMA node. Steps 6 and 7
+#   aggregate across all configs of a wagon, so they run serially after the lanes have joined.
 #
 # Arguments:
 #   REGISTRY (optional):
@@ -147,8 +143,8 @@ FORENSICS_TMP_DIR=""
 LANE_SPECIES=("BothHyperons" "JustLambda" "JustAntiLambda")
 LANE_OTHER_TAG="Unclassified"
 
-# Config that goes last in every lane (see the concurrency note in the header).
-LANE_TAIL_PATTERN="_MixedEventProxies"
+# # Config that goes last in every lane: # No longer needed! Event mixing was fixed in the newer versions
+# LANE_TAIL_PATTERN="_MixedEventProxies"
 
 # ==============================================================================
 # ARGUMENT PARSING
@@ -386,15 +382,13 @@ for CONFIG_FILE in "${CONFIG_FILES[@]}"; do
   echo "$CONFIG_FILE" >> "${RUN_TMP_DIR}/lane_${MATCHED_TAG}.list"
 done
 
-# Order within each lane: everything else first, the long mixing config last.
+# Order within each lane:
 # Empty lanes are dropped so the catch-all costs nothing when it matches nothing.
 for TAG in "${LANE_SPECIES[@]}" "$LANE_OTHER_TAG"; do
   LANE_LIST="${RUN_TMP_DIR}/lane_${TAG}.list"
   [ -s "$LANE_LIST" ] || continue
-  {
-    grep -v -- "$LANE_TAIL_PATTERN" "$LANE_LIST" | sort
-    grep    -- "$LANE_TAIL_PATTERN" "$LANE_LIST" | sort
-  } > "${LANE_LIST}.ordered"
+  
+  sort "$LANE_LIST" > "${LANE_LIST}.ordered"
   mv "${LANE_LIST}.ordered" "$LANE_LIST"
   LANE_TAGS+=("$TAG")
 done
