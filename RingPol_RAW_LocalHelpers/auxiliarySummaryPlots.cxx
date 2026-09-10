@@ -2233,6 +2233,43 @@ SigExtractPoint FetchIntegratedFromCuts(FileCache& cache, const std::string& fil
 }
 
 /**
+ * @brief The integrated <R> split by mass window, from IntegratedCuts/p2dRingCuts*V0MassPeak.
+ *
+ * Same X axis as the one-dimensional pRingCuts profiles -- bin 1 is "All Lambda" -- crossed with a
+ * two-state mass flag on Y, where BIN 1 is strictly OUT of the mass peak and BIN 2 strictly IN it.
+ * (Bin numbers, not fill values: the consumer fills 0 and 1 on a {2, 0, 2} axis.)
+ *
+ * README: this is the cheap counterpart to signalExtractionRing and is deliberately independent of
+ * it -- no fit, no sideband model, nothing to go wrong quietly. It answers "how far does the
+ * background pull the integrated number?" rather than "what is the signal?", and a large gap
+ * between the two canvases is the warning that the extraction has real work to do.
+ *
+ * @param inPeak true selects Y bin 2, false selects Y bin 1.
+ */
+SigExtractPoint FetchIntegratedByMassPeak(FileCache& cache, const std::string& filePath,
+                                          const std::string& proxy, bool inPeak) {
+    SigExtractPoint out;
+    std::string obj;
+    if (proxy == "LeadJet")     obj = "p2dRingCutsV0MassPeak";
+    else if (proxy == "LeadP")  obj = "p2dRingCutsLeadingPV0MassPeak";
+    else if (proxy == "SubJet") obj = "p2dRingCutsSubLeadingJetV0MassPeak";
+    else return out;
+
+    TProfile2D* p = cache.FetchClone<TProfile2D>(filePath,
+                                                 TASK_DIR_IN_FILE + "IntegratedCuts/" + obj, false);
+    if (!p) return out;
+    const int yBin = inPeak ? 2 : 1;
+    const int gBin = p->GetBin(1, yBin); // X bin 1 is "All Lambda"
+    if (p->GetBinEntries(gBin) > 0) {
+        out.value = p->GetBinContent(gBin);
+        out.error = p->GetBinError(gBin);
+        out.found = true;
+    }
+    delete p;
+    return out;
+}
+
+/**
  * @brief Reads one single-bin histogram out of a signalExtractionRing output file.
  *
  * @param cache         Shared file cache; the extraction files are opened at most once each.
@@ -2458,16 +2495,17 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
     // The data config (empty suffix) is handled separately in the logic to ensure it is always first
     // Field order after isData: inRedux, inPtGateStudy, inEtaGateStudy.
     std::vector<VariationConfig> sysVariations = {
-        //  suffix                          legend                       colour     ls  mk  data  redux  ptGate etaGate
-        {"_forceRandJet",                 "Rand Jet",                  kBlue,     1, 20, false, true,  true,  true},  // Full circle
+        // suffix                          legend                      colour     ls mk  data   redux  ptGate etaGate
+        {"_forceRandJet",                 "Rand Jet",                  kBlue,     1, 20, false, false,  true,  true}, // Full circle
         // Data-like is off the reduced canvas because it is the crudest of the mixing proxies: a
         // cheap event mixing, cheaper even than prevJet, which does not carry the correlations
         // between the angular distributions in full. It remains on the full systematics canvas and
         // in the pT gate study.
         {"_forceDatalikeJet",             "Data-like Jet",             kRed,      1, 21, false, false, true,  false}, // Square
         {"_forcePerpToJet",               "Perp to Jet",               kGreen+2,  1, 22, false, true,  true,  true},  // Triangle up
-        {"_forcePreviousJet",             "Prev Jet",                  kOrange+1, 1, 34, false, true,  false, false}, // Full cross (bold "+")
-        {"_MixedEventProxies",            "MixedEv Jet",               kGray+1,   1, 24, false, true,  false, false}, // Open circle
+        {"_forcePreviousJet",             "Prev Jet",                  kOrange+1, 1, 34, false, false, false, false}, // Full cross (bold "+")
+        {"_MixedEventProxies",            "MixedEv Jet",               kGray+2,   1, 24, false, true,  false, false}, // Open circle
+        {"_MixedEventProxies_10ColGap",   "MixedEv Jet (10coll gap)",  kGray+1,   2, 25, false, false, false, false}, // Open circle, dashed line
 
         // Do the artificial proxies survive a minimum-pT gate? The pT of an invented direction is rebuilt from
         // the original |p| (see gatePtOnArtificialProxies in applyProxyDistortion), so gating on it is a genuine
@@ -3514,166 +3552,13 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     }
                 }
 
-                // --- 5b. Per-observable integrated summary ---
-                // One bin per variation, one point in each: the plain value, its significance from zero,
-                // the difference against the data, and that difference's significance. This is a genuinely
-                // different view from the family-level brute force, which puts the OBSERVABLE on the axis
-                // and so cannot resolve the variations against one another.
-                {
-                    TDirectory* integObsDir = EnsureDir(obsDir, "IntegratedSummary");
-
-                    std::vector<std::string> integLabels;
-                    std::vector<std::pair<double, double>> integVals; // {value, error} per variation
-                    std::vector<VariationConfig> integConfigs;
-
-                    for (const auto& b2 : allSystematics) {
-                        integLabels.push_back(b2.config.legendLabel);
-                        integConfigs.push_back(b2.config);
-                        integVals.push_back(GetIntegratedProfile(dynamic_cast<TProfile*>(b2.profile)));
-                    }
-                    for (const auto& ext : presentExternals) {
-                        integLabels.push_back(ext.second.config.legendLabel);
-                        integConfigs.push_back(ext.second.config);
-                        integVals.push_back(GetIntegratedProfile(dynamic_cast<TProfile*>(ext.second.profile)));
-                    }
-
-                    // --- The signal-extracted value, as its own column ------------------------
-                    // Everything else on this axis is an integral of a consumer profile, i.e. the
-                    // entry-weighted mean over ALL candidates, signal and background together. This
-                    // column is <R>_S from the sideband subtraction, so it is the only entry here
-                    // whose background has been removed -- which is exactly why it is worth having
-                    // beside them rather than in a folder of its own.
-                    //
-                    // Its error is NOT a profile SEM. It carries the full propagation done in
-                    // signalExtractionRing: the correlation between the peak counts and the peak
-                    // numerator, the correlation between the sideband counts and the sideband
-                    // <R>_bkg fit, and the covariance of the background polynomial. That is the
-                    // whole reason the number is fetched rather than recomputed here.
-                    // README: proxyTag doubles as the IntegratedSummary folder name, so no mapping
-                    // table is needed. Observables with no proxy tag get no column.
-                    bool hasSigExtractColumn = false;
-                    if (!sigExtractDir.empty() && !profConfig.proxyTag.empty()) {
-                        SigExtractPoint sp = FetchSigExtractPoint(cache, sigExtractDir, fam.dataSuffix,
-                                                                  cutFolder, profConfig.proxyTag,
-                                                                  "hIntegratedRSig");
-                        if (sp.found) {
-                            VariationConfig sigCfg;
-                            sigCfg.legendLabel = "Sig. extracted";
-                            sigCfg.color = kMagenta + 2;
-                            sigCfg.lineStyle = 1;
-                            sigCfg.markerStyle = 29; // Full star: this one is not a systematic
-                            sigCfg.isData = false;
-                            sigCfg.inRedux = true;   // Wanted on the reduced canvas above all
-                            integLabels.push_back(sigCfg.legendLabel);
-                            integConfigs.push_back(sigCfg);
-                            integVals.push_back({sp.value, sp.error});
-                            hasSigExtractColumn = true;
-                        }
-                    }
-                    (void)hasSigExtractColumn;
-
-                    const int nCats = static_cast<int>(integLabels.size());
-                    std::vector<ProfileBundle> bVal, bSub;
-                    std::vector<TH1*> integToDelete;
-
-                    for (int i = 0; i < nCats; ++i) {
-                        const double v = integVals[i].first;
-                        const double e = integVals[i].second;
-
-                        TH1D* hV = MakeCategoricalPoint(Form("IntVal_%d", i), i, nCats, v, e);
-                        bVal.push_back({hV, integConfigs[i]});
-                        integToDelete.push_back(hV);
-
-                        // The data bin is left empty on the difference canvas rather than removed, so its
-                        // axis and labels stay identical to the value canvas above it
-                        if (i == 0) continue;
-
-                        const double d  = integVals[0].first;
-                        const double ed = integVals[0].second;
-                        const double diff = d - v;
-                        const double ediff = std::sqrt(ed * ed + e * e);
-
-                        TH1D* hS = MakeCategoricalPoint(Form("IntSub_%d", i), i, nCats, diff, ediff);
-                        bSub.push_back({hS, integConfigs[i]});
-                        integToDelete.push_back(hS);
-                    }
-
-                    // Two canvases rather than four: the significance now rides along as a lower panel,
-                    // so the value and how far it sits from zero are read off the same plot.
-                    const std::string yInt = "Integrated " + profConfig.yAxisTitle;
-                    DrawIntegratedCanvas(bVal, integLabels, "Canvas_Integrated",
-                                         fam.familyName + " integrated " + ObservableDisplayName(profConfig),
-                                         integObsDir, yInt, false, false, true);
-                    if (!bSub.empty()) {
-                        DrawIntegratedCanvas(bSub, integLabels, "Canvas_Integrated_Subtracted",
-                                             fam.familyName + " integrated difference, " + ObservableDisplayName(profConfig),
-                                             integObsDir, "#Delta" + profConfig.yAxisTitle + " (Data - Var)",
-                                             true, false, true);
-                    }
-
-                    // --- Reduced and gate-study versions of the same axis ---------------------
-                    // Rebuilding the categorical points rather than filtering the ones above,
-                    // because MakeCategoricalPoint places each point by its index within the axis:
-                    // dropping entries from a finished set would leave gaps where the removed
-                    // columns used to be.
-                    // README: same membership flags as the differential canvases.
-                    auto drawIntegratedSubset = [&](std::function<bool(const VariationConfig&)> keep,
-                                                    const std::string& name, const std::string& title,
-                                                    TDirectory* dir) {
-                        std::vector<int> pick;
-                        for (int i = 0; i < nCats; ++i)
-                            if (i == 0 || keep(integConfigs[i])) pick.push_back(i);
-                        if (pick.size() < 2) return;
-
-                        const int nSub = static_cast<int>(pick.size());
-                        std::vector<std::string> subLabels;
-                        std::vector<ProfileBundle> sVal, sSub;
-                        std::vector<TH1*> subToDelete;
-
-                        for (int k = 0; k < nSub; ++k) {
-                            const int i = pick[k];
-                            subLabels.push_back(integLabels[i]);
-
-                            TH1D* hV = MakeCategoricalPoint(Form("%s_V_%d", name.c_str(), k), k, nSub,
-                                                            integVals[i].first, integVals[i].second);
-                            sVal.push_back({hV, integConfigs[i]});
-                            subToDelete.push_back(hV);
-
-                            if (k == 0) continue; // Data column stays empty on the difference canvas
-                            const double diff = integVals[0].first - integVals[i].first;
-                            const double ediff = std::sqrt(integVals[0].second * integVals[0].second +
-                                                           integVals[i].second * integVals[i].second);
-                            TH1D* hS = MakeCategoricalPoint(Form("%s_S_%d", name.c_str(), k), k, nSub,
-                                                            diff, ediff);
-                            sSub.push_back({hS, integConfigs[i]});
-                            subToDelete.push_back(hS);
-                        }
-
-                        DrawIntegratedCanvas(sVal, subLabels, name,
-                                             fam.familyName + " " + title, dir, yInt, false, false, true);
-                        if (!sSub.empty())
-                            DrawIntegratedCanvas(sSub, subLabels, name + "_Subtracted",
-                                                 fam.familyName + " " + title + ", difference", dir,
-                                                 "#Delta" + profConfig.yAxisTitle + " (Data - Var)",
-                                                 true, false, true);
-                        for (auto p : subToDelete) delete p;
-                    };
-
-                    drawIntegratedSubset([](const VariationConfig& c) { return c.inRedux; },
-                                         "Canvas_Integrated_Redux",
-                                         "integrated " + ObservableDisplayName(profConfig) + " (reduced)",
-                                         integObsDir);
-
-                    TDirectory* integGateDir = EnsureDir(integObsDir, "GateStudies");
-                    drawIntegratedSubset([](const VariationConfig& c) { return c.inPtGateStudy; },
-                                         "Canvas_Integrated_PtGate",
-                                         "integrated, pT gate on artificial proxies", integGateDir);
-                    drawIntegratedSubset([](const VariationConfig& c) { return c.inEtaGateStudy; },
-                                         "Canvas_Integrated_EtaGate",
-                                         "integrated, #eta acceptance gate on artificial proxies",
-                                         integGateDir);
-                    for (auto q : integToDelete) delete q;
-                }
+                // NOTE: the per-observable IntegratedSummary block used to live here. It re-integrated
+                // each differential profile with GetIntegratedProfile, which recomputed a number the
+                // consumer already publishes in bin 1 of IntegratedCuts/pRingCuts*. That is now read
+                // directly, once per family, in <Family>/IntegratedSummary/<proxy>/.
+                // README: verified against the old values before removal. The only disagreements were
+                // the two known overflow cases (proxy pT, EtaV0) plus a small one on the centrality
+                // axis, still unexplained; in all three the consumer value is the one to report.
 
                 // Cross-family comparison: only the three representative observables are recorded, one per
                 // proxy, since anything else would just repeat one of them (same argument as above).
@@ -3823,6 +3708,44 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     vals.push_back({p.value, p.error});
                 }
 
+                // External references, in the same order they appear on every other categorical axis.
+                //
+                // MC and pp are consumer output, so they carry the same IntegratedCuts profiles and
+                // are read exactly like the variations above.
+                //
+                // The Toy Model has its own integrated object, TOY_SCENARIO_DIR/pRingProxyJet, a
+                // single-bin TProfile. Nothing is integrated here either: bin 1 is already the
+                // answer. Note pRingProxyJet, NOT pRingProxy -- the latter uses z-hat as the axis
+                // rather than a jet direction, and would be a different observable entirely.
+                // The same toy value is placed on all three proxy axes, which is the convention the
+                // differential plots already follow: the toy generates one random jet direction and
+                // one hyperon species, so it is a reference for the geometric effect rather than a
+                // per-proxy or per-species prediction.
+                for (const auto& ext : externals) {
+                    if (ext.basePath.empty()) continue;
+
+                    SigExtractPoint p;
+                    if (ext.kind == ExternalRef::kToyModel) {
+                        TProfile* pToy = GetToyModelProfile(cache, ext.basePath, "pRingProxyJet");
+                        if (pToy) {
+                            if (pToy->GetNbinsX() >= 1 && pToy->GetBinEntries(1) > 0) {
+                                p.value = pToy->GetBinContent(1);
+                                p.error = pToy->GetBinError(1);
+                                p.found = true;
+                            }
+                            delete pToy;
+                        }
+                    } else {
+                        const std::string extFile = ext.basePath + "/ConsumerResults_" + fam.dataSuffix + ".root";
+                        p = FetchIntegratedFromCuts(cache, extFile, proxy.folderName);
+                    }
+
+                    if (!p.found) continue;
+                    labels.push_back(ext.config.legendLabel);
+                    cfgs.push_back(ext.config);
+                    vals.push_back({p.value, p.error});
+                }
+
                 // The signal-extracted value, as an extra column. Its error carries the full
                 // propagation done in signalExtractionRing, so it is fetched, never recomputed.
                 if (!sigExtractDir.empty()) {
@@ -3897,6 +3820,79 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                          "Canvas_Integrated_PtGate", "integrated, pT gate", gDir);
                 emitAxis([](const VariationConfig& c) { return c.inEtaGateStudy; },
                          "Canvas_Integrated_EtaGate", "integrated, #eta acceptance gate", gDir);
+            }
+        }
+
+        // -----------------------------------------------------------------------------------
+        // CheapSigExtract: the same integrated axis, in and out of the mass peak
+        // -----------------------------------------------------------------------------------
+        // Two canvases of the same shape as Canvas_Integrated_Redux, one built from candidates
+        // strictly inside the mass window and one from candidates strictly outside it. The gap
+        // between them is how much the background moves the integrated number -- measured without
+        // fitting anything, so it cannot be wrong in the way a sideband model can.
+        {
+            const std::string dataFileCheap = consumerDir + "/ConsumerResults_" + fam.dataSuffix + ".root";
+            TDirectory* cheapDir = nullptr;
+
+            for (const auto& proxy : sigExtractProxies) {
+                for (int pass = 0; pass < 2; ++pass) {
+                    const bool inPeak = (pass == 0);
+                    std::vector<std::string> labels;
+                    std::vector<VariationConfig> cfgs;
+                    std::vector<std::pair<double, double>> vals;
+
+                    SigExtractPoint d = FetchIntegratedByMassPeak(cache, dataFileCheap,
+                                                                  proxy.folderName, inPeak);
+                    if (!d.found) continue;
+                    labels.push_back(dataConfig.legendLabel);
+                    cfgs.push_back(dataConfig);
+                    vals.push_back({d.value, d.error});
+
+                    for (const auto& sys : sysVariations) {
+                        if (!sys.inRedux) continue; // Redux membership, same flag as everywhere else
+                        const std::string f = consumerDir + "/ConsumerResults_" + fam.dataSuffix +
+                                              sys.suffix + ".root";
+                        SigExtractPoint p = FetchIntegratedByMassPeak(cache, f, proxy.folderName, inPeak);
+                        if (!p.found) continue;
+                        labels.push_back(sys.legendLabel);
+                        cfgs.push_back(sys);
+                        vals.push_back({p.value, p.error});
+                    }
+                    if (labels.size() < 2) continue;
+
+                    if (!cheapDir) cheapDir = EnsureDir(EnsureDir(fOut, fam.familyName), "CheapSigExtract");
+                    TDirectory* pxDir = EnsureDir(cheapDir, proxy.folderName);
+
+                    const int n = static_cast<int>(labels.size());
+                    const std::string tag = inPeak ? "InMassPeak" : "OutOfMassPeak";
+                    const std::string ttl = fam.familyName + " " + proxy.legendLabel + ", " +
+                                            (inPeak ? "in mass peak" : "out of mass peak");
+
+                    std::vector<ProfileBundle> bVal, bSub;
+                    std::vector<TH1*> del;
+                    for (int k = 0; k < n; ++k) {
+                        TH1D* hV = MakeCategoricalPoint(Form("Cheap_%s_%s_V_%d", tag.c_str(),
+                                                             proxy.folderName.c_str(), k),
+                                                        k, n, vals[k].first, vals[k].second);
+                        bVal.push_back({hV, cfgs[k]}); del.push_back(hV);
+                        if (k == 0) continue;
+                        const double diff = vals[0].first - vals[k].first;
+                        const double ediff = std::sqrt(vals[0].second * vals[0].second +
+                                                       vals[k].second * vals[k].second);
+                        TH1D* hS = MakeCategoricalPoint(Form("Cheap_%s_%s_S_%d", tag.c_str(),
+                                                             proxy.folderName.c_str(), k),
+                                                        k, n, diff, ediff);
+                        bSub.push_back({hS, cfgs[k]}); del.push_back(hS);
+                    }
+
+                    DrawIntegratedCanvas(bVal, labels, "Canvas_Integrated_Redux_" + tag, ttl,
+                                         pxDir, "Integrated <R>", false, false, true);
+                    if (!bSub.empty())
+                        DrawIntegratedCanvas(bSub, labels, "Canvas_Integrated_Redux_" + tag + "_Subtracted",
+                                             ttl + ", difference", pxDir,
+                                             "#Delta<R> (Data - Var)", true, false, true);
+                    for (auto p : del) delete p;
+                }
             }
         }
 

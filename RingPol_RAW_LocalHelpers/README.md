@@ -84,7 +84,7 @@ Every per-config macro takes the same two arguments, in essence:
 
 The output directory is explicit, not inferred from the input path, and is created recursively if absent. The output filename is derived from the input basename by substituting the prefix, e.g. `ConsumerResults_BothHyperons.root` becomes `ErrorPropagation_BothHyperons.root`.
 
-The two per-wagon macros differ: `auxiliarySummaryPlots.exe` takes `<consumerDir> [mcRefDir] [ppRefDir] [toyModelPath] [cutFolder]`, and `zvtxBitForensics.exe` takes a manifest and an output file (see its [appendix](#appendix----ao2d-bit-forensics-in-detail)).
+The two per-wagon macros differ: `auxiliarySummaryPlots.exe` takes `<consumerDir> [mcRefDir] [ppRefDir] [toyModelPath] [cutFolder] [doIndividualComparisons] [sigExtractDir]`, and `zvtxBitForensics.exe` takes a manifest and an output file (see its [appendix](#appendix----ao2d-bit-forensics-in-detail)).
 
 ## Kinematic-cut families
 
@@ -153,7 +153,9 @@ The exceptions are the consumer's own wrapper/batch logs and the two wagon-level
 
 ## `signalExtractionRing.cxx`
 
-**Step 3**, once per config. Output: `results_SigExtract/SignalExtraction_<SUFFIX>.root`.
+**Step 3**, once per config. Output: `results_SigExtract/signalExtractionRing_<SUFFIX>.root`.
+Takes the usual two positional arguments plus optional `--key=value` flags; `--help` lists them all
+with their current defaults.
 
 > Note to self: More documentation on this can be found on scribble "`10 - RingSignalExtractionSummary.pdf`" under my `Thesis/Summaries and LaTeX scribbles/` folder (local, not in this repo. Those are scribbles!)
 
@@ -174,15 +176,42 @@ Both $N_B$ and $\langle R\rangle_B$ under the peak come from extrapolating a sid
 
 ### How
 
-Per bin of the differential observable ($\Delta\phi$, $\Delta\theta$, and 3D slices in
-$p_{\rm T}^{\Lambda}$ and leading-jet $p_{\rm T}$):
+Per bin of the differential observable ($\Delta\phi$, $\Delta\theta$, the three jet-side $\eta$
+proxies, the $\phi_\Lambda - \phi_p^*$ AEE probe, and 3D slices in $p_{\rm T}^{\Lambda}$ and
+leading-jet $p_{\rm T}$):
 
 1. Project the mass spectrum and fit the peak for $\mu$ and $\sigma$.
-2. **Peak window** $[\mu - 4\sigma,\ \mu + 4\sigma]$, chosen to match the sigma0 analysis from Gianni, because it seemed very reasonable an analysis!
-3. **Sidebands** fitted beyond $\mu \pm 6\sigma$, leaving a $2\sigma$ guard band on each side, to guarantee we are not reaching for signal (still could be tuned over more complete analyses).
-4. Fit a second-order polynomial to the sidebands -- separately for the counts and for the ring numerator as a function of mass -- and integrate each over the peak window. In other words, **bin-counting**, then background subtraction via integrated background function (much safer than just fitting everything together! I tried it and the fits are honestly really bad -- it is all in a QA folder under the signal extraction's results, if you want to compare them).
+2. **Peak window** $[\mu - n_\sigma^{\rm peak}\sigma,\ \mu + n_\sigma^{\rm peak}\sigma]$.
+3. **Sidebands** between $n_\sigma^{\rm excl}$ and $n_\sigma^{\rm outer}$, leaving a guard band on
+   each side so that no signal is reached for.
+4. Fit a polynomial to the sideband **counts density**, and, separately, a low-order polynomial to
+   the sideband $\langle R\rangle(m)$. Integrate over the peak window. In other words,
+   **bin-counting**, then background subtraction via an integrated background function -- much safer
+   than fitting everything together, which is retained only as QA in `ResultsCombinedFit/`.
 
-Two quantities are extrapolated independently: the background **yield** $N_B$, and the background **ring numerator** $\sum_i r_i$, whose ratio is $\langle R\rangle_B$.
+Every window is a command-line option now; none of them is hardcoded, including in the plot labels.
+Run with `--help` for the full list and the current defaults.
+
+### The windows, and why the binning decides them
+
+The mass axis is finite and variable-width, so a request for $\mu \pm n\sigma$ is snapped to bin
+edges and comes back **asymmetric and wider than asked for**. The realized window is recorded per
+bin in `<extraction>/Diagnostics/` and per extraction in `hAchievedWindow`, and every log line quotes
+the achieved range next to the configured one. Plot labels carry the *configured* value; only the
+integrated canvases annotate the achieved one, where a single number is well defined.
+
+Two consequences worth internalising:
+
+- **The Gaussian coverage of the window must follow it.** The signal yield is the fitted Gaussian
+  integral times the fraction of it inside the realized window,
+  $\tfrac12\left[\mathrm{erf}\!\left(\tfrac{x_{\rm hi}-\mu}{\sigma\sqrt2}\right) -
+  \mathrm{erf}\!\left(\tfrac{x_{\rm lo}-\mu}{\sigma\sqrt2}\right)\right]$, which reduces to
+  $\mathrm{erf}(n/\sqrt2)$ for a symmetric window. A hardcoded constant tied to one $n$ (the file
+  once carried `0.9999366`, i.e. $\mathrm{erf}(4/\sqrt2)$) biases the yield by 4.7% at $n=2$.
+- **A bounded sideband band can be unfittable.** On a coarse mass axis a $[3\sigma, 5\sigma]$ band may
+  hold fewer points than the polynomial needs, in which case every bin is silently invalidated.
+  `main` therefore resolves the band once at startup, against the reference spectrum, and refuses to
+  run with a message naming the three ways out.
 
 ### Design constraints worth preserving
 
@@ -191,14 +220,41 @@ intervals with a gap between them. A `TH1` cannot express that: fitting over the
 include the peak, and a fit sub-range can only ever be one contiguous interval. A `TGraphErrors`
 holding only the sideband points states the domain exactly.
 
-**Sideband points are densities, not raw counts.** The mass axis is not uniformly binned, so raw
-per-bin counts would hand the fit a spurious shape that follows the binning. Each point is divided by
-its bin width; integrating over the peak window then recovers counts.
+**Counts are fitted as densities; $\langle R\rangle$ is not.** The mass axis is not uniformly binned,
+so raw per-bin counts would hand the fit a spurious shape that follows the binning. Counts and
+$\sum_i r_i$ are *extensive* -- they scale with bin width -- so dividing by the width is meaningful,
+and integrating over the peak window recovers counts. $\langle R\rangle$ is *intensive*: it does not
+scale with binning, and dividing it by a bin width would be meaningless.
 
-**Background uncertainty comes from `TF1::IntegralError`.** The three polynomial coefficients are
-strongly correlated, so adding their individual `GetParError` values in quadrature would be wrong.
-`IntegralError` uses the full covariance matrix from the fit result, which is the only correct way to
-propagate an extrapolated integral.
+**The background numerator comes from a fit to $\langle R\rangle(m)$, not to $\sum_i r_i$.** This is
+a correction to an earlier design and the reasoning matters. In the sidebands
+$\mathrm{d}(\sum_i r_i)/\mathrm{d}m = \langle R\rangle_B(m)\cdot \mathrm{d}N_B/\mathrm{d}m$. With the
+counts modelled as a `pol2` and $\langle R\rangle_B$ roughly constant, that product is itself a
+`pol2` -- so fitting $\sum_i r_i$ with a `pol1` asserted that a quadratic times a constant is linear,
+and the fit absorbed the mismatch by forcing $\langle R\rangle_B(m) = {\rm pol1}(m)/{\rm pol2}(m)$, a
+ratio with poles wherever the denominator crosses zero. Fitting $\langle R\rangle$ directly removes
+the misspecification, makes `pol0` the honest default (it is exactly the assumption sideband
+subtraction has always made), and puts that assumption on a QA canvas where it can be checked.
+
+With the fit done on $\langle R\rangle$, the background numerator is written as the counts-weighted
+average of $\langle R\rangle$ over the window,
+
+$$R_B^{\rm eff} = \frac{\int R(m)\,b(m)\,\mathrm{d}m}{\int b(m)\,\mathrm{d}m} = \sum_k p_k w_k,
+\qquad w_k = \frac{\int (m-m_0)^k\, b(m)\,\mathrm{d}m}{\int b(m)\,\mathrm{d}m},$$
+
+so that $N_B\langle R\rangle_B = R_B^{\rm eff}\cdot N_B$ by construction. Because $R_B^{\rm eff}$ is a
+*linear* functional of the fitted coefficients, its variance is exactly $w^{\rm T}\,\mathrm{Cov}(p)\,w$
+-- no gradient integration, and therefore none of the `IntegralError` roundoff failures.
+
+**Polynomials are fitted in $(m - m_0)$, not in $m$.** The $\{1, m, m^2\}$ basis is nearly degenerate
+over a 70 MeV range centred on 1.115: coefficients come out around $10^{12}$ with alternating signs
+and cancel to $\sim 10^{9}$ at the peak. Double precision absorbs the *value*, but the parameter
+covariance does not survive it -- `TF1::IntegralError` was reporting *cannot reach tolerance because
+of roundoff error* with integral errors of several thousand counts. Since $\mathrm{Var}(N_B)$ feeds
+every downstream uncertainty, this was a correctness problem, not a cosmetic one.
+
+**Background uncertainty comes from the full covariance.** The polynomial coefficients are strongly
+correlated, so adding their individual `GetParError` values in quadrature would be wrong.
 
 **A `TProfile3D` must be converted before projecting.** `Project3D("yx")` on a `TProfile3D` returns a
 `TProfile2D` whose every cell holds the *grand mean* over all $z$ bins in range -- not what a sliced
@@ -211,6 +267,87 @@ $$\text{bin content} = \bar R \cdot N = \sum_i r_i, \qquad
 the absolute sum and its correct error, which *are* additive under projection. Do not reintroduce a
 direct `Project3D` on the profile.
 
+**A `TProfile2D` carries its own denominator.** `GetBinEntries` counts exactly the candidates that
+went into the profile, so `CountsFromProfile2D` pairs a numerator and a denominator that cannot
+describe different selections. That is what lets the AEE probe run with no separately booked counts
+histogram, and it is the safer pairing even where one exists.
+
+### Error propagation
+
+All derived quantities come from four primitives measured in the peak window: the counts $T$, the
+ring numerator $N = \sum_i r_i$, and their sideband-extrapolated backgrounds $B$ and $M$. The
+unconditional covariance, in that order, is
+
+$$\mathrm{Var}(N) = \sigma_{N|T}^2 + \langle R\rangle_{\rm peak}^2\,\mathrm{Var}(T),
+\qquad \mathrm{Cov}(T,N) = \langle R\rangle_{\rm peak}\,\mathrm{Var}(T),$$
+
+and likewise for $(B, M)$ with $\langle R\rangle_B$, the peak block independent of the sideband block
+because they are measured in disjoint mass regions. The extra $R^2\mathrm{Var}$ terms convert the
+*conditional* `TProfile` variances -- the spread of $\sum_i r_i$ at fixed candidate count -- into
+unconditional ones. Dropping them gives an answer that looks plausible and is wrong.
+
+`FinalizeDerivedQuantities` computes everything from those primitives in one place, which is also
+what lets the **angle-combined** results reuse it: independent angular bins have independent
+primitives, so summing the primitives and running the same function on the totals is algebraically
+identical to a single extraction over their union.
+
+**Differences between the three ring observables must not be added in quadrature.** They are three
+functions of the same four primitives:
+
+$$\mathrm{Var}(\langle R\rangle_{\rm peak} - \langle R\rangle_S) =
+\left(\tfrac1T - \tfrac1S\right)^2\sigma_N^2 +
+\frac{\sigma_M^2 + (\langle R\rangle_{\rm peak}-\langle R\rangle_S)^2\mathrm{Var}(T)
++ (\langle R\rangle_B-\langle R\rangle_S)^2\mathrm{Var}(B)}{S^2},$$
+
+$$\mathrm{Var}(\langle R\rangle_{\rm peak} - \langle R\rangle_B) =
+\frac{\sigma_N^2}{T^2} + \frac{\sigma_M^2}{B^2}, \qquad$$
+
+$$\mathrm{Var}(\langle R\rangle_S - \langle R\rangle_B) =
+\frac{\sigma_N^2 + (\langle R\rangle_{\rm peak}-\langle R\rangle_S)^2\mathrm{Var}(T)
++ (\langle R\rangle_S-\langle R\rangle_B)^2\mathrm{Var}(B)}{S^2}
++ \left(\tfrac1S + \tfrac1B\right)^2\sigma_M^2,$$
+
+with $S = T - B$. On a representative primitive set, naive quadrature **overstates** the first by
+about 60% and **understates** the third by about 20%. The second comes out as exact quadrature,
+because those two are measured in disjoint mass regions -- a free consistency check on the whole
+construction. All three are therefore computed here and stored, never re-derived downstream.
+
+### Angle-integrated results: combine, do not project
+
+Two ways to reduce a set of per-bin extractions to one number, and their **difference is itself a
+measurement**:
+
+- **Signal-weighted**: sum the primitives across bins and extract from the totals, giving
+  $\sum_i S_i R_i / \sum_i S_i$. This is the *acceptance-weighted* answer -- the weights $S_i$ are
+  exactly the non-uniform occupancies the azimuthal efficiency effect produces.
+- **Flat-acceptance**: the unweighted bin average $\tfrac1n\sum_i R_i$. Bins hold disjoint candidates
+  and are equal width, so this is a plain independent average and its error really is quadrature.
+
+Their difference, stored as `hAEE_*`, is the azimuthal efficiency effect. Neither number alone shows
+it. Writing $D = \sum_i (w_i - 1/n) R_i$ with $w_i = S_i/\sum_j S_j$, the $R_i$ are independent and
+$\mathrm{Var}(D) = \sum_i (w_i - 1/n)^2\mathrm{Var}(R_i)$; the weights are treated as fixed, which is
+safe while the bin yields are far better determined than the $R_i$ themselves.
+
+For the $\phi_\Lambda - \phi_p^*$ extractions the projection route is **disabled outright**
+(`IntegralMode::CombinePerBin`). Projecting every angular bin onto the mass axis before extracting
+undoes the entire reason for splitting on a variable across which $\langle R\rangle$ changes sign: the
+summed numerator sideband becomes a mixture of opposite-sign contributions, and a low-order
+polynomial has no business describing it.
+
+### Configuration: one set of numbers, four workflows
+
+Four places perform the same measurement -- per angular bin, angle-integrated, denominator QA, and
+the selection cut flow. They used to carry four independently tuned presets, which had drifted apart
+on things that are not workflow-specific at all: one fitted raw counts while the others fitted
+densities, one kept empty sideband bins, and the sigma limits disagreed. They now share **one**
+`SidebandConfig` and differ only in `fallback`, the policy for a mass fit that does not converge,
+which is genuinely semantic rather than numerical.
+
+**Failure must be loud.** A zero-filled single-bin histogram is visually indistinguishable from a
+genuine measurement of zero. Value histograms are therefore written *only* on success, while
+`hExtractionStatus` is written unconditionally, so "the extraction failed" is always distinguishable
+from "the extraction never ran". Every failure branch names itself in the log.
+
 ### Assumptions this rests on
 
 1. Background polarization varies smoothly in invariant mass.
@@ -222,7 +359,9 @@ If these fail, the escape route is a simultaneous mass--polarization fit,
 $$\text{Numerator}(m) = S(m)\,R_S + B(m)\,R_B, \qquad \text{Denominator}(m) = S(m) + B(m),$$
 
 which avoids sideband extrapolation entirely. The `ResultsCombinedFit/` output directory is
-groundwork for exactly that.
+groundwork for exactly that. It is **QA only** and must not be read as a result: the joint fit assumes
+a *constant* $\langle R\rangle_B$ across the mass window while the sideband method fits its mass
+dependence, so a disagreement between the two may be nothing but that modelling difference.
 
 ### V0 selection cut flow
 
@@ -397,15 +536,154 @@ It combines:
 
 Observables are declared in one table (`kObservableGroups` in the main function). Each entry carries its own in-file directory, so profiles living in `EtaDependence/`, `ProxyPtDependence/`, the cut folder root, or task-level folders such as `EtaStudy/` all flow through the same machinery. Adding an observable means adding a row, not a code path.
 
-Beyond the overlays it produces subtracted curves against the data reference, folded versions where symmetry makes that meaningful, $\tanh$ fits of the $\eta$ dependence, mass signal-versus-background splits, and per-family integrated summaries with a cross-family canvas above them.
+Beyond the overlays it produces subtracted curves against the data reference, folded versions where
+symmetry makes that meaningful, $\tanh$ fits of the $\eta$ dependence, mass signal-versus-background
+splits, the azimuthal- and helicity-efficiency cross-checks, and a per-family integrated summary with
+a cross-family canvas above it.
 
-### Design constraints worth preserving
+### Output layout
 
-**Files are opened once.** Every fetch used to reopen and reclose the ROOT file in some previous versions of the code, so the number of opens scaled as (families x observables x variations) -- pure overhead (!), and a real cost once the observable list grew. `FileCache` opens each file once, keeps it open, and closes everything at the end. Failed opens are cached too, so a missing systematic warns **once** instead of once per observable.
+Per family ($\Lambda$, $\bar\Lambda$, both), in this order:
 
-**Objects handed out are detached clones.** `FetchClone` calls `SetDirectory(nullptr)` immediately, because `Clone()` otherwise attaches to `gDirectory` -- which at that point is the *output* file. That detachment is what lets the clones stay valid after `CloseAll()`.
+| Folder | What |
+|---|---|
+| `EtaProxy/`, `EtaSplitStudies/`, `EtaV0/` | the main $\eta$ dependences |
+| `AEE/` | $\langle R\rangle$ vs $\phi_\Lambda - \phi_p^*$, plus `Mass_Selection/` per observable |
+| `HEE/` | $\langle R\rangle$ vs $\cos\theta_{\rm HEE}$, and the same split by the sign of the AEE angle |
+| `CheapSigExtract/` | integrated $\langle R\rangle$ in and out of the mass peak |
+| `IntegratedSummary/<proxy>/` | the integrated value per proxy, all variations on one axis |
+| `ProxyPt/`, `PVz/`, `QA_Mult/`, `OtherAngDepndncs/`, `BruteForce/` | the rest |
 
-**It reads one kinematic-cut family**, `Ring` by default, overridable with the fifth argument. `Ring` is the family the consumer always books, which is why it is the default.
+Blocks that need a specific position in the file **must run from inside the observable loop**:
+directory order in a ROOT file is *creation* order, so a block written after the loop lands after
+every group regardless of where its table entry sits. `runEtaSplitStudies()` and `runAeeHeeBlocks()`
+are hooked that way.
+
+### Naming
+
+Consumer object names encode their ROOT type and a long "what is this" prefix, which produced folders
+like `Lambda/EtaProxy/pRingObservableEtaLeadP` -- most of it repeated from the group folder above.
+`DeriveObservableName` strips mechanically:
+
+1. drop the type marker, `p2d` or `p`;
+2. drop a leading `RingObservable`, **only** if something remains and it does not start with `Vs`.
+
+That guard is what keeps `pRingVsCentrality` readable as `RingVsCentrality` instead of the meaningless
+`VsCentrality`. Where the derived name is still unwieldy -- the AEE observables especially -- a
+`displayName` field on `ProfileConfig` or `CategoricalObservable` overrides it.
+
+> **Fix a bad name with an override, not by extending the rule.** The rule is meant to stay small
+> enough to hold in your head; a pile of special cases in it is worse than nine explicit strings in
+> the table, where the judgement is visible and reviewable.
+
+Any new field on those structs goes at the **end**, since the tables use positional aggregate
+initialisation.
+
+### Which variations appear where
+
+Three flags on `VariationConfig` decide membership, so adding a variation to a canvas is a one-line
+table edit: `inRedux`, `inPtGateStudy`, `inEtaGateStudy`.
+
+The full systematics canvas had become unreadable -- nine curves plus data, several of them
+gated/ungated pairs whose interest is a comparison against a specific *partner* rather than against
+the data. Those move to focused canvases and drop off the reduced one. Data-like is also off it: it
+is the crudest of the mixing proxies, cheaper even than prevJet, and does not carry the correlations
+between the angular distributions in full.
+
+The two gate studies have **opposite polarity**, which is the thing most likely to be misread later.
+The $p_{\rm T}$ study asks whether *adding* a gate changes an artificial proxy. The $\eta$ study asks
+what is lost by *removing* one, since $\eta$ gating is now the default -- an invented direction that
+ignores the experimental acceptance produces an observable the data could never have produced. So the
+pair is (gated parent, ungated variation), and `Data - Var` reads as the cost of not gating. Only
+RandJet and PerpToJet exist in both forms; the data-like proxy gates on $\eta$ by construction.
+
+> **Every canvas drawn from the full variation set must emit its redux twin from the same call site.**
+> Emitting them apart is how two loops end up disagreeing about which variations they show -- exactly
+> the drift that once let an all-V0s canvas into the $\Lambda$ folder. `ReduxSubset()` is the single
+> definition of the reduced set.
+
+### Integrated values: read them, do not recompute them
+
+The consumer already publishes the integrated $\langle R\rangle$ in **bin 1** of the `TProfile1D`s
+`IntegratedCuts/pRingCuts`, `pRingCutsLeadingP` and `pRingCutsSubLeadingJet`. The Toy Model publishes
+its own in `WithEtaGate/BothCuts/All/pRingProxyJet`, a single-bin `TProfile`. Those are authoritative
+and are read directly.
+
+> Note `pRingProxyJet`, **not** `pRingProxy`: the latter uses $\hat z$ as the axis rather than a jet
+> direction, and is a different observable entirely.
+
+This macro used to re-integrate each differential profile with `GetIntegratedProfile`, once per
+observable folder, which recomputed a number that already existed by a different route -- a recipe
+for two values quietly disagreeing after an innocent rebin. Those per-observable folders have been
+removed in favour of one `IntegratedSummary/` per family.
+
+The two routes can legitimately differ in one way: re-integrating covers only the histogram's bins,
+so anything in the **underflow or overflow is silently excluded**, while the consumer's value counts
+every candidate. Angular axes are safe by construction -- they cover the full interval -- but the
+proxy-$p_{\rm T}$ and `EtaV0` axes do overflow, confirmed, with a small shift in some fake-ring
+estimators (RandJet without the $\eta$ gate among them). A small unexplained difference on the
+centrality axis was also observed. In all of these the consumer's value is the one to report.
+
+`GetIntegratedProfile` survives only for the brute-force and cross-family canvases, which put the
+*observable* on the axis rather than the variation.
+
+> **TODO (needs the consumer's code in hand):** confirm every reported observable's integral is
+> available from one of the `IntegratedCuts` X bins, so that no observable needs a per-observable
+> integral at all.
+
+### Reading the signal-extraction results
+
+`sigExtractDir` is the seventh argument, defaulting to `<consumerDir>/../results_SigExtract`; pass
+`"none"` to skip those plots entirely. Two things every fetch must respect:
+
+- **Check `hExtractionStatus` bin 1 first.** A failed extraction writes no value histogram, but a
+  zero-filled one would be indistinguishable from a real measurement of zero.
+- **Never re-derive a stored difference.** `hRSigMinusRBkg`, `hIntegratedDiff*` and `hAEE_*` are
+  computed where the primitives and their covariance are in scope. Differences between *systematic
+  variations* are a different matter -- those come from independent consumer runs, so quadrature there
+  is correct, and that is what the systematics canvases do.
+
+$\langle R\rangle_{\rm measured}$ is **not** the same number as the "Data" column: the summary
+framework averages over the consumer profile's whole mass range, while $\langle R\rangle_{\rm meas}$
+is restricted to the achieved peak window. That is why it deliberately gets no systematics canvas of
+its own -- two views of the same candidates through different code paths should not be read as
+independent measurements.
+
+### The cheap cross-checks
+
+`CheapSigExtract/` and the `Mass_Selection/` canvases answer "how far does the background pull the
+number?" without fitting anything. They are **deliberately independent** of `signalExtractionRing`,
+so that a disagreement between the two is informative rather than circular.
+
+Inside an AEE observable's `Mass_Selection/`, two canvases with different jobs:
+
+- `Canvas_MassSelection` -- in-peak against out-of-peak, built from the `massVariations` files
+  (`_excludeOutOfPeak` / `_excludeInPeak`), and carrying a third curve, the unselected data.
+- `Canvas_SidebandAgreement` -- left sideband against right, which the `massVariations` route cannot
+  produce since it only knows in and out. **Read this one first**: a sideband subtraction is only
+  meaningful if the two sides agree, so this is a precondition for trusting anything above it.
+
+The two also read *different inputs* -- separate mass-cut consumer files versus a slice of the
+three-bin mass axis in one nominal file. They should agree, and a disagreement is worth knowing about.
+All mass-region canvases draw their colours from one set of constants so the legend need not be
+re-learned between them.
+
+### Presentation
+
+Curves are drawn as zero-x-width point graphs with a small per-curve horizontal offset, not as
+superposed histograms. ROOT's default `ErrorX` gives every `"PE"` histogram a horizontal bar half a
+bin wide, which carries no information the axis does not already show, and eight curves put eight
+sets of them inside every bin with all markers at identical $x$. The offset index is **shared between
+the upper and lower pads**, so a curve sits at the same $x$ in both and can be followed down.
+
+Categorical points are placed by index within their axis, so a filtered subset must be **rebuilt**
+rather than have entries dropped -- dropping would leave gaps where the removed columns used to be.
+
+Species-specific observables appear only on the family they describe (`SpeciesMatchesFamily`). A
+per-species profile read from a single-species file is either empty or a duplicate of that species'
+own curve. `BothHyperons` keeps all three, since there the mixed "Lambda-like" set is the QA for
+species competition: with balanced yields its dependence should cancel, so a residual measures the
+imbalance rather than a physics asymmetry.
 
 ### Reference paths
 
