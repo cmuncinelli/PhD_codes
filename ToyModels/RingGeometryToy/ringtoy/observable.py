@@ -275,3 +275,16 @@ def elliptic_average_cos_c(eta_jet):
         # The formula is 0 * infinity at the origin; the limit is 0.
         return 0.0
     return 2.0 / np.pi * np.tanh(eta_jet) * ellipk(1.0 / np.cosh(eta_jet) ** 2)
+
+
+def ellipse_ring_average(a, b):
+    """<P . n_hat> of a coaxial ellipse with material weights, f = 1, no cuts.
+
+    <r> = (a b / perimeter) * integral dlambda / rho = (b/a) K(k) / E(k) for
+    a >= b, with k^2 = 1 - (b/a)^2 (the ring value is symmetric in a and b).
+    scipy's ellipk and ellipe take the parameter m = k^2.
+    """
+    from scipy.special import ellipe, ellipk
+    major, minor = max(a, b), min(a, b)
+    m = 1.0 - (minor / major) ** 2
+    return minor / major * ellipk(m) / ellipe(m)

@@ -53,6 +53,16 @@ def evaluate_all(config, regimes=REGIMES):
     return {regime: evaluate(config, regime) for regime in regimes}
 
 
+def get_parameter(config, parameter):
+    """Current value of a scanned parameter; "delta" is phi_jet - psi2."""
+    if parameter == "delta":
+        return config.jet_phi - config.flow.psi2
+    value = config
+    for name in parameter.split("."):
+        value = getattr(value, name)
+    return value
+
+
 def configure_parameter(config, parameter, value):
     """Set a scanned parameter; "delta" places the jet at psi2 + value."""
     if parameter == "delta":

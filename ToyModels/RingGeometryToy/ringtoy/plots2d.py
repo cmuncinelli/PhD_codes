@@ -205,3 +205,20 @@ def plot_scan(values, sums_per_regime, xlabel, path_stem, title=""):
     if title:
         axes[0].set_title(title, fontsize=10)
     save_figure(fig, path_stem)
+
+
+def plot_ellipticity_check(ratios, toy_values, analytic_values, path_stem):
+    """Toy ring average of a coaxial ellipse against its closed form."""
+    fig, (ax, ax_diff) = plt.subplots(2, 1, figsize=(6.4, 6.4), sharex=True,
+                                      gridspec_kw=dict(height_ratios=[3, 1]))
+    ax.plot(ratios, analytic_values, color="#000000", label=r"$(b/a)\,K(k)/E(k)$")
+    ax.plot(ratios, toy_values, linestyle="none", marker="o", markersize=4, color="#cc0000", label="toy")
+    ax.set_ylabel(LABEL_RING)
+    ax.legend()
+    # A difference, not a ratio: both curves vanish as b/a --> 0.
+    ax_diff.plot(ratios, np.asarray(toy_values) - np.asarray(analytic_values), marker="o", markersize=3,
+                 color="#cc0000")
+    ax_diff.axhline(0.0, color="#888888", linewidth=0.6)
+    ax_diff.set_ylabel("toy - analytic")
+    ax_diff.set_xlabel("minor / major semi-axis $b/a$")
+    save_figure(fig, path_stem)

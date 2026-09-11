@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .almond import AlmondModel
 from .flow import EllipticFlow
 from .geometry import RingPlacement, RingShape
 from .observable import Acceptance
@@ -51,6 +52,7 @@ class ToyConfig:
     acceptance: Acceptance = field(default_factory=Acceptance)
     binning: Binning = field(default_factory=Binning)
     scan: ScanSpec = field(default_factory=ScanSpec)
+    almond: AlmondModel = field(default_factory=AlmondModel)
 
 
 def _base():

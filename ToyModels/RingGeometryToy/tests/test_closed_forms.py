@@ -56,3 +56,18 @@ def test_quadrupole_leakage_selection_rule():
     np.testing.assert_allclose(_quadrupole_leakage(0.3, 0.4, np.pi / 8) / base,
                                np.cos(np.pi / 4), rtol=1e-9)
     assert abs(_quadrupole_leakage(0.3, 0.4, np.pi / 4)) < 1e-12
+
+
+@pytest.mark.parametrize("major, minor", [(1.9, 0.8), (0.7, 1.6)])
+def test_ellipse_ring_average_matches_toy(major, minor):
+    pytest.importorskip("scipy.special")
+    from ringtoy.flow import EllipticFlow
+    from ringtoy.geometry import RingPlacement, RingShape, build_ring, make_jet_frame
+    from ringtoy.observable import ellipse_ring_average, measure, summarize
+    from ringtoy.regimes import PolarizationModel, build_state
+    curve = build_ring(RingShape(kind="ellipse", radius=major, radius_minor=minor, ellipse_angle=0.37,
+                                 n_points=1024),
+                       RingPlacement(distance_along_jet=1.3), make_jet_frame(0.29, -0.8))
+    state = build_state(curve, EllipticFlow(), PolarizationModel(), "R0")
+    np.testing.assert_allclose(summarize(measure(state)).ring_average, ellipse_ring_average(major, minor),
+                               rtol=1e-12)
