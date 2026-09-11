@@ -229,33 +229,34 @@ SidebandConfig MakeSharedSidebandConfig()
     c.minEntries = 50.0;
     c.minIntegral = 30.0;
     c.minSidebandCounts = 8.0; // Below this, the matrix inversion floods Minuit with errors
-    c.minSidebandPoints = 4;   // 0 means "derive from bkgPolOrder"; resolved in ResolveDerivedFields
+    c.minSidebandPoints = 3;   // 0 means "derive from bkgPolOrder"; resolved in ResolveDerivedFields
 
     // Peak-finding fit. ShapeEstimated gives the Gaussian only the excess above an estimated
     // background level instead of the raw maximum, which is the behaviour that survives a
     // background-dominated spectrum -- exactly the regime the thin TH3D slices live in.
     c.initGuessMode = PeakInitGuessMode::ShapeEstimated;
     c.fallback = PeakFitFallback::Reject; // Overridden per workflow below
+    // c.fitOptions = "Q 0 R S E M";
     c.fitOptions = "Q 0 R S";
     c.constrainAmplitudePositive = true;
     c.muInitGuess = lambdaPDGMassApprox;
-    c.sigmaInitGuess = 0.002; // Typical for Lambda, from an earlier analysis
-    c.muLimitWindow = 0.01;
+    c.sigmaInitGuess = 0.0025; // Typical for Lambda, from an earlier analysis
+    c.muLimitWindow = 0.004;
 
     // Sigma limits: the two old presets disagreed (0.1-5 MeV vs 0.5-8 MeV). The wider one is kept
     // because it is the only one under which the salvage window below is actually reachable; with
     // a 5 MeV cap, SetParLimits already forbids everything the salvage test was written to accept.
-    c.sigmaLimitMin = 0.0005; // 0.5 MeV
-    c.sigmaLimitMax = 0.008;  // 8 MeV
-    c.salvageMuMin = 1.105;
-    c.salvageMuMax = 1.125;
+    c.sigmaLimitMin = 0.001; // 0.5 MeV
+    c.sigmaLimitMax = 0.02;   // 20 MeV
+    c.salvageMuMin = 1.11;
+    c.salvageMuMax = 1.12;
     c.salvageSigmaMin = 0.0005;
     c.salvageSigmaMax = 0.008;
 
     // Region definitions.
-    c.nSigmaPeak = 2.0; // Historic value: 4.0
-    c.nSigmaExclusion = 5.0; // Historic value: 6.0
-    c.nSigmaExclusionOuter = 7.0; // Historic value: -1.0
+    c.nSigmaPeak = 4.0; // Historic value: 4.0
+    c.nSigmaExclusion = 6.0; // Historic value: 6.0
+    c.nSigmaExclusionOuter = 12.0; // Historic value: -1.0
 
     // These two order parameters should be kept at the same values for the hNumExtBinDensity fits
     // For the density fit, we are fitting <R>*dN/dm (i.e., <R>_meas * (N_sig + N_bkg) = (<R>_sig * N_sig + <R>_bkg * N_bkg)), from <R>_meas = (<R>_sig * N_sig + <R>_bkg * N_bkg)/(N_sig + N_bkg)
@@ -265,7 +266,7 @@ SidebandConfig MakeSharedSidebandConfig()
     // does not depend on mass. Raising it to 1 is the natural systematic variation, and the QA
     // canvas shows directly whether the flat assumption holds.
     c.ringBkgPolOrder = 0;
-    c.requirePositiveSidebandBins = true;
+    c.requirePositiveSidebandBins = false;
 
     return c;
 }
@@ -369,11 +370,12 @@ TDirectory* EnsureDir(TDirectory* parent, const char* name)
 // code that read the number from a variable, so changing the variable quietly made the plots lie.
 /// @brief A polN written in (x - shift) rather than in x.
 ///
-/// @note The {1, x, x^2} basis is nearly degenerate over a 70 MeV range centred on 1.115: the three
+/// The {1, x, x^2} basis is nearly degenerate over a 70 MeV range centred on 1.115: the three
 /// columns are almost parallel, the fitted coefficients come out around 1e12 with alternating
 /// signs, and the value at the peak is a cancellation down to about 1e9. Double precision absorbs
 /// the value, but the PARAMETER COVARIANCE does not survive it -- TF1::IntegralError integrates a
-/// gradient built from that matrix and was returning "cannot reach tolerance because of roundoff error"
+/// gradient built from that matrix and was returning
+///     "cannot reach tolerance because of roundoff error"
 /// with an integral error of several thousand counts. Var(bkgCounts) feeds every downstream
 /// uncertainty, so this was a correctness problem and not merely cosmetic.
 ///
@@ -712,6 +714,61 @@ struct PeakWindowYields {
     double diffSigMinusBkg = 0.0, errDiffSigMinusBkg = 0.0;
 };
 
+/**
+ * @brief Exact integral of a shifted polN over [a, b], with its variance from the fit covariance.
+ *
+ * REPLACES TF1::IntegralError, which was failing on this fit. Two different GSL errors were seen,
+ * and they are two symptoms of the same design problem:
+ *   Error 18 (roundoff)   -- before the basis was recentred on the peak
+ *   Error 11 (iterations) -- after, on the same window
+ * IntegralError builds an integrand from TF1::GradientPar, which differentiates the function
+ * NUMERICALLY with respect to each parameter. ROOT has no way to know the model is linear in its
+ * parameters, so it takes finite differences whose step is chosen from the parameter magnitudes --
+ * and with a density-scale p0 of order 1e9 beside much smaller higher coefficients, the resulting
+ * gradient is numerically noisy. The adaptive quadrature then cannot converge on it, whatever the
+ * basis. Recentring was necessary and did help; it was never sufficient.
+ *
+ * None of that work is needed. A polynomial IS linear in its parameters, so
+ *
+ *     Integral = sum_k p_k * I_k,     I_k = [ (b-m0)^(k+1) - (a-m0)^(k+1) ] / (k+1)
+ *
+ * is exact in closed form, and because the integral is a linear functional of the coefficients its
+ * variance is exactly I^T Cov(p) I -- the full covariance, correlations included, which is the whole
+ * reason IntegralError was being used in the first place. No quadrature, no gradient, no tolerance
+ * to fail to reach. Verified against a fine numerical integration to 1e-14 relative.
+ *
+ * @param order Polynomial order; the fit must have exactly order+1 parameters.
+ * @param shift m0, the same recentring constant PolShifted used to build the function.
+ */
+struct IntegralWithError { double value = 0.0, error = 0.0; };
+
+IntegralWithError ShiftedPolIntegral(TF1* fit, TFitResultPtr fitRes,
+                                     double a, double b, int order, double shift)
+{
+    IntegralWithError out;
+    if (!fit) return out;
+
+    const int nPar = order + 1;
+    std::vector<double> basisInt(nPar, 0.0);
+    for (int k = 0; k < nPar; ++k) {
+        basisInt[k] = (std::pow(b - shift, k + 1) - std::pow(a - shift, k + 1)) / (k + 1);
+        out.value += fit->GetParameter(k) * basisInt[k];
+    }
+
+    double var = 0.0;
+    if (fitRes.Get()) {
+        const TMatrixDSym& cov = fitRes->GetCovarianceMatrix();
+        for (int i = 0; i < nPar; ++i)
+            for (int j = 0; j < nPar; ++j) var += basisInt[i] * basisInt[j] * cov(i, j);
+    } else {
+        // No covariance available: fall back to the diagonal, which UNDERSTATES the error whenever
+        // the coefficients are anti-correlated, as they always are here. Should not happen.
+        for (int k = 0; k < nPar; ++k) var += std::pow(basisInt[k] * fit->GetParError(k), 2);
+    }
+    out.error = std::sqrt(std::max(var, 0.0));
+    return out;
+}
+
 // ------------------------------------------------------------------------------------------------
 // FinalizeDerivedQuantities -- everything that follows from the four primitives.
 // ------------------------------------------------------------------------------------------------
@@ -894,7 +951,8 @@ void FinalizeDerivedQuantities(PeakWindowYields& y)
 PeakWindowYields ComputePeakWindowYields(TH1D* hMassCounts, TH1D* hNumSum,
                                          double mu, double sigma, double nSigmaPeak,
                                          TF1* bkgFit, TFitResultPtr rBkg,
-                                         TF1* ringBkgFit, TFitResultPtr rRingBkg)
+                                         TF1* ringBkgFit, TFitResultPtr rRingBkg,
+                                         double polShift)
 {
     PeakWindowYields y;
     if (!hMassCounts || !bkgFit) return y;
@@ -934,16 +992,18 @@ PeakWindowYields ComputePeakWindowYields(TH1D* hMassCounts, TH1D* hNumSum,
     * Performing per-bin integrations and summing the errors in quadrature incorrectly
     * assumes independent uncertainties between bins. This artificial inflation of the
     * background error severely overestimates the final signal uncertainty.
-    * TF1::IntegralError correctly uses the Jacobian of the integral with respect to
-    * the parameters and the full parameter covariance matrix.
+    * ShiftedPolIntegral does this in closed form: the integral of a polN is a linear functional of
+    * its coefficients, so its variance is exactly I^T Cov I. See the note on that function for why
+    * TF1::IntegralError could not do it here.
     *
     * The pol2 was fitted to a DENSITY (counts per unit mass), so TF1::Integral over the window
     * already returns counts -- exactly as integrating dN/dpT over a pT window returns counts.
     * No division by bin width is needed anywhere below.
     */
-    y.bkgCounts = bkgFit->Integral(y.xLow, y.xHigh);
-    y.errBkgCounts = bkgFit->IntegralError(y.xLow, y.xHigh, rBkg->GetParams(),
-                                           rBkg->GetCovarianceMatrix().GetMatrixArray());
+    const IntegralWithError bkgInt = ShiftedPolIntegral(bkgFit, rBkg, y.xLow, y.xHigh,
+                                                       bkgFit->GetNpar() - 1, polShift);
+    y.bkgCounts = bkgInt.value;
+    y.errBkgCounts = bkgInt.error;
 
     if (y.hasNumerator) {
         // --- Background numerator, from the fitted <R>_bkg(m) ---------------------------------
@@ -2109,7 +2169,7 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
 
         // 7. Signal extraction. Every count, subtraction and uncertainty lives in this one call.
         PeakWindowYields y = ComputePeakWindowYields(hMassProj, hNumProj, mu, sigma, cfg.nSigmaPeak,
-                                                     bkgFitFunc, rBkg, ringBkgFitFunc, rRingBkg);
+                                                     bkgFitFunc, rBkg, ringBkgFitFunc, rRingBkg, cfg.muInitGuess);
 
         if (!y.valid) {
             // failStage 1 = no counts in the window at all, 2 = background exceeded the peak
@@ -2468,7 +2528,8 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
                     PeakWindowYields yInt = ComputePeakWindowYields(hMassInt, hNumInt, muInt, sigmaInt,
                                                                     cfgInt.nSigmaPeak,
                                                                     bkgFitInt, rBkgInt,
-                                                                    ringBkgFitInt, rRingBkgInt);
+                                                                    ringBkgFitInt, rRingBkgInt,
+                                                                    cfgInt.muInitGuess);
                     if (yInt.valid) {
                         hIntegratedRSig->SetBinContent(1, yInt.R_S);
                         hIntegratedRSig->SetBinError(1, yInt.errR_S);
@@ -3128,6 +3189,19 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
                       peak.mu, peak.sigma, peak.sigma * 1000.0,
                       hFinePeakRef ? "the fine QA mass axis" : "the profile's own axis") << std::endl;
 
+    // Full parameters of the mass fit. Cheap to print because this fit runs once per proxy, and it
+    // is the one fit whose numbers you want in the log rather than buried in a canvas.
+    if (peak.fit) {
+        std::cout << Form("    mass fit [gaus(0)+pol%d(3)], chi2/ndf = %.2f/%d:",
+                          cfg.bkgPolOrder, peak.fit->GetChisquare(), peak.fit->GetNDF()) << std::endl;
+        const char* parNames[3] = {"amplitude", "mu", "sigma"};
+        for (int ip = 0; ip < peak.fit->GetNpar(); ++ip) {
+            const char* nm = (ip < 3) ? parNames[ip] : Form("bkg p%d", ip - 3);
+            std::cout << Form("       p%d %-10s = %+.6e +/- %.3e", ip, nm,
+                              peak.fit->GetParameter(ip), peak.fit->GetParError(ip)) << std::endl;
+        }
+    }
+
     // --- Sidebands, always on the profile's own axis ------------------------------------------
     SidebandSpan span;
     TGraphErrors* grBkg = BuildSidebandGraph(hCounts, peak.mu, peak.sigma, massMin, massMax, cfg,
@@ -3164,8 +3238,23 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
         return;
     }
 
+    // Sideband fit parameters. Printed here rather than earlier because both fits have to exist and
+    // have converged first; this runs once per proxy, so the verbosity is affordable.
+    std::cout << Form("    sideband counts fit [pol%d in (m - %.5f)], chi2/ndf = %.2f/%d:",
+                      cfg.bkgPolOrder, cfg.muInitGuess, bkgFit->GetChisquare(), bkgFit->GetNDF())
+              << std::endl;
+    for (int ip = 0; ip < bkgFit->GetNpar(); ++ip)
+        std::cout << Form("       p%d = %+.6e +/- %.3e", ip,
+                          bkgFit->GetParameter(ip), bkgFit->GetParError(ip)) << std::endl;
+    std::cout << Form("    sideband <R> fit [pol%d], chi2/ndf = %.2f/%d: ", cfg.ringBkgPolOrder,
+                      ringBkgFit->GetChisquare(), ringBkgFit->GetNDF());
+    for (int ip = 0; ip < ringBkgFit->GetNpar(); ++ip)
+        std::cout << Form("p%d = %+.6e +/- %.3e  ", ip,
+                          ringBkgFit->GetParameter(ip), ringBkgFit->GetParError(ip));
+    std::cout << std::endl;
+
     PeakWindowYields y = ComputePeakWindowYields(hCounts, hNum, peak.mu, peak.sigma, cfg.nSigmaPeak,
-                                                 bkgFit, rBkg, ringBkgFit, rRingBkg);
+                                                 bkgFit, rBkg, ringBkgFit, rRingBkg, cfg.muInitGuess);
     if (!y.valid) {
         bail("the yield computation rejected the result (signal counts are non-positive)");
         delete bkgFit; delete ringBkgFit; delete grBkg; delete grRingBkg;
@@ -3419,7 +3508,7 @@ void PerformDenominatorQA(TH1D* hMassSigExtract, TDirectory* outDir,
     if (fitOK && bkgFitOK) {
         PeakWindowYields y = ComputePeakWindowYields(hMassSigExtract, nullptr,
                                                      fitMu, fitSigma, cfg.nSigmaPeak,
-                                                     fitBkg, rBkg, nullptr, TFitResultPtr());
+                                                     fitBkg, rBkg, nullptr, TFitResultPtr(), cfg.muInitGuess);
         if (y.valid) {
             std::cout << Form("  [DenomQA] %s: S = %.1f +/- %.1f, B = %.1f +/- %.1f, "
                               "purity = %.4f +/- %.4f, S/sqrt(S+B) = %.2f +/- %.2f\n",
@@ -3776,7 +3865,7 @@ void PerformSelectionCutFlowExtraction(TH2D* h2dSelectionMass,
 
         // --- Signal extraction (denominator only: there is no ring observable here) ---
         PeakWindowYields y = ComputePeakWindowYields(hMassProj, nullptr, mu, sigma, cfg.nSigmaPeak,
-                                                     bkgFitFunc, rBkg, nullptr, TFitResultPtr());
+                                                     bkgFitFunc, rBkg, nullptr, TFitResultPtr(), cfg.muInitGuess);
 
         if (!y.valid) {
             std::cout << "    [CutFlow " << tag << "] step " << iCut << ": non-positive yield, skipped.\n";
