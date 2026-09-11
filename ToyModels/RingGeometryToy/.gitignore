@@ -1,0 +1,4 @@
+# Some ignores for general output and python-specific outputs
+untrackedOutput/
+__pycache__/
+.pytest_cache/
