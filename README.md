@@ -16,7 +16,7 @@ This repository collects most of the analysis and simulation codes developed dur
 [IFGW -- Instituto de Física Gleb Wataghin](https://portal.ifi.unicamp.br/), Universidade Estadual
 de Campinas (Unicamp), within the ALICE collaboration at CERN.
 
-The central physics goal is to **search for local Λ (and anti-Λ) polarization induced by jets** -- in a search for Hydro-predicted vorticity ring structures that may form around them -- **in heavy-ion and hadronic
+The central physics goal is to **search for local $\Lambda$ (and anti-$\Lambda$) polarization induced by jets** -- in a search for Hydro-predicted vorticity ring structures that may form around them -- **in heavy-ion and hadronic
 collisions** (Pb--Pb, O--O, and pp). PYTHIA and PYTHIA Angantyr Monte Carlo simulations, which
 contain no polarization signal by construction, serve as essential cross-checks. Some codes in this
 repository are more general-purpose and may not be directly tied to this specific analysis.
@@ -32,12 +32,14 @@ are not included here.
 
 | Folder | Description |
 |---|---|
-| [`vorticity_hydro/`](vorticity_hydro) | Hydrodynamic and PYTHIA-based toy models for Λ polarization from fluid vorticity. Used as proof-of-concept and ring observable development. |
+| [`vorticity_hydro/`](vorticity_hydro) | Hydrodynamic and PYTHIA-based toy models for $\Lambda$ polarization from fluid vorticity. Used as proof-of-concept and ring observable development. |
 | [`pythia_runs/`](pythia_runs) | PYTHIA8 and PYTHIA Angantyr generator codes with FastJet integration. Produces zero-polarization MC reference samples for the ring observable analysis. |
 | [`RingPol_RAW_LocalHelpers/`](RingPol_RAW_LocalHelpers) | Local analysis framework for the ring polarization observable. Includes tools for downloading, processing, and analyzing both raw AOD and Hyperloop derived data. |
-| [`LambdaV0Radius_QA/`](LambdaV0Radius_QA) | Quality assurance study for systematic effects related to the V0 decay radius in Λ reconstruction. |
+| [`LambdaV0Radius_QA/`](LambdaV0Radius_QA) | Quality assurance study for systematic effects related to the V0 decay radius in $\Lambda$ reconstruction. |
 | [`ToyModels/`](ToyModels) | Collection of Toy Models to estimate and understand spurious polarization effects introduced by kinematic cuts and detector asymmetries. |
+| [`O2PhysicsTools/`](O2PhysicsTools) | Memory cleaning scripts and tools for linting+formatting code before submitting PRs to the central repository. |
 | [`IC_helper_tasks/`](IC_helper_tasks) | Utility scripts written to support undergraduate research students. |
+| [`archive/`](archive) | Some older code that never made it into the central repository of O2Physics. Stored here for bookkeeping some old ideas that may come in hand. |
 
 ---
 

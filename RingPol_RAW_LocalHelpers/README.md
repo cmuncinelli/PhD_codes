@@ -33,7 +33,7 @@ The C++ macros live at the top level of this folder. All but one are driven by
 
 | File | One line |
 |---|---|
-| `signalExtractionRing.cxx` | Sideband signal extraction of $\langle R\rangle_S$ from the $\Lambda$ invariant-mass spectrum |
+| `signalExtractionRing.cxx` | Signal extraction of $\langle R\rangle_S$ from the $\Lambda$ invariant-mass spectrum, by sideband fit or by equal-width window counting |
 | `extractDeltaErrors.cxx` | Delta-method uncertainties on $\langle R\rangle$, preserving the numerator--denominator covariance |
 | `makeCumulativeDCAdauProfile.cxx` | Robustness of $\langle R\rangle$ against tightening DCA cuts (the AEE probe) |
 | `auxiliaryPerConfigPlots.cxx` | Per-config derivative plots: polarization vector fields, ring-observable 2D maps |
@@ -181,16 +181,151 @@ proxies, the $\phi_\Lambda - \phi_p^*$ AEE probe, and 3D slices in $p_{\rm T}^{\
 leading-jet $p_{\rm T}$):
 
 1. Project the mass spectrum and fit the peak for $\mu$ and $\sigma$.
-2. **Peak window** $[\mu - n_\sigma^{\rm peak}\sigma,\ \mu + n_\sigma^{\rm peak}\sigma]$.
-3. **Sidebands** between $n_\sigma^{\rm excl}$ and $n_\sigma^{\rm outer}$, leaving a guard band on
-   each side so that no signal is reached for.
-4. Fit a polynomial to the sideband **counts density**, and, separately, a low-order polynomial to
-   the sideband $\langle R\rangle(m)$. Integrate over the peak window. In other words,
-   **bin-counting**, then background subtraction via an integrated background function -- much safer
-   than fitting everything together, which is retained only as QA in `ResultsCombinedFit/`.
+2. **Peak window**, either $[\mu - n_\sigma^{\rm peak}\sigma,\ \mu + n_\sigma^{\rm peak}\sigma]$ or,
+   when `--massPeakHalfWidth` is positive, $[\mu - w,\ \mu + w]$ in absolute mass.
+3. **Background**, by one of the two methods below.
+4. Integrate over the peak window. In other words **bin-counting**, then background subtraction via
+   an integrated background estimate -- much safer than fitting everything together, which is
+   retained only as QA in `ResultsCombinedFit/`.
 
-Every window is a command-line option now; none of them is hardcoded, including in the plot labels.
-Run with `--help` for the full list and the current defaults.
+Every window is a command-line option; none is hardcoded, including in the plot labels. Run with
+`--help` for the full list and the current defaults.
+
+### Two background methods
+
+`--bkgMethod` selects between them. They fill the **same booked histograms** and write to the same
+paths, so the post-processing chain is unaffected; the method is recorded in bin 7 of
+`hExtractionStatus` and tagged on the QA canvases, so a file always says which produced it.
+
+**`sideband`** fits the sideband counts density with a `polN` and, separately, the sideband
+$\langle R\rangle(m)$ with a low-order `polN`, then extrapolates both inward.
+
+**`window`** (the default in `run_all_wagons.sh`) counts two windows of the **same width as the peak
+window**, one on each side, separated by a gap. Nothing is extrapolated for $\langle R\rangle$.
+
+The motivation is composition, not simplicity: equal-width windows sitting close to the peak share
+its kinematic and topological makeup, so acceptance distortions -- the azimuthal and helicity
+efficiency effects -- act on the background sample the same way they act on the signal sample. A
+fitted extrapolation cannot promise that.
+
+> **The band half-width is never configured.** It is taken from the *realized* peak half-width, after
+> bin snapping, whatever defined the peak window. That makes the equal-width invariant hold by
+> construction rather than by two configured numbers agreeing, and it is why window counting works
+> with a sigma-defined peak as happily as with a mass-defined one. `massSidebandGap <= 0` likewise
+> means "one peak half-width", so the whole geometry follows the peak.
+>
+> Because the band width depends on the realized window, the counting happens *inside*
+> `ComputePeakWindowYields`, after the window has been resolved -- not at the call site.
+
+#### What window counting does and does not replace
+
+It gives the background's **polarization**. It does **not** give the background **yield** under the
+peak, except in the linear case, and that distinction decides the design. Working in $t = m - \mu$
+with a background $A + Bt + Ct^2$:
+
+$$\int_{\rm peak} = 2Aw + \tfrac23 C w^3, \qquad
+\int_{\rm bands} = 2Aw + \tfrac23 C w^3 + 2C g^2 w + 2C g w^2 .$$
+
+The $A$ and $B$ terms cancel exactly -- symmetric equal-width bands are **exact for any linear
+background**, which is the real content of the equal-width choice. The curvature does not cancel, and
+the excess grows as $g^2$: already at $g = w$ the bands carry $4Cw^3$ against the peak's
+$\tfrac23 Cw^3$, a factor of six too much curvature, and worse the further out the bands sit.
+
+So the **yield always comes from the fitted counts density**, integrated over the peak window, in
+both methods. Only $\langle R\rangle_B$ changes. Fit what a fit is good at -- a smooth yield -- and
+count what counting is good at, a composition-matched polarization.
+
+#### Pooling the two bands
+
+From the sums, never by averaging two per-band means:
+
+$$\langle R\rangle_B = \frac{\Sigma_L + \Sigma_R}{N_L + N_R},
+\qquad \sigma^2_{\rm cond} = \sum_j (n_j\,{\rm SEM}_j)^2 .$$
+
+This is exactly what a single wider bin would have given. Averaging the two means and adding their
+errors in quadrature would both shift the central value and inflate the error whenever the bands have
+unequal statistics -- on a realistic test with a 4:1 imbalance, by 3.5% and a factor 1.4 respectively.
+
+The background numerator under the peak is then $M = \langle R\rangle_B \cdot B$ with conditional
+error $B\,\sigma(\langle R\rangle_B)$, which is the same relation the fitted route arrives at and
+exactly what the covariance structure below already assumes. The two methods therefore share every
+derived quantity and every propagated difference: running both on one input is a genuine
+cross-check, not a comparison of two implementations.
+
+#### Geometry validation
+
+Structural errors are **fatal**, checked once at startup before any extraction runs: a peak window
+with no width, a negative gap, or an outermost band edge off the mass axis. Every one of those is a
+typo rather than a property of the data.
+
+Realized widths after bin snapping are **not** fatal. On a variable-width axis exact equality may be
+unsatisfiable whatever is configured, and aborting there would leave the macro unrunnable for a
+reason only a consumer rebin could fix. Those are reported and stored in `hAchievedWindow` instead.
+
+### Fixed mass windows
+
+Everything above is relative to the fitted `mu`, which is refitted in every angular bin. Six options
+replace that with absolute boundaries in GeV/c^2:
+
+```
+--signalMassMin   --signalMassMax
+--leftSidebandMin --leftSidebandMax
+--rightSidebandMin --rightSidebandMax
+```
+
+All six or none; any one left unset falls back to the sigma-relative windows. When set they govern
+the peak window, both sideband graphs, and the window-counting bands -- `mu` is not consulted for
+any of them.
+
+**Why this is not a convenience.** The peak is **not Gaussian in the tails**: the fitted Gaussian
+falls faster than the real `dN/dm` does, so a window quoted in fitted sigmas understates how far the
+peak actually reaches. Only around 6 sigma is one reliably clear of it. A sigma-relative window
+therefore does not mean what it says, and it means something slightly different in every angular bin,
+since `mu` and `sigma` move. Naming the intervals in mass removes both problems at once.
+
+Two consequences follow:
+
+- The windows are **reproducible** across bins, wagons and reruns.
+- A bin is no longer **rejected** because its peak fit failed. With fixed windows the peak fit
+  defines nothing, so it is demoted to QA and only the sideband background fit can still reject a
+  bin. That removes most of the unused-angular-bin problem. The count of bins kept this way is
+  reported, with the caveat that their `MassFits` canvases are not to be trusted even though their
+  yields are.
+
+A worked invocation, with `sigma = 0.0017127606` and `mu = 1.1156830`, giving a `mu +/- 1 sigma` peak
+and `[6, 7] sigma` bands on each side:
+
+```bash
+SIGEXTRACT_OPTS=(
+  --bkgMethod=window
+  --signalMassMin=1.1139702   --signalMassMax=1.1173958
+  --leftSidebandMin=1.1036937 --leftSidebandMax=1.1054064
+  --rightSidebandMin=1.1259596 --rightSidebandMax=1.1276723
+)
+```
+
+Startup prints both widths and notes any mismatch. Equal width is a property of the window-counting
+method, not of the sideband fit, so a mismatch is **reported and never fatal** -- unequal bands may
+well be wanted deliberately.
+
+> **The band label follows the windows.** `SidebandBandLabel` once read the sigma fields
+> unconditionally, so a run with fixed windows printed "8-10 sigma" in the log and in every saved
+> canvas legend while integrating named mass intervals. A wrong-window run would have been
+> indistinguishable from a right one in the output.
+
+#### Narrow bands and the point count
+
+A band 1 sigma wide holds about two bin centres on the current mass axis, so two bands give four
+points. `minSidebandPoints` derives from the polynomial order, and a `polN` fitted with
+`TF1::IntegralError`-grade covariance wants `N + 3`. Four against five rejects every bin, which is
+what an over-tight configuration looks like: not a crash, but `NO RESULT` everywhere.
+
+In **window mode** the `<R>` sideband is counted rather than fitted, so its point count constrains
+nothing and only the counts fit sets the requirement: `minSidebandPoints` derives to `bkgPolOrder + 2`
+there. The starvation warning prints the realized band, how many bin centres the axis offers inside
+it, and the three remedies with their costs, because they are not interchangeable: lowering
+`--bkgPolOrder`, widening the bands (costs the composition match with the peak), or refining the
+consumer mass axis (costs counts per bin).
 
 ### The windows, and why the binning decides them
 
@@ -253,8 +388,35 @@ covariance does not survive it -- `TF1::IntegralError` was reporting *cannot rea
 of roundoff error* with integral errors of several thousand counts. Since $\mathrm{Var}(N_B)$ feeds
 every downstream uncertainty, this was a correctness problem, not a cosmetic one.
 
-**Background uncertainty comes from the full covariance.** The polynomial coefficients are strongly
-correlated, so adding their individual `GetParError` values in quadrature would be wrong.
+**Background uncertainty comes from the full covariance, computed in closed form.** The polynomial
+coefficients are strongly correlated, so adding their individual `GetParError` values in quadrature
+would be wrong. `TF1::IntegralError` does use the full covariance, and it was used here -- but it
+failed on this fit, twice over, with two GSL errors that are two symptoms of one cause:
+
+```
+Error 18  cannot reach tolerance because of roundoff error   (before recentring)
+Error 11  number of iterations was insufficient              (after recentring, same window)
+```
+
+`IntegralError` builds its integrand from `TF1::GradientPar`, which differentiates **numerically**
+with respect to each parameter. ROOT has no way to know the model is linear in its parameters, so it
+takes finite differences whose step comes from the parameter magnitudes -- and with a density-scale
+$p_0$ of order $10^9$ beside much smaller higher coefficients, that gradient is numerically noisy.
+Adaptive quadrature then cannot converge on it, whatever basis is used. Recentring was necessary and
+did help; it was never going to be sufficient.
+
+None of that work is needed. A polynomial **is** linear in its parameters, so
+
+$$\int_a^b {\rm pol}N = \sum_k p_k I_k, \qquad
+I_k = \frac{(b-m_0)^{k+1} - (a-m_0)^{k+1}}{k+1},$$
+
+is exact in closed form, and because the integral is a linear functional of the coefficients its
+variance is exactly $I^{\rm T}\,{\rm Cov}(p)\,I$ -- full covariance, correlations included, which is
+the only reason `IntegralError` was wanted. No quadrature, no gradient, no tolerance to fail to
+reach. `ShiftedPolIntegral` does this, and there are now zero `IntegralError` calls in the file.
+
+The same trick supplies the variance of $\langle R\rangle_B^{\rm eff}$ in the fitted method: it too
+is a linear functional of the fitted coefficients, so $w^{\rm T}\,{\rm Cov}(p)\,w$ is exact.
 
 **A `TProfile3D` must be converted before projecting.** `Project3D("yx")` on a `TProfile3D` returns a
 `TProfile2D` whose every cell holds the *grand mean* over all $z$ bins in range -- not what a sliced
@@ -333,6 +495,99 @@ For the $\phi_\Lambda - \phi_p^*$ extractions the projection route is **disabled
 undoes the entire reason for splitting on a variable across which $\langle R\rangle$ changes sign: the
 summed numerator sideband becomes a mixture of opposite-sign contributions, and a low-order
 polynomial has no business describing it.
+
+### The angle-combined output, and one label worth not misreading
+
+`IntegratedCombined/` holds three labelled histograms rather than the fourteen single-bin ones it
+started as. A `TBrowser` lists single-bin objects in whatever order it likes, and the grouping had to
+be reconstructed from names.
+
+| Object | Holds |
+|---|---|
+| `hCombinedSummary` | $\langle R\rangle_{\rm meas}$, $\langle R\rangle_S$, $\langle R\rangle_B$, $\langle R\rangle_S - \langle R\rangle_B$ |
+| `hCombinedQA` | the other two differences, and the four "weighted-flat" rows |
+| `hCombinedQuality` | purity, significance, signal and background counts, bins used against total |
+
+They are split by **scale**, not by importance. Purity is of order $0.1$ and significance of order
+$100$, while every $\langle R\rangle$ here is of order $10^{-2}$: on a shared axis the ring
+observables collapse onto zero and nothing is readable.
+
+> **"weighted-flat" is not a different $\langle R\rangle_S$.** It is the same quantity minus its
+> flat-acceptance average -- what the number would be if the per-bin counts were ignored when
+> integrating. The gap between the two is the acceptance weighting, which is what makes it an AEE
+> probe. These rows were once labelled `AEE: <R>_S`, which read as "the $\langle R\rangle_S$ of the
+> AEE observable". It is not that.
+
+**What to quote.** $\langle R\rangle_S$ is the observable. $\langle R\rangle_S - \langle R\rangle_B$
+is, in principle, a **diagnostic**: its error is propagated correctly, but a contrast is not a polarization. It is
+worth watching because $\langle R\rangle_S \approx \langle R\rangle_B$ is the signature of a "signal"
+that is really background leaking through. The remaining differences are cross-checks on the
+subtraction, and the weighted-flat rows measure acceptance distortion, not polarization.
+
+> A small warning though: if we assume that the background carries the same kind of fake polarization as the signal, but carries no true polarization because it is not composed of true Lambdas (and we assume that the proton daughters of the $\Lambda$'s are not polarized either), then $\langle R\rangle_S - \langle R\rangle_B$ becomes the result we actually want to report!!! After all, that would be equivalent to estimating the fake polarization from combinatorial V0s and then using that to correct the true V0s' polarization measurement! (Similar to Joseph Adams' method from his thesis' section "3.4 Polarization observable")
+
+The flat-acceptance averages themselves live in `IntegratedCombined/NotForPhysics_FlatAcceptance/`,
+with the warning in the histogram title so it travels with the object. The folder is deliberately not
+called `QA/`: that name is used elsewhere for things that *are* trustworthy for what they claim,
+whereas a flat average weights a thin bin exactly like a well-populated one. It answers "what would
+this be with uniform acceptance", not "what is it", and it exists to be subtracted.
+
+### Subtract first, then combine
+> THIS SECTION IS PARTICULARLY IMPORTANT!
+
+When the proxy-`eta` split is used, each half is extracted separately and the halves are recombined
+afterwards. The **order** of subtraction and recombination is not a matter of taste.
+
+Write the assumption explicitly. Within half `i`, the fake polarization `F_i` -- acceptance, AEE, HEE -- is common to signal and background:
+
+$$R_S^i = T_i + F_i \quad (\text{true} + \text{fake}), \qquad R_B^i = F_i \quad (\text{fake only}),$$
+
+so the per-half difference is $D_i = R_S^i - R_B^i = T_i$. **The fake part cancels exactly, inside
+each half, with no weighting at all.** A combinatorial pair has no physics polarization; a real
+Lambda carries the same detector distortions as one. That is what the subtraction is for.
+
+**Method A, subtract then combine** gives the signal-yield-weighted true polarization and nothing
+else:
+
+$$D_A = \frac{S_P T_P + S_N T_N}{S_P + S_N}.$$
+
+**Method B, combine each row then subtract** gives
+
+$$D_B = D_A + \left( \langle F\rangle_S - \langle F\rangle_B \right), \qquad
+\text{residual} = f\left[\frac{S_P - S_N}{S_P + S_N} - \frac{B_P - B_N}{B_P + B_N}\right].$$
+
+That residual vanishes only if the halves are perfectly symmetric, **or** the purity is identical in both halves (If it were identical, then we could simply use $N^\Lambda_{\eta_{proxy}>0}$ and $N^\Lambda_{\eta_{proxy}<0}$ as weights instead of $S_P$ and $S_N$). Neither is guaranteed -- different acceptance on each side is precisely why the split exists. And it is multiplied by `f`, the **large** number. On a toy with a true polarization of 0.002 and a fake of 0.030:
+
+| halves | A | B | B - A |
+|---|---|---|---|
+| symmetric | +0.002000 | +0.002000 | 0 |
+| signal 5% asymmetric, background symmetric | +0.002000 | +0.003500 | **+75% of the true value** |
+| signal 5% asym., background 8% asym. | +0.002000 | +0.001100 | **-45% of the true value** |
+
+A 5% yield asymmetry between the halves corrupts the answer by most of its own size. That is the "summing two big numbers and getting zero" failure re-entering at the **recombination** step, after it had been successfully kept out of the fit. Method B undoes the benefit of splitting at the very last stage.
+
+So: **subtract within a half, unweighted; combine across halves, signal-yield weighted, quadrature.**
+
+There is an error-side argument too -- `D_B` would need $\mathrm{Cov}(R_S^{\rm comb}, R_B^{\rm comb})$, which is non-zero and is not stored, while `D_A` needs no covariance at any stage. Across halves the candidates are disjoint, so quadrature there is exact.
+
+> This rests on `F` being common to signal and background *within* a half. If the fake polarization acted differently on a real Lambda's decay kinematics than on a combinatorial pair's, neither method would be clean. The `<R>_meas - <R>_B` comparison is one handle on that, and the unsplit-versus-recombined gap another.
+
+> Notice that we make a hypothesis here, but if we assume that all the "fake" polarization is caused by the analysis cuts (DCAtoPV of the daughters, $p_T$ cuts, and all the cuts that were available in the toy model) and efficiency cuts, and assume also that these effects are the same for all V0 structures (be they $\Lambda$'s or just combinatorics), then it is a pretty reasonable hypothesis!
+
+#### Per-row weights, and the closure test
+
+Each row of `hCombinedSummary` is a mean over a **different** population, so each is recombined with
+its own weight. Weighting them all by `S` is wrong for most of them:
+
+| row | mean over | weight |
+|---|---|---|
+| `<R>_meas^FullMassRange` | every candidate, all mass, every angular bin | full-range counts |
+| `<R>_meas^PeakWin,AccBins` | peak window, accepted bins only | `T = S + B` |
+| `<R>_S` | signal candidates | `S` |
+| `<R>_B` | background candidates | `B` |
+| `<R>_S - <R>_B` | the true polarization carried by the signal | `S` |
+
+> The first row is the **closure test**. It involves no fit, no mass window and no bin rejection, so recombining the two halves must reproduce `NoEtaSplit` exactly; if it does not, the weights are wrong. The second row need not close (with the first row), and **the gap between rows one and two is precisely what it cost to restrict the mass and to drop the bins that failed extraction**.
 
 ### Configuration: one set of numbers, four workflows
 
@@ -538,21 +793,32 @@ Observables are declared in one table (`kObservableGroups` in the main function)
 
 Beyond the overlays it produces subtracted curves against the data reference, folded versions where
 symmetry makes that meaningful, $\tanh$ fits of the $\eta$ dependence, mass signal-versus-background
-splits, the azimuthal- and helicity-efficiency cross-checks, and a per-family integrated summary with
-a cross-family canvas above it.
+splits, the azimuthal- and helicity-efficiency cross-checks, the signal-extraction results read back
+from `signalExtractionRing`, and a per-family integrated summary with a cross-family canvas above it.
+
+`sigExtractDir` is the seventh argument and defaults to `<consumerDir>/../results_SigExtract`, which
+matches the pipeline layout, so `run_all_wagons.sh` needs no extra argument. Pass `"none"` to skip
+every signal-extraction plot.
 
 ### Output layout
 
 Per family ($\Lambda$, $\bar\Lambda$, both), in this order:
 
-| Folder | What |
-|---|---|
-| `EtaProxy/`, `EtaSplitStudies/`, `EtaV0/` | the main $\eta$ dependences |
-| `AEE/` | $\langle R\rangle$ vs $\phi_\Lambda - \phi_p^*$, plus `Mass_Selection/` per observable |
-| `HEE/` | $\langle R\rangle$ vs $\cos\theta_{\rm HEE}$, and the same split by the sign of the AEE angle |
-| `CheapSigExtract/` | integrated $\langle R\rangle$ in and out of the mass peak |
-| `IntegratedSummary/<proxy>/` | the integrated value per proxy, all variations on one axis |
-| `ProxyPt/`, `PVz/`, `QA_Mult/`, `OtherAngDepndncs/`, `BruteForce/` | the rest |
+| Folder | What | Sweeps variations? |
+|---|---|---|
+| `EtaProxy/`, `EtaSplitStudies/`, `EtaV0/` | the main $\eta$ dependences | yes |
+| `AEE/` | $\langle R\rangle$ vs $\phi_\Lambda - \phi_p^*$, plus `Mass_Selection/` per observable | yes / **no** |
+| `AEE_SignalExtracted/` | the same axis after signal extraction, plus `CrossSystem/` and `QA/` | yes |
+| `HEE/` | $\langle R\rangle$ vs $\cos\theta_{\rm HEE}$, and the same split by the sign of the AEE angle | **no** |
+| `CheapSigExtract/<proxy>/` | integrated $\langle R\rangle$ in and out of the mass peak, and their difference | yes |
+| `IntegratedSummary/<proxy>/` | the integrated value per proxy, all variations on one axis | yes |
+| `SignalExtraction/<proxy>/` | $\langle R\rangle_{\rm meas}$, $\langle R\rangle_S$, $\langle R\rangle_B$ side by side and across systematics | yes |
+| `ProxyPt/`, `PVz/`, `QA_Mult/`, `OtherAngDepndncs/`, `BruteForce/` | the rest | yes |
+
+> **TODO.** Two blocks still read only `ConsumerResults_<dataSuffix>.root` and draw Data alone:
+> `HEE/` and the `Mass_Selection/` canvases under `AEE/`. That wastes the one thing the variation
+> machinery is for. Both are differential rather than categorical, so they want the variations
+> overlaid through `DrawComparisonCanvas` rather than the integrated drawer. (Actually not a big "TODO": these are postponed because their plots would be really messy and wouldn't really contribute to the bigger picture right now)
 
 Blocks that need a specific position in the file **must run from inside the observable loop**:
 directory order in a ROOT file is *creation* order, so a block written after the loop lands after
@@ -649,10 +915,39 @@ is restricted to the achieved peak window. That is why it deliberately gets no s
 its own -- two views of the same candidates through different code paths should not be read as
 independent measurements.
 
+### Reading the AEE signal extraction
+
+`AEE_SignalExtracted/<proxy>_<species>/` carries the per-bin extraction against
+$\phi_\Lambda - \phi_p^*$: `Canvas_SigVsBkg` (and its pull), `Canvas_SigMinusBkg`, the two
+angle-combined digests, and `CrossSystem/` with each quantity across every consumer variation.
+
+> **These objects live at the TOP LEVEL of the extraction file, not under a cut folder**, because the
+> consumer books the source profiles with a bare path rather than `(folder + "/...")`. A path built
+> the way the per-proxy `IntegratedSummary` ones are built finds nothing -- and fails *silently*,
+> since every fetch is null-guarded. That is why nothing here uses `cutFolder`.
+
+`CrossSystem/` reads bins 2, 3 and 4 of `hCombinedSummary`, so it is **coupled to the row order** of
+that histogram in `signalExtractionRing.cxx`. Changing the order there without changing it here
+produces plausible-looking plots of the wrong quantity.
+
+`Canvas_SigMinusBkg` is read from `hRSigMinusRBkg`, never recomputed: $\langle R\rangle_S$ and
+$\langle R\rangle_B$ share the sideband primitives, and quadrature understates their difference by
+roughly a fifth.
+
 ### The cheap cross-checks
 
-`CheapSigExtract/` and the `Mass_Selection/` canvases answer "how far does the background pull the
-number?" without fitting anything. They are **deliberately independent** of `signalExtractionRing`,
+`CheapSigExtract/<proxy>/` and the `Mass_Selection/` canvases answer "how far does the background
+pull the number?" without fitting anything. The former reads
+`IntegratedCuts/p2dRingCuts*V0MassPeak` at X bin 1 ("All Lambda") crossed with the mass flag, where
+**Y bin 1 is strictly out of the mass peak and Y bin 2 strictly in it** -- bin numbers, not fill
+values, since the consumer fills 0 and 1 on a `{2, 0, 2}` axis. It produces the two states as
+separate redux-style axes, plus `Canvas_InVsOutOfMassPeak` and `Canvas_InMinusOutOfMassPeak`.
+
+> **That difference IS plain quadrature**, unlike the differences inside the signal extraction. In-
+> and out-of-peak candidates occupy disjoint mass regions, so the two measurements share no
+> candidate and are independent. The two kinds of difference now sit close together in the output,
+> so the distinction is worth carrying: quadrature is correct between independent *samples* and
+> wrong between correlated *functions of the same primitives*. They are **deliberately independent** of `signalExtractionRing`,
 so that a disagreement between the two is informative rather than circular.
 
 Inside an AEE observable's `Mass_Selection/`, two canvases with different jobs:
@@ -801,7 +1096,7 @@ Chaining `DF_x/O2ringcollision` with `DF_y/O2ringcollision` erases the dataframe
 | Histogram | What it measures | How to read it |
 |---|---|---|
 | `hTrailingZeros_<col>` | Distribution of trailing zero mantissa bits | The **lowest populated bin** is the truncation depth: that many low bits were cleared by the writer. `23 - that` is the surviving precision. |
-| `hTrailingZerosVsBinade_<col>` | Truncation depth vs `floor(log2|value|)` | A **horizontal band** means relative (mantissa-mask) truncation: constant significant bits, absolute step scaling with magnitude -- so a single "precision in cm" number would be misleading. A band **sloping with the binade** means fixed absolute rounding. |
+| `hTrailingZerosVsBinade_<col>` | Truncation depth vs `floor(log2\|value\|)` | A **horizontal band** means relative (mantissa-mask) truncation: constant significant bits, absolute step scaling with magnitude -- so a single "precision in cm" number would be misleading. A band **sloping with the binade** means fixed absolute rounding. |
 
 ### `Duplicates/`
 
@@ -837,7 +1132,7 @@ collision pairs agreeing bit-for-bit on the *first k* columns.
 | `hObservedFingerprintPairs` | **Read the shape, not the value.** Chance coincidences fall steeply with each added column. A genuinely duplicated row matches on *everything*, so real duplicates make the curve **plateau at a nonzero floor**. Steady falloff = healthy. Plateau = duplicated collision rows. |
 | `hExpectedFingerprintPairs` | Chance expectation assuming column independence. The three centrality columns are all multiplicity-derived and therefore **mutually correlated**, so this product is a **lower bound** on the true chance rate, never an upper bound. Treat it as a reference curve, not a threshold. |
 | `hFingerprintGroupSize` | Size of each full-fingerprint group. **Should be empty** on healthy data. |
-| `hFingerprintRowGap` | Row separation between consecutive members of a full-fingerprint group, linear from 0. A spike at `|dRow| = 1` is consecutive duplicated rows -- the signature of a split vertex or a double write. |
+| `hFingerprintRowGap` | Row separation between consecutive members of a full-fingerprint group, linear from 0. A spike at `\|dRow\| = 1` is consecutive duplicated rows -- the signature of a split vertex or a double write. |
 
 The cumulative construction is what removes the need for an independence model: the plateau-versus-
 falloff reading is assumption-free, which matters precisely because the centrality columns are
@@ -870,7 +1165,7 @@ Bins collisions on the mixing grid `(Zvtx, proxy pT, centrality)` using the cons
 | `hCollisionsPerDataframe` | Whether dataframes are large enough for mixing at all |
 | `hMixBinOccupancyLeadP`, `hMixBinOccupancyLeadJet` | Collisions per mixing bin, per dataframe |
 | `hMixPoolOutcomeLeadP`, `hMixPoolOutcomeLeadJet` | Three-way per-collision verdict: *no proxy*; *proxy, alone in bin*; *proxy, partner available*. **The middle bin is the useful number**: those collisions can never be mixed regardless of `mixedEventWindowSize`, so it is an upper bound on mixing efficiency computed without running the consumer. |
-| `hZvtxAcceptance` | Collisions surviving the `|Zvtx| < 10 cm` filter |
+| `hZvtxAcceptance` | Collisions surviving the `\|Zvtx\| < 10 cm` filter |
 
 ## 5. Reading a run: checklist
 

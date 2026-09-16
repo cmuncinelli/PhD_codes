@@ -13,6 +13,8 @@ The models herein are deliberately simple: they have no GEANT4 material budget, 
 
 The physical intuition is based on Joseph Richard Adams' dissertation from 2021, titled *"A Measurement of Lambda-Hyperon Spin Polarization in Au+Au Collisions at sqrt(sNN) = 3 GeV with STAR"*. For that, we thank the author and his advisor, Prof. Mike Lisa.
 
+> There is also a neat visualization model for the ring observable's behavior under [RingGeometryToy/](RingGeometryToy). It is a geometric toy for the response of the ring observable to idealized and distorted vortex rings. No intention to reproduce physical values numerically, just to gain some intuition on how the ring's distortion due to plasma expansion affects the ring observable.
+
 ---
 
 ## Physics background

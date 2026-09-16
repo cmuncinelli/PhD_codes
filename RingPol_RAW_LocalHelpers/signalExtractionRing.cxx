@@ -157,6 +157,12 @@ enum class PeakFitFallback {
     PdgDefaults    // fall back to PDG-approximate values and carry on (used for drawing-only QA)
 };
 
+/// @brief How the background under the peak is estimated. See SidebandConfig::bkgMethod.
+enum class BackgroundMethod {
+    SidebandFit,    // Fit the sidebands and extrapolate inward
+    WindowCounting  // Count two equal-width windows beside the peak then subtract. No fit.
+};
+
 // ------------------------------------------------------------------------------------------------
 // SidebandConfig -- every tuned number of the extraction, in one place.
 // ------------------------------------------------------------------------------------------------
@@ -197,6 +203,74 @@ struct SidebandConfig {
     double nSigmaExclusionOuter; // Outer edge of the sidebands.
                                  // <= 0 means "consider the edges of the mass axis"
 
+    // --- Background method ------------------------------------------------------------------
+    // SidebandFit    : fit the sideband counts density and <R>(m), extrapolate under the peak via a fit.
+    // WindowCounting : no fit at all. Count two sideband windows of the SAME WIDTH as the peak window, one on each side, separated from it by a gap.
+    //
+    // The equal-sized closed windows method exists because equal-width windows sitting close to the peak should share the
+    // kinematic and topological characteristics of the peak sample, so acceptance/efficiency distortions (AEE, HEE)
+    // should have a similar magnitude effect in the signal region and the background regions.
+    //
+    // WHAT IT DOES AND DOES NOT REPLACE. The bands give the background's POLARIZATION, <R>_B, from a
+    // sample that matches the peak's composition. They do NOT give the background YIELD under the
+    // peak, except in the constant/pedestal case. Working in t = m - mu with background A + B t + C t^2:
+    //     integral over the peak    = 2Aw + (2/3) C w^3
+    //     integral over both bands  = 2Aw + (2/3) C w^3 + 2C g^2 w + 2C g w^2
+    //
+    // The A and B terms cancel exactly -- symmetric equal-width bands are exact for any LINEAR
+    // background, which is the real content of the equal-width choice. The curvature does not
+    // cancel, and the excess grows as g^2: already at g = w the bands carry 4Cw^3 against the peak's
+    // (2/3)Cw^3, a factor of six too much curvature, and worse the further out the bands sit.
+    //
+    // So the yield keeps coming from the pol2 fit, integrated over the peak window, while <R>_B
+    // comes from the counting bands. That split is the method: fit what a fit is good at (a smooth
+    // yield), count what counting is good at (a badly-behaved, unknown-shape polarization background).
+    BackgroundMethod bkgMethod;
+
+    // Window definitions in ABSOLUTE MASS, used only by WindowCounting as an alternative handle.
+    // Sigma-based windows are somewhat a poor handle here: the peak is visibly non-Gaussian in the tails, so a width that matches the
+    // core underestimates how far the peak actually reaches, and "6 sigma" is still on the peak.
+    //   peak       = [mu - massPeakHalfWidth, mu + massPeakHalfWidth]
+    //   background = [mu - gap - w, mu - gap] U [mu + gap, mu + gap + w],  w = massPeakHalfWidth
+    // The band half-width is DERIVED, never configured, so the equal-width invariant cannot be
+    // violated by a typo. See ValidateWindowCountingConfig.
+    // massPeakHalfWidth OVERRIDES the sigma-based peak window whenever it is positive, for both
+    // methods. The peak is visibly non-Gaussian in the tails, so a sigma fitted to the core does not
+    // describe how far the peak actually reaches; being able to state the integration region in mass
+    // is the point. Leave it <= 0 to keep the sigma window, which is the default.
+    //
+    // It does NOT set the sideband band width. The bands always take the REALIZED peak half-width,
+    // so window counting works with a sigma-defined peak just as well as with a mass-defined one.
+    double massPeakHalfWidth;
+    // Separation between the peak window and each band. <= 0 means one peak half-width.
+    double massSidebandGap;
+
+    // --- Explicit, FIXED mass windows -------------------------------------------------------
+    // Everything above is relative to the fitted mu, which is refitted in every angular bin. These
+    // six are absolute boundaries in GeV/c^2 and do not move: set them and the extraction integrates
+    // exactly the intervals you named, in every bin, whatever the local fit does.
+    //
+    // Two consequences worth having:
+    //   - The windows become reproducible across bins, wagons and reruns, which mu-relative ones are
+    //     not: a bin whose peak fit lands 0.3 MeV off integrates a different interval from its
+    //     neighbour.
+    //   - A bin is no longer REJECTED because its peak fit failed. With fixed windows the peak fit
+    //     defines nothing, so it is demoted to QA and only the sideband background fit can reject a
+    //     bin. That is what removes most of the unused-angular-bin problem.
+    //
+    // All six must be set together, or none. <= 0 anywhere means "use the sigma-relative windows".
+    double signalMassMin, signalMassMax;
+    double leftSidebandMin, leftSidebandMax;
+    double rightSidebandMin, rightSidebandMax;
+
+    /// @brief True when the six explicit boundaries are all set and the fit defines no window.
+    bool usesFixedMassWindows() const
+    {
+        return signalMassMin > 0.0 && signalMassMax > signalMassMin &&
+               leftSidebandMin > 0.0 && leftSidebandMax > leftSidebandMin &&
+               rightSidebandMin > 0.0 && rightSidebandMax > rightSidebandMin;
+    }
+
     // --- Background model -------------------------------------------------------------------
     // Order of the "polN" fitted to the sideband graphs. The two spectra are NOT the same shape
     // and have no business sharing an order: the COUNTS sideband is a smooth combinatorial mass
@@ -229,7 +303,7 @@ SidebandConfig MakeSharedSidebandConfig()
     c.minEntries = 50.0;
     c.minIntegral = 30.0;
     c.minSidebandCounts = 8.0; // Below this, the matrix inversion floods Minuit with errors
-    c.minSidebandPoints = 3;   // 0 means "derive from bkgPolOrder"; resolved in ResolveDerivedFields
+    c.minSidebandPoints = 0;   // 0 means "derive from bkgPolOrder"; resolved in ResolveDerivedFields
 
     // Peak-finding fit. ShapeEstimated gives the Gaussian only the excess above an estimated
     // background level instead of the raw maximum, which is the behaviour that survives a
@@ -240,27 +314,33 @@ SidebandConfig MakeSharedSidebandConfig()
     c.fitOptions = "Q 0 R S";
     c.constrainAmplitudePositive = true;
     c.muInitGuess = lambdaPDGMassApprox;
-    c.sigmaInitGuess = 0.0025; // Typical for Lambda, from an earlier analysis
-    c.muLimitWindow = 0.004;
+    c.sigmaInitGuess = 0.002; // Typical for Lambda, from an earlier analysis
+    c.muLimitWindow = 0.01;
 
     // Sigma limits: the two old presets disagreed (0.1-5 MeV vs 0.5-8 MeV). The wider one is kept
     // because it is the only one under which the salvage window below is actually reachable; with
     // a 5 MeV cap, SetParLimits already forbids everything the salvage test was written to accept.
-    c.sigmaLimitMin = 0.001; // 0.5 MeV
-    c.sigmaLimitMax = 0.02;   // 20 MeV
+    c.sigmaLimitMin = 0.001; // 1 MeV
+    c.sigmaLimitMax = 0.02;  // 20 MeV
     c.salvageMuMin = 1.11;
     c.salvageMuMax = 1.12;
     c.salvageSigmaMin = 0.0005;
     c.salvageSigmaMax = 0.008;
 
     // Region definitions.
-    c.nSigmaPeak = 4.0; // Historic value: 4.0
-    c.nSigmaExclusion = 6.0; // Historic value: 6.0
-    c.nSigmaExclusionOuter = 12.0; // Historic value: -1.0
+    c.nSigmaPeak = 2.0; // Historic value: 2.0
+    c.nSigmaExclusion = 8.0; // Historic value: 4.0
+    c.nSigmaExclusionOuter = 10.0; // Historic value: 7.0
 
-    // These two order parameters should be kept at the same values for the hNumExtBinDensity fits
-    // For the density fit, we are fitting <R>*dN/dm (i.e., <R>_meas * (N_sig + N_bkg) = (<R>_sig * N_sig + <R>_bkg * N_bkg)), from <R>_meas = (<R>_sig * N_sig + <R>_bkg * N_bkg)/(N_sig + N_bkg)
-    // Thus, the shape is conditioned to the dN/dm format and we should have the same pol2 estimating both of them.
+    c.bkgMethod = BackgroundMethod::SidebandFit; // --bkgMethod=window selects the other
+    c.massPeakHalfWidth = -1.0; // <= 0: keep the sigma-based peak window (nSigmaPeak * sigma)
+    c.massSidebandGap = -1.0;   // <= 0: one peak half-width of separation on each side
+
+    // <= 0 everywhere: sigma-relative windows, the historical behaviour
+    c.signalMassMin = -1.0;    c.signalMassMax = -1.0;
+    c.leftSidebandMin = -1.0;  c.leftSidebandMax = -1.0;
+    c.rightSidebandMin = -1.0; c.rightSidebandMax = -1.0;
+
     c.bkgPolOrder = 2;    // The Lambda combinatorial background is almost linear, with a little curvature
     // pol0 says exactly what sideband subtraction has always assumed -- that <R> in the sidebands
     // does not depend on mass. Raising it to 1 is the natural systematic variation, and the QA
@@ -271,6 +351,76 @@ SidebandConfig MakeSharedSidebandConfig()
     return c;
 }
 
+/**
+ * @brief Fatal check on the WindowCounting geometry. Structural only, nothing statistical.
+ *
+ * Fires before any work is done, because every failure here is a typo in the configuration rather
+ * than a property of the data. The equal-width invariant itself cannot fail -- the band half-width
+ * is derived from massPeakHalfWidth rather than configured -- so what is checked is that the windows
+ * are positive, ordered, and inside the mass axis.
+ *
+ * The REALIZED widths after bin snapping are a different matter and are NOT fatal: on a variable-width
+ * axis exact equality may be unsatisfiable whatever is configured, and aborting there would leave the
+ * macro unrunnable for a reason only a consumer rebin could fix. Those are reported instead, and
+ * stored in hAchievedWindow so any plot can state what was really used.
+ *
+ * @return false and prints the reason; the caller aborts.
+ */
+bool ValidateWindowCountingConfig(const SidebandConfig& c, double massMin, double massMax)
+{
+    if (c.usesFixedMassWindows()) {
+        // Explicit windows: check they are ordered, disjoint from the peak, and on the axis.
+        if (c.leftSidebandMax > c.signalMassMin || c.rightSidebandMin < c.signalMassMax) {
+            std::cerr << "  Error: the sidebands overlap the signal window.\n";
+            return false;
+        }
+        if (c.leftSidebandMin < massMin || c.rightSidebandMax > massMax) {
+            std::cerr << Form("  Error: the fixed windows run off the mass axis [%.5f, %.5f].\n",
+                              massMin, massMax);
+            return false;
+        }
+        // Reported, never fatal: equal widths are a property of the METHOD, and someone may well
+        // want unequal ones deliberately.
+        const double wPeak = c.signalMassMax - c.signalMassMin;
+        const double wBand = (c.leftSidebandMax - c.leftSidebandMin) +
+                             (c.rightSidebandMax - c.rightSidebandMin);
+        std::cout << Form("  Fixed mass windows: peak [%.6f, %.6f] (width %.6f); bands "
+                          "[%.6f, %.6f] U [%.6f, %.6f] (total width %.6f).",
+                          c.signalMassMin, c.signalMassMax, wPeak,
+                          c.leftSidebandMin, c.leftSidebandMax,
+                          c.rightSidebandMin, c.rightSidebandMax, wBand) << std::endl;
+        if (std::abs(wBand - wPeak) > 1e-9)
+            std::cout << Form("  NOTE: the sideband total width differs from the peak width by "
+                              "%.6f. Window counting assumes they match; the sideband FIT does not.",
+                              wBand - wPeak) << std::endl;
+        return true;
+    }
+
+    if (c.bkgMethod != BackgroundMethod::WindowCounting) return true;
+
+    // The band width is no longer configurable, so there is nothing to check about it. What can
+    // still be got wrong is the geometry: a peak window given in mass must be positive if given at
+    // all, and the outermost band edge must stay on the axis.
+    const double halfWidth = (c.massPeakHalfWidth > 0.0)
+                             ? c.massPeakHalfWidth
+                             : c.nSigmaPeak * c.sigmaInitGuess; // Approximate: for the range check only
+    if (!(halfWidth > 0.0)) {
+        std::cerr << "  Error: the peak window has no width. Set --massPeakHalfWidth, or a positive "
+                     "--nSigmaPeak with a positive --sigmaInitGuess.\n";
+        return false;
+    }
+
+    const double gap = (c.massSidebandGap > 0.0) ? c.massSidebandGap : halfWidth;
+    const double outer = gap + halfWidth;
+    if (c.muInitGuess - outer < massMin || c.muInitGuess + outer > massMax) {
+        std::cerr << Form("  Error: the sideband windows run off the mass axis. Outer edges would be "
+                          "[%.5f, %.5f], axis is [%.5f, %.5f].\n",
+                          c.muInitGuess - outer, c.muInitGuess + outer, massMin, massMax);
+        return false;
+    }
+    return true;
+}
+
 // Fields that are derived from other fields rather than set directly.
 void ResolveDerivedFields(SidebandConfig& c)
 {
@@ -278,7 +428,9 @@ void ResolveDerivedFields(SidebandConfig& c)
     // the minimum at which the covariance matrix TF1::IntegralError needs is worth anything.
     // Driven by the HIGHER of the two orders, since both fits run on the same set of points.
     if (c.minSidebandPoints <= 0)
-        c.minSidebandPoints = std::max(c.bkgPolOrder, c.ringBkgPolOrder) + 3;
+        c.minSidebandPoints = (c.bkgMethod == BackgroundMethod::WindowCounting)
+                              ? c.bkgPolOrder + 2   // Only the counts fit needs points here
+                              : std::max(c.bkgPolOrder, c.ringBkgPolOrder) + 3;
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -413,11 +565,14 @@ TGraphErrors* BuildRingSidebandGraph(TH1D* hCounts, TH1D* hNumSum, double mu, do
 {
     if (!hCounts || !hNumSum) return nullptr;
 
+    const bool fixed = cfg.usesFixedMassWindows();
     const bool boundedOuter = (cfg.nSigmaExclusionOuter > 0.0);
-    const double xInnerLow = mu - cfg.nSigmaExclusion * sigma;
-    const double xInnerHigh = mu + cfg.nSigmaExclusion * sigma;
-    const double xOuterLow = boundedOuter ? std::max(massMin, mu - cfg.nSigmaExclusionOuter * sigma) : massMin;
-    const double xOuterHigh = boundedOuter ? std::min(massMax, mu + cfg.nSigmaExclusionOuter * sigma) : massMax;
+    const double xInnerLow = fixed ? cfg.leftSidebandMax : mu - cfg.nSigmaExclusion * sigma;
+    const double xInnerHigh = fixed ? cfg.rightSidebandMin : mu + cfg.nSigmaExclusion * sigma;
+    const double xOuterLow = fixed ? cfg.leftSidebandMin
+                                   : (boundedOuter ? std::max(massMin, mu - cfg.nSigmaExclusionOuter * sigma) : massMin);
+    const double xOuterHigh = fixed ? cfg.rightSidebandMax
+                                    : (boundedOuter ? std::min(massMax, mu + cfg.nSigmaExclusionOuter * sigma) : massMax);
 
     TGraphErrors* gr = new TGraphErrors();
     gr->SetName(grName);
@@ -447,6 +602,12 @@ TString SignalWindowLabel(const SidebandConfig& cfg)
 
 TString SidebandBandLabel(const SidebandConfig& cfg)
 {
+    // Fixed windows first: reporting "8-10 sigma" while integrating named mass intervals is how a
+    // log and a plot legend come to describe a band the run never used.
+    if (cfg.usesFixedMassWindows())
+        return TString(Form("[%.5f, %.5f] U [%.5f, %.5f] GeV/c^{2}",
+                            cfg.leftSidebandMin, cfg.leftSidebandMax,
+                            cfg.rightSidebandMin, cfg.rightSidebandMax));
     if (cfg.nSigmaExclusionOuter > 0.0)
         return TString(Form("%.3g-%.3g#sigma", cfg.nSigmaExclusion, cfg.nSigmaExclusionOuter));
     return TString(Form("%.3g#sigma excl.", cfg.nSigmaExclusion));
@@ -608,11 +769,20 @@ TGraphErrors* BuildSidebandGraph(TH1D* hSource, double mu, double sigma,
     if (!hSource) return nullptr;
 
     // Resolve the band. A non-positive outer half-width means "run to the mass axis edge".
-    const bool boundedOuter = (cfg.nSigmaExclusionOuter > 0.0);
-    span.xInnerLow = mu - cfg.nSigmaExclusion * sigma;
-    span.xInnerHigh = mu + cfg.nSigmaExclusion * sigma;
-    span.xOuterLow = boundedOuter ? std::max(massMin, mu - cfg.nSigmaExclusionOuter * sigma) : massMin;
-    span.xOuterHigh = boundedOuter ? std::min(massMax, mu + cfg.nSigmaExclusionOuter * sigma) : massMax;
+    if (cfg.usesFixedMassWindows()) {
+        // Named intervals, taken as given. The two bands need not be symmetric about anything and mu
+        // is not consulted, which is the whole point of setting them explicitly.
+        span.xOuterLow = cfg.leftSidebandMin;
+        span.xInnerLow = cfg.leftSidebandMax;
+        span.xInnerHigh = cfg.rightSidebandMin;
+        span.xOuterHigh = cfg.rightSidebandMax;
+    } else {
+        const bool boundedOuter = (cfg.nSigmaExclusionOuter > 0.0);
+        span.xInnerLow = mu - cfg.nSigmaExclusion * sigma;
+        span.xInnerHigh = mu + cfg.nSigmaExclusion * sigma;
+        span.xOuterLow = boundedOuter ? std::max(massMin, mu - cfg.nSigmaExclusionOuter * sigma) : massMin;
+        span.xOuterHigh = boundedOuter ? std::min(massMax, mu + cfg.nSigmaExclusionOuter * sigma) : massMax;
+    }
 
     TGraphErrors* gr = new TGraphErrors();
     gr->SetName(grName);
@@ -713,6 +883,109 @@ struct PeakWindowYields {
     double diffPeakMinusBkg = 0.0, errDiffPeakMinusBkg = 0.0;
     double diffSigMinusBkg = 0.0, errDiffSigMinusBkg = 0.0;
 };
+
+/**
+ * @brief Background yield and <R> from two equal-width windows beside the peak. No fit.
+ *
+ * The two bands are pooled from their SUMS, never by averaging two per-band means:
+ *
+ *     <R>_B = (Sum_L + Sum_R) / (N_L + N_R)
+ *
+ * Averaging the means and adding their errors in quadrature would both inflate the uncertainty and
+ * weight the two bands equally when their statistics differ. Pooling from sums is exactly what a
+ * single wider bin would have given, which is the point.
+ *
+ * The conditional variance of the pooled numerator is sum_j (n_j * SEM_j)^2 over every bin in both
+ * bands -- the same "error of the sum" the rest of this file uses, and conditional on the counts by
+ * construction, which is what ComputePeakWindowYields expects.
+ *
+ * The yield needs no correction for a background that is linear in mass: the two bands are symmetric
+ * about mu and share the peak window's width, so the linear terms cancel between them and their
+ * combined integral equals the integral under the peak exactly. Curvature is the only residual, and
+ * it is second order.
+ *
+ * @param[out] out Fills bkgCounts, errBkgCounts, bkgNum, errBkgNum. Other fields untouched.
+ * @return false when either band is empty, in which case nothing is filled.
+ */
+struct WindowBackground {
+    double bkgCounts = 0.0, errBkgCounts = 0.0;
+    double bkgNum = 0.0, errBkgNum = 0.0;
+    double xLoOuter = 0.0, xLoInner = 0.0, xHiInner = 0.0, xHiOuter = 0.0; // Realized band edges
+    double realizedBandWidth = 0.0; // Summed width actually used, for the equal-width report
+    int    nBinsLeft = 0, nBinsRight = 0;
+    bool   valid = false;
+};
+
+WindowBackground ComputeWindowCountingBackground(TH1D* hMassCounts, TH1D* hNumSum,
+                                                 double mu, double peakHalfWidthRealized,
+                                                 const SidebandConfig& cfg)
+{
+    WindowBackground w;
+    if (!hMassCounts || !(peakHalfWidthRealized > 0.0)) return w;
+
+    // The band half-width is the REALIZED peak half-width, whatever defined it -- a sigma window or
+    // a mass window, before or after bin snapping. That is what makes the equal-width invariant hold
+    // by construction rather than by agreement between two separately configured numbers, and it is
+    // why the peak window must be resolved before this is called.
+    const double halfWidth = peakHalfWidthRealized;
+    // A non-positive gap means "one peak half-width", so the geometry follows the peak window too
+    // unless it is deliberately set in mass.
+    const double gap = (cfg.massSidebandGap > 0.0) ? cfg.massSidebandGap : halfWidth;
+
+    // Requested edges. The band half-width is halfWidth, the same as the peak's, by construction.
+    const bool fixed = cfg.usesFixedMassWindows();
+    const double reqLoOuter = fixed ? cfg.leftSidebandMin  : mu - gap - halfWidth;
+    const double reqLoInner = fixed ? cfg.leftSidebandMax  : mu - gap;
+    const double reqHiInner = fixed ? cfg.rightSidebandMin : mu + gap;
+    const double reqHiOuter = fixed ? cfg.rightSidebandMax : mu + gap + halfWidth;
+
+    // Snap to bin edges, the same way the peak window is snapped, so the two are comparable.
+    const int bLoOuter = hMassCounts->FindBin(reqLoOuter);
+    const int bLoInner = hMassCounts->FindBin(reqLoInner);
+    const int bHiInner = hMassCounts->FindBin(reqHiInner);
+    const int bHiOuter = hMassCounts->FindBin(reqHiOuter);
+
+    double sumCounts = 0.0, varCounts = 0.0, sumNum = 0.0, varNum = 0.0;
+
+    auto accumulate = [&](int binLo, int binHi, int& nBins) {
+        for (int j = binLo; j <= binHi; ++j) {
+            if (j < 1 || j > hMassCounts->GetNbinsX()) continue;
+            const double n = hMassCounts->GetBinContent(j);
+            if (cfg.requirePositiveSidebandBins && !(n > 0.0)) continue;
+            sumCounts += n;
+            varCounts += hMassCounts->GetBinError(j) * hMassCounts->GetBinError(j);
+            if (hNumSum) {
+                // Content may legitimately be zero or negative; only the error is required
+                sumNum += hNumSum->GetBinContent(j);
+                varNum += hNumSum->GetBinError(j) * hNumSum->GetBinError(j);
+            }
+            nBins++;
+        }
+    };
+
+    // Left band excludes the inner edge bin, right band excludes it symmetrically, so the gap is
+    // respected on both sides and no bin is counted twice.
+    accumulate(bLoOuter, bLoInner - 1, w.nBinsLeft);
+    accumulate(bHiInner + 1, bHiOuter, w.nBinsRight);
+
+    if (w.nBinsLeft == 0 || w.nBinsRight == 0 || sumCounts <= 0.0) return w;
+
+    w.xLoOuter = hMassCounts->GetBinLowEdge(bLoOuter);
+    w.xLoInner = hMassCounts->GetBinLowEdge(bLoInner);
+    w.xHiInner = hMassCounts->GetBinLowEdge(bHiInner) + hMassCounts->GetBinWidth(bHiInner);
+    w.xHiOuter = hMassCounts->GetBinLowEdge(bHiOuter) + hMassCounts->GetBinWidth(bHiOuter);
+    w.realizedBandWidth = (w.xLoInner - w.xLoOuter) + (w.xHiOuter - w.xHiInner);
+
+    w.bkgCounts = sumCounts;
+    w.errBkgCounts = std::sqrt(varCounts);
+    if (hNumSum) {
+        w.bkgNum = sumNum;
+        // Conditional on the counts, as everywhere else in this file
+        w.errBkgNum = std::sqrt(varNum);
+    }
+    w.valid = true;
+    return w;
+}
 
 /**
  * @brief Exact integral of a shifted polN over [a, b], with its variance from the fit covariance.
@@ -950,18 +1223,35 @@ void FinalizeDerivedQuantities(PeakWindowYields& y)
 
 PeakWindowYields ComputePeakWindowYields(TH1D* hMassCounts, TH1D* hNumSum,
                                          double mu, double sigma, double nSigmaPeak,
+                                         double massPeakHalfWidth,
                                          TF1* bkgFit, TFitResultPtr rBkg,
                                          TF1* ringBkgFit, TFitResultPtr rRingBkg,
-                                         double polShift)
+                                         double polShift,
+                                         const SidebandConfig* windowCfg = nullptr)
 {
     PeakWindowYields y;
     if (!hMassCounts || !bkgFit) return y;
 
-    y.hasNumerator = (hNumSum != nullptr && ringBkgFit != nullptr);
+    const bool useWindow = (windowCfg && windowCfg->bkgMethod == BackgroundMethod::WindowCounting);
+    y.hasNumerator = (hNumSum != nullptr && (ringBkgFit != nullptr || useWindow));
 
     // --- Signal window, snapped to bin edges ---
-    y.firstBin = hMassCounts->FindBin(mu - nSigmaPeak * sigma);
-    y.lastBin = hMassCounts->FindBin(mu + nSigmaPeak * sigma);
+    // Absolute mass wins when configured; sigma-based otherwise. Recorded either way in
+    // nSigmaAchieved*, so downstream code never has to know which route defined the window.
+    // Explicit boundaries win over everything, and do not involve mu at all.
+    if (windowCfg && windowCfg->usesFixedMassWindows()) {
+        y.firstBin = hMassCounts->FindBin(windowCfg->signalMassMin);
+        y.lastBin = hMassCounts->FindBin(windowCfg->signalMassMax);
+        // FindBin puts a value sitting exactly on an edge into the bin ABOVE, so a boundary given as
+        // a bin edge would pull in one extra bin on the high side. Step back when that happened.
+        if (y.lastBin > y.firstBin &&
+            hMassCounts->GetBinLowEdge(y.lastBin) >= windowCfg->signalMassMax - 1e-12)
+            y.lastBin--;
+    } else {
+        const double peakHalf = (massPeakHalfWidth > 0.0) ? massPeakHalfWidth : nSigmaPeak * sigma;
+        y.firstBin = hMassCounts->FindBin(mu - peakHalf);
+        y.lastBin = hMassCounts->FindBin(mu + peakHalf);
+    }
     y.xLow = hMassCounts->GetBinLowEdge(y.firstBin);
     y.xHigh = hMassCounts->GetBinLowEdge(y.lastBin) + hMassCounts->GetBinWidth(y.lastBin);
     if (sigma > 0.0) {
@@ -1000,12 +1290,44 @@ PeakWindowYields ComputePeakWindowYields(TH1D* hMassCounts, TH1D* hNumSum,
     * already returns counts -- exactly as integrating dN/dpT over a pT window returns counts.
     * No division by bin width is needed anywhere below.
     */
+    // The YIELD always comes from the fitted counts density, integrated over the peak window --
+    // including in WindowCounting mode. Band counting is exact only for a linear background; the
+    // curvature excess grows as gap^2 and is already a factor six too large at gap = half-width.
+    // See the note on SidebandConfig::bkgMethod for the algebra.
     const IntegralWithError bkgInt = ShiftedPolIntegral(bkgFit, rBkg, y.xLow, y.xHigh,
                                                        bkgFit->GetNpar() - 1, polShift);
     y.bkgCounts = bkgInt.value;
     y.errBkgCounts = bkgInt.error;
 
-    if (y.hasNumerator) {
+    // The bands are counted HERE rather than at the call site, because their half-width is the
+    // realized peak half-width and that is only known once the window above has been snapped to bin
+    // edges. Doing it earlier is what forced the peak window to be configured in mass; doing it here
+    // lets a sigma-defined peak carry the bands with it.
+    WindowBackground windowBkg;
+    if (windowCfg && windowCfg->bkgMethod == BackgroundMethod::WindowCounting) {
+        windowBkg = ComputeWindowCountingBackground(hMassCounts, hNumSum, mu,
+                                                    0.5 * (y.xHigh - y.xLow), *windowCfg);
+    }
+
+    if (y.hasNumerator && useWindow && windowBkg.valid) {
+        // WindowCounting: <R>_B is the pooled band mean, (Sum_L + Sum_R)/(N_L + N_R), measured on a
+        // sample that matches the peak's kinematics and topology. The background NUMERATOR under the
+        // peak is then that polarization times the fitted background yield,
+        //     M = <R>_B * B,
+        // which is the same relation the fitted route arrives at and which the covariance downstream
+        // already assumes (Cov(M,B) = <R>_B * Var(B)). Its conditional error is B * err(<R>_B).
+        const double nBand = windowBkg.bkgCounts;
+        if (nBand > 0.0) {
+            const double rB = windowBkg.bkgNum / nBand;
+            const double errRB = windowBkg.errBkgNum / nBand; // Conditional on the band counts
+            y.bkgNum = rB * y.bkgCounts;
+            y.errBkgNum = y.bkgCounts * errRB;
+        } else {
+            y.hasNumerator = false;
+        }
+    } else if (y.hasNumerator && useWindow) {
+        y.hasNumerator = false; // Window counting was asked for but both bands came back empty
+    } else if (y.hasNumerator) {
         // --- Background numerator, from the fitted <R>_bkg(m) ---------------------------------
         // M = Integral over the window of R(m) * b(m) dm, where b is the counts density fitted
         // above. Writing it as the b-WEIGHTED AVERAGE of R over the window,
@@ -1983,9 +2305,12 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
     std::vector<PeakWindowYields> perBinYields;
     std::vector<double> perBinRSig, perBinRSigErr, perBinRBkg, perBinRBkgErr;
     std::vector<double> perBinRMeas, perBinRMeasErr, perBinSigCounts;
+    std::vector<double> perBinDiffSB, perBinDiffSBErr; // <R>_S - <R>_B, correlated error per bin
 
     // Running summary for the one log line printed after the loop.
     int    nBinsExtracted = 0, nSidebandStarved = 0;
+    int    nPeakFitFailedButKept = 0; // Only ever non-zero with fixed windows
+    int    nSidebandBinsAvailable = -1; // Bin centres the axis offers inside the band, for the report
     double achievedLowMin = 1e9, achievedLowMax = -1e9;
     double achievedHighMin = 1e9, achievedHighMax = -1e9;
     int    sidebandPointsMin = 1000000, sidebandPointsMax = -1;
@@ -2083,6 +2408,17 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
             // Save the histogram only if the projection is not empty!
         if (hMassProj->GetEntries() > 0) hMassProjDensity->Write(); // For QA
 
+        // With explicit mass windows the peak fit defines NO boundary -- not the signal window, not
+        // the sidebands. It is QA. Rejecting a bin because it failed would then throw away good data
+        // for a fit that nothing downstream depends on, which is most of what the unused-bin problem
+        // was. mu and sigma are still set, because the QA plots and the achieved-window report read
+        // them, but no yield does.
+        if (!peak.valid && cfg.usesFixedMassWindows()) {
+            nPeakFitFailedButKept++;
+            peak.valid = true;
+            peak.mu = cfg.muInitGuess;
+            peak.sigma = cfg.sigmaInitGuess;
+        }
         if (!peak.valid) {
             if (printHeader) std::cout << "    Bin " << iBin << ": invalid mu/sigma, skipped.\n";
             delete hMassProjDensity; delete hNumProjDensity; delete hNumProj; delete hMassProj;
@@ -2114,7 +2450,12 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
         // If the background counts sum to (nearly) zero the matrix inversion fails and we get a
         // looooot of Minuit errors. spanBkg.rawCounts holds the RAW counts, which is what this
         // check needs: the graph's own Y values are densities now, so they cannot be summed here.
-        if (grBkg->GetN() < cfg.minSidebandPoints || grRingBkg->GetN() < cfg.minSidebandPoints ||
+        if (nSidebandBinsAvailable < 0) nSidebandBinsAvailable = grBkg->GetN();
+        // In window mode the <R> sideband is COUNTED, not fitted, so its point count constrains
+        // nothing. Requiring it here would reject a bin over a graph the run never fits.
+        const bool ringGraphMatters = (cfg.bkgMethod != BackgroundMethod::WindowCounting);
+        if (grBkg->GetN() < cfg.minSidebandPoints ||
+            (ringGraphMatters && grRingBkg->GetN() < cfg.minSidebandPoints) ||
             (cfg.minSidebandCounts > 0.0 && spanBkg.rawCounts <= cfg.minSidebandCounts)) {
             nSidebandStarved++;
             delete grBkg; delete grRingBkg;
@@ -2130,13 +2471,19 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
                                   massMin, massMax);
         TFitResultPtr rBkg = grBkg->Fit(bkgFitFunc, "Q 0 S"); // "Q" = quiet, "0" = don't draw, "S" = return TFitResultPtr
 
+        // In WindowCounting mode the <R> sideband FIT is skipped entirely -- <R>_B comes from
+        // counting the two equal-width bands instead. The COUNTS fit always runs: the background
+        // yield under the peak still comes from it, in both modes.
+        const bool useWindowBkg = (cfg.bkgMethod == BackgroundMethod::WindowCounting);
         TF1* ringBkgFitFunc = new TF1(Form("ringBkgFit_Bin%d", iBin),
                                      PolShifted(cfg.ringBkgPolOrder, cfg.muInitGuess),
                                      massMin, massMax);
-        TFitResultPtr rRingBkg = grRingBkg->Fit(ringBkgFitFunc, "Q 0 S");
+        TFitResultPtr rRingBkg;
+        if (!useWindowBkg) rRingBkg = grRingBkg->Fit(ringBkgFitFunc, "Q 0 S");
 
         // --- STABILITY CHECK 2: Did the fits converge properly? ---
-        if (!rBkg->IsValid() || !rRingBkg->IsValid()) {
+        const bool ringOk = useWindowBkg ? true : (rRingBkg.Get() && rRingBkg->IsValid());
+        if (!rBkg->IsValid() || !ringOk) {
             // Here you still need to delete the TF1s manually, as they have not yet been taken
             // ownership of by ROOT through an "Add()" call!
             delete bkgFitFunc; delete ringBkgFitFunc;
@@ -2168,8 +2515,11 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
         delete hRingVsMass;
 
         // 7. Signal extraction. Every count, subtraction and uncertainty lives in this one call.
-        PeakWindowYields y = ComputePeakWindowYields(hMassProj, hNumProj, mu, sigma, cfg.nSigmaPeak,
-                                                     bkgFitFunc, rBkg, ringBkgFitFunc, rRingBkg, cfg.muInitGuess);
+        PeakWindowYields y = ComputePeakWindowYields(hMassProj, hNumProj, mu, sigma, cfg.nSigmaPeak, cfg.massPeakHalfWidth,
+                                                     bkgFitFunc, rBkg,
+                                                     useWindowBkg ? nullptr : ringBkgFitFunc, rRingBkg,
+                                                     cfg.muInitGuess,
+                                                     useWindowBkg ? &cfg : nullptr);
 
         if (!y.valid) {
             // failStage 1 = no counts in the window at all, 2 = background exceeded the peak
@@ -2218,6 +2568,7 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
         perBinRSig.push_back(y.R_S);       perBinRSigErr.push_back(y.errR_S);
         perBinRBkg.push_back(y.R_B);       perBinRBkgErr.push_back(y.errR_B);
         perBinRMeas.push_back(y.R_peak);   perBinRMeasErr.push_back(y.errR_peak);
+        perBinDiffSB.push_back(y.diffSigMinusBkg); perBinDiffSBErr.push_back(y.errDiffSigMinusBkg);
         perBinSigCounts.push_back(y.sigCounts);
 
         nBinsExtracted++;
@@ -2289,12 +2640,28 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
                               sidebandPointsMin, sidebandPointsMax, nBinsExtracted, nBins)
                       << std::endl;
         }
+        if (nPeakFitFailedButKept > 0) {
+            std::cout << Form("  -> NOTE [%s]: %d/%d bins had a failed peak fit but were KEPT, "
+                              "because the mass windows are fixed and the fit defines none of them. "
+                              "Their MassFits canvases are not to be trusted; their yields are.",
+                              extractionName.Data(), nPeakFitFailedButKept, nBins)
+                      << std::endl;
+        }
         if (nSidebandStarved > 0) {
             std::cout << Form("  -> WARNING [%s]: %d/%d bins had too few sideband points or counts "
-                              "(need >= %d points and > %.1f counts). Widen the band or coarsen the "
-                              "mass axis.", extractionName.Data(), nSidebandStarved, nBins,
+                              "(need >= %d points and > %.1f counts).",
+                              extractionName.Data(), nSidebandStarved, nBins,
                               cfg.minSidebandPoints, cfg.minSidebandCounts)
                       << std::endl;
+            std::cout << Form("     band %s; the mass axis offers %d bin centres inside it.",
+                              SidebandBandLabel(cfg).Data(), nSidebandBinsAvailable)
+                      << std::endl;
+            // The remedies are not interchangeable and the choice is a physics one, so they are
+            // spelled out rather than left as "widen the band or coarsen the axis".
+            std::cout << "     Remedies, in order of least damage: lower --bkgPolOrder (a polN needs "
+                         "N+3 points, or N+2 in window mode); widen the bands, which costs the "
+                         "composition match with the peak; or refine the consumer mass axis, which "
+                         "costs counts per bin." << std::endl;
         }
     }
 
@@ -2343,47 +2710,171 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
 
         PeakWindowYields aggSW = CombineYieldsSignalWeighted(perBinYields);
 
+        // <R> over the FULL mass range and EVERY angular bin. No fit, no peak window, no stability
+        // guard -- a plain sum over the two input histograms. It exists to bound the bias introduced
+        // by the two restrictions the row below carries: the mass window and the rejection of
+        // angular bins that failed the extraction. Comparing the two says how much was given up.
+        double fullNum = 0.0, fullNumVar = 0.0, fullCounts = 0.0;
+        for (int ix = 1; ix <= h2dCounts->GetNbinsX(); ++ix) {
+            for (int iy = 1; iy <= h2dCounts->GetNbinsY(); ++iy) {
+                fullCounts += h2dCounts->GetBinContent(ix, iy);
+                fullNum += h2dNum->GetBinContent(ix, iy);
+                fullNumVar += h2dNum->GetBinError(ix, iy) * h2dNum->GetBinError(ix, iy);
+            }
+        }
+        const bool fullValid = (fullCounts > 0.0);
+        const double fullRMeas = fullValid ? fullNum / fullCounts : 0.0;
+        // Conditional on the counts, as everywhere else in this file
+        const double fullRMeasErr = fullValid ? std::sqrt(fullNumVar) / fullCounts : 0.0;
+
         FlatAverage flatSig = AverageOverBins(perBinRSig, perBinRSigErr);
         FlatAverage flatBkg = AverageOverBins(perBinRBkg, perBinRBkgErr);
         FlatAverage flatMeas = AverageOverBins(perBinRMeas, perBinRMeasErr);
 
         FlatAverage aeeSig = WeightedMinusFlat(perBinRSig, perBinRSigErr, perBinSigCounts);
         FlatAverage aeeBkg = WeightedMinusFlat(perBinRBkg, perBinRBkgErr, perBinSigCounts);
+        // The same weighted-minus-flat construction applied to the signal/background CONTRAST, so
+        // the AEE rows cover every quantity the results rows do rather than only three of them.
+        FlatAverage aeeDiffSB = WeightedMinusFlat(perBinDiffSB, perBinDiffSBErr, perBinSigCounts);
         FlatAverage aeeMeas = WeightedMinusFlat(perBinRMeas, perBinRMeasErr, perBinSigCounts);
 
-        auto scalarOut = [&](const char* stem, const char* yTitle, double v, double e) {
-            TH1D* h = new TH1D(Form("%s_%s", stem, extractionName.Data()),
-                               Form("%s; ;%s", extractionName.Data(), yTitle), 1, 0, 1);
-            h->SetDirectory(nullptr);
-            h->SetBinContent(1, v);
-            h->SetBinError(1, e);
-            dirCombined->cd();
-            h->Write();
-            delete h;
+        // --- One labelled histogram instead of fourteen single-bin ones -----------------------
+        // The signal-weighted block, the flat block and their difference were fourteen separate
+        // TH1Ds of one bin each, which a TBrowser lists in whatever order it likes and which forced
+        // the reader to reconstruct the grouping from the names. One histogram with labelled bins
+        // shows the whole comparison at a glance and in a fixed order.
+        //
+        // The FLAT entries are deliberately NOT presented as results -- see the folder they are
+        // written to below. They exist to be subtracted from the signal-weighted ones, and the
+        // difference is the measurement.
+        struct CombinedEntry { const char* label; bool ok; double v, e; };
+        // Two histograms rather than one. Purity and significance are dimensionless quantities of
+        // order 0.1 and order 100 respectively, while every <R> here is of order 1e-2: on a shared
+        // axis the ring observables collapse onto zero and nothing is readable. They are worth
+        // having, so they get their own canvas instead of being dropped.
+        //
+        // The "weighted - flat" rows are NOT a different <R>_S. They are the SAME quantity minus its
+        // flat-acceptance average, i.e. how much the azimuthal efficiency effect distorts it. The
+        // earlier label "AEE: <R>_S" read as "the <R>_S of the AEE observable", which it is not.
+        // The two <R>_meas rows are deliberately separate and deliberately adjacent. The first is
+        // everything; the second is what the extraction actually used. Their gap is the price of the
+        // mass window plus the rejected angular bins, and it belongs beside the result rather than
+        // buried in a QA folder, because a large gap makes the rows below harder to believe.
+        const std::vector<CombinedEntry> combinedRows = {
+            {"<R>_{meas}^{FullMassRange}", fullValid, fullRMeas, fullRMeasErr},
+            {"<R>_{meas}^{PeakWin,AccBins}", aggSW.valid, aggSW.R_peak, aggSW.errR_peak},
+            {"<R>_{S}",           aggSW.valid, aggSW.R_S, aggSW.errR_S},
+            {"<R>_{B}",           aggSW.valid, aggSW.R_B, aggSW.errR_B},
+            {"<R>_{S}-<R>_{B}",   aggSW.valid, aggSW.diffSigMinusBkg, aggSW.errDiffSigMinusBkg}
         };
 
-        if (aggSW.valid) {
-            scalarOut("hCombinedRMeas_SignalWeighted", "<R>_{measured}", aggSW.R_peak, aggSW.errR_peak);
-            scalarOut("hCombinedRSig_SignalWeighted", "<R>_{S}", aggSW.R_S, aggSW.errR_S);
-            scalarOut("hCombinedRBkg_SignalWeighted", "<R>_{B}", aggSW.R_B, aggSW.errR_B);
-            scalarOut("hCombinedDiffSigMinusBkg_SignalWeighted", "<R>_{S} - <R>_{B}",
-                      aggSW.diffSigMinusBkg, aggSW.errDiffSigMinusBkg);
-            scalarOut("hCombinedDiffMeasMinusSig_SignalWeighted", "<R>_{measured} - <R>_{S}",
-                      aggSW.diffPeakMinusSig, aggSW.errDiffPeakMinusSig);
-            scalarOut("hCombinedDiffMeasMinusBkg_SignalWeighted", "<R>_{measured} - <R>_{B}",
-                      aggSW.diffPeakMinusBkg, aggSW.errDiffPeakMinusBkg);
-            scalarOut("hCombinedPurity_SignalWeighted", "S/(S+B)", aggSW.purity, aggSW.errPurity);
-            scalarOut("hCombinedSignificance_SignalWeighted", "S/#sqrt{S+B}",
-                      aggSW.significance, aggSW.errSignificance);
-        }
-        if (flatMeas.valid) scalarOut("hCombinedRMeas_Flat", "<R>_{measured}", flatMeas.value, flatMeas.error);
-        if (flatSig.valid)  scalarOut("hCombinedRSig_Flat", "<R>_{S}", flatSig.value, flatSig.error);
-        if (flatBkg.valid)  scalarOut("hCombinedRBkg_Flat", "<R>_{B}", flatBkg.value, flatBkg.error);
+        // Cross-checks and acceptance diagnostics, kept off the results canvas so that it carries
+        // only quantities someone might quote.
+        //
+        // "weighted-flat" is the signal-weighted integral MINUS the plain unweighted bin average:
+        // what the number would be if the per-bin counts were ignored when integrating. The gap
+        // between the two is the acceptance weighting, which is what makes it an AEE probe.
+        const std::vector<CombinedEntry> qaRows = {
+            {"<R>_{meas}-<R>_{S}",             aggSW.valid, aggSW.diffPeakMinusSig, aggSW.errDiffPeakMinusSig},
+            {"<R>_{meas}-<R>_{B}",             aggSW.valid, aggSW.diffPeakMinusBkg, aggSW.errDiffPeakMinusBkg},
+            {"<R>_{meas}: weighted-flat",      aeeMeas.valid, aeeMeas.value, aeeMeas.error},
+            {"<R>_{S}: weighted-flat",         aeeSig.valid, aeeSig.value, aeeSig.error},
+            {"<R>_{B}: weighted-flat",         aeeBkg.valid, aeeBkg.value, aeeBkg.error},
+            {"<R>_{S}-<R>_{B}: weighted-flat", aeeDiffSB.valid, aeeDiffSB.value, aeeDiffSB.error}
+        };
 
-        // Azimuthal Efficiency Effect: signal-weighted minus flat, per quantity.
-        if (aeeMeas.valid) scalarOut("hAEE_RMeas", "<R>_{measured}: weighted - flat", aeeMeas.value, aeeMeas.error);
-        if (aeeSig.valid)  scalarOut("hAEE_RSig", "<R>_{S}: weighted - flat", aeeSig.value, aeeSig.error);
-        if (aeeBkg.valid)  scalarOut("hAEE_RBkg", "<R>_{B}: weighted - flat", aeeBkg.value, aeeBkg.error);
+        // Extraction quality, on its own scale. <R>_S is the result; these say whether it can be
+        // believed. A signal polarization sitting on top of its own background, or one extracted
+        // from a handful of candidates, is not a measurement however small its error bar.
+        const std::vector<CombinedEntry> qualityRows = {
+            {"purity S/(S+B)",      aggSW.valid, aggSW.purity, aggSW.errPurity},
+            {"significance",        aggSW.valid, aggSW.significance, aggSW.errSignificance},
+            {"signal counts",       aggSW.valid, aggSW.sigCounts, aggSW.errSigCounts},
+            {"background counts",   aggSW.valid, aggSW.bkgCounts, aggSW.errBkgCounts},
+            {"angular bins used",   true, double(perBinYields.size()), 0.0},
+            {"angular bins total",  true, double(nBins), 0.0},
+            // Weight for the full-mass-range row of hCombinedSummary. Stored because that row is a
+            // mean over a different population again -- every candidate, not just the peak window --
+            // so recombining it across eta halves needs this and not S, B or T.
+            {"full-range counts",   fullValid, fullCounts, std::sqrt(std::max(fullCounts, 0.0))}
+        };
+
+        {
+            const int nRows = static_cast<int>(combinedRows.size());
+            TH1D* hSummary = new TH1D(Form("hCombinedSummary_%s", extractionName.Data()),
+                                      Form("%s: angle-combined results; ;Value",
+                                           extractionName.Data()),
+                                      nRows, 0, nRows);
+            hSummary->SetDirectory(nullptr);
+            for (int r = 0; r < nRows; ++r) {
+                hSummary->GetXaxis()->SetBinLabel(r + 1, combinedRows[r].label);
+                if (!combinedRows[r].ok) continue; // Left empty rather than filled with a false zero
+                hSummary->SetBinContent(r + 1, combinedRows[r].v);
+                hSummary->SetBinError(r + 1, combinedRows[r].e);
+            }
+            dirCombined->cd();
+            hSummary->Write();
+            delete hSummary;
+
+            const int nQ = static_cast<int>(qualityRows.size());
+            TH1D* hQuality = new TH1D(Form("hCombinedQuality_%s", extractionName.Data()),
+                                      Form("%s: extraction quality; ;Value", extractionName.Data()),
+                                      nQ, 0, nQ);
+            hQuality->SetDirectory(nullptr);
+            for (int r = 0; r < nQ; ++r) {
+                hQuality->GetXaxis()->SetBinLabel(r + 1, qualityRows[r].label);
+                if (!qualityRows[r].ok) continue;
+                hQuality->SetBinContent(r + 1, qualityRows[r].v);
+                hQuality->SetBinError(r + 1, qualityRows[r].e);
+            }
+            hQuality->Write();
+            delete hQuality;
+
+            const int nQA = static_cast<int>(qaRows.size());
+            TH1D* hQA = new TH1D(Form("hCombinedQA_%s", extractionName.Data()),
+                                 Form("%s: cross-checks and acceptance diagnostics; ;Value",
+                                      extractionName.Data()),
+                                 nQA, 0, nQA);
+            hQA->SetDirectory(nullptr);
+            for (int r = 0; r < nQA; ++r) {
+                hQA->GetXaxis()->SetBinLabel(r + 1, qaRows[r].label);
+                if (!qaRows[r].ok) continue;
+                hQA->SetBinContent(r + 1, qaRows[r].v);
+                hQA->SetBinError(r + 1, qaRows[r].e);
+            }
+            hQA->Write();
+            delete hQA;
+        }
+
+        // The flat-acceptance numbers go somewhere that cannot be mistaken for a result.
+        // A flat average over angular bins is NOT the integrated polarization: it weights a thin bin
+        // exactly like a well-populated one, so it answers "what would this be with uniform
+        // acceptance", not "what is it". It is an ingredient of the AEE difference above and has no
+        // standalone meaning. "QA" would be the wrong name -- that folder holds things that ARE
+        // trustworthy for what they claim.
+        {
+            TDirectory* dirFlat = EnsureDir(dirCombined, "NotForPhysics_FlatAcceptance");
+            const std::vector<CombinedEntry> flatRows = {
+                {"<R>_{meas} (flat)", flatMeas.valid, flatMeas.value, flatMeas.error},
+                {"<R>_{S} (flat)",    flatSig.valid, flatSig.value, flatSig.error},
+                {"<R>_{B} (flat)",    flatBkg.valid, flatBkg.value, flatBkg.error}
+            };
+            const int nFlat = static_cast<int>(flatRows.size());
+            TH1D* hFlat = new TH1D(Form("hCombinedFlat_%s", extractionName.Data()),
+                                   Form("%s: flat-acceptance averages, NOT a physics result; ;Value",
+                                        extractionName.Data()),
+                                   nFlat, 0, nFlat);
+            hFlat->SetDirectory(nullptr);
+            for (int r = 0; r < nFlat; ++r) {
+                hFlat->GetXaxis()->SetBinLabel(r + 1, flatRows[r].label);
+                if (!flatRows[r].ok) continue;
+                hFlat->SetBinContent(r + 1, flatRows[r].v);
+                hFlat->SetBinError(r + 1, flatRows[r].e);
+            }
+            dirFlat->cd();
+            hFlat->Write();
+            delete hFlat;
+        }
 
         // Bookkeeping, so a combined number can always be traced back to how many bins fed it.
         TH1D* hNUsed = new TH1D(Form("hCombinedBinsUsed_%s", extractionName.Data()),
@@ -2526,7 +3017,7 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
                     // 3. Global integration and error propagation -- the very same helper used by
                     //    the per-bin loop, so the two paths can never drift apart again.
                     PeakWindowYields yInt = ComputePeakWindowYields(hMassInt, hNumInt, muInt, sigmaInt,
-                                                                    cfgInt.nSigmaPeak,
+                                                                    cfgInt.nSigmaPeak, cfgInt.massPeakHalfWidth,
                                                                     bkgFitInt, rBkgInt,
                                                                     ringBkgFitInt, rRingBkgInt,
                                                                     cfgInt.muInitGuess);
@@ -3122,7 +3613,7 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
     // on success: a zero-filled TH1D looks exactly like a genuine measurement of zero, and that
     // ambiguity is precisely the failure mode this reporting exists to remove.
     TH1D* hStatus = new TH1D(Form("hExtractionStatus_%s", spec.name),
-                             Form("%s: extraction status; ;Value", spec.label), 6, 0, 6);
+                             Form("%s: extraction status; ;Value", spec.label), 7, 0, 7);
     hStatus->SetDirectory(nullptr);
     hStatus->GetXaxis()->SetBinLabel(1, "valid");
     hStatus->GetXaxis()->SetBinLabel(2, "peakFitConverged");
@@ -3132,6 +3623,10 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
     hStatus->SetBinContent(5, cfg.bkgPolOrder);
     hStatus->GetXaxis()->SetBinLabel(6, "ringBkgPolOrder");
     hStatus->SetBinContent(6, cfg.ringBkgPolOrder);
+    // 0 = SidebandFit, 1 = WindowCounting. Written unconditionally, so a file always records which
+    // background method produced it without anyone having to find the log.
+    hStatus->GetXaxis()->SetBinLabel(7, "bkgMethod");
+    hStatus->SetBinContent(7, cfg.bkgMethod == BackgroundMethod::WindowCounting ? 1 : 0);
 
     auto bail = [&](const char* why) {
         std::cout << Form("  [Integrated %s] NO RESULT: %s", spec.label, why) << std::endl;
@@ -3227,12 +3722,17 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
                           PolShifted(cfg.bkgPolOrder, cfg.muInitGuess), massMin, massMax);
     TF1* ringBkgFit = new TF1(Form("ringBkgFitInt_%s", spec.name),
                              PolShifted(cfg.ringBkgPolOrder, cfg.muInitGuess), massMin, massMax);
+    const bool useWindowBkg = (cfg.bkgMethod == BackgroundMethod::WindowCounting);
     TFitResultPtr rBkg = grBkg->Fit(bkgFit, "Q 0 S");
-    TFitResultPtr rRingBkg = grRingBkg->Fit(ringBkgFit, "Q 0 S");
+    TFitResultPtr rRingBkg;
+    if (!useWindowBkg) rRingBkg = grRingBkg->Fit(ringBkgFit, "Q 0 S");
 
-    if (!rBkg->IsValid() || !rRingBkg->IsValid()) {
-        bail(Form("a sideband fit failed (counts status %d, numerator status %d)",
-                  rBkg->Status(), rRingBkg->Status()));
+    const bool ringOk = useWindowBkg ? true : (rRingBkg.Get() && rRingBkg->IsValid());
+    if (!rBkg->IsValid() || !ringOk) {
+        bail(Form("the background estimate failed (counts fit status %d, %s)",
+                  rBkg->Status(),
+                  useWindowBkg ? "window counting found an empty band"
+                               : "the <R> sideband fit did not converge"));
         delete bkgFit; delete ringBkgFit; delete grBkg; delete grRingBkg;
         delete hPeakSource; delete hCounts; delete hNum;
         return;
@@ -3253,8 +3753,11 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
                           ringBkgFit->GetParameter(ip), ringBkgFit->GetParError(ip));
     std::cout << std::endl;
 
-    PeakWindowYields y = ComputePeakWindowYields(hCounts, hNum, peak.mu, peak.sigma, cfg.nSigmaPeak,
-                                                 bkgFit, rBkg, ringBkgFit, rRingBkg, cfg.muInitGuess);
+    PeakWindowYields y = ComputePeakWindowYields(hCounts, hNum, peak.mu, peak.sigma, cfg.nSigmaPeak, cfg.massPeakHalfWidth,
+                                                 bkgFit, rBkg,
+                                                 useWindowBkg ? nullptr : ringBkgFit, rRingBkg,
+                                                 cfg.muInitGuess,
+                                                 useWindowBkg ? &cfg : nullptr);
     if (!y.valid) {
         bail("the yield computation rejected the result (signal counts are non-positive)");
         delete bkgFit; delete ringBkgFit; delete grBkg; delete grRingBkg;
@@ -3328,7 +3831,12 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
     for (int i = 1; i <= prof->GetNbinsX(); ++i) profCandidates += prof->GetBinEntries(i);
     double peakSrcCandidates = hPeakSource->Integral();
 
+    const char* methodTag = (cfg.bkgMethod == BackgroundMethod::WindowCounting)
+                            ? "background: window counting (yield from the counts fit)"
+                            : "background: sideband fit";
+
     std::vector<TString> massLines = {
+        Form("%s", methodTag),
         Form("candidates in the spectrum: %.0f", peakSrcCandidates),
         Form("#mu = %.5f, #sigma = %.5f GeV/c^{2} (%.3f MeV)", peak.mu, peak.sigma, peak.sigma * 1000.0),
         Form("signal window [%.5f, %.5f] = [-%.2f, +%.2f] #sigma", y.xLow, y.xHigh,
@@ -3343,6 +3851,7 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
                     massLines, y.xLow, y.xHigh, dirQA);
 
     std::vector<TString> ringLines;
+    ringLines.push_back(Form("%s", methodTag));
     ringLines.push_back(Form("candidates in this profile: %.0f", profCandidates));
     ringLines.push_back(Form("sideband band: %s, %d + %d points",
                              SidebandBandLabel(cfg).Data(), span.nPointsLeft, span.nPointsRight));
@@ -3507,7 +4016,7 @@ void PerformDenominatorQA(TH1D* hMassSigExtract, TDirectory* outDir,
     // then be assumptions rather than measurements.
     if (fitOK && bkgFitOK) {
         PeakWindowYields y = ComputePeakWindowYields(hMassSigExtract, nullptr,
-                                                     fitMu, fitSigma, cfg.nSigmaPeak,
+                                                     fitMu, fitSigma, cfg.nSigmaPeak, cfg.massPeakHalfWidth,
                                                      fitBkg, rBkg, nullptr, TFitResultPtr(), cfg.muInitGuess);
         if (y.valid) {
             std::cout << Form("  [DenomQA] %s: S = %.1f +/- %.1f, B = %.1f +/- %.1f, "
@@ -3864,7 +4373,7 @@ void PerformSelectionCutFlowExtraction(TH2D* h2dSelectionMass,
         grBkg->Write();
 
         // --- Signal extraction (denominator only: there is no ring observable here) ---
-        PeakWindowYields y = ComputePeakWindowYields(hMassProj, nullptr, mu, sigma, cfg.nSigmaPeak,
+        PeakWindowYields y = ComputePeakWindowYields(hMassProj, nullptr, mu, sigma, cfg.nSigmaPeak, cfg.massPeakHalfWidth,
                                                      bkgFitFunc, rBkg, nullptr, TFitResultPtr(), cfg.muInitGuess);
 
         if (!y.valid) {
@@ -4092,6 +4601,19 @@ void PrintUsage(const char* exeName)
         << "  --minIntegral=<x>           Integral required before fitting a spectrum  [" << d.minIntegral << "]\n"
         << "  --muInitGuess=<x>           Initial guess for the peak position, GeV/c^2 [" << d.muInitGuess << "]\n"
         << "  --sigmaInitGuess=<x>        Initial guess for the peak width, GeV/c^2    [" << d.sigmaInitGuess << "]\n"
+        << "  --bkgMethod=<sideband|window>  How the background under the peak is estimated.\n"
+        << "                              'sideband' fits and extrapolates; 'window' counts two\n"
+        << "                              equal-width windows beside the peak, no fit at all.\n"
+        << "  --massPeakHalfWidth=<x>     Peak half-width in GeV/c^2, overriding nSigmaPeak.\n"
+        << "                              <= 0 keeps the sigma window                    [" << d.massPeakHalfWidth << "]\n"
+        << "  --massSidebandGap=<x>       Gap between peak and each band, GeV/c^2;\n"
+        << "                              <= 0 means one peak half-width                 [" << d.massSidebandGap << "]\n"
+        << "  --signalMassMin=<x>         Explicit, FIXED mass windows in GeV/c^2. Set all six and\n"
+        << "  --signalMassMax=<x>         the extraction integrates exactly these intervals in\n"
+        << "  --leftSidebandMin=<x>       every angular bin, with no dependence on the fitted mu.\n"
+        << "  --leftSidebandMax=<x>       The peak fit is then QA only, so a bin can no longer be\n"
+        << "  --rightSidebandMin=<x>      rejected for failing it. Leave any of them unset to keep\n"
+        << "  --rightSidebandMax=<x>      the sigma-relative windows above.\n"
         << "  --help                      Print this message and exit\n\n"
         << "The windows are applied identically to all four workflows (per-bin, integrated,\n"
         << "denominator QA and cut flow). Those four differ only in what they do with a mass fit\n"
@@ -4123,6 +4645,22 @@ bool ParseCommandLine(int argc, char** argv, ExtractionConfigSet& configs, bool&
         std::string key = arg.substr(2, eq - 2);
         std::string valStr = arg.substr(eq + 1);
 
+        // Word-valued options, handled before the numeric parse below
+        if (key == "bkgMethod") {
+            BackgroundMethod m;
+            if (valStr == "sideband" || valStr == "fit")   m = BackgroundMethod::SidebandFit;
+            else if (valStr == "window" || valStr == "counting") m = BackgroundMethod::WindowCounting;
+            else {
+                std::cerr << "  Error: --bkgMethod must be 'sideband' or 'window'.\n";
+                return false;
+            }
+            configs.perBin.bkgMethod = m;
+            configs.integrated.bkgMethod = m;
+            configs.denomQA.bkgMethod = m;
+            configs.cutFlow.bkgMethod = m;
+            continue;
+        }
+
         double val = 0.0;
         try { val = std::stod(valStr); }
         catch (const std::exception&) {
@@ -4135,6 +4673,14 @@ bool ParseCommandLine(int argc, char** argv, ExtractionConfigSet& configs, bool&
         else if (key == "nSigmaExclusionOuter") applyToAll([](SidebandConfig& c, double v){ c.nSigmaExclusionOuter = v; }, val);
         else if (key == "bkgPolOrder")          applyToAll([](SidebandConfig& c, double v){ c.bkgPolOrder = int(v); c.minSidebandPoints = 0; }, val);
         else if (key == "ringBkgPolOrder")      applyToAll([](SidebandConfig& c, double v){ c.ringBkgPolOrder = int(v); c.minSidebandPoints = 0; }, val);
+        else if (key == "massPeakHalfWidth")    applyToAll([](SidebandConfig& c, double v){ c.massPeakHalfWidth = v; }, val);
+        else if (key == "massSidebandGap")      applyToAll([](SidebandConfig& c, double v){ c.massSidebandGap = v; }, val);
+        else if (key == "signalMassMin")        applyToAll([](SidebandConfig& c, double v){ c.signalMassMin = v; }, val);
+        else if (key == "signalMassMax")        applyToAll([](SidebandConfig& c, double v){ c.signalMassMax = v; }, val);
+        else if (key == "leftSidebandMin")      applyToAll([](SidebandConfig& c, double v){ c.leftSidebandMin = v; }, val);
+        else if (key == "leftSidebandMax")      applyToAll([](SidebandConfig& c, double v){ c.leftSidebandMax = v; }, val);
+        else if (key == "rightSidebandMin")     applyToAll([](SidebandConfig& c, double v){ c.rightSidebandMin = v; }, val);
+        else if (key == "rightSidebandMax")     applyToAll([](SidebandConfig& c, double v){ c.rightSidebandMax = v; }, val);
         else if (key == "minSidebandPoints")    applyToAll([](SidebandConfig& c, double v){ c.minSidebandPoints = int(v); }, val);
         else if (key == "minSidebandCounts")    applyToAll([](SidebandConfig& c, double v){ c.minSidebandCounts = v; }, val);
         else if (key == "minEntries")           applyToAll([](SidebandConfig& c, double v){ c.minEntries = v; }, val);
@@ -4185,6 +4731,22 @@ bool CheckSidebandBandIsFittable(TH1D* hRefMass, const SidebandConfig& cfg)
     double sigma = cfg.sigmaInitGuess;
     double massMin = hRefMass->GetXaxis()->GetXmin();
     double massMax = hRefMass->GetXaxis()->GetXmax();
+
+    // Window-counting geometry is structural, so it is checked here and is FATAL: every failure is a
+    // typo in the configuration rather than a property of the data, and it costs nothing to catch it
+    // before any of the extraction calls run.
+    if (!ValidateWindowCountingConfig(cfg, massMin, massMax)) return false;
+
+    if (cfg.bkgMethod == BackgroundMethod::WindowCounting) {
+        // The sideband GRAPH is not used in this mode -- there is no <R> fit to feed -- so the point
+        // count below would be checking a band the run never looks at.
+        std::cout << Form("  Window-counting precheck: bands take the realized peak half-width, "
+                          "gap = %s.",
+                          cfg.massSidebandGap > 0.0 ? Form("%.5f", cfg.massSidebandGap)
+                                                    : "one peak half-width")
+                  << std::endl;
+        return true;
+    }
 
     SidebandSpan span;
     TGraphErrors* gr = BuildSidebandGraph(hRefMass, mu, sigma, massMin, massMax, cfg,
@@ -4402,10 +4964,67 @@ int main(int argc, char** argv) {
         qaFile = nullptr;
     }
 
+    // All results of the derived data consumer live inside a folder named after the task. Declared here because Step 2.6 below is the first user of it:
+    const std::string baseFolderTableConsumer = "lambdajetpolarizationionsderived";
+
+    // =========================================================================================
+    // Step 2.6: analysis-level V0 selection cut-flow signal extraction
+    // =========================================================================================
+    // The consumer's counterpart to Step 2.5. Same question -- at each selection step, how much of
+    // what was removed was background and how much was signal -- but for the cuts applied in the
+    // DERIVED-DATA consumer (isV0Accepted) rather than those applied in the TableProducer.
+    //
+    // Three things make it simpler than the producer-side flow:
+    //   1. It lives at the ROOT of the consumer output, in the file this macro already has open.
+    //      No separate AnalysisResults file, no GeneralQA folder.
+    //   2. There is no hypothesis branch. Every cut is a single comparison in one function, so the
+    //      chain is one unbroken segment, bin 1 to the last bin, rather than a shared block plus a
+    //      per-species block that must not be chained into one another.
+    //   3. The species gate runs BEFORE isV0Accepted in the consumer, so a JustLambda or
+    //      JustAntiLambda wagon already produces a species-pure flow in this one object. One
+    //      extraction, not two.
+    //
+    // The object exists only when doAnalysisLevelCuts is on, so its absence is the normal case for a
+    // nominal wagon and is reported as information rather than as a warning.
+    {
+        const std::string analysisFlowPath = baseFolderTableConsumer + "/h2dAnalysisLevelSelectionV0sVsMass";
+        TH2D* h2dAnalysisFlow = (TH2D*)inFile->Get(analysisFlowPath.c_str());
+
+        if (!h2dAnalysisFlow) {
+            std::cout << "\n[Step 2.6] No h2dAnalysisLevelSelectionV0sVsMass in this file; skipping "
+                         "the analysis-level cut flow. Expected whenever doAnalysisLevelCuts is off."
+                      << std::endl;
+        } else {
+            std::cout << "\n[Step 2.6] Running analysis-level V0 selection cut-flow signal extraction..."
+                      << std::endl;
+
+            TDirectory* dirAnalysisFlow = outFile->mkdir("AnalysisLevelSelectionCutFlow");
+
+            // One unbroken chain over every bin, which is what "no hypothesis branch" means here.
+            // Read from the histogram rather than hardcoded, so adding a cut in the consumer needs no
+            // edit on this side -- only the label list in the consumer's init() has to stay in step
+            // with the cut order in isV0Accepted.
+            const int nFlowBins = h2dAnalysisFlow->GetXaxis()->GetNbins();
+            const std::vector<std::pair<int, int>> analysisChain = {{1, nFlowBins}};
+
+            // The companion 1D flow, kept beside the extracted yields for traceability
+            TH1* hAnalysisFlow1D = (TH1*)inFile->Get((baseFolderTableConsumer + "/hAnalysisLevelSelectionV0s").c_str());
+            dirAnalysisFlow->cd();
+            if (hAnalysisFlow1D) hAnalysisFlow1D->Write();
+            h2dAnalysisFlow->Write(); // Input histogram, saved for traceability
+
+            // The mass axis is the Lambda-like mass under whichever hypothesis the candidate was
+            // stored as, so the axis title is deliberately species-neutral: in a BothHyperons wagon
+            // this one object carries both, and labelling it p-pi would be wrong for half of it.
+            PerformSelectionCutFlowExtraction(h2dAnalysisFlow, dirAnalysisFlow, "AnalysisLevel",
+                                              "m_{p#pi} (GeV/#it{c}^{2})", analysisChain,
+                                              configs.cutFlow);
+            outFile->cd();
+        }
+    }
+
     outFile->cd(); // Restore a well-defined current directory before the variation loop starts
 
-    // All results of the derived data consumer live inside a folder named after the task.
-    const std::string baseFolderForAEE = "lambdajetpolarizationionsderived";
 
     // =========================================================================================
     // Step 2.75: Azimuthal Efficiency Effect probe -- signal extraction vs phi_Lambda - phi_p*
@@ -4425,7 +5044,7 @@ int main(int argc, char** argv) {
     // required: CountsFromProfile2D reads the denominator out of the profile's own entry array,
     // which also guarantees the numerator and denominator describe the same candidates.
     {
-        const std::string aeeFolder = baseFolderForAEE + "/HelicityEfficiencyQA/PhiLambdaPhiProtonStar";
+        const std::string aeeFolder = baseFolderTableConsumer + "/HelicityEfficiencyQA/PhiLambdaPhiProtonStar";
         TDirectory* aeeIn = (TDirectory*)inFile->Get(aeeFolder.c_str());
 
         if (!aeeIn) {
@@ -4461,36 +5080,59 @@ int main(int argc, char** argv) {
                  "#phi_{#bar{#Lambda}}-#phi_{#bar{p}}^{*}"}
             };
 
+            // Three eta-split variants of every profile, distinguished only by a suffix on the
+            // object name. The consumer books them with the same base name plus PosProxyEta or
+            // NegProxyEta, so one loop covers all 27 extractions.
+            //
+            // Each variant gets its own subdirectory filled IDENTICALLY -- MassFits,
+            // RingObservable_vs_Mass, Diagnostics, Results, IntegratedCombined. That uniformity is
+            // the point: comparing the split against the unsplit is then a matter of reading the
+            // same object from three folders, with no special case anywhere downstream.
+            // Axis titles come from aeeSpecs, this macro's own table, so nothing here depends on
+            // the consumer's titles.
+            struct EtaSplitVariant { const char* suffix; const char* dirName; };
+            const std::vector<EtaSplitVariant> etaSplits = {
+                {"",            "NoEtaSplit"},
+                {"PosProxyEta", "EtaProxyPos"},
+                {"NegProxyEta", "EtaProxyNeg"}
+            };
+
             int nDone = 0, nSkipped = 0;
-            for (const auto& spec : aeeSpecs) {
-                TProfile2D* prof = (TProfile2D*)aeeIn->Get(spec.profileName);
-                if (!prof) {
-                    std::cout << "    -> Skipping " << spec.outName << ": " << spec.profileName
-                              << " not found." << std::endl;
-                    nSkipped++;
-                    continue;
+            for (const auto& split : etaSplits) {
+                TDirectory* splitDir = EnsureDir(aeeOut, split.dirName);
+
+                for (const auto& spec : aeeSpecs) {
+                    const std::string objName = std::string(spec.profileName) + split.suffix;
+                    TProfile2D* prof = (TProfile2D*)aeeIn->Get(objName.c_str());
+                    if (!prof) {
+                        std::cout << "    -> Skipping " << split.dirName << "/" << spec.outName
+                                  << ": " << objName << " not found." << std::endl;
+                        nSkipped++;
+                        continue;
+                    }
+
+                    TH2D* counts = CountsFromProfile2D(prof, Form("h2dCountsAEE_%s_%s",
+                                                                  split.dirName, spec.outName));
+                    double aeeMassMin = prof->GetYaxis()->GetXmin();
+                    double aeeMassMax = prof->GetYaxis()->GetXmax();
+
+                    std::cout << "    -> Processing " << split.dirName << "/" << spec.outName << " ("
+                              << prof->GetXaxis()->GetNbins() << " angular bins, "
+                              << prof->GetEntries() << " entries)..." << std::endl;
+
+                    // CombinePerBin: no projection over phi_Lambda - phi_p*. See the note at the top
+                    // of the combination helpers -- projecting first would undo the entire reason
+                    // this folder splits on an angular variable across which <R> changes sign.
+                    ExtractObservable2D(counts, prof, splitDir, spec.outName, spec.axisTitle,
+                                        aeeMassMin, aeeMassMax,
+                                        configs.perBin, configs.integrated,
+                                        IntegralMode::CombinePerBin);
+                    delete counts;
+                    nDone++;
                 }
-
-                TH2D* counts = CountsFromProfile2D(prof, Form("h2dCountsAEE_%s", spec.outName));
-                double aeeMassMin = prof->GetYaxis()->GetXmin();
-                double aeeMassMax = prof->GetYaxis()->GetXmax();
-
-                std::cout << "    -> Processing " << spec.outName << " ("
-                          << prof->GetXaxis()->GetNbins() << " angular bins, "
-                          << prof->GetEntries() << " entries)..." << std::endl;
-
-                // CombinePerBin: no projection over phi_Lambda - phi_p*. See the note at the top
-                // of the combination helpers -- projecting first would undo the entire reason this
-                // folder splits on an angular variable across which <R> changes sign.
-                ExtractObservable2D(counts, prof, aeeOut, spec.outName, spec.axisTitle,
-                                    aeeMassMin, aeeMassMax,
-                                    configs.perBin, configs.integrated,
-                                    IntegralMode::CombinePerBin);
-                delete counts;
-                nDone++;
             }
             std::cout << Form("  [AEE probe] %d of %d extractions produced; %d profiles missing.",
-                              nDone, (int)aeeSpecs.size(), nSkipped) << std::endl;
+                              nDone, int(aeeSpecs.size() * etaSplits.size()), nSkipped) << std::endl;
             outFile->cd();
         }
     }
@@ -4500,7 +5142,7 @@ int main(int argc, char** argv) {
     // =========================================================================================
     std::cout << "\n[Step 3] Looping over variations and fetching histograms..." << std::endl;
     
-    std::string baseFolder = baseFolderForAEE; // Same task folder the AEE block above used
+    std::string baseFolder = baseFolderTableConsumer;
     // Only "Ring" is generally booked by the consumer.
     // The other three families have their switches turned off in most cases.
     struct VariationSpec { std::string name; bool mandatory; };

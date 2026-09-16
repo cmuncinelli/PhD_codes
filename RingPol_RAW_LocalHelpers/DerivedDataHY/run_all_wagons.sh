@@ -102,7 +102,6 @@ MC_REF_DIR="/home/users/cicerodm/RingPol/LHC25h3c/ITSandTPC_min3ITS/results_cons
 # PP_REF_DIR="/home/users/cicerodm/RingPol/LHC23_pass4_Thin_small/ITSandTPC_min3ITS/results_consumer"
 PP_REF_DIR="/home/users/cicerodm/RingPol/LHC23_pass4_Thin_medium/ITSandTPC-pp/results_consumer"
 
-
 # Absolute path to the Toy Model ROOT file for Auxiliary Plots (chose the Toy Model representative whose configurations are 
 # closest to what an actual data selection would do in data processing, as an attempt to keep everything consistent)
 # Leave empty ("") if you do not want to overlay the Toy Model.
@@ -119,6 +118,20 @@ AUX_ALWAYS_ON_FOLDER="Ring"
 AUX_DO_INDIVIDUAL_COMPARISONS=0
 # Testing with other model configurations:
 # TOY_MODEL_PATH="/home/users/cicerodm/RingPol/HelicityToyModel/9_RealisticAlice/alice_std/helicity_alice_std.root"
+
+# Signal extraction configs:
+LAMBDA_MASS=1.1156830
+SIGMA=0.0017127606
+# SIGEXTRACT_OPTS=(--bkgMethod=window)
+SIGEXTRACT_OPTS=(
+  --bkgMethod=window
+  --signalMassMin=$(bc -l <<< "$LAMBDA_MASS - 1.5*$SIGMA")
+  --signalMassMax=$(bc -l <<< "$LAMBDA_MASS + 1.5*$SIGMA")
+  --leftSidebandMin=$(bc -l <<< "$LAMBDA_MASS - 7*$SIGMA")
+  --leftSidebandMax=$(bc -l <<< "$LAMBDA_MASS - 5.5*$SIGMA")
+  --rightSidebandMin=$(bc -l <<< "$LAMBDA_MASS + 5.5*$SIGMA")
+  --rightSidebandMax=$(bc -l <<< "$LAMBDA_MASS + 7*$SIGMA")
+)
 
 # Set executable paths
 EXTRACT_DELTA_EXE="${REPO_DIR}/RingPol_RAW_LocalHelpers/extractDeltaErrors.exe"
@@ -585,7 +598,7 @@ run_config_steps() {
   # Step 3: signalExtractionRing
   # ------------------------------------------------------------------
   if [ $SKIP_SIG_EXTRACT -eq 0 ]; then
-    if "$SIGNAL_EXTRACT_EXE" "${CONSUMER_RESULT}" "${SIGNAL_EXTRACT_DIR}/" > "$SIG_LOG" 2>&1 < /dev/null; then
+    if "$SIGNAL_EXTRACT_EXE" "${CONSUMER_RESULT}" "${SIGNAL_EXTRACT_DIR}/" "${SIGEXTRACT_OPTS[@]}" > "$SIG_LOG" 2>&1 < /dev/null; then
       echo "${PREFIX} [3/7] sigExtract      : ${CONS_SUFFIX}  -> OK"
     else
       echo "${PREFIX} [3/7] sigExtract      : ${CONS_SUFFIX}  -> FAILED  (log: ${SIG_LOG})"
