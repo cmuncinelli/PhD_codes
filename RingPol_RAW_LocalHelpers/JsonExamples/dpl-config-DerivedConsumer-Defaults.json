@@ -1,0 +1,526 @@
+{
+    "lambdajetpolarizationionsderived": {
+        "PeakWindowNSigma": "1",
+        "SidebandInnerNSigma": "6",
+        "SidebandOuterNSigma": "7",
+        "analyseAntiLambda": "false",
+        "analyseLambda": "true",
+        "analyseMagField": "true",
+        "analysisLevelCuts": {
+            "apAlphaMax": "0.94999998807907104",
+            "apAlphaMin": "0.40000000596046448",
+            "apQtMax": "0.10999999940395355",
+            "apQtMin": "0.0080000003799796104",
+            "doAnalysisLevelCuts": "false",
+            "nSigmaTPCPiLike": "5",
+            "nSigmaTPCPrLike": "5",
+            "v0MaxDcaDau": "999",
+            "v0MaxPt": "999",
+            "v0MaxRadius": "999",
+            "v0MaxRap": "0.5",
+            "v0MinCosPA": "-1",
+            "v0MinDcaPiLikeToPV": "-1",
+            "v0MinDcaPrLikeToPV": "-1",
+            "v0MinPt": "-1",
+            "v0MinRadius": "-1"
+        },
+        "axisConfigurations": {
+            "axisAPAlpha": {
+                "values": [
+                    "220",
+                    "-1.1000000238418579",
+                    "1.1000000238418579"
+                ]
+            },
+            "axisAPQt": {
+                "values": [
+                    "220",
+                    "0",
+                    "0.5"
+                ]
+            },
+            "axisCentrality": {
+                "values": [
+                    "0",
+                    "0",
+                    "20",
+                    "50",
+                    "100"
+                ]
+            },
+            "axisCosTheta": {
+                "values": [
+                    "50",
+                    "-1",
+                    "1"
+                ]
+            },
+            "axisCosThetaCoarse": {
+                "values": [
+                    "10",
+                    "-1",
+                    "1"
+                ]
+            },
+            "axisDCAdau": {
+                "values": [
+                    "10",
+                    "0",
+                    "2"
+                ]
+            },
+            "axisDCAdauPV": {
+                "values": [
+                    "10",
+                    "0",
+                    "1.2"
+                ]
+            },
+            "axisDeltaCollisionIndex": {
+                "values": [
+                    "2000",
+                    "-0.5",
+                    "1999.5"
+                ]
+            },
+            "axisDeltaCollisionIndexNonAbs": {
+                "values": [
+                    "4000",
+                    "-2000.5",
+                    "1999.5"
+                ]
+            },
+            "axisDeltaComponents": {
+                "values": [
+                    "5",
+                    "0",
+                    "5"
+                ]
+            },
+            "axisDeltaEtaCoarse": {
+                "values": [
+                    "40",
+                    "-1.7999999523162842",
+                    "1.7999999523162842"
+                ]
+            },
+            "axisDeltaPhi": {
+                "values": [
+                    "40",
+                    "-3.1415927410125732",
+                    "3.1415927410125732"
+                ]
+            },
+            "axisDeltaPhiCoarse": {
+                "values": [
+                    "32",
+                    "-3.1415927410125732",
+                    "3.1415927410125732"
+                ]
+            },
+            "axisDeltaTheta": {
+                "values": [
+                    "40",
+                    "0",
+                    "3.1415927410125732"
+                ]
+            },
+            "axisEta": {
+                "values": [
+                    "50",
+                    "-1",
+                    "1"
+                ]
+            },
+            "axisEtaCoarse": {
+                "values": [
+                    "20",
+                    "-0.89999997615814209",
+                    "0.89999997615814209"
+                ]
+            },
+            "axisEtaSigExtract": {
+                "values": [
+                    "10",
+                    "-0.89999997615814209",
+                    "0.89999997615814209"
+                ]
+            },
+            "axisJetPt": {
+                "values": [
+                    "0",
+                    "0",
+                    "2",
+                    "4",
+                    "6",
+                    "8",
+                    "10",
+                    "15",
+                    "20",
+                    "30",
+                    "40",
+                    "60",
+                    "80",
+                    "120",
+                    "160",
+                    "200"
+                ]
+            },
+            "axisJetPtSigExtract": {
+                "values": [
+                    "0",
+                    "0",
+                    "5",
+                    "10",
+                    "12",
+                    "16",
+                    "20",
+                    "25",
+                    "30",
+                    "35",
+                    "40",
+                    "60",
+                    "100",
+                    "200"
+                ]
+            },
+            "axisLambdaMass": {
+                "values": [
+                    "450",
+                    "1.0800000429153442",
+                    "1.1499999761581421"
+                ]
+            },
+            "axisLambdaMassSigExtract": {
+                "values": [
+                    "0",
+                    "1.0780000000000001",
+                    "1.0868199999999999",
+                    "1.0957699999999999",
+                    "1.0966400000000001",
+                    "1.09751",
+                    "1.0983799999999999",
+                    "1.0992500000000001",
+                    "1.10012",
+                    "1.1009899999999999",
+                    "1.1018600000000001",
+                    "1.10273",
+                    "1.1035999999999999",
+                    "1.1044700000000001",
+                    "1.10534",
+                    "1.1062099999999999",
+                    "1.1070800000000001",
+                    "1.1079600000000001",
+                    "1.10883",
+                    "1.1096999999999999",
+                    "1.1105700000000001",
+                    "1.11145",
+                    "1.11232",
+                    "1.1131899999999999",
+                    "1.1140600000000001",
+                    "1.11494",
+                    "1.11581",
+                    "1.1166799999999999",
+                    "1.11755",
+                    "1.11843",
+                    "1.1193",
+                    "1.1201700000000001",
+                    "1.12104",
+                    "1.12192",
+                    "1.12279",
+                    "1.1236600000000001",
+                    "1.12453",
+                    "1.12541",
+                    "1.1262799999999999",
+                    "1.1271500000000001",
+                    "1.12802",
+                    "1.1288899999999999",
+                    "1.1297600000000001",
+                    "1.13063",
+                    "1.1315",
+                    "1.1323700000000001",
+                    "1.13324",
+                    "1.13411",
+                    "1.1349800000000001",
+                    "1.1434299999999999",
+                    "1.1519999999999999"
+                ]
+            },
+            "axisLambdaMassThreeBin": {
+                "values": [
+                    "0",
+                    "1.0800000429153442",
+                    "1.1101399660110474",
+                    "1.1206099987030029",
+                    "1.1499999761581421"
+                ]
+            },
+            "axisLambdaPx": {
+                "values": [
+                    "40",
+                    "-3",
+                    "3"
+                ]
+            },
+            "axisLambdaPy": {
+                "values": [
+                    "40",
+                    "-3",
+                    "3"
+                ]
+            },
+            "axisLambdaPz": {
+                "values": [
+                    "40",
+                    "-4",
+                    "4"
+                ]
+            },
+            "axisMixCandidates": {
+                "values": [
+                    "200",
+                    "-0.5",
+                    "199.5"
+                ]
+            },
+            "axisMixDeltaCentCoarse": {
+                "values": [
+                    "200",
+                    "-100",
+                    "100"
+                ]
+            },
+            "axisMixDeltaCentrality": {
+                "values": [
+                    "1000",
+                    "-100",
+                    "100"
+                ]
+            },
+            "axisMixDeltaEta": {
+                "values": [
+                    "90",
+                    "-1.7999999523162842",
+                    "1.7999999523162842"
+                ]
+            },
+            "axisMixDeltaIndexCoarse": {
+                "values": [
+                    "401",
+                    "-200.5",
+                    "200.5"
+                ]
+            },
+            "axisMixDeltaPhi": {
+                "values": [
+                    "90",
+                    "-3.1415927410125732",
+                    "3.1415927410125732"
+                ]
+            },
+            "axisMixDeltaPt": {
+                "values": [
+                    "800",
+                    "-40",
+                    "40"
+                ]
+            },
+            "axisMixDeltaPtCoarse": {
+                "values": [
+                    "400",
+                    "-40",
+                    "40"
+                ]
+            },
+            "axisMixDeltaZvtx": {
+                "values": [
+                    "400",
+                    "-20",
+                    "20"
+                ]
+            },
+            "axisMixDeltaZvtxCoarse": {
+                "values": [
+                    "200",
+                    "-1",
+                    "1"
+                ]
+            },
+            "axisPVz": {
+                "values": [
+                    "60",
+                    "-10",
+                    "10"
+                ]
+            },
+            "axisPVzCoarse": {
+                "values": [
+                    "10",
+                    "-10",
+                    "10"
+                ]
+            },
+            "axisPhi": {
+                "values": [
+                    "40",
+                    "0",
+                    "6.2831854820251465"
+                ]
+            },
+            "axisPt": {
+                "values": [
+                    "0",
+                    "0",
+                    "0.10000000149011612",
+                    "0.20000000298023224",
+                    "0.30000001192092896",
+                    "0.40000000596046448",
+                    "0.5",
+                    "0.60000002384185791",
+                    "0.69999998807907104",
+                    "0.80000001192092896",
+                    "0.89999997615814209",
+                    "1",
+                    "1.1000000238418579",
+                    "1.2000000476837158",
+                    "1.2999999523162842",
+                    "1.3999999761581421",
+                    "1.5",
+                    "1.6000000238418579",
+                    "1.7000000476837158",
+                    "1.7999999523162842",
+                    "1.8999999761581421",
+                    "2",
+                    "2.2000000476837158",
+                    "2.4000000953674316",
+                    "2.5999999046325684",
+                    "2.7999999523162842",
+                    "3",
+                    "3.2000000476837158",
+                    "3.4000000953674316",
+                    "3.5999999046325684",
+                    "3.7999999523162842",
+                    "4",
+                    "4.4000000953674316",
+                    "4.8000001907348633",
+                    "5.1999998092651367",
+                    "5.5999999046325684",
+                    "6",
+                    "6.5",
+                    "7",
+                    "7.5",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "15",
+                    "17",
+                    "19",
+                    "21",
+                    "23",
+                    "25",
+                    "30",
+                    "35",
+                    "40",
+                    "50"
+                ]
+            },
+            "axisPtCoarseQA": {
+                "values": [
+                    "0",
+                    "0",
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                    "7",
+                    "10",
+                    "15"
+                ]
+            },
+            "axisPtSigExtract": {
+                "values": [
+                    "0",
+                    "0",
+                    "0.25",
+                    "0.5",
+                    "0.75",
+                    "1",
+                    "1.25",
+                    "1.5",
+                    "2",
+                    "2.5",
+                    "3",
+                    "4",
+                    "6",
+                    "8",
+                    "10",
+                    "15",
+                    "20",
+                    "30",
+                    "50"
+                ]
+            },
+            "axisRingCounts": {
+                "values": [
+                    "90",
+                    "-4.5",
+                    "4.5"
+                ]
+            },
+            "axisV0Eta": {
+                "values": [
+                    "75",
+                    "-1.5",
+                    "1.5"
+                ]
+            },
+            "axisV0EtaCoarse": {
+                "values": [
+                    "32",
+                    "-1.5",
+                    "1.5"
+                ]
+            }
+        },
+        "centralityEstimator": "1",
+        "excludeInPeakQA": "false",
+        "excludeOutOfPeakQA": "false",
+        "fakePolSwitches": {
+            "doMixedEventProxies": "false",
+            "forceDatalikeJet": "false",
+            "forceJetDirectionSmudge": "false",
+            "forcePerpToJet": "false",
+            "forcePolSignQA": "false",
+            "forcePreviousJet": "false",
+            "forceRandJet": "false",
+            "gateEtaOnArtificialProxies": "true",
+            "gatePtOnArtificialProxies": "false",
+            "maxJetProxyEta": "0.5",
+            "maxLeadPProxyEta": "0.89999997615814209",
+            "mixedEventWindowSize": "20",
+            "mixingIdxGapSize": "0",
+            "nProxyResamples": "1"
+        },
+        "familySwitches": {
+            "doFamilyJetAndLambdaKinematicCuts": "false",
+            "doFamilyJetKinematicCuts": "true",
+            "doFamilyRing": "true",
+            "doFamilyRingKinematicCuts": "false"
+        },
+        "jetR": "0.40000000596046448",
+        "maxZVtxPosition": "5",
+        "minLeadJetPt": "10",
+        "minLeadParticlePt": "4",
+        "minSubLeadJetPt": "8",
+        "processPolarizationData": "true",
+        "qaSwitches": {
+            "doEventMixingQA": "true",
+            "doFakePolDiagnosticsQA": "true"
+        }
+    }
+}
