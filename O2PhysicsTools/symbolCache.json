@@ -1,0 +1,11 @@
+{
+  "-constants::math::PI": -3.1415927410125732,
+  "constants::math::PI": 3.1415927410125732,
+  "constants::math::TwoPI": 6.2831854820251465,
+  "constants::math::TwoPI / 18": 0.3490658700466156,
+  "kAntiKt": 2.0,
+  "kCentFT0M": 1.0,
+  "kChargedJet": 0.0,
+  "kEScheme": 0.0,
+  "kNoSubtraction": 0.0
+}
