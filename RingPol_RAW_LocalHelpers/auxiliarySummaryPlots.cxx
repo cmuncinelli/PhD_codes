@@ -2878,34 +2878,30 @@ std::pair<double, double> KappaOf(const RingSample& s) {
     return {3. * r.first, 3. * r.second};
 }
 
-// TODO: rethink of this DrawSlotSeries function. The label on the middle one was not a good design.
-// We can just revert to the categorical plot where a bunch of points where spaced with a fraction in the X axis.
 /**
- * @brief Several series side by side on one categorical axis: each column gets one sub-slot per series,
- *        and its label goes on the middle one. A value with a negative error is treated as missing.
+ * @brief Several series on one categorical axis, one bin per column, the series nudged sideways within it.
+ * A thin adapter onto DrawOffsetSeriesCanvas: it only packs vals[series][column] into one histogram per
+ * series. A value with a negative error is treated as missing and left empty, which the offset canvas
+ * skips (no marker parked at zero).
  */
-void DrawSlotSeries(const std::vector<std::string>& columnLabels, const std::vector<VariationConfig>& series,
-                    const std::vector<std::vector<std::pair<double, double>>>& vals,
-                    const std::string& canvasName, const std::string& title, TDirectory* dir, const std::string& yTitle) {
+void DrawSeriesByColumn(const std::vector<std::string>& columnLabels, const std::vector<VariationConfig>& series,
+                        const std::vector<std::vector<std::pair<double, double>>>& vals,
+                        const std::string& canvasName, const std::string& title, TDirectory* dir, const std::string& yTitle) {
     const int nCols = static_cast<int>(columnLabels.size());
-    const int nSer  = static_cast<int>(series.size());
-    if (!dir || nCols == 0 || nSer == 0) return;
-    const int nBins = nSer * nCols;
-    std::vector<std::string> slotLabels(nBins, "");
-    for (int c = 0; c < nCols; ++c) slotLabels[nSer * c + nSer / 2] = columnLabels[c];
+    if (!dir || nCols == 0 || series.empty()) return;
 
     std::vector<ProfileBundle> bundles;
-    for (int s = 0; s < nSer; ++s) {
-        TH1D* h = new TH1D(Form("%s_series%d", canvasName.c_str(), s), "", nBins, 0, nBins);
+    for (size_t sIdx = 0; sIdx < series.size(); ++sIdx) {
+        TH1D* h = new TH1D(Form("%s_series%zu", canvasName.c_str(), sIdx), "", nCols, 0, nCols);
         h->SetDirectory(nullptr);
         for (int c = 0; c < nCols; ++c) {
-            if (vals[s][c].second < 0.) continue;
-            h->SetBinContent(nSer * c + s + 1, vals[s][c].first);
-            h->SetBinError(nSer * c + s + 1, vals[s][c].second);
+            if (vals[sIdx][c].second < 0.) continue;
+            h->SetBinContent(c + 1, vals[sIdx][c].first);
+            h->SetBinError(c + 1, vals[sIdx][c].second);
         }
-        bundles.push_back({h, series[s]});
+        bundles.push_back({h, series[sIdx]});
     }
-    DrawIntegratedCanvas(bundles, slotLabels, canvasName, title, dir, yTitle, false, true, false);
+    DrawOffsetSeriesCanvas(columnLabels, bundles, canvasName, title, dir, yTitle, 0.5, false);
     for (auto& b : bundles) delete b.profile;
 }
 
@@ -2960,7 +2956,7 @@ void DrawRingVsRingZ(FileCache& cache, TDirectory* fileRoot, const std::string& 
             if (cfgs.empty() || !cfgs.front().isData) continue; // Differences need Data as the first column
             if (!famDir) famDir = EnsureDir(EnsureDir(fileRoot, "RingVsRingZ"), fam.familyName);
 
-            DrawSlotSeries(labels, series, vals, "Canvas_RingVsRingZ_" + proxy,
+            DrawSeriesByColumn(labels, series, vals, "Canvas_RingVsRingZ_" + proxy,
                            fam.familyName + ", " + proxy + ": full ring vs R_{z} (raw, all candidates)", famDir, "integrated value");
             DrawCategoricalCrossSystem(labels, cfgs, vals[2], "Canvas_RzOverNz2_" + proxy,
                                        fam.familyName + ", " + proxy + ": <R_{z}>/<n_{z}^{2}> (raw)", famDir,
@@ -2974,8 +2970,13 @@ void DrawRingVsRingZ(FileCache& cache, TDirectory* fileRoot, const std::string& 
  *
  * Both ring definitions are reduced to the same quantity, the ring density P_R (under ring alignment):
  *   full ring  P = (R_d - R_f) / (kappa_eff - (alpha^2/3) R_d R_f)    exact inversion (eq:finalcorrection)
- *   R_z        P = (R_z,d - R_z,f) / (3 <u^2>) = R_z,true / <n_z^2>   linear: R_z's own fake is small
- * with d the data sample, f its mixed-event partner, and kappa and <u^2> measured on the data sample. For
+ *   R_z        P = (R_z,d - R_z,f) / (3 <u^2>) = R_z,true / <n_z^2>   linear, see below
+ * with d the data sample, f its mixed-event partner, and kappa and <u^2> measured on the data sample.
+ * The exact R_z inversion is R_z,true = [R_z,d (1 + <delta>_0) - R_z,f] / kappa_z, where <delta>_0 ~
+ * (alpha^2/3) R_true R_fake is the normalization of the WHOLE sample -- full-ring quantities, whatever R_z's
+ * own fake is. It multiplies R_z,d, so the dropped term is <delta>_0 R_z,d ~ 1e-4 x R_z,d: negligible even
+ * with R_z's fake as large as its signal. The full ring cannot drop it, because there it multiplies R_d ~ 0.8.
+ * For
  * the full ring kappa_eff = 3 <u^2>, so both are the one expression P = (R_d - R_f) / (3 <u^2> - k R_d R_f),
  * with k = alpha^2/3 for the full ring (FamilyConfig::alphaSq) and k = 0 for R_z.
  *
@@ -3073,10 +3074,10 @@ void DrawCorrections(TDirectory* fileRoot, const std::vector<FamilyConfig>& fami
             }
             if (kLabels.empty()) continue;
             if (!famDir) famDir = EnsureDir(EnsureDir(EnsureDir(fileRoot, "Corrections"), folder), fam.familyName);
-            DrawSlotSeries(kLabels, kappaSeries, kVals, "Canvas_Kappa_" + proxy,
+            DrawSeriesByColumn(kLabels, kappaSeries, kVals, "Canvas_Kappa_" + proxy,
                            fam.familyName + ", " + proxy + ": #kappa of the data sample (" + tag + ")", famDir, "#kappa");
             if (!cLabels.empty())
-                DrawSlotSeries(cLabels, corrSeries, cVals, "Canvas_Corrected_" + proxy,
+                DrawSeriesByColumn(cLabels, corrSeries, cVals, "Canvas_Corrected_" + proxy,
                                fam.familyName + ", " + proxy + ": fake-subtracted ring density (" + tag + ")", famDir, "P_{R}");
         }
     }
