@@ -75,6 +75,7 @@ Every device key that does not belong to the analysed source is listed under `un
 Four patterns are recognised inside any top-level `struct` in the source:
 
 - `Configurable<T> name{"key", default, "help"};`
+- `Configurable<std::vector<T>> name{"key", {a, b, ...}, "help"};` -- serialized by DPL as `{"values": [...]}`, the same shape an axis uses
 - `ConfigurableAxis name{"key", {...}, "help"};` (`VARIABLE_WIDTH` is the plain `0` sentinel of the stored vector)
 - `struct : ConfigurableGroup { std::string prefix = "groupName"; ... }` -- the **`prefix` member**, not the instance name, is what becomes the JSON sublevel
 - `PROCESS_SWITCH(struct, name, "help", default)` and its `_FULL` variant -- easy to forget, but a process switch is a configurable like any other
@@ -92,7 +93,9 @@ Configurable<double> radiusJet{"radiusJet", 0.4f, ...};  // float literal widene
 Configurable<float>  v0cospa  {"v0cospa",   0.995, ...};  // double literal narrowed to float
 ```
 
-So the literal is first evaluated in its own type (`f` suffix means `float`), then cast to the declared type. `ConfigurableAxis` is a `Configurable<std::vector<double>>`, so only the first cast bites there -- which is why `0.1f` lands in the JSON as `0.10000000149011612`.
+So the literal is first evaluated in its own type (`f` suffix means `float`), then cast to the declared type.
+
+Vectors are handled elementwise, with the **element** type driving both casts and the comparison band. `ConfigurableAxis` is not a special case here: it is exactly a `Configurable<std::vector<double>>`, which is why only the first cast bites on an axis and `0.1f` lands in the JSON as `0.10000000149011612`. A `Configurable<std::vector<float>>` is written to 9 significant digits instead, so it gets the `float` band -- treating it as an axis would raise a spurious warning on every run.
 
 <a name="symbol-resolution"></a>
 ### Symbol resolution (the one thing that needs o2env)
@@ -120,7 +123,7 @@ Bit-exact comparison is therefore impossible, and a single tolerance would eithe
 
 | Relative difference | Verdict |
 | --- | --- |
-| below the writer's noise floor (1e-8 for `float`, 1e-12 for `double` and axes) | `PRUNE`, silently |
+| below the writer's noise floor (1e-8 for `float`, 1e-12 for `double`; for a vector, the band of its element type) | `PRUNE`, silently |
 | between that and **1e-6** | `NEAR`: **pruned anyway, with a warning** |
 | above 1e-6 | `KEEP` |
 
@@ -145,6 +148,6 @@ This is not a flag and cannot be turned off. A tool whose failure mode is silent
 ## Known limits
 
 - One source file per invocation. Run it once for the producer and once for the consumer.
-- Only `Configurable`, `ConfigurableAxis`, `ConfigurableGroup` and `PROCESS_SWITCH` are recognised. An unsupported `Configurable<T>` is fatal rather than skipped -- better a stop than a wrong prune.
+- Only `Configurable`, `ConfigurableAxis`, `ConfigurableGroup` and `PROCESS_SWITCH` are recognised. Scalars and one-level `std::vector` of them are supported; a nested vector or any other `Configurable<T>` is fatal rather than skipped -- better a stop than a wrong prune.
 - Configurables inherited from an included header are not followed. Neither of my two tasks has any; if that changes, the tool will report the keys as orphans, which is the loud failure and not the quiet one.
 - The `internal-dpl-aod-reader` block also carries framework defaults, but it belongs to no analysed source and is left alone by design.

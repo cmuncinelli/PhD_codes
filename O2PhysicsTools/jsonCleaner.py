@@ -332,12 +332,24 @@ def literal_value(expr):
     return None if number is None else number[0]
 
 
-def axis_elements(expr):
-    """The brace-enclosed element list of a ConfigurableAxis default."""
+def brace_elements(expr, key):
+    """The elements of a brace-initialised default (an axis or any vector)."""
     expr = expr.strip()
     if not expr.startswith("{"):
-        fatal("ConfigurableAxis default is not a brace list: %s" % expr)
+        fatal("default of '%s' is a vector but not a brace list: %s" % (key, expr))
     return split_arguments(expr[1:-1])
+
+
+def default_expressions(decl):
+    """The atomic C++ expressions behind a declaration's default.
+
+    A vector default is a brace list, so its elements go to ROOT one by one -- a
+    braced-init-list is not an expression and cannot be cast or printed.
+    """
+    category = declaration_category(decl)
+    if category.startswith("vector:"):
+        return brace_elements(decl["default_expr"], decl["key"])
+    return [decl["default_expr"]]
 
 
 def collect_unresolved(devices):
@@ -345,9 +357,7 @@ def collect_unresolved(devices):
     pending = set()
     for declarations in devices.values():
         for decl in declarations.values():
-            exprs = (axis_elements(decl["default_expr"])
-                     if decl["kind"] == "ConfigurableAxis" else [decl["default_expr"]])
-            for expr in exprs:
+            for expr in default_expressions(decl):
                 if expr == "VARIABLE_WIDTH":
                     continue
                 if literal_value(expr) is None:
@@ -424,8 +434,17 @@ def resolve_with_root(expressions, enum_blocks, cache_path):
 
 
 def type_category(template):
-    """Map a Configurable's template argument onto how its value has to be compared."""
+    """Map a Configurable's template argument onto how its value has to be compared.
+
+    A vector comes back as "vector:<element>", since the element type sets both the
+    comparison band and the way the JSON writer rounds it.
+    """
     name = re.sub(r"\b(o2::framework::|std::)", "", template or "").strip()
+    vector = re.match(r"^vector\s*<\s*(.+?)\s*>$", name)
+    if vector:
+        element = type_category(vector.group(1))
+        return None if element is None or element.startswith("vector:") \
+            else "vector:" + element
     if name == "bool":
         return "bool"
     if name == "string":
@@ -440,6 +459,32 @@ def type_category(template):
     return None
 
 
+def declaration_category(decl):
+    """ConfigurableAxis is just a Configurable<std::vector<double>> by another name."""
+    if decl["kind"] == "ConfigurableAxis":
+        return "vector:double"
+    category = type_category(decl["template"])
+    if category is None:
+        fatal("unsupported Configurable type '%s' for key '%s'"
+              % (decl["template"], decl["key"]))
+    return category
+
+
+def cast_scalar(category, value, key):
+    """Store a resolved default the way the declared scalar type would hold it."""
+    if category == "bool":
+        return bool(value)
+    if category == "string":
+        if not isinstance(value, str):
+            fatal("default of '%s' is not a string literal" % key)
+        return value
+    if category == "int":
+        return int(value)
+    if category == "float":
+        return float32(float(value))
+    return float(value)
+
+
 def evaluate_default(decl, symbols):
     """The compiled default, canonicalized the way C++ would store it.
 
@@ -447,38 +492,21 @@ def evaluate_default(decl, symbols):
     Configurable<double> radiusJet{..., 0.4f} widens a float literal, while
     Configurable<float> v0cospa{..., 0.995} narrows a double one.
     """
-    if decl["kind"] == "ConfigurableAxis":
-        values = []
-        for expr in axis_elements(decl["default_expr"]):
-            if expr == "VARIABLE_WIDTH":
-                values.append(0.0)  # the sentinel is a plain 0 in the stored vector
-                continue
-            value = literal_value(expr)
-            if value is None:
-                value = symbols[expr]
-            values.append(float(value))
-        return "axis", values
+    category = declaration_category(decl)
+    values = []
+    for expr in default_expressions(decl):
+        if expr == "VARIABLE_WIDTH":
+            values.append(0.0)  # the sentinel is a plain 0 in the stored vector
+            continue
+        value = literal_value(expr)
+        if value is None:
+            value = symbols[expr]  # already (double)(expr) from ROOT
+        values.append(value)
 
-    category = type_category(decl["template"])
-    if category is None:
-        fatal("unsupported Configurable type '%s' for key '%s'"
-              % (decl["template"], decl["key"]))
-
-    value = literal_value(decl["default_expr"])
-    if value is None:
-        value = symbols[decl["default_expr"]]  # already (double)(expr) from ROOT
-
-    if category == "bool":
-        return category, bool(value)
-    if category == "string":
-        if not isinstance(value, str):
-            fatal("default of '%s' is not a string literal" % decl["key"])
-        return category, value
-    if category == "int":
-        return category, int(value)
-    if category == "float":
-        return category, float32(float(value))
-    return category, float(value)
+    if not category.startswith("vector:"):
+        return category, cast_scalar(category, values[0], decl["key"])
+    element = category.split(":", 1)[1]
+    return category, [cast_scalar(element, v, decl["key"]) for v in values]
 
 
 # ---------------------------------------------------------------------------
@@ -488,10 +516,11 @@ def evaluate_default(decl, symbols):
 def parse_json_value(raw, category, key):
     """DPL writes everything as strings; bring it back to the compared type."""
     try:
-        if category == "axis":
+        if category.startswith("vector:"):
             if not isinstance(raw, dict) or "values" not in raw:
                 return None
-            return [float(v) for v in raw["values"]]
+            element = category.split(":", 1)[1]
+            return [parse_json_value(v, element, key) for v in raw["values"]]
         if isinstance(raw, dict) or isinstance(raw, list):
             return None
         if category == "bool":
@@ -531,17 +560,17 @@ def compare_values(category, reference, candidate):
     """Return 'exact', 'near' or 'differ', plus the worst relative difference seen."""
     if category in ("bool", "string", "int"):
         return ("exact" if reference == candidate else "differ"), 0.0
-    if category == "axis":
+    if category.startswith("vector:"):
+        element = category.split(":", 1)[1]
         if len(reference) != len(candidate):
             return "differ", 0.0
         outcome, worst = "exact", 0.0
         for ref, got in zip(reference, candidate):
-            element = compare_float(ref, got, "double")  # axes are vectors of double
-            if element != "exact" and ref != 0.0:
-                worst = max(worst, abs(got - ref) / abs(ref))
-            if element == "differ":
+            step, relative = compare_values(element, ref, got)
+            worst = max(worst, relative)
+            if step == "differ":
                 outcome = "differ"
-            elif element == "near" and outcome == "exact":
+            elif step == "near" and outcome == "exact":
                 outcome = "near"
         return outcome, worst
     outcome = compare_float(reference, candidate, category)
@@ -551,8 +580,9 @@ def compare_values(category, reference, candidate):
 
 
 def describe(category, value):
-    if category == "axis":
-        head = ", ".join("%g" % v for v in value[:4])
+    if category.startswith("vector:"):
+        element = category.split(":", 1)[1]
+        head = ", ".join(describe(element, v) for v in value[:4])
         return "{%s%s} (%d values)" % (head, ", ..." if len(value) > 4 else "", len(value))
     if category == "bool":
         return "true" if value else "false"
@@ -730,8 +760,9 @@ def process_file(path, devices, defaults, apply_changes, backup_dir):
 
 def serialize_default(category, value):
     """Write a default back in the DPL string style, for the reference dumps."""
-    if category == "axis":
-        return {"values": ["%.17g" % v for v in value]}
+    if category.startswith("vector:"):
+        element = category.split(":", 1)[1]
+        return {"values": [serialize_default(element, v) for v in value]}
     if category == "bool":
         return "true" if value else "false"
     if category == "string":
