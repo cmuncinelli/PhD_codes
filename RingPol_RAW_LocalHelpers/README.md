@@ -14,8 +14,9 @@ canvases.
 1. [Layout](#layout)
 2. [The post-processing chain](#the-post-processing-chain)
 3. [Conventions](#conventions)
-4. [Macro reference](#macro-reference)
-5. [Appendix -- AO2D bit forensics in detail](#appendix----ao2d-bit-forensics-in-detail)
+4. [The longitudinal ring, $R_z$ (`useRingZ`)](#the-longitudinal-ring-r_z-useringz)
+5. [Macro reference](#macro-reference)
+6. [Appendix -- AO2D bit forensics in detail](#appendix----ao2d-bit-forensics-in-detail)
 
 ---
 
@@ -146,6 +147,113 @@ results_AuxPerConfig/logs/auxPerConfig_<SUFFIX>.log
 
 The exceptions are the consumer's own wrapper/batch logs and the two wagon-level logs
 (`auxSummaryPlots.log`, `zvtxBitForensics.log`), which stay under `results_consumer/logs/`.
+
+---
+
+# The longitudinal ring, $R_z$ (`useRingZ`)
+
+## What the switch does
+
+The consumer configurable `useRingZ` (default off) redefines the ring observable, for every proxy, as its projection on the beam axis:
+
+$$R_z \;=\; P_z\,n_z,\qquad \hat n=\frac{\hat t\times\vec p_\Lambda}{\lVert\hat t\times\vec p_\Lambda\rVert}.$$
+
+Nothing else in the consumer changes. Every object filled with the ring -- the four cut families, `IntegratedCuts/`, `EtaStudy/`, the `HelicityEfficiencyQA/` AEE profiles and the Delta-method trackers -- then holds $\langle R_z\rangle$ under its usual name. The titles still read $\langle R\rangle$; the post-processing relabels them for $R_z$ files, and only where the meaning actually changes.
+
+An $R_z$ output is identified **by its file name alone**: the consumer configs carry `_useRingZ` right after the family, as in `dpl-config-DerivedConsumer-BothHyperons_useRingZ_MixedEventProxies.json`, so every output follows as `ConsumerResults_BothHyperons_useRingZ_MixedEventProxies.root`. There is no marker object inside the file.
+
+## Why it is cleaner
+
+Write $\hat n=\cos\chi\,\hat\varphi+\sin\chi\,\hat\theta$ in the $\Lambda$ basis $(\hat p,\hat\theta,\hat\varphi)$, with $\chi$ the bearing of the proxy seen from the $\Lambda$ (the same $\chi$ as in the ring-geometry note). Because $\hat\varphi$ has no $z$ component, $n_z=-\sin\theta_\Lambda\sin\chi$, and the whole azimuthal group of the master equation -- the AEE fake, global polarization and $P_N$ -- drops out of $R_z$ **exactly**, candidate by candidate. Exactly, per candidate,
+
+$$R_z=\sin^2\theta_\Lambda\,\bigl(\sin\chi\,P_\theta\bigr)\;-\;\sin\theta_\Lambda\cos\theta_\Lambda\,\sin\chi\,P_p .$$
+
+What is left enters only with $\sin\chi$, which is odd between the two sides of the $\Lambda$ ("east" and "west"). The non-ring remainder therefore cancels up to the east--west imbalance $A_{EW}$, and $R_z$ has no large fake of its own. Two consequences follow:
+
+- The denominator of the exact inversion is negligible, and the **linear subtraction** $R_{z,\rm true}=(R_{z,\rm meas}-R_{z,\rm fake})/\kappa_z$ is safe. Do not feed $R_z$ quantities into the full-ring Mobius formula: its denominator is written in terms of the full ring's fake.
+- The response coefficient is $R_z$'s own, $\kappa_z$, not the full ring's $\kappa_{\rm eff}$ (see `KappaEff/` below).
+
+The price is signal. $R_z$ keeps the ring with weight $n_z^2$, so near-side geometry retains about $0.45$ of the signal and $0.67$ of the significance.
+
+## What is expected to vanish, and what is not
+
+Several outputs of an $R_z$ run are **null tests**, and a non-zero value there is a finding, not a bug:
+
+- **The ring kernel (`RingKernel/`, and Sections 6--8 of `auxiliaryPerConfigPlots`).** The kernel exists to extract $B_\varphi$, which $R_z$ removes by construction. The profiles still fill and must be consistent with zero; the $B_\varphi$ and $M_0/M_1$ fits are meaningless and are read as nulls only.
+- **$\langle R_z\rangle$ vs $\varphi_{\rm AEE}$.** It must be flat. Unlike the full ring, where binning in $\varphi_{\rm AEE}$ biases $\hat p^{*}\!\cdot\hat\varphi$ purely kinematically, $\hat p^{*}_z$ is independent of $\varphi^{*}_p$ for isotropic decays, so any structure is instrumental and E--W imbalanced.
+- **`ringObservableOverJetZ`.** Built for the full ring's $\hat t_z$ invariance; not meaningful for $R_z$.
+- **MixedEv** should give $R_z\approx0$. This is necessary but not sufficient: mixing cannot see fakes tied to the real jet's environment, and its $A_{EW}$ is not the data's.
+- **pp** is zero only if vacuum fragmentation carries no ring. That is a physics question, not a closure test.
+
+What survives in data besides the signal: the jet-$v_2$ times $v_2$-induced $P_z$ leak (entirely along $z$, so about twice as important relative to the signal as in the full ring), and any **field-odd** instrumental part. The solenoid field is the only thing in ALICE that breaks the mirror symmetry through the $(\hat z,\hat p_\Lambda)$ plane, which is what E--W cancellation relies on.
+
+## East versus west, for free
+
+Exactly, $n_z=\sin\Delta\varphi\,\sin\theta_t\sin\theta_\Lambda/\sin\Delta\theta$, so $\mathrm{sign}(n_z)=\mathrm{sign}(\sin\Delta\varphi)$, and zero is a bin edge of `axisDeltaPhi`. Hence:
+
+- $A_{EW}$ comes from the halves of the existing `QA/hDeltaPhi*` counters;
+- the east and west $\langle R_z\rangle$ come from integrating the halves of the existing `pRingObservable*DeltaPhi` profiles;
+- the **odd part** of $\langle R_z\rangle(\Delta\varphi)$ is pure leak, and the even part is signal plus any field-odd residue.
+
+No dedicated object is booked for any of this.
+
+## `RzDiagnostics/` (booked only with `useRingZ`)
+
+The full ring is computed alongside $R_z$ **only** in this mode, and only to fill this folder.
+
+| Object | Content |
+|---|---|
+| `pRingVsChi<Proxy>`, `p2dRingVsChiVsMass<Proxy>` | $\langle R_z\rangle$ vs $\chi$, integrated and vs mass |
+| `p2dRingVsDeltaPhiVsDeltaEtaLeadJet` | the same sectors in detector variables |
+| `pRingPerpIntegrated`, `pRingPerp<Proxy>Vs{Mass,PhiAEE,DeltaPhi}` | the complement $R_\perp=R-R_z$, filled directly |
+| `pCosSqThetaStarZLeadJetVsMass` | the standard, unweighted $\langle\cos^2\theta^{*}_z\rangle$ |
+
+`<Proxy>` is `LeadJet`, `LeadP` or `SubJet`. The profile names read `Ring` rather than `RingZ` on purpose, since this whole folder only exists in $R_z$ mode.
+
+**The $\chi$ sectors.** Under the reflections $(\chi\to-\chi,\ \chi\to\pi-\chi)$:
+
+| Sector | Weight | What lives there |
+|---|---|---|
+| $(+,+)$ | $\sin^2\theta\sin^2\chi$ | the signal, plus field-odd instrumental parts only |
+| $(-,+)$ | $\sin\chi$ | $\Lambda$-kinematic fakes ($B_\theta$, HEE) times $A_{EW}$ |
+| $(-,-)$ | $\sin 2\chi$ | the in-plane "towards-the-jet" component $P_e$, $\hat e=\hat p\times\hat n$ |
+| $(+,-)$ | -- | null (needs both the field and a $z$ asymmetry) |
+
+$P_e$ and the helicity component $P_p$ are parity-odd, so strong production cannot generate them: both are purely instrumental. $P_e$ enters $R_z$ but **not** the full ring ($\hat e\perp\hat n$), and event mixing is blind to it.
+
+**$R_\perp$ is filled, not subtracted.** $\langle R\rangle-\langle R_z\rangle$ has the right mean, but $R$ and $R_z$ share every candidate, so quadrature errors on that difference would be wrong.
+
+## `KappaEff/` (always booked, in every cut family)
+
+Both response coefficients share one form. With $u=R/c_\alpha$ the unitless ring ($c_\alpha$ the polarization prefactor) and $w$ its projection weight,
+
+$$\kappa=3\,\frac{\langle u^2\rangle}{\langle w\rangle},\qquad w=\begin{cases}1 & \text{full ring: } u=\hat p^{*}\!\cdot\hat n\\[2pt] n_z^2 & R_z:\ u=n_z\,\hat p^{*}_z\end{cases}$$
+
+so the same four profiles per proxy, all vs mass, serve both modes:
+
+| Object | Filled with | Used for |
+|---|---|---|
+| `pKappaNum<Proxy>VsMass` | $u^2$ | $\kappa$ numerator |
+| `pKappaDen<Proxy>VsMass` | $w$ | $\kappa$ denominator; the $R_z\to P_R$ conversion $R_z/\langle n_z^2\rangle$ |
+| `pKappaNumTimesDen<Proxy>VsMass` | $u^2 w$ | $\mathrm{Cov}(u^2,w)$, for the error on $\kappa$ |
+| `pRingTimesDen<Proxy>VsMass` | $R\,w$ | $\mathrm{Cov}(R,w)$, for the error on $R_z/\langle n_z^2\rangle$ |
+
+In full-ring mode $w\equiv1$, so the last three are trivially redundant. They are filled anyway so the post-processing never has to know the mode.
+
+Three design points:
+
+- **Unitless, on purpose.** $u$ carries no $\alpha$. $\langle R^2\rangle$ read off the existing profiles' spread would mix $\lvert\alpha_\Lambda\rvert\neq\lvert\alpha_{\bar\Lambda}\rvert$ in `BothHyperons`, and would not give the covariances.
+- **Vs mass, per cut family.** $\kappa$ must be measured on exactly the candidates that make $R$, and the background's $\hat p^{*}$ distribution is not isotropic, so $\kappa_B\neq\kappa_S$ in general. The signal-region value comes out of the same sideband machinery as $\langle R\rangle_S$.
+- **Ratios of means on one sample.** Each $\kappa$ and each $R_z/\langle n_z^2\rangle$ is a ratio of two means over the same candidates. First-order propagation needs only $\Sigma y$, $\Sigma y^2$ (which `TProfile` already stores) and the cross-product profile.
+
+The full ring's $\kappa_{\rm eff}=3\langle(\hat p^{*}\!\cdot\hat n)^2\rangle$ is the data-driven second moment of the note, valid up to $O(\alpha P_{\rm true})$. $R_z$'s $\kappa_z=3\langle n_z^2(\hat p^{*}_z)^2\rangle/\langle n_z^2\rangle$ reduces to the standard $n_z^2$-weighted $3\langle\cos^2\theta^{*}_z\rangle$ for a $\phi^{*}$-independent, forward--backward-symmetric acceptance about $\hat z$; comparing it with the unweighted factor in `RzDiagnostics/` shows whether the weighting matters.
+
+## Post-processing in $R_z$ mode
+
+- **Pairing.** Data, MixedEv, pp and MC must be read in the same mode, which the suffix guarantees.
+- **Toy Model.** Its overlay is a full-ring prediction, so it is dropped for $R_z$ files.
+- **Titles.** Relabelled downstream from $\langle R\rangle$ to $\langle R_z\rangle$, only for $R_z$ files.
+- **Every macro reads the mode from the file names**, so `run_all_wagons.sh` needs no change: the per-config macros see one file at a time, and the summary picks up any `_useRingZ` outputs in the wagon as extra families (`<Family>_RingZ/`). See [its section](#auxiliarysummaryplotscxx).
 
 ---
 
@@ -603,6 +711,19 @@ genuine measurement of zero. Value histograms are therefore written *only* on su
 `hExtractionStatus` is written unconditionally, so "the extraction failed" is always distinguishable
 from "the extraction never ran". Every failure branch names itself in the log.
 
+### The KappaEff moments
+
+The response coefficient is $\kappa=3\langle u^2\rangle/\langle w\rangle$ (see [The longitudinal ring](#the-longitudinal-ring-r_z-useringz)), so its signal-region value needs only $\langle u^2\rangle_S$ and $\langle w\rangle_S$. Each is a per-candidate quantity profiled against mass, exactly like $R$, so each goes through **the same integrated extraction** -- same peak, same windows, same sideband model, same error propagation -- with nothing written for it but a folder name and a symbol for the labels:
+
+```
+<Family>/KappaEff/<Proxy>_Num/hIntegratedRSig_<Proxy>_Num   <-- <u^2>_S
+<Family>/KappaEff/<Proxy>_Den/hIntegratedRSig_<Proxy>_Den   <-- <w>_S, R_z files only
+```
+
+The object names are the usual ones, so `hIntegratedRSig_<name>` is $\langle y\rangle_S$ for whatever $y$ was profiled; the titles carry the right symbol. The ratio is taken by the summary, in `Corrections/SignalExtracted/`.
+
+$\langle w\rangle_S$ is extracted for `_useRingZ` files only, the mode being read from the file name as everywhere downstream of the consumer. For the full ring $w\equiv1$, so $\langle w\rangle_S=1$ identically and there is nothing to extract; a zero-spread profile would also leave the sideband fit with no errors to weigh. A consumer output that predates `KappaEff/` is reported in one line and skipped.
+
 ### Assumptions this rests on
 
 1. Background polarization varies smoothly in invariant mass.
@@ -746,29 +867,475 @@ types.
 
 The general home for **per-config derivative plots** -- anything cheap to build from a finished `ConsumerResults_*.root` that does not belong inside the O2Physics consumer and does not need cross-config aggregation. It is deliberately not scoped to one quantity; new sections are expected (see the `ADD MORE POST-PROCESSING SECTIONS HERE` marker in `main()`).
 
+### Coordinate systems used by the polarization maps
+
+The consumer books the polarization maps in **three** rotated frames, under `<folder>/PolMaps/<frame>/`. They are not competing definitions of the same picture: each answers a question the others cannot, and two of them are *not* vector fields at all. This subsection is the reference for why.
+
+Throughout, $\vec p^{\,*}$ is the unit vector along the proton-like daughter's momentum boosted into the $\Lambda$ rest frame, still expressed in **lab Cartesian axes** (a pure boost does not rotate the axes). $\vec P^{*} = (3/\alpha)\,\vec p^{\,*}$ is what the profiles actually hold. $\hat p_\Lambda$ is the unit vector along the $\Lambda$ **lab momentum**, $\hat t$ the jet direction, and
+
+$$\Phi_{AEE} \equiv \phi_{\Lambda} - \phi^{*}_{p}$$
+
+is the azimuthal-efficiency angle (`deltaPhiLambdaProtonStar` in the consumer).
+
+#### The one rule that decides whether to rotate
+
+Every rotated frame here is built from vectors reconstructed per candidate, so the binned plane is invariant under some group of lab rotations. **Any polarization component drawn on that plane must be invariant under the same group, or it averages to zero bin by bin.**
+
+The lab azimuth of an event is random, so the relevant group always contains rotations about $\hat z$. That single observation settles every design question below:
+
+- Components expressed in **lab** axes are *not* $z$-rotation invariant. Overlaying them on a rotated plane gives an arrow field consistent with zero, whose residual measures only the detector's azimuthal non-uniformity.
+- Components expressed in the **rotated** axes *are* invariant -- but if the frame was built out of the polarization itself, they are invariant *trivially*, because the rotation froze them.
+
+So: **rotate when the new frame is built from vectors independent of $\vec P^{*}$; do not when the frame is built from $\vec P^{*}$.**
+
+| Frame | $\hat x$ along | Built from | What it is for |
+|---|---|---|---|
+| `Lab` | detector $x$ | -- | the detector-frame picture, unchanged |
+| `Aee` | $\Phi_{AEE} = 0$, i.e. $\vec p^{\,*}_{T}$ | the proton | acceptance maps (**scalars only**) |
+| `PrimeV0` | $\vec p^{\,\Lambda}_{T}$ | the $\Lambda$ | the $\Lambda$ production plane (vector field) |
+| `PrimeJet` | beam, orthogonalised against the jet | jet + beam | the ring measurement (vector field) |
+
+#### `Aee` -- and why it carries no arrows
+
+The rotation is by $-\phi^{*}_{p}$ about $\hat z$, so that $\hat x_{AEE}$ is the transverse direction of the rest-frame proton. The plane is then polar in disguise: **radius is $p_T^{\Lambda}$ and azimuth is $\Phi_{AEE}$.** The counts map on it is the azimuthal efficiency modulation, resolved in $p_T$ -- the AEE, drawn directly.
+
+But $\hat x_{AEE}$ is aligned with the transverse polarization *by construction*. With $\hat y_{AEE} = \hat z \times \hat x_{AEE} = (-\sin\phi^{*}_{p},\ \cos\phi^{*}_{p},\ 0)$,
+
+$$\vec p^{\,*}\cdot\hat y_{AEE} = p^{*}_{T}\big(-\cos\phi^{*}_{p}\sin\phi^{*}_{p} + \sin\phi^{*}_{p}\cos\phi^{*}_{p}\big) = 0 \quad \text{identically,}$$
+
+so in this frame the polarization is exactly
+
+$$\big(P^{*}_{x'},\ P^{*}_{y'},\ P^{*}_{z'}\big) = \big(|\vec p^{\,*}_{T}|,\ 0,\ P^{*}_{z}\big) \;\propto\; \big(\sin\theta^{*},\ 0,\ \cos\theta^{*}\big),$$
+
+with $\theta^{*}$ measured from the **beam** -- which is the axis $\vec B$ lies along, hence the AEE-relevant one. Every arrow would point along $+\hat x_{AEE}$ with the same frozen direction; only the length would vary.
+
+Leaving the components *unrotated* does not rescue it either: the bin coordinates are $z$-rotation invariant while $P^{*}_x$ and $P^{*}_y$ are not, so both average to zero.
+
+The general statement, which no choice of $\hat x$ escapes: **the transverse plane has one angular degree of freedom, and $\Phi_{AEE}$ already spends it.** Any transverse vector built from $\{\hat p_{\Lambda,T},\ \vec p^{\,*}_T,\ \hat z\}$ has an azimuth that is a fixed function of $\Phi_{AEE}$, in any frame.
+
+What survives is not nothing. $\langle\sin\theta^{*}\rangle$ and $\langle\cos\theta^{*}\rangle$ per $(p_T, \Phi_{AEE})$ bin are the first two moments of the rest-frame polar-angle acceptance in that bin. For a perfect, isotropic detector $\langle\sin\theta^{*}\rangle = \pi/4 \approx 0.785$ and $\langle\cos\theta^{*}\rangle = 0$, both flat; every deviation is acceptance sculpting. Together with the counts map that is a complete low-order characterisation, which is exactly what this family books.
+
+#### `PrimeV0` -- the $\Lambda$ production plane
+
+The rotation is by $-\phi_{\Lambda}$, so $\hat x_{V0}$ is the $\Lambda$'s own transverse direction and $\hat y_{V0} = \hat z \times \hat x_{V0}$. The components are
+
+$$P^{*}_{x'V0} = p^{*}_{T}\cos\Phi_{AEE}, \qquad P^{*}_{y'V0} = -\,p^{*}_{T}\sin\Phi_{AEE}, \qquad P^{*}_{z} \ \text{unchanged}.$$
+
+Two things make this frame worth having.
+
+**First**, $\hat y_{V0} = \widehat{\hat z \times \hat p_{\Lambda}}$ is the ring observable's normal with the **beam substituted for the jet**. So
+
+$$\langle P^{*}_{y'V0}\rangle \;=\; \langle R\rangle \ \text{computed with}\ \hat z\ \text{as the jet proxy},$$
+
+identically, not approximately. That is a control observable of the same kind as the leading-particle and mixed-event proxies: it carries no jet-correlated ring signal, but the full AEE bias. It costs two multiplications.
+
+**Second**, $(p_z,\ p_T)$ *is* the production plane, and $\hat z$ and $\hat x_{V0}$ are its own in-plane unit vectors. Axes and arrows therefore share one basis, with no mixed-frame comparison hiding anywhere:
+
+| | |
+|---|---|
+| horizontal axis | $p_z^{\Lambda}$, in-plane, along $\hat z$ |
+| vertical axis | $p_T^{\Lambda} \ge 0$, in-plane, along $\hat x_{V0}$ |
+| arrows | $(\langle P^{*}_z\rangle,\ \langle P^{*}_{x'V0}\rangle)$ |
+| COLZ | $\langle P^{*}_{y'V0}\rangle$, out of plane |
+
+#### `PrimeJet` -- the jet frame
+
+$\hat z_{Jet} = \hat t$, and $\hat x_{Jet}$ is the beam direction **orthogonalised against the jet**. With $t_z = \hat t\cdot\hat z$ and $t_T \equiv \sqrt{1-t_z^{2}} = 1/\cosh\eta_{jet}$:
+
+$$\hat z_{Jet} = \hat t, \qquad \hat x_{Jet} = \frac{\hat z - t_z\,\hat t}{t_T}, \qquad \hat y_{Jet} = \hat z_{Jet}\times\hat x_{Jet} = \frac{\hat t \times \hat z}{t_T},$$
+
+giving, for any vector $\vec v$,
+
+$$v_{z'} = \vec v\cdot\hat t, \qquad v_{x'} = \frac{v_z - t_z\,v_{z'}}{t_T}, \qquad v_{y'} = \frac{v_x t_y - v_y t_x}{t_T}.$$
+
+$t_z$ and $1/t_T$ depend only on the jet, so the consumer resolves them **once per collision**, right after `applyProxyDistortion()` (which rewrites `leadingJetUnitVec` in place -- computing the basis before it would use the undistorted jet). The same rotation is applied to $\vec p^{\,*}$ and to $\vec p^{\,\Lambda}$.
+
+**Why the orthogonalisation is not optional.** The naive triad $\{\hat z,\ \hat t\times\hat z,\ \hat t\}$ fails twice: $\hat z\cdot\hat t = \tanh\eta_{jet} \neq 0$ for any jet off midrapidity, and $|\hat t\times\hat z| = 1/\cosh\eta_{jet} \neq 1$. The second is only a normalisation; the first is structural. With $\hat x = \hat z$ the "plane transverse to the jet" is tilted by $\tanh\eta_{jet}$ *along* the jet, so the projection is skewed by an amount correlated with the jet kinematics, which would smear the ring pattern in an $\eta_{jet}$-dependent way. Note that $\hat y_{Jet}$ comes out in the same direction either way -- only $\hat x_{Jet}$ actually changes -- and the whole construction reduces to the naive one at $\eta_{jet}=0$.
+
+**No sign ambiguity.** A frame axis fixed by an arbitrary algorithmic choice would average $\langle P^{*}_{x'}\rangle$ to zero. That does not happen here:
+
+$$\hat x_{Jet}\cdot\hat z = \frac{1-t_z^{2}}{t_T} = t_T > 0 \quad\text{always},$$
+
+and $\hat x_{Jet}$ is a smooth, branch-free function of $\hat t$ alone. It is the unique unit vector perpendicular to the jet, lying in the beam-jet plane, on the $+\hat z$ side. The only degeneracy is $t_T \to 0$, a jet exactly along the beam, where the beam-jet plane does not exist; unreachable for the $|\eta_{jet}|$ the jet finder accepts, and guarded anyway.
+
+### The ring observable *is* the azimuthal component of the jet-frame arrows
+
+This is the reason the $(x'_{Jet},\ y'_{Jet})$ panel is the headline plot.
+
+In the jet frame $\hat t = \hat z'$, so $\widehat{\hat t\times\hat p_\Lambda}$, the ring normal, is the azimuthal unit vector $(-\sin\phi',\ \cos\phi',\ 0)$ with $\phi'$ the azimuth of $\hat p_\Lambda$ in the jet frame. Therefore
+
+$$R \;=\; -P^{*}_{x'}\sin\phi' + P^{*}_{y'}\cos\phi' \;=\; P^{*}_{\phi'}.$$
+
+Consequences worth internalising:
+
+- A genuine ring signal appears as arrows **circulating** about the origin. A radial or divergent pattern is something else entirely.
+- The radius of that plane is $|\vec p_{\Lambda}|\sin\Delta\theta_{jet}$ -- literally the radius of the ring.
+- It is a **bin-by-bin closure test**: the tangential projection of the drawn arrows must reproduce `p2dRingObservableVsPxPyPrimeJet`, up to binning effects.
+
+### Parity relations, and which ones are supposed to break
+
+Momenta are polar vectors, $\vec P^{*}$ is axial, and $\vec B = B\hat z$ is axial too. Mirror symmetries therefore relate the maps to themselves for free -- and, crucially, the magnetic field breaks exactly one of the two, which is what makes the pair diagnostic.
+
+#### Mirror through the beam-jet plane ($M_1$, the $x'z'$ plane)
+
+The jet frame is invariant under it. For a parity-conserving production mechanism and an $M_1$-symmetric acceptance:
+
+$$\langle P_{x'}\rangle,\ \langle P_{z'}\rangle \ \text{odd in } p_{y'}; \qquad \langle P_{y'}\rangle,\ \langle R\rangle \ \text{even in } p_{y'}.$$
+
+$\vec B$ lies **in** this mirror plane and is axial, so $M_1$ flips it. **This relation is designed to break**: a violation is a magnetic-field-induced bias, which is the thing the AEE study is hunting.
+
+#### Mirror through $z=0$ ($M_z$)
+
+Here the frame does not simply follow the mirror. Working it through: $\hat z'_{img} = M_z\hat z'$ and $\hat y'_{img} = M_z\hat y'$, but $\hat x'_{img} = -M_z\hat x'$, because the definition always points beam-ward while the mirror image of $+\hat z$ is $-\hat z$. The result is
+
+$$\langle P_{x'}\rangle \ \text{even in } p_{x'}; \qquad \langle P_{y'}\rangle,\ \langle P_{z'}\rangle \ \text{odd in } p_{x'}; \qquad \langle R\rangle \ \text{even in } p_{x'}.$$
+
+$\vec B$ is **normal** to this mirror plane and axial, so $M_z$ preserves it. This relation is broken only by genuine detector $z$-asymmetry or collision-system asymmetry, neither of which applies to O--O in the central barrel. **This one should simply hold**, and a violation means something is wrong with the machinery, not with the physics.
+
+So $\langle R\rangle$ is even under both: the ring map should be symmetric about **both** axes of the $(x',y')$ panel. Free closure test on the headline plot, nothing extra to book.
+
+#### In the production plane (`PrimeV0`)
+
+Take $M_{\Lambda}$, the mirror through the $\Lambda$ production plane. It leaves $\vec p_{\Lambda}$ alone and sends $\Phi_{AEE}\to-\Phi_{AEE}$. At fixed $(p_z, p_T)$ we integrate over $\Phi_{AEE}$, so
+
+$$\langle P^{*}_{x'V0}\rangle = \langle P^{*}_{z}\rangle = 0, \qquad \langle P^{*}_{y'V0}\rangle \ \text{unconstrained}.$$
+
+This is the Basel-convention statement: a parity-conserving single-spin polarization must be normal to the production plane. **The arrows in that panel must vanish identically**, so any non-zero arrow field there is B-induced bias -- the cleanest pure null test in the whole set. The COLZ is *not* a null: $\langle P^{*}_{y'V0}\rangle$ is allowed by parity and is the classic transverse $\Lambda$ polarization normal to the production plane.
+
+#### On the AEE planes
+
+Differential in $\Phi_{AEE}$, so parity forces a symmetry rather than a vanishing:
+
+$$\text{counts},\ \langle\sin\theta^{*}\rangle \ \text{even in } \Phi_{AEE}; \qquad \langle\cos\theta^{*}\rangle \ \text{odd in } \Phi_{AEE}.$$
+
+Note this corrects a natural but wrong expectation: the null for the $\langle P^{*}_z\rangle$ map is **odd in $\Phi_{AEE}$**, not flat -- it integrates to zero rather than being zero everywhere. And it gives a quantitative prescription:
+
+$$\text{AEE} \;\equiv\; \text{the odd-in-}\Phi_{AEE}\text{ component of the counts map.}$$
+
+Folding the map about $\Phi_{AEE}=0$ leaves an antisymmetric residue that *is* the effect, isolated from acceptance that is merely non-uniform for geometric reasons. See Section 5.
+
 ### Section 1 -- polarization vector fields
 
-$\langle \vec{P}^{*}\rangle$ drawn over the $\Lambda$ momentum plane, in the same visual language as the Helicity Efficiency Toy Model's plotter ["PhD_codes/ToyModels/plotHelicityEfficiency.cxx"](../ToyModels/plotHelicityEfficiency.cxx), so that real data and toy model can be compared by eye.
+$\langle \vec{P}^{*}\rangle$ drawn over momentum planes, in the same visual language as the Helicity Efficiency Toy Model's plotter ["PhD_codes/ToyModels/plotHelicityEfficiency.cxx"](../ToyModels/plotHelicityEfficiency.cxx), so that real data and toy model can be compared by eye.
+
+One canvas per coordinate system, per kinematic-cut folder.
+
+**`cVectorFieldLab`** -- read from `PolMaps/Lab/`:
 
 | Panel | COLZ background | Arrows |
 |---|---|---|
-| X--Y plane | $\langle P^{*}_z\rangle$ (out of plane) | $(\langle P^{*}_x\rangle,\ \langle P^{*}_y\rangle)$ |
-| Z--X plane | $\langle P^{*}_y\rangle$ (out of plane) | $(\langle P^{*}_z\rangle,\ \langle P^{*}_x\rangle)$ |
+| X--Y plane | $\langle P^{*}_z\rangle$ | $(\langle P^{*}_x\rangle,\ \langle P^{*}_y\rangle)$ |
+| Z--X plane | $\langle P^{*}_y\rangle$ | $(\langle P^{*}_z\rangle,\ \langle P^{*}_x\rangle)$ |
+| Y--Z plane | $\langle P^{*}_x\rangle$ | $(\langle P^{*}_y\rangle,\ \langle P^{*}_z\rangle)$ |
 
-Arrows are **block-averaged** over `arrowBlockSize` x `arrowBlockSize` tiles of the underlying `TProfile2D`, because one arrow per histogram bin is unreadable (and too unstable in error!). Bins below `minEntries` are excluded
-from the tile average rather than diluting it.
+**`cVectorFieldPrimeJet`** -- read from `PolMaps/PrimeJet/`, the same three planes in primed components. The X'--Y' panel is the measurement itself (see above).
+
+**`cVectorFieldPrimeV0`** -- read from `PolMaps/PrimeV0/`: the production-plane panel described above, plus its counts map.
+
+Arrows are **block-averaged** over `arrowBlockSize` x `arrowBlockSize` tiles of the underlying `TProfile2D`, because one arrow per histogram bin is unreadable (and too unstable in error!). Bins below `minEntries` are excluded from the tile average rather than diluting it.
 
 Arrow *length* is normalised to a **percentile** of the tile-magnitude distribution (95th by default) rather than to the maximum: a single noisy tile would otherwise set the scale and shrink every real arrow to nothing. Lengths are then capped at that reference, so an outlier shows up as a full-length arrow instead of one running off the pad, and the reference magnitude is printed on the panel so the scale never has to be guessed.
 
 The COLZ range is symmetric about zero, so the sign of the out-of-plane component reads directly from the colour.
 
+#### The axis-aspect correction, and the bug it fixes
+
+The arrow direction $(b_x, b_y)$ lives in **polarization-component space**, where both components carry the same units, so the drawn angle is meaningful. The arrow tip, however, is placed in **data coordinates**. Displacing by the same number of data units along both axes only renders the correct angle when both axes map the same number of data units per pixel -- and they generally do not.
+
+`DrawVectorFieldPanel()` therefore now converts the vertical displacement through the pad's pixel geometry,
+
+$$\text{aspect} = \frac{y_{\text{range}}/H_{\text{px}}}{x_{\text{range}}/W_{\text{px}}}, \qquad y_2 = y_c + \frac{b_y}{|\vec b|}\,\ell\,\cdot\,\text{aspect},$$
+
+so the arrow has a fixed pixel *length* and the true polarization *angle* on screen. $W_{\text{px}}$ and $H_{\text{px}}$ are the frame extents, i.e. the pad size times the margin-free fractions; `gPad->Update()` must have run first.
+
+This was a genuine, silent bug. With $p_z$ spanning $[-4,4]$ against $p_x$ spanning $[-3,3]$ on a non-square pad, a 45-degree polarization drew at roughly 34 degrees. Every non-square panel ever produced was systematically misread, and since the whole point of these panels is reading directions off the page, that mattered. `aspect = 1` recovers the old behaviour exactly, which is what a square panel with equal ranges would give anyway, so the X--Y panels are unaffected.
+
+Relatedly, all rotated-frame momentum axes now share `axisLambdaPRot`, and `axisLambdaPtRot` is binned at 0.2 GeV/c to match `axisLambdaPz`, so the panels are isotropic in the first place rather than relying on the correction to rescue them.
+
+#### On the out-of-plane sign convention
+
+Every vector-field canvas uses the three **cyclic** planes, read as an ordered pair (horizontal, vertical):
+
+$$(x,y) \to +\hat z, \qquad (y,z) \to +\hat x, \qquad (z,x) \to +\hat y.$$
+
+All three are right-handed by construction, so one rule holds on every panel without exception: **a positive colour points out of the page, toward the reader.** No sign is flipped anywhere in the plotting code -- each COLZ is the raw booked profile -- and the price is only cosmetic: $p_z$ is horizontal on one panel and vertical on another.
+
+The convention lives in the consumer's booking (`_vsPyPz`, `_vsPyAeePz`, `_vsPyPzPrimeJet`), not here. Anyone adding a plane should keep it: a non-cyclic pair such as $(z,y)$ has out-of-plane direction $-\hat x$, and would silently invert the reading of that one panel.
+
+**What to check when adding a vector panel:** the arrow's horizontal component must be the profile of the *horizontal* axis. On a $(y,z)$ panel that is $\langle P^{*}_y\rangle$, not $\langle P^{*}_z\rangle$; carrying over the $(z,x)$ ordering by habit transposes the whole field about the diagonal, and a transposed field still looks plausible. The three component letters of `(hA, hB, hC)` must form a cyclic triple.
+
 ### Section 2 -- ring-observable 2D maps
 
-$\langle R\rangle$ over the same two momentum planes, for both jet proxies (FastJet and leading particle). No arrow overlay: the ring observable is already one scalar per candidate, so the COLZ background *is* the whole result. No arrows here!
+$\langle R\rangle$ over the momentum planes. No arrow overlay: the ring observable is already one scalar per candidate, so the COLZ background *is* the whole result. No arrows here!
+
+$R$ is a scalar and invariant under every rotation above, so **only the binning plane changes** between these canvases -- nothing is recomputed:
+
+| Canvas | Planes |
+|---|---|
+| `cRingObservable2D` | lab: X--Y, Z--X, Y--Z |
+| `cRingObservableAee2D` | Aee: $(x_{AEE}, y_{AEE})$, $(z, x_{AEE})$, $(y_{AEE}, z)$ |
+| `cRingObservablePrimeJet2D` | jet frame: X'--Y', Z'--X', Y'--Z' |
+| `cRingObservableLeadP2D` | lab, leading-particle proxy |
+
+### Section 3 -- AEE acceptance maps
+
+Three canvases, one per Aee plane, each holding candidate counts, $\langle P^{*}_{T}\rangle$ and $\langle P^{*}_{z}\rangle$. The counts panel of `cAeeMapsXY` is the headline: radius $p_T^{\Lambda}$, azimuth $\Phi_{AEE}$, so any azimuthal structure there is the azimuthal efficiency modulation resolved in $p_T$.
+
+Counts are drawn one-sided (floor pinned at zero) rather than with the diverging symmetric range used for the polarization maps: they are a one-sided quantity, and the symmetric treatment would waste half the palette and put the empty regions in mid-scale.
+
+### Section 4 -- candidate counts
+
+`cCountsLab` and `cCountsPrimeJet`, three planes each. Plain occupancy, useful as the denominator behind every map above and as the first place a detector hole shows up.
+
+### Section 5 -- AEE fold
+
+The parity relations above say what each Aee map must look like under $\Phi_{AEE}\to-\Phi_{AEE}$. On the $(x_{AEE}, y_{AEE})$ plane that reflection is simply $y_{AEE}\to-y_{AEE}$, so the fold is a pairing of bin $i_y$ with bin $N+1-i_y$. `cAeeFold` puts the effect and its three parity nulls side by side:
+
+| Panel | Content | Expectation |
+|---|---|---|
+| 1 | $\mathcal{A} = \dfrac{N(x,y)-N(x,-y)}{N(x,y)+N(x,-y)}$ | **the AEE itself**; non-zero if present |
+| 2 | odd part of $\langle P^{*}_{T}\rangle$ | null: $\langle\sin\theta^{*}\rangle$ is even |
+| 3 | even part of $\langle P^{*}_{z}\rangle$ | null: $\langle\cos\theta^{*}\rangle$ is odd |
+| 4 | odd part of $\langle R\rangle$ | null: $R$ is even |
+
+The folded histograms are written next to the canvas, so the asymmetry can be projected or integrated downstream rather than only looked at.
+
+**Design constraints worth preserving:**
+
+- **The counts are folded into a normalised asymmetry, not a raw difference.** $\mathcal{A}$ is dimensionless, bounded in $[-1,1]$, reads directly as a fractional efficiency modulation, and for independent Poisson counts has the exact variance $\sigma^{2}_{\mathcal{A}} = 4ab/(a+b)^{3}$.
+- **The profile folds need *both* partners populated.** A pair enters only if both bins clear `minEntries`. A half-populated pair would otherwise masquerade as a parity violation -- precisely the failure mode this canvas exists to detect.
+- **The output fills the full plane.** It is antisymmetric (or symmetric) by construction, so drawing both halves makes that manifest by eye, at the cost of some redundancy.
+- **The axis is checked, not assumed.** Folding needs the vertical axis symmetric about zero with an even bin count. `axisLambdaPRot` qualifies, but it is a `ConfigurableAxis`, so `HasFoldableYAxis()` verifies it at runtime and skips the canvas with a message otherwise.
+
+**What to check:** panels 2--4 are nulls only for a mirror-symmetric setup, and the magnetic field that produces panel 1 is exactly what breaks that mirror. Read the four together; a residue in a null is not automatically a bug.
+
+### Direction cosines, and why the kernel uses them
+
+Sections 6 and 7 bin in direction cosines rather than in pseudorapidity or angle. For pseudorapidity the identity
+
+$$\tanh\eta = \cos\theta$$
+
+is exact, so the $z$ component of any unit vector already *is* $\tanh\eta$. The consumer reads them straight off the vectors it already builds -- `jetZ` $= \hat t_z$, `leadPZ` $= \hat t^{\,\rm LeadP}_z$, `lambdaZ` $= (\hat p_\Lambda)_z$ -- with no transcendental evaluated anywhere. Throughout, $t_z$ is the reference-axis direction cosine and $\lambda_z = \cos\theta_\Lambda$, with $\lambda_T = \sin\theta_\Lambda = \sqrt{1-\lambda_z^{2}}$.
+
+Three further reasons make $\cos\Delta\theta_{jet}$, rather than $\Delta\theta_{jet}$, the right binning variable: the kernel's numerator is linear in it; it is the flat variable of the phase space, which keeps the occupancy even across bins; and it turns the $\Delta\theta\leftrightarrow\pi-\Delta\theta$ pairing into a plain fold about zero.
+
+### Section 6 -- ring projection kernel
+
+> In an $R_z$ file, Sections 6 to 8 are null tests: see [The longitudinal ring](#the-longitudinal-ring-r_z-useringz).
+
+Sections 6 to 8 rest on the geometry derived in full in the ring-geometry note (`18 - RingSymmetriesAndTanh.pdf`). This section summarises what the code relies on, and nothing more; every statement below is proved there.
+
+#### The kernel
+
+Notation: $t_z$ is the reference-axis direction cosine (`jetZ` or `leadPZ`, accordingly), $\lambda_z=\cos\theta_\Lambda$ (`lambdaZ`), $\lambda_T=\sin\theta_\Lambda$, and $c=\cos\Delta\theta$. Since $\tanh\eta=\cos\theta$ exactly, $t_z=\tanh\eta_t$ and $\lambda_z=\tanh\eta_\Lambda$.
+
+After an exact average over the decay, the mean ring at fixed kinematics is the projection $\vec P_{\rm meas}\cdot\hat n$ of one effective polarization vector, for *any* acceptance. Decomposing $\vec P_{\rm meas}$ in the $\Lambda$'s local triad $(\hat p_\Lambda,\ \hat\theta,\ \hat\varphi)$, with $\hat\varphi=\widehat{\hat z\times\hat p_\Lambda}$ (the `PrimeV0` frame's $\hat y_{V0}$) and $\hat\theta=\hat\varphi\times\hat p_\Lambda$, gives, exactly and configuration by configuration,
+
+$$\langle R\rangle \;=\; P_\varphi\cos\chi \;+\; P_\theta\sin\chi, \qquad \cos\chi \;=\; \frac{t_z-\lambda_z c}{\lambda_T\sqrt{1-c^{2}}},$$
+
+where $\chi$ is the bearing of the reference axis as seen from the $\Lambda$, with the beam as north. $\cos\chi$ is the spherical law of cosines, and it is the origin of every $\tanh\eta_{\rm jet}$ in the ring. The sign of $\sin\chi$ records on which side of the $\Lambda$'s meridian the reference axis lies (east or west).
+
+Three structural facts follow, all properties of the projection rather than of any dataset:
+
+- **The helicity component never enters.** $\hat p_\Lambda\perp\hat n$ identically.
+- **$p_T^\Lambda$ never enters the geometry.** $\hat n$ is built from unit vectors only.
+- **$P_\theta$ enters only through the branch sign.** In a cell of fixed $(t_z,\lambda_z,c)$, $|\sin\chi|$ is fixed and only its sign varies, so $P_\theta$ contributes $|\sin\chi|\langle\sigma P_\theta\rangle$. It drops out only if the polarization does not know where the reference axis is *and* the two branches are equally populated. A genuine ring puts part of its signal into $P_\theta$, so this term is not negligible in general.
+
+**At fixed $\lambda_z$**, for an efficiency that does not know where the reference axis is and balanced branches, the kernel is exactly affine in $t_z$:
+
+$$\langle R\rangle \;=\; \bar P_\varphi(\lambda_z)\,\frac{t_z-\lambda_z c}{\lambda_T\sqrt{1-c^{2}}}.$$
+
+This is what Section 7 uses.
+
+**Integrated over $\lambda_z$** -- which is what the 2D profile does -- the $P_\varphi$ term still reduces exactly to two moments,
+
+$$\langle R\rangle(c,t_z) \;=\; \frac{M_0\,t_z-M_1\,c}{\sqrt{1-c^{2}}} \;+\; (\text{branch term}) \;+\; S, \qquad M_0=\big\langle P_\varphi\cosh\eta_\Lambda\big\rangle_{c,t_z},\quad M_1=\big\langle P_\varphi\sinh\eta_\Lambda\big\rangle_{c,t_z},$$
+
+but the moments are **cell-local**: averages over the $\Lambda$s in that $(c,t_z)$ bin. They vary across the surface even for a constant $P_\varphi$ and a perfectly symmetric detector, because at fixed $(c,t_z)$ a $\Lambda$ enters with phase-space weight $1/\sqrt{G}$, where $G$ is the Gram determinant of beam, reference axis and $\Lambda$ -- and $G$ depends on $t_z$. Two consequences:
+
+- the 2D surface is not exactly affine in $t_z$;
+- $M_1$ has a purely geometric part, odd in $t_z$ and in $c$, which vanishes at $t_z=0$ and at $c=0$. A non-zero $M_1$ is therefore not by itself a detector asymmetry. Its value at $t_z=0$, where the geometric part vanishes, can come from an $\eta_\Lambda$-asymmetric yield, an $\eta_\Lambda$-asymmetric acceptance, or a genuine polarization normal to the production plane ($P_N$, odd in $\eta_\Lambda$) -- and only the first two are detector effects.
+
+#### Input
+
+Booked by the consumer under `<folder>/RingKernel/`, jet-gated via `RING_OBSERVABLE_FILL_LIST` and `RING_OBSERVABLE_LEADP_FILL_LIST`:
+
+| Histogram | Axes |
+|---|---|
+| `p2dRingObservableCosDeltaThetaVsJetZ` | `axisCosTheta` x `axisJetZ` |
+| `h2dCountsCosDeltaThetaVsJetZ` | same |
+| `p3dRingObservableCosDeltaThetaVsJetZVsLambdaZ` | `axisCosThetaCoarse` x `axisJetZ` x `axisLambdaZ` |
+| `p2dRingObservableLeadPCosDeltaThetaVsLeadPZ` | `axisCosTheta` x `axisLeadPZ` |
+| `h2dCountsLeadPCosDeltaThetaVsLeadPZ` | same |
+| `p3dRingObservableLeadPCosDeltaThetaVsLeadPZVsLambdaZ` | `axisCosThetaCoarse` x `axisLeadPZ` x `axisLambdaZ` |
+
+The two proxy axes differ on purpose. FastJet at $R = 0.4$ inside $|\eta| < 0.9$ confines jets to $|\eta| < 0.5$, i.e. $|t_z| \le \tanh 0.5$; leading particles reach $|\eta| < 0.9$. `axisJetZ` and `axisLeadPZ` follow each proxy's fiducial range rather than wasting bins on structurally empty space. `axisProxyZ` keeps the older full-range binning for `pRingVsJetZcomponent`. Every axis used by Sections 7 and 8 must be symmetric about zero with an even bin count; both sections verify this at runtime.
+
+The consumer only books and fills these. **All fitting happens here**, per the ALICE convention that no post-processing lives in an O2Physics task.
+
+#### What Section 6 does
+
+`FitRingKernelSlices()` groups `cosRebin` bins of $\cos\Delta\theta$, collapses each group into a $t_z$ profile with `ProfileY`, and fits a straight line. Because the moments depend on $t_z$, the slope is not $M_0/\sin\Delta\theta$ but
+
+$$\text{slope}\times\sin\Delta\theta \;=\; M_0 \;+\; t_z\,\frac{\partial M_0}{\partial t_z} \;-\; c\,\frac{\partial M_1}{\partial t_z} \;+\; (\text{branch term}),$$
+
+and since the geometric $M_1$ is odd in $c$, the correction $-c\,\partial M_1/\partial t_z$ is **even** in $c$. The fit range in $t_z$ is symmetric about zero, so the intercept is the value at $t_z=0$, where the geometric $M_1$ vanishes.
+
+`cRingKernel` shows three panels:
+
+| Panel | Content | Prediction |
+|---|---|---|
+| 1 | $\langle R\rangle$ over $(\cos\Delta\theta,\ t_z)$, leading jet | a tilted surface, steepening toward $\vert\cos\Delta\theta\vert\to1$ |
+| 2 | slope $\times\sin\Delta\theta$, jet and leading particle overlaid | **a bowl**, even in $\cos\Delta\theta$, with its minimum at $\cos\Delta\theta=0$ close to $M_0$ |
+| 3 | intercept $\times\sin\Delta\theta$ | $-M_1(0,c)\,c+S(c)\sin\Delta\theta$: odd in $\cos\Delta\theta$ whenever $S=0$ |
+
+The dashed lines on panels 2 and 3 mark each proxy's **fully allowed window**, $|\cos\Delta\theta|\le-\cos(\vartheta_t+\vartheta_\Lambda)$, with $\vartheta$ the smallest polar angle in each acceptance. Inside it no $\Lambda$ in the acceptance is kinematically excluded; outside it, kinematic truncation steepens the bowl further, in a way that depends on how the bins sample the edge of the domain, and no simple shape should be expected there. The acceptance edges are read off the 3D profile's own occupancy -- conservatively, at the outer edge of the outermost populated bin -- so the window follows whatever the consumer actually accepted instead of repeating its cuts here.
+
+Per-slice fit canvases go to `RingKernel_Canvases/Fits_<folder>/`, and the four `TGraphErrors` are written alongside for downstream use.
+
+**Design constraints worth preserving:**
+
+- **A straight-line fit, with no Minos.** At fixed $\cos\Delta\theta$ the model is a line in $t_z$ (exactly so at fixed $\lambda_z$), so there is no model choice to make. The $\tanh$ fits in `auxiliarySummaryPlots.cxx` need Minos because their two parameters collapse onto a curved valley at small argument; a line has no such valley, and with a $t_z$ axis symmetric about zero the slope and intercept are nearly uncorrelated. Chi-squared is the right method, since the bins are means carrying SEM errors, not Poisson counts.
+- **Do not fit a $\tanh$ here.** The $\tanh$ shape is what the $t_z$-linear kernel turns into *after* integrating over $\Delta\theta$ and the $\eta_\Lambda$ distribution. Fitting it to this surface would fit a consequence of the model instead of the model.
+- **Panel 2 is not a flatness test.** The bowl is geometry, present for a constant $P_\varphi$ and a perfect detector. What *is* informative is its symmetry about $\cos\Delta\theta=0$.
+- **$M_1$ is not separated from $S$ here.** Doing so by parity in $\cos\Delta\theta$ would need $S$ to be even about $\cos\Delta\theta=0$, which nothing guarantees -- the recoil jet sits near $\pi-\Delta\theta$. Section 8 performs the separation properly, at fixed $\lambda_z$, where it is exact.
+
+Defaults (`cosRebin = 5`, `maxAbsCos = 0.95`, `minEntries = 200`) are parameters of `MakeRingKernelCanvas()`. The $|\cos\Delta\theta|$ ceiling exists because the kernel diverges as $1/\sin\Delta\theta$ there, and the acceptance has already emptied those bins.
+
+**What to check:**
+
+- Panel 2 symmetric about $\cos\Delta\theta=0$. An odd component points at a near-side correlation between reference axis and $\Lambda$, or at an efficiency that knows where the reference axis is.
+- The minimum of panel 2 against Section 7's $M_0$. They should be close but need not be equal: the minimum is the cell-local $M_0$ at $(c,t_z)\approx(0,0)$, weighted by the phase-space Jacobian there, while Section 7's is a sample-wide average. The exact comparison predicts the whole bowl from Section 7's $K(\lambda_z)$ and the 3D occupancy (not yet implemented).
+- Jet against leading particle. For azimuthally uncorrelated proxies their minima should agree, but their bowls need not: the fitted slope depends on the $t_z$ range, which differs, and on each proxy's correlation with the $\Lambda$. Proxy independence is exact only at fixed $\lambda_z$ (Section 7).
+- Panel 3 odd in $\cos\Delta\theta$. An even part is signal, or a branch term.
+- The per-slice $\chi^{2}/\text{ndf}$ in `Fits_<folder>/`, and the counts histogram, to see where the plane is kinematically forbidden before reading anything into its edges.
+
+### Section 7 -- kernel moments
+
+Section 6's bowl brackets $M_0$ without pinning it down. Section 7 goes behind it: it recovers the axis-independent azimuthal component **differentially in $\cos\theta_\Lambda$** from the 3D profile, where the kernel is exactly affine in $t_z$, and builds both moments from it.
+
+The code calls this component `Bphi`. It is the whole axis-independent azimuthal component of $\vec P_{\rm meas}$: the detector-induced part *and* any genuine $P_N$. The two are not separated here.
+
+#### The extraction
+
+At fixed $(\lambda_z,\ c)$ the kernel's slope in $t_z$ is $m = K/\sqrt{1-c^{2}}$, with $K = \bar P_\varphi/\lambda_T$. Together with $\cosh\eta_\Lambda = 1/\lambda_T$ and $\sinh\eta_\Lambda = \lambda_z/\lambda_T$, this gives
+
+$$m\sqrt{1-c^{2}} = K \quad \text{(constant in } c\text{)}, \qquad M_0 = \langle K\rangle_{w}, \qquad M_1 = \langle \lambda_z K\rangle_{w},$$
+
+with $w(\lambda_z)$ the $\Lambda$ occupancy of each slab over the whole surface. **The 3D profile alone carries everything**: the moments through its $\lambda_z$ axis, the weights through its own per-bin entry counts, and the model test through the redundancy across $\cos\Delta\theta$ columns. Nothing else needs booking.
+
+These moments are **sample-wide**, unlike Section 6's cell-local ones: the weights are whole-slab occupancies, so the geometric, $t_z$-odd part of the cell-local $M_1$ cancels. What remains in $M_1$ is the $\eta_\Lambda$-odd content of the sample: an A/C yield asymmetry, an A/C acceptance asymmetry, or a genuine $P_N$.
+
+Each $\cos\Delta\theta$ column gives an independent estimate of the same $K$. They are combined with inverse-variance weights, and their scatter about the combination is kept as a $\chi^{2}$. That scatter *is* the model test: at fixed $\lambda_z$ the kernel says $m\sqrt{1-c^{2}}$ does not depend on $c$ at all. Like Section 6, the extraction is immune to a genuine ring, because $K$ comes from a $t_z$ slope and a ring of constant magnitude is flat in $t_z$.
+
+**Symmetrising.** Replacing $w(\lambda_z)$ by $\min\big(w(\lambda_z),\ w(-\lambda_z)\big)$ gives the largest mirror-symmetric weight set that never up-weights a slab beyond what was recorded. It removes the yield asymmetry, and nothing else. The residual $M_1^{\rm sym}$ is non-zero if $K$ has a part odd in $\eta_\Lambda$, which can be an A/C *acceptance* asymmetry or a genuine $P_N$. Field reversal separates those two: a detector-induced $P_\varphi$ is odd in the field, a genuine $P_N$ is not.
+
+#### What Section 7 does
+
+`cKernelMoments` shows three panels:
+
+| Panel | Content | Prediction |
+|---|---|---|
+| 1 | $\bar P_\varphi(\lambda_z)$, leading jet, with its own mirror image overlaid | coincide if detector-induced with an A/C-symmetric acceptance; an odd part is an A/C acceptance difference or a genuine $P_N$ |
+| 2 | $\bar P_\varphi(\lambda_z)$, jet and leading particle | coincide -- at fixed $\lambda_z$ the component does not know the proxy |
+| 3 | $K = \bar P_\varphi\cosh\eta_\Lambda$, with $M_0$, $M_1$, $M_1^{\rm sym}$, the yield asymmetry and $M_0^{\rm LeadP}$ | read together with panel 1 |
+
+The same numbers are printed to stdout per folder, since they are what the cross-config stage consumes.
+
+**Design constraints worth preserving:**
+
+- **The per-column fits are closed-form, not Minuit.** `WeightedLineFit()` solves the two-parameter weighted least squares exactly. There are hundreds of these per folder and none is meant to be inspected, so routing each through `TF1` would buy only overhead and transient ROOT objects. Section 6's fits go through ROOT precisely because their canvases *are* meant to be looked at.
+- **The $\cos\theta_\Lambda$ axis must mirror-pair.** Symmetrising pairs slab $i_z$ with slab $N+1-i_z$, which `axisLambdaZ` supports. It is a `ConfigurableAxis`, so `ComputeKernelMoments()` verifies the pairing and reports $M_1^{\rm sym}$ as unavailable rather than computing it on a mis-paired axis.
+- **The validation used a known truth.** The extraction was checked on a synthetic profile carrying a prescribed azimuthal component, a deliberate yield asymmetry, and a non-trivial ring. Re-run such a check after any change to the extraction: the ring must not leak into $K$, and symmetrising must remove the yield asymmetry without moving $M_0$ appreciably.
+
+Defaults (`maxAbsCos = 0.95`, `minEntriesCell = 30`) are parameters of `MakeKernelMomentsCanvas()`. The per-cell threshold is lower than Section 6's per-slice one because a 3D cell holds far fewer entries.
+
+**What to check:**
+
+- Panel 1: filled and open markers overlie. A systematic gap is an A/C acceptance difference or a genuine $P_N$; compare field polarities to tell which.
+- Panel 2: jet and leading particle agree. Here, unlike Section 6, this is exact.
+- $M_0$ and $M_0^{\rm LeadP}$ agree, for the same reason.
+- $M_1^{\rm sym}$ small compared with $M_1$ when the $M_1$ comes from yield alone.
+- The per-slab scatter $\chi^{2}$ does not grow systematically with $|\lambda_z|$.
+
+**An independent cross-check, not yet implemented.** $\bar P_\varphi$ is also measured directly by `p2dPyStarPrimeV0_vsPzPt`, from which $\cosh\eta_\Lambda = |p|/p_T$ and $\sinh\eta_\Lambda = p_z/p_T$ follow bin by bin. That route needs no fitting at all. Two caveats: `PolMaps/PrimeV0` is filled from the ungated `POLARIZATION_PROFILE_FILL_LIST`, so it includes events without a leading jet; and it is an *axis-blind* map, into which a genuine ring leaks unless the reference axes accompanying each $\Lambda$ are antipodally balanced.
+
+### Section 8 -- symmetry decomposition of the kernel
+
+Two reflections act on the $(c,\ t_z,\ \lambda_z)$ cells of the 3D kernel profile:
+
+| Operation | Action on the cell | Physical meaning |
+|---|---|---|
+| $M_z$ | $(c,\ t_z,\ \lambda_z)\to(c,\ -t_z,\ -\lambda_z)$ | reflection of the event through $z=0$ |
+| $\mathcal A$ | $(c,\ t_z,\ \lambda_z)\to(-c,\ -t_z,\ \lambda_z)$ | reference axis replaced by its antipode, $\hat t\to-\hat t$ |
+| $M_z\mathcal A$ | $(c,\ t_z,\ \lambda_z)\to(-c,\ t_z,\ -\lambda_z)$ | both |
+
+With the identity they form a four-element group, so any cell function $F$ splits exactly into four sectors, labelled by the sign under $M_z$ and under $\mathcal A$:
+
+$$F_{ab} \;=\; \tfrac14\big(F + a\,F\circ M_z + b\,F\circ\mathcal A + ab\,F\circ M_z\mathcal A\big), \qquad a,b=\pm1.$$
+
+What lands in each sector follows from two facts. A detector-induced polarization is a *polar* vector and a genuine one an *axial* vector, so under any reflection that is a symmetry of the setup the first gives an odd ring and the second an even one. And $\hat n$ reverses under $\mathcal A$, so anything that does not know where the reference axis is gives a ring that is odd under $\mathcal A$ -- with no condition on the detector at all.
+
+| Sector | $M_z$ | $\mathcal A$ | Contains |
+|---|---|---|---|
+| `(+,+)` | even | even | a genuine ring, averaged between $\Delta\theta$ and $\pi-\Delta\theta$ |
+| `(+,-)` | even | odd | a genuine $P_N$; the near/away-odd part of a genuine ring; detector effects leaking through an A/C-asymmetric acceptance |
+| `(-,-)` | odd | odd | detector-induced contributions that do not know where the reference axis is |
+| `(-,+)` | odd | even | **nothing -- a null test** |
+
+The assignments rest on two assumptions, one per reflection. $M_z$ requires a barrel whose two sides have equal acceptance, for the detector part. $\mathcal A$ requires an efficiency that does not know where the reference axis is. Each tolerates exactly what the other forbids -- $\mathcal A$ is indifferent to A/C asymmetry, $M_z$ to a jet-aware efficiency -- which is what makes the null sector informative. It was validated on a synthetic profile carrying a detector-induced component, a genuine $P_N$ and a genuine ring with different near- and away-side magnitudes: each landed in its sector, and the null stayed at the finite-bin level.
+
+#### What Section 8 does
+
+For each proxy, `cKernelSymmetry{Jet,LeadP}` shows the four sectors over $(\cos\Delta\theta,\ t_z)$, each averaged over $\lambda_z$ with the cells' entry counts as weights. The four sector maps are written alongside, and the $\chi^{2}$ of each sector against zero -- counted once per orbit of the group, since the four cells of an orbit carry the same information -- is printed to stdout.
+
+**Design constraints worth preserving:**
+
+- **The decomposition is done at fixed $\lambda_z$, and averaged only afterwards.** At fixed $\lambda_z$ the statements are exact per cell. Integrating over $\lambda_z$ first would not be: the phase-space weights of a cell and of its antipodal image differ as soon as the reference axis is correlated in azimuth with the $\Lambda$. Averaging the *sectors* afterwards is harmless, because a weighted average of sector values stays in its sector.
+- **A cell is used only if all four members of its orbit clear `minEntriesCell`.** A partially populated orbit would put a missing mirror into a sector as a spurious signal.
+- **All three axes are verified to mirror-pair.** The maps pair bin $b$ with $N+1-b$ on each axis; `IsMirrorPairable()` checks every edge, so a variable-width `ConfigurableAxis` is caught as well.
+
+**What to check:**
+
+- `(-,+)` consistent with zero. A non-zero null is a detector effect that knows where the reference axis is, or a finite-bin residual, which appears wherever the population varies across a cell differently from its images -- a near-side correlation does this, and it shrinks with the bin width.
+- `(-,-)` against Sections 6 and 7: the same detector-induced component, isolated here without fitting.
+- `(+,+)` as the signal estimator: free of every axis-independent detector effect, under the $\mathcal A$ assumption alone.
+- `(+,-)` separated further by field reversal: a genuine $P_N$ is even in the field, a detector leak through an A/C asymmetry odd.
+- The same four sectors for jet and leading particle. The `(-,-)` sector should agree between them; the genuine sectors need not.
+
+### Section 9 -- KappaEff
+
+Written for both ring definitions, one canvas per family, one panel per proxy: the **raw** $\kappa$ per mass bin, $3\langle u^2\rangle/\langle w\rangle$, signal and background mixed. It is a QA of $\kappa$'s mass dependence, not a result -- $\kappa_S$ belongs to the signal extraction, like $\langle R\rangle_S$.
+
+Both means come from the same candidates, so the first-order error keeps their covariance,
+
+$$\mathrm{Var}(\kappa)=\frac{9}{n}\,\frac{\sigma_U^2-2\,(U/W)\,C+(U/W)^2\sigma_W^2}{W^2},\qquad C=\langle u^2w\rangle-UW,$$
+
+with $U=\langle u^2\rangle$, $W=\langle w\rangle$ and the spreads $\sigma$ read from the profiles themselves. For the full ring $w\equiv1$, so $\sigma_W=C=0$ and this is the plain standard error of $3\langle u^2\rangle$. The histograms are written as `hKappaVsMass<Proxy>_<Family>`.
+
+### Section 10 -- $R_z$ diagnostics
+
+Only for `_useRingZ` files, into `RzDiagnostics_Canvases/`. The physics is in [The longitudinal ring](#the-longitudinal-ring-r_z-useringz); what the code does:
+
+- **East/west fold** (per family and proxy). The existing $\langle R_z\rangle(\Delta\varphi)$ is folded into its even (signal) and odd (leak) parts vs $\lvert\Delta\varphi\rvert$. The two halves are merged with `TProfile::Rebin`, which is exact, and summarised as: all, $\Delta\varphi>0$, $\Delta\varphi<0$, symmetrized $\tfrac12(R_++R_-)$, half-difference $D=\tfrac12(R_+-R_-)$, and the leak $A_{EW}D$. The identity $\langle R_z\rangle-\text{symmetrized}=A_{EW}D$ is exact, and $A_{EW}=(N_+-N_-)/(N_++N_-)$ comes from the profile's own entries, so it describes exactly the candidates that make $\langle R_z\rangle$.
+- **$\chi$ sectors** (per proxy, task level). $f_{s_a s_b}(\chi)=\tfrac14\bigl[f(\chi)+s_af(-\chi)+s_bf(\pi-\chi)+s_as_bf(\chi-\pi)\bigr]$ on $\chi\in[0,\pi/2]$, fitted with $\sin^2\chi$, $\sin\chi$, $\sin2\chi$ and a constant. The shapes are those of the weights with $\theta_\Lambda$ averaged, so the amplitudes are summaries, not measurements. The axis must be uniform on $[-\pi,\pi]$ with a multiple of 4 bins, so every orbit partner is a whole bin.
+- **$\varphi_{\rm AEE}$ flatness** (LeadJet and LeadP). $\langle R_z\rangle$ and $\langle R_\perp\rangle$ overlaid, with a constant fitted to $\langle R_z\rangle$; its $\chi^2$ is the test. Both profiles fill on the same candidates, but the $R_z$ one lives under `HelicityEfficiencyQA/`, so the canvas is skipped quietly when that QA is off.
+
+The symmetrized estimator removes the leak **without external input** under one assumption: at fixed $\lvert\Delta\varphi\rvert$, the fake does not know which side of the $\Lambda$ the proxy sits on. That holds exactly for mixed events. In data only a mirror-breaking effect -- the field, again -- can violate it, and the $(+,+)$ and $(+,-)$ sectors are where it would show.
+
+**Mode check.** `_useRingZ` in the file name and the presence of `RzDiagnostics/` must agree; a mismatch exits `1`. A mislabelled file would otherwise be drawn, and compared downstream, as the wrong observable.
 
 ### On the duplicated `DrawVectorFieldPanel()`
 
 It is copied almost verbatim from `plotHelicityEfficiency.cxx`, deliberately. The toy-model plotter and this post-processor are independent workflows, separately compiled and separately run, and the function is small, self-contained and stable. Sharing it through a common header would couple two otherwise unrelated build targets for very little. If it ever needs to diverge meaningfully, or grows non-trivially, that is the trigger to revisit though.
+
+The axis-aspect correction is **not** such a divergence -- it is a bug fix, and both copies carry it. Keep it that way: a fix applied to only one copy would make the toy model and the data stop being comparable by eye on every non-square plane, silently.
+
+### Panel registry
+
+Canvases are described as data, not code: a `PanelSpec` table (kind, histogram names, axis titles, banner) consumed by a single `MakePanelCanvas()` that handles fetching, missing-object reporting, layout and labelling. A new coordinate system therefore costs one table, not one function. Axis-title fragments are named once and shared, so the Lab, Aee, PrimeV0 and PrimeJet versions of the same plane cannot drift apart; the ring panels are generated from a prefix plus plane suffixes rather than written out four times.
+
+Fetching is **all-or-nothing per canvas**. The folder is already known to exist (`ScanPresentFolders()` resolved it), so a missing histogram is a genuine anomaly -- most likely a consumer/macro name drift -- and half a canvas would hide it rather than show it. The warning names the first offender so the drift is one `grep` away.
 
 ---
 
@@ -799,6 +1366,67 @@ from `signalExtractionRing`, and a per-family integrated summary with a cross-fa
 `sigExtractDir` is the seventh argument and defaults to `<consumerDir>/../results_SigExtract`, which
 matches the pipeline layout, so `run_all_wagons.sh` needs no extra argument. Pass `"none"` to skip
 every signal-extraction plot.
+
+### $R_z$ families
+
+The summary reads the ring definition of every input from its **name**, so one call covers both. The consumer configs carry `_useRingZ` right after the family, so an $R_z$ output is simply another family whose suffix ends in the tag: `BothHyperons_useRingZ` plus `_MixedEventProxies` is exactly the file an ordinary variation lookup builds. Each family whose $R_z$ data file exists therefore gets an **$R_z$ sibling**, flagged `isRingZ` and written to `<Family>_RingZ/`, and everything -- variations, the MC and pp references, the signal-extraction outputs -- resolves for it with no separate code path. Nothing changes for a wagon without $R_z$ outputs.
+
+The flag changes four things, and nothing else:
+
+- **Absent variations.** Only a subset is run in $R_z$. Their absence is expected, so it is recorded once per $R_z$ family, quietly, with one log line, instead of warned about per observable.
+- **Toy Model.** Off for $R_z$ families: it predicts the full ring. The references list keeps its toy entry with an empty path, so every per-reference row stays aligned.
+- **Cross-family blocks** (`CrossFamily_Integrated/`) stay full-ring. $R_z$ is compared against the full ring in `RingVsRingZ/` instead.
+- **Titles.** They come from many literals (`"<R>"`, `"Integrated <R>_{S}"`, a bare `"R"` y title and `"#Delta"` plus that title). Rather than touching each, an $R_z$ family's folder is **relabelled in one pass** once it is complete: every canvas, histogram and graph under it is read back, its titles, axis titles, bin labels, legend entries and text lines are swapped to $R_z$, and it is rewritten in place. Only whole-token forms change, so a jet-radius "R = 0.4" is left alone, and no other folder is touched.
+
+Two folders need both definitions at once. They are drawn at the top level from the full-ring families, pairing each file with its `_useRingZ` sibling, and each uses only the files it finds.
+
+#### What both folders are built from
+
+Everything is computed from candidate moments -- $n$, $\sum y$, $\sum y^2$ -- rebuilt from each cell's mean and spread of mass-binned profiles, every bin and flow included. All of a proxy's profiles are filled on exactly its candidates, so they share one candidate set: the ring comes from `pRingObservableMass` (LeadJet) or from the $(\eta_{\rm proxy},m)$ maps (LeadP, SubJet, whose 1D mass profiles sit in the leading-jet list), and the $\kappa$ moments from `KappaEff/`. **Nothing here is signal-extracted:** these are all candidates, signal and background mixed. The signal-extracted versions come from `signalExtractionRing`.
+
+A ratio of two means over the same candidates keeps its covariance,
+
+$$\mathrm{Var}(r)=\frac{\sigma_a^2-2rC+r^2\sigma_b^2}{n\,\langle b\rangle^2},\qquad r=\frac{\langle a\rangle}{\langle b\rangle},\qquad C=\langle ab\rangle-\langle a\rangle\langle b\rangle ,$$
+
+which is used for both $\langle R_z\rangle/\langle n_z^2\rangle$ and $\kappa=3\langle u^2\rangle/\langle w\rangle$.
+
+#### `RingVsRingZ/` -- the headline check
+
+Per family and proxy, one column per config present in **both** definitions (Data, every variation, MC and pp), three numbers:
+
+| Series | Meaning |
+|---|---|
+| $\langle R\rangle$ | the full ring, fake included |
+| $\langle R_z\rangle$ | the longitudinal ring |
+| $\langle R_z\rangle/\langle n_z^2\rangle$ | the ring density per candidate, comparable with $\langle R\rangle$ once the latter's fake is removed (under ring alignment) |
+
+If $R_z$ does what it should, $\langle R_z\rangle$ is about zero for MixedEv and pp and survives only in data, while $\langle R\rangle$ carries its large fake everywhere. A second canvas repeats $\langle R_z\rangle/\langle n_z^2\rangle$ alone, with its Data $-$ Var differences.
+
+#### `Corrections/` -- $\kappa$ and the corrected ring, raw and signal-extracted
+
+The fake is subtracted and the response divided out, reducing both definitions to the same quantity, the ring density $P_R$:
+
+$$P^{\rm full}=\frac{R_d-R_f}{\kappa_{\rm eff}-\tfrac{\alpha^2}{3}R_dR_f}\quad\text{(exact inversion)},\qquad P^{z}=\frac{R_{z,d}-R_{z,f}}{3\langle u^2\rangle}=\frac{R_{z,\rm true}}{\langle n_z^2\rangle}\quad\text{(linear)},$$
+
+with $d$ the data sample, $f$ its mixed-event partner, and $\kappa$ and $\langle u^2\rangle$ measured on the data sample. The pairs are Data/MixedEv, the AN-cuts pair, and each MC or pp reference against its own `_MixedEventProxies` run when that exists. $R_z$ uses the linear form because its own fake is small; the exact form would even be wrong there, since its denominator is written in terms of the full ring's fake.
+
+Since $\kappa_{\rm eff}=3\langle u^2\rangle$ for the full ring and $\kappa_z\langle n_z^2\rangle=3\langle u^2\rangle$ for $R_z$, both are **one expression**, $P=(R_d-R_f)/(3\langle u^2\rangle-k\,R_dR_f)$, with $k=\alpha^2/3$ for the full ring and $k=0$ for $R_z$. One routine computes it; only its inputs change:
+
+| Folder | $\langle R\rangle$ | $\langle u^2\rangle$, $\langle w\rangle$ |
+|---|---|---|
+| `Corrections/Raw/` | all candidates, from the consumer's mass-binned profiles | all candidates, from `KappaEff/` |
+| `Corrections/SignalExtracted/` | $\langle R\rangle_S$, from `IntegratedSummary/` | $\langle u^2\rangle_S$, $\langle w\rangle_S$, from `KappaEff/` of `signalExtractionRing` |
+
+A reference's signal extraction is looked for where the pipeline puts it, `<base>/../results_SigExtract`; when it is absent, that reference simply has no signal-extracted column.
+
+**$\alpha$ is the family's own**, from the same decay constants as the consumer ($\alpha_\Lambda=0.749$, $\alpha_{\bar\Lambda}=-0.758$). `BothHyperons` mixes the two while the exact term is per species; it uses the mean of the two $\alpha^2$, which is within 1.2% of either, on a term that is itself a $\sim10\%$ correction, so the choice moves $P$ by $\lesssim0.2\%$.
+
+Per family and proxy each folder holds two canvases: $\kappa_{\rm eff}$ and $\kappa_z$ for every data-like sample, and $P^{\rm full}$ and $P^z$ for every pair. The full ring is always drawn; $R_z$ joins it wherever its files exist.
+
+**Errors.** They are first order, with the full derivative of the exact inversion.
+- The data and fake rings come from separate consumer runs and are added in quadrature. The mixed events reuse the data's $\Lambda$s, so they over-cover slightly, as everywhere in this macro.
+- The error of $3\langle u^2\rangle$ is propagated, but its covariance with $R_d$ is not, because there is no $\langle Ru^2\rangle$ profile. This is safe: every term in it carries $\partial P/\partial D=-P/D$, so the dropped term is at most $\sim2P\sigma_D/\sigma_R\sim10^{-3}$ of the leading one.
+- $\kappa$ itself is only displayed, never used in $P$. The raw $\kappa$ keeps the covariance of $\langle u^2\rangle$ and $\langle w\rangle$ (the ratio-of-means formula above). The signal-extracted $\kappa_z$ takes their errors in quadrature: the two are positively correlated, both scaling as $n_z^2$, so this slightly overstates it.
 
 ### Output layout
 

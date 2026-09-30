@@ -479,6 +479,17 @@ static void DrawVectorFieldPanel(TProfile2D* hX, TProfile2D* hY, TProfile2D* hZ,
     int    nTilesX = nBinsX / bs;
     int    nTilesY = nBinsY / bs;
 
+    // Properly accounting for the cases when the X and Y axis of the panel are not created with same-sized ranges:
+    // (otherwise, there is a silent mismatch between the angles calculated for the arrows and the true angles.
+    //  Different bin-width axes were being considered as if same-width!)
+    const double frameWpx = gPad->GetWw() * gPad->GetAbsWNDC() * (1.0 - gPad->GetLeftMargin() - gPad->GetRightMargin());
+    const double frameHpx = gPad->GetWh() * gPad->GetAbsHNDC() * (1.0 - gPad->GetTopMargin() - gPad->GetBottomMargin());
+    const double xRange   = hZd->GetXaxis()->GetXmax() - hZd->GetXaxis()->GetXmin();
+    const double yRange   = hZd->GetYaxis()->GetXmax() - hZd->GetYaxis()->GetXmin();
+    double aspect = 1.0;
+    if (frameWpx > 0. && frameHpx > 0. && xRange > 0. && yRange > 0.)
+        aspect = (yRange / frameHpx) / (xRange / frameWpx);
+
     // ---- Pass 1: accumulate tile averages & propagate errors ----
     struct Tile { 
         double xc, yc;
@@ -586,7 +597,7 @@ static void DrawVectorFieldPanel(TProfile2D* hX, TProfile2D* hY, TProfile2D* hZ,
         // Cap outlier arrows at scaleRef length; direction is always correct
         double drawLen = std::min(t.mag, scaleRef) * scale;
         double x2 = t.xc + (t.bx / t.mag) * drawLen;
-        double y2 = t.yc + (t.by / t.mag) * drawLen;
+        double y2 = t.yc + (t.by / t.mag) * drawLen * aspect;
 
         TArrow* arr = new TArrow(t.xc, t.yc, x2, y2, 0.012, ">");
         arr->SetLineColor(kBlack);

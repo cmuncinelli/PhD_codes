@@ -2202,6 +2202,141 @@ SimFitResult PerformSimultaneousFitQA(TH1D* hMassDensity, TH1D* hNumDensity, dou
 
 // (TODO: make helper function numerically stable for full experimental statistics, i.e.,
 // normalize particle counters in a smart way that does not break signal extraction)
+
+// Writes the per-angular-bin QA objects (mass fits, sideband graphs, <R> vs mass) to the output.
+// They are the drill-down layer under the mosaics, and by far the bulk of the file: step 3 runs over
+// every variation, so the driver can switch them off for all but the nominal one (--perBinQA=0).
+// The mosaics, the diagnostics and every result histogram are written regardless.
+bool gWritePerBinQA = true;
+
+// Why an angular bin did or did not produce a result, stored per bin in hCellStatus. Extracted is 1
+// rather than 0 so that an all-good map reads as one flat colour; 0 then only ever means a bin the
+// loop never reached, which should not happen and is worth seeing if it does.
+enum CellStatus {
+    kCellExtracted = 1,
+    kCellTooFewEntries = 2,
+    kCellPeakFitFailed = 3,
+    kCellSidebandStarved = 4,
+    kCellBkgFitFailed = 5,
+    kCellNoSignal = 6
+};
+const char* CellStatusReason(int status)
+{
+    switch (status) {
+        case kCellExtracted:       return "extracted";
+        case kCellTooFewEntries:   return "too few entries";
+        case kCellPeakFitFailed:   return "peak fit failed";
+        case kCellSidebandStarved: return "sidebands starved";
+        case kCellBkgFitFailed:    return "background fit failed";
+        case kCellNoSignal:        return "no signal in window";
+        default:                   return "not reached";
+    }
+}
+
+/// @brief What one angular bin contributes to the QA mosaics, held until the extraction loop ends.
+/// @note Owns its histograms and function; WriteMassMosaics deletes nothing, the caller frees them.
+struct MosaicCell {
+    int    status = 0;
+    double xLow = 0.0, xHigh = 0.0;  // Angular bin edges, for the pad label
+    TH1D*  hRing = nullptr;          // <R> vs mass, ring background fit attached
+    TH1D*  hMass = nullptr;          // dN/dm, peak fit attached
+    TF1*   bkgFit = nullptr;         // Counts background, drawn over hMass under the peak
+    // The regions the extraction actually used in this bin, not the ones configured. The two band
+    // sets differ in window-counting mode, where <R>_B is counted in equal-width windows while the
+    // yield still comes from the fitted counts sidebands. Order: left outer, left inner, right
+    // inner, right outer.
+    double peakLow = 0.0, peakHigh = 0.0;
+    double ringBands[4] = {0.0, 0.0, 0.0, 0.0};
+    double massBands[4] = {0.0, 0.0, 0.0, 0.0};
+};
+
+/// @brief One canvas per quantity with every angular bin as its own pad, regions shaded.
+///
+/// A folder of per-bin canvases stops being readable long before the eta-binned extraction is done
+/// multiplying them, so this is the entry point instead: one grid shows every bin of one extraction
+/// at once, and a bin that misbehaves stands out against its neighbours. Rejected bins keep their
+/// pad, labelled with the reason, so the grid stays in angular order.
+///
+/// Sidebands are hatched blue and the peak window hatched red. Hatching rather than transparency,
+/// because transparency renders solid on X11 without OpenGL and would hide the points.
+void WriteMassMosaics(const std::vector<MosaicCell>& cells, const TString& baseName,
+                      const TString& titleStem, TDirectory* dirRing, TDirectory* dirMass)
+{
+    if (cells.empty()) return;
+    const int n = static_cast<int>(cells.size());
+    // Wider than tall: each pad is a spectrum, read left to right
+    const int nCols = std::max(1, static_cast<int>(std::ceil(std::sqrt(2.0 * n))));
+    const int nRows = (n + nCols - 1) / nCols;
+
+    gStyle->SetOptStat(0);
+    gStyle->SetOptFit(0);
+
+    auto drawOne = [&](bool ringPanel, TDirectory* dir, const TString& name, const TString& title) {
+        if (!dir) return;
+        TCanvas* c = new TCanvas(name, title, 260 * nCols, 210 * nRows);
+        c->Divide(nCols, nRows, 0.001, 0.001);
+
+        for (int i = 0; i < n; ++i) {
+            const MosaicCell& m = cells[i];
+            c->cd(i + 1);
+            gPad->SetMargin(0.16, 0.03, 0.14, 0.10);
+            TH1D* h = ringPanel ? m.hRing : m.hMass;
+
+            if (!h) {
+                TPaveText* pt = new TPaveText(0.05, 0.35, 0.95, 0.65, "NDC");
+                pt->SetBorderSize(0);
+                pt->SetFillStyle(0);
+                pt->AddText(Form("[%.3f, %.3f)", m.xLow, m.xHigh));
+                pt->AddText(CellStatusReason(m.status));
+                pt->SetBit(kCanDelete);
+                pt->Draw();
+                continue;
+            }
+
+            h->SetStats(0);
+            h->SetMarkerStyle(20);
+            h->SetMarkerSize(0.45);
+            h->GetXaxis()->SetLabelSize(0.06);
+            h->GetYaxis()->SetLabelSize(0.06);
+            h->GetXaxis()->SetNdivisions(504);
+            h->GetYaxis()->SetNdivisions(505);
+            h->SetTitle(m.status == kCellExtracted
+                            ? Form("[%.3f, %.3f)", m.xLow, m.xHigh)
+                            : Form("[%.3f, %.3f): %s", m.xLow, m.xHigh, CellStatusReason(m.status)));
+            h->Draw("AXIS"); // The frame first, so the shading can use its y-range
+            gPad->Update();
+            const double yLo = gPad->GetUymin(), yHi = gPad->GetUymax();
+
+            auto shade = [&](double a, double b, int color, int style) {
+                if (!(b > a)) return;
+                TBox* box = new TBox(a, yLo, b, yHi);
+                box->SetFillColor(color);
+                box->SetFillStyle(style);
+                box->SetLineWidth(0);
+                box->SetBit(kCanDelete);
+                box->Draw();
+            };
+            const double* bands = ringPanel ? m.ringBands : m.massBands;
+            shade(bands[0], bands[1], kBlue + 1, 3004);
+            shade(bands[2], bands[3], kBlue + 1, 3004);
+            shade(m.peakLow, m.peakHigh, kRed + 1, 3005);
+
+            h->Draw("E SAME"); // Points and attached fits back on top of the shading
+            if (!ringPanel && m.bkgFit) m.bkgFit->Draw("SAME");
+        }
+
+        c->Update(); // TCanvas::Write() does not paint; without this the pads are stored unpainted
+        dir->cd();
+        c->Write();
+        delete c;    // Deletes only what was marked kCanDelete; the cells keep their histograms
+    };
+
+    drawOne(true, dirRing, baseName + "_RingVsMass_Mosaic",
+            titleStem + ": <R> vs mass per angular bin (blue: sidebands, red: peak window)");
+    drawOne(false, dirMass, baseName + "_MassFit_Mosaic",
+            titleStem + ": dN/dm per angular bin, peak fit and extrapolated background");
+}
+
 // =================================================================================================
 // HELPER FUNCTION: Full 2D to 1D Signal Extraction Engine
 // =================================================================================================
@@ -2210,6 +2345,19 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
                          const SidebandConfig& cfg, const SidebandConfig& cfgInt,
                          IntegralMode integralMode = IntegralMode::ProjectThenExtract,
                          bool printHeader = true){
+    // The consumer's own booking string is the single source of truth for what this axis is called,
+    // so an empty axisTitle means "read it from the input" and a non-empty one is a deliberate
+    // override. The profile is asked first: the counts histogram is sometimes rebuilt locally and
+    // carries a title only if that rebuild copied one across.
+    if (axisTitle.IsNull() && p2dRingObs) axisTitle = p2dRingObs->GetXaxis()->GetTitle();
+    if (axisTitle.IsNull() && h2dCounts) axisTitle = h2dCounts->GetXaxis()->GetTitle();
+    if (axisTitle.IsNull()) {
+        // Never leave the axis blank: a missing label is much harder to notice than a wrong one.
+        axisTitle = extractionName;
+        std::cerr << "[ExtractObservable2D] WARNING: no x-axis title available for "
+                  << extractionName << "; falling back to the extraction name.\n";
+    }
+
     if (printHeader) std::cout << "\n[ExtractObservable2D] Starting extraction: " << extractionName << std::endl;
     // Create subdirectories for organized output
     TDirectory* dirBase = parentDir->mkdir(extractionName);
@@ -2263,6 +2411,18 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
     TH1D* hRBkg = (TH1D*)hSigYield->Clone(Form("hRBkg_%s", extractionName.Data()));
     hRBkg->SetTitle(Form("Background <R>_{bkg} vs %s;%s;<R>_{B}", axisTitle.Data(), axisTitle.Data()));
 
+    // The measured <R> inside the peak window, before any decomposition. Stored rather than left to
+    // be rebuilt downstream because the three results are tied by <R>_meas = p <R>_S + (1-p) <R>_B,
+    // with p from hPurity: a canvas carrying all three then shows the decomposition, and a visible
+    // violation of that identity is a defect rather than a fluctuation. Rebuilding it from hPurity
+    // would reproduce the value but not the error -- all three are functions of the same four
+    // primitives, so quadrature does not apply.
+    // This is the PEAK-WINDOW measured value. The full-mass-range one is a different quantity and
+    // has no mass axis to window: it comes from the consumer's ...VsProxyEta profiles instead.
+    TH1D* hRMeas = (TH1D*)hSigYield->Clone(Form("hRMeas_%s", extractionName.Data()));
+    hRMeas->SetTitle(Form("Measured <R> in the peak window vs %s;%s;<R>_{meas}",
+                          axisTitle.Data(), axisTitle.Data()));
+
     // --- QA HISTOGRAMS: statistical significance and purity ---
     TH1D* hPurity = (TH1D*)hSigYield->Clone(Form("hPurity_%s", extractionName.Data()));
     hPurity->SetTitle(Form("Purity S/(S+B) vs %s;%s;Purity", axisTitle.Data(), axisTitle.Data()));
@@ -2290,6 +2450,25 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
     TH1D* hSidebandPointsRight = (TH1D*)hSigYield->Clone(Form("hSidebandPointsRight_%s", extractionName.Data()));
     hSidebandPointsRight->SetTitle(Form("Sideband points used, right of the peak vs %s;%s;Points",
                                         axisTitle.Data(), axisTitle.Data()));
+
+    // Why each bin did or did not produce a result; codes in CellStatus. The failures are the
+    // information that matters once a split is fine enough to starve some of its cells.
+    TH1D* hCellStatus = (TH1D*)hSigYield->Clone(Form("hCellStatus_%s", extractionName.Data()));
+    hCellStatus->SetTitle(Form("Cell status (1 extracted, 2 few entries, 3 peak fit, 4 sidebands, "
+                               "5 bkg fit, 6 no signal) vs %s;%s;Status", axisTitle.Data(), axisTitle.Data()));
+
+    // The assumption sideband subtraction rests on, measured: how far <R>_B(m) is from flat across
+    // the mass window, as the linear coefficient of the <R> sideband fit over its error. Parameter 1
+    // of PolShifted is the slope AT the peak position, which is the one that matters under the peak
+    // whatever the polynomial order. Splitting on the drivers of the fake signal should pull this
+    // towards zero; this is where to see whether it did. Empty in window-counting mode, which fits
+    // no <R> background at all.
+    TH1D* hRingBkgSlopeSignif = (TH1D*)hSigYield->Clone(Form("hRingBkgSlopeSignif_%s", extractionName.Data()));
+    hRingBkgSlopeSignif->SetTitle(Form("<R> sideband fit: slope at the peak / its error vs %s;%s;"
+                                       "p_{1} / #sigma_{p_{1}}", axisTitle.Data(), axisTitle.Data()));
+    TH1D* hRingBkgChi2Ndf = (TH1D*)hSigYield->Clone(Form("hRingBkgChi2Ndf_%s", extractionName.Data()));
+    hRingBkgChi2Ndf->SetTitle(Form("<R> sideband fit: #chi^{2}/ndf vs %s;%s;#chi^{2}/ndf",
+                                   axisTitle.Data(), axisTitle.Data()));
     dirResults->cd();
 
     // <R>_S - <R>_B in each angular bin. Stored rather than left to be subtracted downstream,
@@ -2357,6 +2536,11 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
     // this file do the fitting, the sideband collection and the error propagation.
     if (printHeader) std::cout << "  -> Steps 4/5/6/6.5: Mass fits, sideband fits and extraction..." << std::endl;
 
+    // Every bin leaves a cell here, extracted or not, so the mosaics keep the angular order and
+    // show a rejected bin as a labelled pad instead of silently closing the gap.
+    std::vector<MosaicCell> mosaic;
+    mosaic.reserve(nBins);
+
     for (int iBin = 1; iBin <= nBins; ++iBin){
         // 1. Project the mass spectrum (Counts/Denominator) using "e" for error propagation
         TH1D* hMassProj = h2dCounts->ProjectionY(Form("hMass_Bin%d", iBin), iBin, iBin, "e");
@@ -2367,13 +2551,32 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
         double xHigh = xAxis->GetBinUpEdge(iBin);
         hMassProj->SetTitle(Form("Angle bin %d [%.4f,%.4f)];M_{p#pi} (GeV/c^{2});Counts", iBin, xLow, xHigh));
 
+        MosaicCell cell;
+        cell.xLow = xLow;
+        cell.xHigh = xHigh;
+        // Records the outcome once, on every exit path, in the map and in the mosaic alike
+        auto markCell = [&](int status) {
+            hCellStatus->SetBinContent(iBin, status);
+            hCellStatus->SetBinError(iBin, 0.0);
+            cell.status = status;
+            mosaic.push_back(cell);
+        };
+        // The spectrum is shown for a failed bin too, whenever it exists: a cell that failed is
+        // exactly the one worth looking at.
+        auto keepMass = [&](TH1D* hDensity) {
+            if (!hDensity) return;
+            cell.hMass = (TH1D*)hDensity->Clone(Form("%s_mosaic", hDensity->GetName()));
+            cell.hMass->SetDirectory(nullptr);
+        };
+
         // --- STABILITY CHECK: Does this bin even have data? ---
         // If there are fewer than ~30 counts in the entire mass window, a good fit is probably
         // impossible (and if possible, useless).
         if (hMassProj->GetEntries() < cfg.minEntries || hMassProj->Integral() <= cfg.minIntegral) {
-            if (printHeader) std::cout << "    Bin " << iBin << ": invalid mu/sigma, skipped.\n";
+            if (printHeader) std::cout << "    Bin " << iBin << ": too few entries, skipped.\n";
             // We don't even want to see these problematic histograms, so just skip right away!
             delete hMassProj;
+            markCell(kCellTooFewEntries);
             continue;
         }
 
@@ -2406,7 +2609,7 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
         dirFits->cd();
         hMassProjDensity->GetListOfFunctions()->Add(peak.fit); // Histogram takes ownership of the TF1
             // Save the histogram only if the projection is not empty!
-        if (hMassProj->GetEntries() > 0) hMassProjDensity->Write(); // For QA
+        if (gWritePerBinQA && hMassProj->GetEntries() > 0) hMassProjDensity->Write(); // For QA
 
         // With explicit mass windows the peak fit defines NO boundary -- not the signal window, not
         // the sidebands. It is QA. Rejecting a bin because it failed would then throw away good data
@@ -2421,7 +2624,9 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
         }
         if (!peak.valid) {
             if (printHeader) std::cout << "    Bin " << iBin << ": invalid mu/sigma, skipped.\n";
+            keepMass(hMassProjDensity);
             delete hMassProjDensity; delete hNumProjDensity; delete hNumProj; delete hMassProj;
+            markCell(kCellPeakFitFailed);
             continue;
         }
         double mu = peak.mu;
@@ -2458,8 +2663,10 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
             (ringGraphMatters && grRingBkg->GetN() < cfg.minSidebandPoints) ||
             (cfg.minSidebandCounts > 0.0 && spanBkg.rawCounts <= cfg.minSidebandCounts)) {
             nSidebandStarved++;
+            keepMass(hMassProjDensity);
             delete grBkg; delete grRingBkg;
             delete hMassProjDensity; delete hNumProjDensity; delete hNumProj; delete hMassProj;
+            markCell(kCellSidebandStarved);
             continue;
         }
 
@@ -2486,33 +2693,69 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
         if (!rBkg->IsValid() || !ringOk) {
             // Here you still need to delete the TF1s manually, as they have not yet been taken
             // ownership of by ROOT through an "Add()" call!
+            keepMass(hMassProjDensity);
             delete bkgFitFunc; delete ringBkgFitFunc;
             delete grBkg; delete grRingBkg;
             delete hMassProjDensity; delete hNumProjDensity; delete hNumProj; delete hMassProj;
+            markCell(kCellBkgFitFailed);
             continue;
         }
 
         dirFits->cd();
         grBkg->GetListOfFunctions()->Add(bkgFitFunc); // Attach fit for viewing in TBrowser
-        grBkg->Write();
+        if (gWritePerBinQA) grBkg->Write();
+
+        // How far from flat <R>_B(m) really is in this bin; see hRingBkgSlopeSignif. Only defined
+        // where the <R> sideband was actually fitted, with a polynomial that has a slope.
+        if (!useWindowBkg && cfg.ringBkgPolOrder >= 1) {
+            const double e1 = ringBkgFitFunc->GetParError(1);
+            if (e1 > 0.0) {
+                hRingBkgSlopeSignif->SetBinContent(iBin, ringBkgFitFunc->GetParameter(1) / e1);
+                hRingBkgSlopeSignif->SetBinError(iBin, 0.0);
+            }
+            if (rRingBkg->Ndf() > 0) {
+                hRingBkgChi2Ndf->SetBinContent(iBin, rRingBkg->Chi2() / rRingBkg->Ndf());
+                hRingBkgChi2Ndf->SetBinError(iBin, 0.0);
+            }
+        }
 
         // --- <R>(m) with the fitted sideband background drawn on it ---------------------------
         // Built here rather than earlier so the fitted function can be attached to it: this is the
         // one plot that shows whether the flat-<R> assumption behind sideband subtraction actually
         // holds in this angular bin. The fit is CLONED because the graph below takes ownership of
         // the original.
+        // Filled bin by bin, exactly as BuildRingSidebandGraph builds the points the fit sees:
+        // Sum_R / N, with error sigma(Sum_R) / N, i.e. the error of the mean. TH1::Divide cannot give
+        // that. Its binomial option assumes a fraction in [0, 1], which a signed mean is not, and was
+        // right here only by accident, because <R> is of order 1e-2.
+        // (In other words, there was a small imprecision in the way hNumProj's division was being done before, in commit ef46316ae3a3cce9d4653ffccb78ff680bccf721)
         TH1D* hRingVsMass = (TH1D*)hNumProj->Clone(Form("hRingVsMass_Bin%d", iBin));
         hRingVsMass->SetDirectory(nullptr);
+        hRingVsMass->Reset();
         hRingVsMass->SetTitle(Form("<R> vs mass, bin %d [%.4f,%.4f);M_{p#pi} (GeV/c^{2});<R>",
                                    iBin, xLow, xHigh));
-        hRingVsMass->Divide(hNumProj, hMassProj, 1.0, 1.0, "B");
-        hRingVsMass->GetListOfFunctions()->Add((TF1*)ringBkgFitFunc->Clone());
+        for (int j = 1; j <= hRingVsMass->GetNbinsX(); ++j) {
+            const double n = hMassProj->GetBinContent(j);
+            const double errSum = hNumProj->GetBinError(j);
+            if (!(n > 0.0) || !(errSum > 0.0)) continue; // Content may be zero or negative; the error may not
+            hRingVsMass->SetBinContent(j, hNumProj->GetBinContent(j) / n);
+            hRingVsMass->SetBinError(j, errSum / n);
+        }
+        // In window-counting mode nothing was fitted, and an unfitted function draws as a flat line
+        // at zero that reads like a result. Corrected with a gate:
+        if (!useWindowBkg) hRingVsMass->GetListOfFunctions()->Add((TF1*)ringBkgFitFunc->Clone());
 
         dirRingMass->cd();
-        hRingVsMass->Write();
+        if (gWritePerBinQA) hRingVsMass->Write();
         grRingBkg->GetListOfFunctions()->Add(ringBkgFitFunc); // Graph takes ownership
-        grRingBkg->Write();
-        delete hRingVsMass;
+        if (gWritePerBinQA) grRingBkg->Write();
+
+        // Handed to the mosaic rather than deleted. Freed once the mosaics are written:
+        cell.hRing = hRingVsMass;
+        keepMass(hMassProjDensity);
+        cell.bkgFit = (TF1*)bkgFitFunc->Clone(Form("bkgFitMosaic_%s_Bin%d", extractionName.Data(), iBin));
+        cell.bkgFit->SetLineColor(kBlue + 1);
+        cell.bkgFit->SetLineStyle(2);
 
         // 7. Signal extraction. Every count, subtraction and uncertainty lives in this one call.
         PeakWindowYields y = ComputePeakWindowYields(hMassProj, hNumProj, mu, sigma, cfg.nSigmaPeak, cfg.massPeakHalfWidth,
@@ -2521,11 +2764,28 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
                                                      cfg.muInitGuess,
                                                      useWindowBkg ? &cfg : nullptr);
 
+        // The regions this bin was really extracted with. The window-counting bands are resolved by
+        // the same call, with the same arguments, the extraction itself made, so the shading cannot
+        // disagree with the numbers.
+        cell.peakLow = y.xLow;
+        cell.peakHigh = y.xHigh;
+        cell.massBands[0] = spanBkg.xOuterLow;  cell.massBands[1] = spanBkg.xInnerLow;
+        cell.massBands[2] = spanBkg.xInnerHigh; cell.massBands[3] = spanBkg.xOuterHigh;
+        if (useWindowBkg) {
+            const WindowBackground wb = ComputeWindowCountingBackground(hMassProj, nullptr, mu,
+                                                                        0.5 * (y.xHigh - y.xLow), cfg);
+            cell.ringBands[0] = wb.xLoOuter; cell.ringBands[1] = wb.xLoInner;
+            cell.ringBands[2] = wb.xHiInner; cell.ringBands[3] = wb.xHiOuter;
+        } else {
+            for (int k = 0; k < 4; ++k) cell.ringBands[k] = cell.massBands[k];
+        }
+
         if (!y.valid) {
             // failStage 1 = no counts in the window at all, 2 = background exceeded the peak
             if (y.failStage == 2) std::cout << "    Bin " << iBin << ": non-positive signal, skipped.\n";
             delete grBkg; delete grRingBkg;
             delete hMassProjDensity; delete hNumProjDensity; delete hNumProj; delete hMassProj;
+            markCell(kCellNoSignal);
             continue;
         }
 
@@ -2541,6 +2801,9 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
 
         hRBkg->SetBinContent(iBin, y.R_B);
         hRBkg->SetBinError(iBin, std::sqrt(y.varR_B));
+
+        hRMeas->SetBinContent(iBin, y.R_peak);
+        hRMeas->SetBinError(iBin, y.errR_peak);
 
         hPurity->SetBinContent(iBin, y.purity);
         hPurity->SetBinError(iBin, y.errPurity);
@@ -2572,6 +2835,7 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
         perBinSigCounts.push_back(y.sigCounts);
 
         nBinsExtracted++;
+        markCell(kCellExtracted);
         achievedLowMin = std::min(achievedLowMin, y.nSigmaAchievedLow);
         achievedLowMax = std::max(achievedLowMax, y.nSigmaAchievedLow);
         achievedHighMin = std::min(achievedHighMin, y.nSigmaAchievedHigh);
@@ -2671,6 +2935,14 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
     hAchievedCoverage->Write();
     hSidebandPointsLeft->Write();
     hSidebandPointsRight->Write();
+    hCellStatus->Write();
+    hRingBkgSlopeSignif->Write();
+    hRingBkgChi2Ndf->Write();
+
+    // Written the output of gWritePerBinQA: it is the view that replaces the per-bin objects.
+    WriteMassMosaics(mosaic, "Canvas_" + extractionName, extractionName, dirRingMass, dirFits);
+    for (auto& m : mosaic) { delete m.hRing; delete m.hMass; delete m.bkgFit; }
+    mosaic.clear();
 
     dirResults->cd();
     hRSigMinusRBkg->Write();
@@ -2684,6 +2956,7 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
     hBkgYield->Write();
     hRSig->Write();
     hRBkg->Write();
+    hRMeas->Write();
     hPurity->Write();
     hSigStat->Write();
 
@@ -3474,6 +3747,10 @@ TH2D* CountsFromProfile2D(TProfile2D* prof, const char* name)
     else
         h = new TH2D(name, "", nx, ax->GetXmin(), ax->GetXmax(), ny, ay->GetXmin(), ay->GetXmax());
     h->SetDirectory(nullptr);
+    // Carry the profile's labelling across. This histogram is handed to ExtractObservable2D, which
+    // now takes its axis title from whichever input has one.
+    h->GetXaxis()->SetTitle(prof->GetXaxis()->GetTitle());
+    h->GetYaxis()->SetTitle(prof->GetYaxis()->GetTitle());
 
     for (int ix = 1; ix <= nx; ++ix) {
         for (int iy = 1; iy <= ny; ++iy) {
@@ -3485,6 +3762,135 @@ TH2D* CountsFromProfile2D(TProfile2D* prof, const char* name)
     // h->SetEntries(prof->GetEntries());
     h->ResetStats();
     return h;
+}
+
+// The (x, z) profile of a TProfile3D over its y bins [yFirst, yLast], as an x-vs-z TProfile2D.
+// This is what cuts the AEE angle x eta_Proxy x mass profiles into one (angle, mass) profile per
+// eta_Proxy bin, which ExtractObservable2D then handles exactly like the 2D ones. yFirst = 0 and
+// yLast = nBinsY + 1 include the flow bins. The result is detached and belongs to the caller.
+//
+// Built from the profile's own accumulators, NOT through Project3DProfile. ROOT's projection goes
+// through TProfile3D::ProjectionXYZ, which refuses an axis set that mixes variable and fixed-size (uniform-size) bins
+// -- the variable-width mass axis beside the fixed angle and eta axes is exactly that -- and returns null,
+// which DoProjectProfile2D then dereferences. Merging profile bins is nothing more than adding their four sums, so this is exact by construction.
+// Step 2.8 nevertheless checks the result against the 2D profiles the consumer filled from the same candidates.
+// (see CompareProfiles2D's checks for more details)
+TProfile2D* SliceProfile3D(TProfile3D* p3, int yFirst, int yLast, const TString& name)
+{
+    if (!p3) return nullptr;
+    const TAxis* ax = p3->GetXaxis();
+    const TAxis* az = p3->GetZaxis();
+    const int nx = ax->GetNbins(), ny = p3->GetNbinsY(), nz = az->GetNbins();
+    yFirst = std::max(yFirst, 0);
+    yLast = std::min(yLast, ny + 1);
+
+    // The same axes, fixed or variable as the source has them, as CountsFromProfile2D does.
+    // Detached from birth: no "Replacing existing" warning, and no directory claiming it.
+    const Bool_t addDir = TH1::AddDirectoryStatus();
+    TH1::AddDirectory(kFALSE);
+    const bool varX = (ax->GetXbins()->GetSize() > 0);
+    const bool varZ = (az->GetXbins()->GetSize() > 0);
+    TProfile2D* p = nullptr;
+    if (varX && varZ)
+        p = new TProfile2D(name, p3->GetTitle(), nx, ax->GetXbins()->GetArray(), nz, az->GetXbins()->GetArray());
+    else if (varZ)
+        p = new TProfile2D(name, p3->GetTitle(), nx, ax->GetXmin(), ax->GetXmax(), nz, az->GetXbins()->GetArray());
+    else if (varX)
+        p = new TProfile2D(name, p3->GetTitle(), nx, ax->GetXbins()->GetArray(), nz, az->GetXmin(), az->GetXmax());
+    else
+        p = new TProfile2D(name, p3->GetTitle(), nx, ax->GetXmin(), ax->GetXmax(), nz, az->GetXmin(), az->GetXmax());
+    TH1::AddDirectory(addDir);
+    p->SetErrorOption(p3->GetErrorOption());
+
+    // A profile bin is four accumulators: sum of w (the entries), of w*t, of w*t^2, and, when it was
+    // filled with weights, of w^2. The error of the mean is rebuilt from these on demand.
+    const Double_t* srcWT = p3->GetArray();
+    const TArrayD* srcWT2 = p3->GetSumw2();
+    const TArrayD* srcW2 = p3->GetBinSumw2();
+    if (!srcWT2 || srcWT2->fN == 0) {
+        std::cerr << "[SliceProfile3D] ERROR: " << p3->GetName() << " carries no sum of squares. Discarded.\n";
+        delete p;
+        return nullptr;
+    }
+    const bool weighted = (srcW2 && srcW2->fN > 0);
+    if (weighted) p->Sumw2(); // Allocates the sum of w^2, so the effective entries survive the copy
+    Double_t* dstWT = p->GetArray();
+    TArrayD* dstWT2 = p->GetSumw2();
+    TArrayD* dstW2 = p->GetBinSumw2();
+
+    double entries = 0.0;
+    for (int ix = 0; ix <= nx + 1; ++ix) {
+        for (int iz = 0; iz <= nz + 1; ++iz) {
+            double w = 0.0, wt = 0.0, wt2 = 0.0, w2 = 0.0;
+            for (int iy = yFirst; iy <= yLast; ++iy) {
+                const int src = p3->GetBin(ix, iy, iz);
+                w += p3->GetBinEntries(src);
+                wt += srcWT[src];
+                wt2 += srcWT2->fArray[src];
+                if (weighted) w2 += srcW2->fArray[src];
+            }
+            const int dst = p->GetBin(ix, iz);
+            p->SetBinEntries(dst, w);
+            dstWT[dst] = wt;
+            dstWT2->fArray[dst] = wt2;
+            if (weighted) dstW2->fArray[dst] = w2;
+            entries += w;
+        }
+    }
+    p->SetEntries(entries);
+
+    // Titles travel explicitly: ExtractObservable2D names its axes after this object
+    p->GetXaxis()->SetTitle(ax->GetTitle());
+    p->GetYaxis()->SetTitle(az->GetTitle());
+    return p;
+}
+
+// Struct that stores how far apart two (angle, mass) profiles that must be identical are after our SliceProfile3D procedure,
+// measured over the in-range cells ExtractObservable2D reads. Entries must agree exactly: means up to floating-point summation order.
+struct ProfileClosure {
+    bool   comparable = false;
+    double maxEntryDiff = 0.0, maxMeanDiff = 0.0;
+    double entriesA = 0.0, entriesB = 0.0;
+    bool passed() const { return comparable && maxEntryDiff < 0.5 && maxMeanDiff < 1e-9; }
+};
+ProfileClosure CompareProfiles2D(TProfile2D* a, TProfile2D* b)
+{
+    ProfileClosure c;
+    if (!a || !b || a->GetNbinsX() != b->GetNbinsX() || a->GetNbinsY() != b->GetNbinsY()) return c;
+    c.comparable = true;
+    for (int ix = 1; ix <= a->GetNbinsX(); ++ix) {
+        for (int iy = 1; iy <= a->GetNbinsY(); ++iy) {
+            const int bin = a->GetBin(ix, iy);
+            const double na = a->GetBinEntries(bin), nb = b->GetBinEntries(bin);
+            c.entriesA += na;
+            c.entriesB += nb;
+            c.maxEntryDiff = std::max(c.maxEntryDiff, std::fabs(na - nb));
+            if (na > 0.0 && nb > 0.0)
+                c.maxMeanDiff = std::max(c.maxMeanDiff, std::fabs(a->GetBinContent(bin) - b->GetBinContent(bin)));
+        }
+    }
+    return c;
+}
+
+// A caller-owned copy of an object already written under dir, read back from its key.
+// Get() would return the in-memory original when one exists, which the directory owns and may still
+// delete, or a fresh copy when it does not. Reading the key always gives the latter, so ownership is
+// never in doubt.
+template <typename T>
+T* ReadWritten(TDirectory* dir, const TString& path)
+{
+    if (!dir) return nullptr;
+    const Ssiz_t slash = path.Last('/');
+    TDirectory* d = (slash == kNPOS) ? dir : dir->GetDirectory(TString(path(0, slash)));
+    if (!d) return nullptr;
+    const TString leaf = (slash == kNPOS) ? path : TString(path(slash + 1, path.Length() - slash - 1));
+    TKey* key = d->GetKey(leaf.Data());
+    if (!key) return nullptr;
+    TObject* o = key->ReadObj();
+    T* obj = dynamic_cast<T*>(o);
+    if (!obj) { delete o; return nullptr; }
+    if (auto* h = dynamic_cast<TH1*>(obj)) h->SetDirectory(nullptr);
+    return obj;
 }
 
 // Sum_R_i in each bin, with the error of the SUM rather than of the mean.
@@ -3598,14 +4004,24 @@ void DrawFitQACanvas(TH1* h, TF1* fit, const char* canvasName, const char* canva
 // ------------------------------------------------------------------------------------------------
 // hFinePeakRef is optional: when supplied, (mu, sigma) are taken from it instead of from the
 // profile's own axis. Pass nullptr to fit the profile's axis directly.
+//
+// Nothing here is specific to R: any per-candidate quantity profiled against mass goes through the
+// same algebra. The KappaEff moments use exactly that, with their own output folder and symbol; the
+// output object names stay the same (hIntegratedRSig_<name> is <y>_S for whatever y was profiled).
 void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
                                   TDirectory* parentDir, const IntegratedProxySpec& spec,
-                                  const SidebandConfig& cfg)
+                                  const SidebandConfig& cfg,
+                                  const char* summaryFolder = "IntegratedSummary",
+                                  const char* obsSymbol = "R")
 {
+    // Display text only: "<R>" becomes "<obsSymbol>"
+    const TString sym = Form("<%s>", obsSymbol);
+    auto L = [&sym](const char* text) { TString t(text); t.ReplaceAll("<R>", sym); return t; };
+
     std::cout << Form("  [Integrated %s] ----------------------------------------------------------",
                       spec.label) << std::endl;
 
-    TDirectory* dirProxy = EnsureDir(EnsureDir(parentDir, "IntegratedSummary"), spec.name);
+    TDirectory* dirProxy = EnsureDir(EnsureDir(parentDir, summaryFolder), spec.name);
     TDirectory* dirQA = EnsureDir(dirProxy, "QA");
 
     // hExtractionStatus is written unconditionally, so that "the extraction failed" is always
@@ -3707,10 +4123,10 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
                                                     Form("grRingBkg_%s", spec.name));
     hStatus->SetBinContent(4, span.nPointsLeft + span.nPointsRight);
 
-    std::cout << Form("    sidebands: %s -> %d left + %d right = %d points (need >= %d; counts pol%d, "
+    std::cout << L(Form("    sidebands: %s -> %d left + %d right = %d points (need >= %d; counts pol%d, "
                       "<R>_bkg pol%d)",
                       SidebandBandLabel(cfg).Data(), span.nPointsLeft, span.nPointsRight,
-                      grBkg->GetN(), cfg.minSidebandPoints, cfg.bkgPolOrder, cfg.ringBkgPolOrder) << std::endl;
+                      grBkg->GetN(), cfg.minSidebandPoints, cfg.bkgPolOrder, cfg.ringBkgPolOrder)) << std::endl;
 
     if (grBkg->GetN() < cfg.minSidebandPoints || grRingBkg->GetN() < cfg.minSidebandPoints) {
         bail("too few sideband points for the background polynomial");
@@ -3732,7 +4148,7 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
         bail(Form("the background estimate failed (counts fit status %d, %s)",
                   rBkg->Status(),
                   useWindowBkg ? "window counting found an empty band"
-                               : "the <R> sideband fit did not converge"));
+                               : L("the <R> sideband fit did not converge").Data()));
         delete bkgFit; delete ringBkgFit; delete grBkg; delete grRingBkg;
         delete hPeakSource; delete hCounts; delete hNum;
         return;
@@ -3746,8 +4162,8 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
     for (int ip = 0; ip < bkgFit->GetNpar(); ++ip)
         std::cout << Form("       p%d = %+.6e +/- %.3e", ip,
                           bkgFit->GetParameter(ip), bkgFit->GetParError(ip)) << std::endl;
-    std::cout << Form("    sideband <R> fit [pol%d], chi2/ndf = %.2f/%d: ", cfg.ringBkgPolOrder,
-                      ringBkgFit->GetChisquare(), ringBkgFit->GetNDF());
+    std::cout << L(Form("    sideband <R> fit [pol%d], chi2/ndf = %.2f/%d: ", cfg.ringBkgPolOrder,
+                      ringBkgFit->GetChisquare(), ringBkgFit->GetNDF()));
     for (int ip = 0; ip < ringBkgFit->GetNpar(); ++ip)
         std::cout << Form("p%d = %+.6e +/- %.3e  ", ip,
                           ringBkgFit->GetParameter(ip), ringBkgFit->GetParError(ip));
@@ -3768,9 +4184,9 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
     hStatus->SetBinContent(1, 1);
 
     // --- Results -------------------------------------------------------------------------------
-    auto scalar = [&](const char* stem, const char* yTitle, double v, double e) {
+    auto scalar = [&](const char* stem, const TString& yTitle, double v, double e) {
         TH1D* h = new TH1D(Form("%s_%s", stem, spec.name),
-                           Form("%s; ;%s", spec.label, yTitle), 1, 0, 1);
+                           Form("%s; ;%s", spec.label, yTitle.Data()), 1, 0, 1);
         h->SetDirectory(nullptr);
         h->SetBinContent(1, v);
         h->SetBinError(1, e);
@@ -3778,14 +4194,14 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
     };
 
     std::vector<TH1D*> outputs = {
-        scalar("hIntegratedRMeas", "<R>_{measured}", y.R_peak, y.errR_peak),
-        scalar("hIntegratedRSig", "<R>_{S}", y.R_S, y.errR_S),
-        scalar("hIntegratedRBkg", "<R>_{B}", y.R_B, y.errR_B),
-        scalar("hIntegratedDiffMeasMinusSig", "<R>_{measured} - <R>_{S}",
+        scalar("hIntegratedRMeas", L("<R>_{measured}"), y.R_peak, y.errR_peak),
+        scalar("hIntegratedRSig", L("<R>_{S}"), y.R_S, y.errR_S),
+        scalar("hIntegratedRBkg", L("<R>_{B}"), y.R_B, y.errR_B),
+        scalar("hIntegratedDiffMeasMinusSig", L("<R>_{measured} - <R>_{S}"),
                y.diffPeakMinusSig, y.errDiffPeakMinusSig),
-        scalar("hIntegratedDiffMeasMinusBkg", "<R>_{measured} - <R>_{B}",
+        scalar("hIntegratedDiffMeasMinusBkg", L("<R>_{measured} - <R>_{B}"),
                y.diffPeakMinusBkg, y.errDiffPeakMinusBkg),
-        scalar("hIntegratedDiffSigMinusBkg", "<R>_{S} - <R>_{B}",
+        scalar("hIntegratedDiffSigMinusBkg", L("<R>_{S} - <R>_{B}"),
                y.diffSigMinusBkg, y.errDiffSigMinusBkg),
         scalar("hIntegratedPurity", "S/(S+B)", y.purity, y.errPurity),
         scalar("hIntegratedSignificance", "S/#sqrt{S+B}", y.significance, y.errSignificance)
@@ -3815,12 +4231,12 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
                       "significance = %.2f",
                       y.sigCounts, y.errSigCounts, y.bkgCounts, y.errBkgCounts,
                       y.purity, y.significance) << std::endl;
-    std::cout << Form("    <R>_measured = %+.6f +/- %.6f", y.R_peak, y.errR_peak) << std::endl;
-    std::cout << Form("    <R>_S        = %+.6f +/- %.6f", y.R_S, y.errR_S) << std::endl;
-    std::cout << Form("    <R>_B        = %+.6f +/- %.6f", y.R_B, y.errR_B) << std::endl;
-    std::cout << Form("    <R>_S - <R>_B = %+.6f +/- %.6f  (naive quadrature would give %.6f)",
-                      y.diffSigMinusBkg, y.errDiffSigMinusBkg,
-                      std::sqrt(y.errR_S * y.errR_S + y.errR_B * y.errR_B)) << std::endl;
+    std::cout << L(Form("    <R>_measured = %+.6f +/- %.6f", y.R_peak, y.errR_peak)) << std::endl;
+    std::cout << L(Form("    <R>_S        = %+.6f +/- %.6f", y.R_S, y.errR_S)) << std::endl;
+    std::cout << L(Form("    <R>_B        = %+.6f +/- %.6f", y.R_B, y.errR_B)) << std::endl;
+    std::cout << L(Form("    <R>_S - <R>_B = %+.6f +/- %.6f  (naive quadrature would give %.6f)",
+                        y.diffSigMinusBkg, y.errDiffSigMinusBkg,
+                        std::sqrt(y.errR_S * y.errR_S + y.errR_B * y.errR_B))) << std::endl;
 
     // --- QA canvases ---------------------------------------------------------------------------
     TF1* fPeakDraw = peak.fit;
@@ -3857,13 +4273,13 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
                              SidebandBandLabel(cfg).Data(), span.nPointsLeft, span.nPointsRight));
     for (int ip = 0; ip <= cfg.ringBkgPolOrder; ++ip)
         ringLines.push_back(Form("p%d = %+.6e #pm %.3e", ip, ringBkgFit->GetParameter(ip), ringBkgFit->GetParError(ip)));
-    ringLines.push_back(Form("<R>_{meas} = %+.6f #pm %.6f", y.R_peak, y.errR_peak));
-    ringLines.push_back(Form("<R>_{S} = %+.6f #pm %.6f", y.R_S, y.errR_S));
-    ringLines.push_back(Form("<R>_{B} = %+.6f #pm %.6f", y.R_B, y.errR_B));
+    ringLines.push_back(L(Form("<R>_{meas} = %+.6f #pm %.6f", y.R_peak, y.errR_peak)));
+    ringLines.push_back(L(Form("<R>_{S} = %+.6f #pm %.6f", y.R_S, y.errR_S)));
+    ringLines.push_back(L(Form("<R>_{B} = %+.6f #pm %.6f", y.R_B, y.errR_B)));
 
     TProfile* profDraw = (TProfile*)prof->Clone(Form("pRingVsMass_%s", spec.name));
     profDraw->SetDirectory(nullptr);
-    profDraw->SetTitle(Form("%s: <R> vs mass;m_{p#pi} (GeV/c^{2});<R>", spec.label));
+    profDraw->SetTitle(L(Form("%s: <R> vs mass;m_{p#pi} (GeV/c^{2});<R>", spec.label)));
     // The numerator background is fitted as a DENSITY of Sum_R, so dividing by the counts density
     // is what turns it into the <R> the profile shows. Drawn over the profile's own range only.
     // <R>_bkg(m) is now fitted DIRECTLY, so this is simply that function -- no longer a ratio of
@@ -3871,9 +4287,9 @@ void ExtractIntegratedFromProfile(TProfile* prof, TH1D* hFinePeakRef,
     TF1* fRingBkg = (TF1*)ringBkgFit->Clone(Form("fRingBkg_%s", spec.name));
     DrawFitQACanvas(profDraw, fRingBkg,
                     Form("cRingVsMass_%s", spec.name),
-                    Form("%s: <R> vs mass with the sideband background", spec.label),
-                    Form("<R>_{bkg}(m) = pol%d in (m - %.5f), fitted to the sidebands",
-                         cfg.ringBkgPolOrder, cfg.muInitGuess),
+                    L(Form("%s: <R> vs mass with the sideband background", spec.label)),
+                    L(Form("<R>_{bkg}(m) = pol%d in (m - %.5f), fitted to the sidebands",
+                           cfg.ringBkgPolOrder, cfg.muInitGuess)),
                     ringLines, y.xLow, y.xHigh, dirQA);
 
     // Keep the sideband graphs and the fitted functions, so the QA canvases can be re-derived.
@@ -4614,6 +5030,8 @@ void PrintUsage(const char* exeName)
         << "  --leftSidebandMax=<x>       The peak fit is then QA only, so a bin can no longer be\n"
         << "  --rightSidebandMin=<x>      rejected for failing it. Leave any of them unset to keep\n"
         << "  --rightSidebandMax=<x>      the sigma-relative windows above.\n"
+        << "  --perBinQA=<0|1>            Write the per-angular-bin QA objects under the mosaics.\n"
+        << "                              They dominate the file size; 0 for non-nominal runs [" << gWritePerBinQA << "]\n"
         << "  --help                      Print this message and exit\n\n"
         << "The windows are applied identically to all four workflows (per-bin, integrated,\n"
         << "denominator QA and cut flow). Those four differ only in what they do with a mass fit\n"
@@ -4687,6 +5105,7 @@ bool ParseCommandLine(int argc, char** argv, ExtractionConfigSet& configs, bool&
         else if (key == "minIntegral")          applyToAll([](SidebandConfig& c, double v){ c.minIntegral = v; }, val);
         else if (key == "muInitGuess")          applyToAll([](SidebandConfig& c, double v){ c.muInitGuess = v; }, val);
         else if (key == "sigmaInitGuess")       applyToAll([](SidebandConfig& c, double v){ c.sigmaInitGuess = v; }, val);
+        else if (key == "perBinQA")             gWritePerBinQA = (val != 0.0); // An output switch, not a method setting
         else {
             std::cerr << "  Error: unknown option '--" << key << "'. Run with --help for the list.\n";
             return false;
@@ -5043,8 +5462,30 @@ int main(int argc, char** argv) {
     // NO COUNTS HISTOGRAM IS NEEDED. The consumer books no TH2D counterpart for these, and none is
     // required: CountsFromProfile2D reads the denominator out of the profile's own entry array,
     // which also guarantees the numerator and denominator describe the same candidates.
+    //
+    // The nine (proxy, species) pairs, shared with Step 2.8 so the two cannot drift apart. Object
+    // names are built from the consumer's own tokens -- "2ndJet" in its names, "SubJet" in ours.
+    // The inclusive "LambdaLike" set is QA for the competition between the two species: with equal
+    // Lambda and antiLambda yields the dependence should cancel, so a residual there is itself the
+    // measurement of imbalance.
+    struct AEEPair { const char* proxy; const char* species; const char* outName; };
+    const std::vector<AEEPair> aeePairs = {
+        {"LeadJet", "LambdaLike", "LeadJet_LambdaLike"},
+        {"LeadP",   "LambdaLike", "LeadP_LambdaLike"},
+        {"2ndJet",  "LambdaLike", "SubJet_LambdaLike"},
+        {"LeadJet", "Lambda",     "LeadJet_Lambda"},
+        {"LeadP",   "Lambda",     "LeadP_Lambda"},
+        {"2ndJet",  "Lambda",     "SubJet_Lambda"},
+        {"LeadJet", "AntiLambda", "LeadJet_AntiLambda"},
+        {"LeadP",   "AntiLambda", "LeadP_AntiLambda"},
+        {"2ndJet",  "AntiLambda", "SubJet_AntiLambda"}
+    };
+    // <R> vs AEE angle vs mass, as the consumer names it; the eta-sign variants append a suffix
+    auto aeeProfile2DName = [](const AEEPair& pr) {
+        return std::string(Form("p2dRingObservable%sVsPhi%sPhiProtonStarVsMass", pr.proxy, pr.species));
+    };
+    const std::string aeeFolder = baseFolderTableConsumer + "/HelicityEfficiencyQA/PhiLambdaPhiProtonStar";
     {
-        const std::string aeeFolder = baseFolderTableConsumer + "/HelicityEfficiencyQA/PhiLambdaPhiProtonStar";
         TDirectory* aeeIn = (TDirectory*)inFile->Get(aeeFolder.c_str());
 
         if (!aeeIn) {
@@ -5055,30 +5496,9 @@ int main(int argc, char** argv) {
             std::cout << "\n[Step 2.75] Extracting <R> vs phi_Lambda - phi_p* per mass bin..." << std::endl;
             TDirectory* aeeOut = outFile->mkdir("HelicityEfficiencyQA_PhiLambdaPhiProtonStar");
 
-            // Three proxies x three species selections. The inclusive "LambdaLike" set is QA for the
-            // competition between the two species: with equal Lambda and antiLambda yields the
-            // dependence should cancel, so a residual there is itself the measurement of imbalance.
-            struct AEESpec { const char* profileName; const char* outName; const char* axisTitle; };
-            const std::vector<AEESpec> aeeSpecs = {
-                {"p2dRingObservableLeadJetVsPhiLambdaLikePhiProtonStarVsMass", "LeadJet_LambdaLike",
-                 "#phi_{#Lambda-like}-#phi_{p-like}^{*}"},
-                {"p2dRingObservableLeadPVsPhiLambdaLikePhiProtonStarVsMass", "LeadP_LambdaLike",
-                 "#phi_{#Lambda-like}-#phi_{p-like}^{*}"},
-                {"p2dRingObservable2ndJetVsPhiLambdaLikePhiProtonStarVsMass", "SubJet_LambdaLike",
-                 "#phi_{#Lambda-like}-#phi_{p-like}^{*}"},
-                {"p2dRingObservableLeadJetVsPhiLambdaPhiProtonStarVsMass", "LeadJet_Lambda",
-                 "#phi_{#Lambda}-#phi_{p}^{*}"},
-                {"p2dRingObservableLeadPVsPhiLambdaPhiProtonStarVsMass", "LeadP_Lambda",
-                 "#phi_{#Lambda}-#phi_{p}^{*}"},
-                {"p2dRingObservable2ndJetVsPhiLambdaPhiProtonStarVsMass", "SubJet_Lambda",
-                 "#phi_{#Lambda}-#phi_{p}^{*}"},
-                {"p2dRingObservableLeadJetVsPhiAntiLambdaPhiProtonStarVsMass", "LeadJet_AntiLambda",
-                 "#phi_{#bar{#Lambda}}-#phi_{#bar{p}}^{*}"},
-                {"p2dRingObservableLeadPVsPhiAntiLambdaPhiProtonStarVsMass", "LeadP_AntiLambda",
-                 "#phi_{#bar{#Lambda}}-#phi_{#bar{p}}^{*}"},
-                {"p2dRingObservable2ndJetVsPhiAntiLambdaPhiProtonStarVsMass", "SubJet_AntiLambda",
-                 "#phi_{#bar{#Lambda}}-#phi_{#bar{p}}^{*}"}
-            };
+            // Axis titles come from the consumer's booking strings, read off each profile inside
+            // ExtractObservable2D. The pair table therefore says only which object goes where.
+            // (i.e., removed an old AEESpec struct that existed here)
 
             // Three eta-split variants of every profile, distinguished only by a suffix on the
             // object name. The consumer books them with the same base name plus PosProxyEta or
@@ -5088,8 +5508,6 @@ int main(int argc, char** argv) {
             // RingObservable_vs_Mass, Diagnostics, Results, IntegratedCombined. That uniformity is
             // the point: comparing the split against the unsplit is then a matter of reading the
             // same object from three folders, with no special case anywhere downstream.
-            // Axis titles come from aeeSpecs, this macro's own table, so nothing here depends on
-            // the consumer's titles.
             struct EtaSplitVariant { const char* suffix; const char* dirName; };
             const std::vector<EtaSplitVariant> etaSplits = {
                 {"",            "NoEtaSplit"},
@@ -5101,8 +5519,8 @@ int main(int argc, char** argv) {
             for (const auto& split : etaSplits) {
                 TDirectory* splitDir = EnsureDir(aeeOut, split.dirName);
 
-                for (const auto& spec : aeeSpecs) {
-                    const std::string objName = std::string(spec.profileName) + split.suffix;
+                for (const auto& spec : aeePairs) {
+                    const std::string objName = aeeProfile2DName(spec) + split.suffix;
                     TProfile2D* prof = (TProfile2D*)aeeIn->Get(objName.c_str());
                     if (!prof) {
                         std::cout << "    -> Skipping " << split.dirName << "/" << spec.outName
@@ -5123,7 +5541,7 @@ int main(int argc, char** argv) {
                     // CombinePerBin: no projection over phi_Lambda - phi_p*. See the note at the top
                     // of the combination helpers -- projecting first would undo the entire reason
                     // this folder splits on an angular variable across which <R> changes sign.
-                    ExtractObservable2D(counts, prof, splitDir, spec.outName, spec.axisTitle,
+                    ExtractObservable2D(counts, prof, splitDir, spec.outName, "",
                                         aeeMassMin, aeeMassMax,
                                         configs.perBin, configs.integrated,
                                         IntegralMode::CombinePerBin);
@@ -5132,9 +5550,271 @@ int main(int argc, char** argv) {
                 }
             }
             std::cout << Form("  [AEE probe] %d of %d extractions produced; %d profiles missing.",
-                              nDone, int(aeeSpecs.size() * etaSplits.size()), nSkipped) << std::endl;
+                              nDone, int(aeePairs.size() * etaSplits.size()), nSkipped) << std::endl;
             outFile->cd();
         }
+    }
+
+    // =========================================================================================
+    // Step 2.8: AEE probe binned in proxy eta -- extraction per (AEE angle, eta_Proxy) cell
+    // =========================================================================================
+    // WHY. Step 2.75 splits on the two main drivers of the fake signal, but on eta_Proxy only by its
+    // sign. The fake signal grows with |eta_Proxy|, so it still varies within each half, and wherever
+    // the eta_Proxy distribution of the candidates drifts with mass it leaves a mass dependence in
+    // <R>_B(m) that the sideband polynomial has to absorb. Binning eta_Proxy removes that drift from
+    // every cell. Whether it did is measured rather than assumed: compare hRingBkgSlopeSignif here
+    // with the same histogram from Step 2.75.
+    //
+    // HOW. Each eta_Proxy bin of the TProfile3D is projected to an (angle, mass) TProfile2D and handed
+    // to ExtractObservable2D unchanged, so every fit, window and error convention is Step 2.75's by
+    // construction. Only the slicing is new, and it is checked before it is used: summed back
+    // together, the slices must reproduce the profiles Step 2.75 extracts, cell by cell.
+    //
+    // COST. A cell sees about 2/N of the statistics of a sign-split cell, for N eta_Proxy bins.
+    // Slices with no entries at all -- the jet proxies beyond |eta| = 0.5 -- are skipped outright.
+    //
+    // TODO: repeat in t_z = tanh(eta_Proxy). The fake kernel is linear in t_z at fixed Delta-theta,
+    // so uniform t_z bins would give every cell the same control over it.
+    {
+        TDirectory* aeeIn = (TDirectory*)inFile->Get(aeeFolder.c_str());
+        TDirectory* etaOut = nullptr; // Created with the first profile found, so older files leave none
+        int nPairsDone = 0, nPairsMissing = 0, nPairsFailedClosure = 0, nSlicesDone = 0, nSlicesEmpty = 0;
+
+        // In-range entries of an (angle, mass) profile: the candidates ExtractObservable2D can see
+        auto sumEntries = [](TProfile2D* p) {
+            double n = 0.0;
+            if (!p) return n;
+            for (int ix = 1; ix <= p->GetNbinsX(); ++ix)
+                for (int iy = 1; iy <= p->GetNbinsY(); ++iy) n += p->GetBinEntries(p->GetBin(ix, iy));
+            return n;
+        };
+        auto edgesOf = [](const TAxis* a) {
+            std::vector<double> e(a->GetNbins() + 1);
+            for (int i = 0; i <= a->GetNbins(); ++i) e[i] = a->GetBinLowEdge(i + 1);
+            return e;
+        };
+
+        for (const auto& pr : aeePairs) {
+            if (!aeeIn) break;
+            const TString name3D = Form("p3dRingObservable%sVsPhi%sPhiProtonStarVsProxyEtaVsMass",
+                                        pr.proxy, pr.species);
+            TProfile3D* p3In = dynamic_cast<TProfile3D*>(aeeIn->Get(name3D));
+            if (!p3In) { nPairsMissing++; continue; }
+            // Sliced by moving an axis range, so work on a private copy rather than the file's object
+            TProfile3D* p3 = (TProfile3D*)p3In->Clone(Form("%s_work", name3D.Data()));
+            p3->SetDirectory(nullptr);
+
+            if (!etaOut) {
+                std::cout << "\n[Step 2.8] Extracting <R> per (phi_Lambda - phi_p*, eta_Proxy) cell..." << std::endl;
+                etaOut = outFile->mkdir("HelicityEfficiencyQA_PhiLambdaPhiProtonStar_EtaBinned");
+            }
+            TAxis* etaAxis = p3->GetYaxis();
+            const int nEta = etaAxis->GetNbins();
+            TDirectory* pairDir = EnsureDir(etaOut, pr.outName);
+            TDirectory* sumDir = EnsureDir(pairDir, "Summary");
+
+            // --- Closure: the slices must add up to what Step 2.75 extracted -------------------
+            // Against the unsplit profile, over every eta_Proxy bin including the flows: a failure
+            // there means the projection itself is wrong, and nothing built on it can be trusted.
+            // Against the sign-split profiles, which the consumer fills with its own eta >= 0 test:
+            // a failure there means the eta_Proxy axis and that test disagree about where zero is.
+            const std::string base2D = aeeProfile2DName(pr);
+            auto fetch2D = [&](const std::string& splitSuffix) {
+                return dynamic_cast<TProfile2D*>(aeeIn->Get((base2D + splitSuffix).c_str()));
+            };
+            const int firstPos = etaAxis->FindFixBin(0.0); // Low edges are inclusive, so eta = 0 is positive
+            const bool zeroIsEdge = std::fabs(etaAxis->GetBinLowEdge(firstPos)) < 1e-9;
+
+            TProfile2D* sAll = SliceProfile3D(p3, 0, nEta + 1, Form("sliceAll_%s", pr.outName));
+            TProfile2D* sIn = SliceProfile3D(p3, 1, nEta, Form("sliceIn_%s", pr.outName));
+            const ProfileClosure cAll = CompareProfiles2D(sAll, fetch2D(""));
+            const double entriesInEta = sumEntries(sIn);
+            delete sAll;
+            delete sIn;
+            ProfileClosure cNeg, cPos;
+            if (zeroIsEdge) {
+                TProfile2D* sNeg = SliceProfile3D(p3, 0, firstPos - 1, Form("sliceNeg_%s", pr.outName));
+                TProfile2D* sPos = SliceProfile3D(p3, firstPos, nEta + 1, Form("slicePos_%s", pr.outName));
+                cNeg = CompareProfiles2D(sNeg, fetch2D("NegProxyEta"));
+                cPos = CompareProfiles2D(sPos, fetch2D("PosProxyEta"));
+                delete sNeg;
+                delete sPos;
+            }
+            const double outsideEta = cAll.entriesA - entriesInEta;
+
+            // Kept in the file, not only in the log, so a result can always be traced to its check
+            {
+                sumDir->cd();
+                struct Row { const char* label; double v; };
+                const std::vector<Row> rows = {
+                    {"max |#DeltaN|, all #eta", cAll.maxEntryDiff},
+                    {"max |#Delta<R>|, all #eta", cAll.maxMeanDiff},
+                    {"max |#DeltaN|, #eta < 0", cNeg.maxEntryDiff},
+                    {"max |#Delta<R>|, #eta < 0", cNeg.maxMeanDiff},
+                    {"max |#DeltaN|, #eta #geq 0", cPos.maxEntryDiff},
+                    {"max |#Delta<R>|, #eta #geq 0", cPos.maxMeanDiff},
+                    {"entries, all #eta", cAll.entriesA},
+                    {"entries outside the #eta axis", outsideEta}
+                };
+                TH1D* hClosure = new TH1D("hSliceClosure", "Slicing closure against the 2D profiles "
+                                          "(sign rows are zero when #eta = 0 is not a bin edge);;Value",
+                                          int(rows.size()), 0, double(rows.size()));
+                hClosure->SetDirectory(nullptr);
+                for (size_t r = 0; r < rows.size(); ++r) {
+                    hClosure->GetXaxis()->SetBinLabel(int(r) + 1, rows[r].label);
+                    hClosure->SetBinContent(int(r) + 1, rows[r].v);
+                }
+                hClosure->Write();
+                delete hClosure;
+            }
+
+            std::cout << Form("    -> %s: closure against the unsplit profile max|dN| = %g, max|d<R>| = %.1e; "
+                              "%.0f of %.0f entries (%.2f%%) lie outside the eta_Proxy axis and in no slice.",
+                              pr.outName, cAll.maxEntryDiff, cAll.maxMeanDiff, outsideEta, cAll.entriesA,
+                              cAll.entriesA > 0.0 ? 100.0 * outsideEta / cAll.entriesA : 0.0) << std::endl;
+            if (!cAll.passed()) {
+                std::cerr << "       ERROR: " << (cAll.comparable ? "the eta_Proxy slices do not add up to "
+                                                                    "the unsplit profile"
+                                                                  : "no comparable unsplit profile to check against")
+                          << ". This pair is NOT extracted: its cells would rest on an unverified projection."
+                          << std::endl;
+                nPairsFailedClosure++;
+                delete p3;
+                continue;
+            }
+            if (!zeroIsEdge)
+                std::cout << "       eta = 0 is not a bin edge of this axis, so the sign halves cannot be checked." << std::endl;
+            else if (!(cNeg.passed() && cPos.passed()))
+                std::cerr << "       WARNING: the sign halves disagree with PosProxyEta/NegProxyEta (max|dN| "
+                          << cNeg.maxEntryDiff << " / " << cPos.maxEntryDiff << "). The projection is fine, since "
+                          "the total closes; the consumer's eta >= 0 test and this axis disagree about zero."
+                          << std::endl;
+
+            // --- One extraction per eta_Proxy bin -----------------------------------------------
+            std::vector<int> ran; // Slices that actually went through ExtractObservable2D
+            for (int k = 1; k <= nEta; ++k) {
+                const TString sliceName = Form("EtaBin%02d", k - 1);
+                TProfile2D* slice = SliceProfile3D(p3, k, k, Form("p2dAEE_%s_%s", pr.outName, sliceName.Data()));
+                if (!slice) continue;
+                const double nSlice = sumEntries(slice);
+                if (nSlice <= 0.0) { nSlicesEmpty++; delete slice; continue; }
+
+                std::cout << Form("       %s  eta_Proxy in [%+.3f, %+.3f): %.0f entries", sliceName.Data(),
+                                  etaAxis->GetBinLowEdge(k), etaAxis->GetBinUpEdge(k), nSlice) << std::endl;
+                TH2D* counts = CountsFromProfile2D(slice, Form("h2dCountsAEE_%s_%s", pr.outName, sliceName.Data()));
+                // CombinePerBin for the same reason as Step 2.75: <R> changes sign across the angle
+                ExtractObservable2D(counts, slice, pairDir, sliceName, "",
+                                    slice->GetYaxis()->GetXmin(), slice->GetYaxis()->GetXmax(),
+                                    configs.perBin, configs.integrated,
+                                    IntegralMode::CombinePerBin, false);
+                delete counts;
+                delete slice;
+                ran.push_back(k);
+                nSlicesDone++;
+            }
+
+            // --- Summary: the slices side by side ------------------------------------------------
+            // Everything downstream needs is written here once, as histograms on the consumer's own
+            // axes, so nothing later rebuilds an eta_Proxy binning or walks the slice folders.
+            sumDir->cd();
+            const TAxis* angAxis = p3->GetXaxis();
+            const std::vector<double> angEdges = edgesOf(angAxis);
+            const std::vector<double> etaEdges = edgesOf(etaAxis);
+
+            // Per-cell maps over (angle, eta_Proxy). A cell that was not extracted stays empty, which
+            // is indistinguishable from a genuine zero on its own; hMap_CellStatus tells them apart
+            // (0 there means the whole slice was skipped as empty).
+            struct MapSpec { const char* folder; const char* obj; const char* zTitle; };
+            const std::vector<MapSpec> mapSpecs = {
+                {"Results", "hRSig", "<R>_{S}"},
+                {"Results", "hRBkg", "<R>_{B}"},
+                {"Results", "hRMeas", "<R>_{meas}^{binnedInMass}"},
+                {"Results", "hRSigMinusRBkg", "<R>_{S} - <R>_{B}"},
+                {"Results", "hPurity", "Purity"},
+                {"Results", "hSigStat", "S/#sqrt{S+B}"},
+                {"Results", "hSigYield", "Signal yield"},
+                {"Diagnostics", "hCellStatus", "Cell status"},
+                {"Diagnostics", "hRingBkgSlopeSignif", "p_{1}/#sigma_{p_{1}}"},
+                {"Diagnostics", "hRingBkgChi2Ndf", "#chi^{2}/ndf"}
+            };
+            for (const auto& ms : mapSpecs) {
+                TH2D* hMap = new TH2D(Form("hMap_%s", ms.obj + 1), // "hRSig" --> "hMap_RSig"
+                                      Form("%s;%s;%s;%s", ms.zTitle, angAxis->GetTitle(), etaAxis->GetTitle(), ms.zTitle),
+                                      int(angEdges.size()) - 1, angEdges.data(),
+                                      int(etaEdges.size()) - 1, etaEdges.data());
+                hMap->SetDirectory(nullptr);
+                for (int k : ran) {
+                    const TString sliceName = Form("EtaBin%02d", k - 1);
+                    TH1D* h = ReadWritten<TH1D>(pairDir, Form("%s/%s/%s_%s", sliceName.Data(), ms.folder,
+                                                             ms.obj, sliceName.Data()));
+                    if (!h) continue;
+                    for (int ix = 1; ix <= std::min(h->GetNbinsX(), hMap->GetNbinsX()); ++ix) {
+                        hMap->SetBinContent(ix, k, h->GetBinContent(ix));
+                        hMap->SetBinError(ix, k, h->GetBinError(ix));
+                    }
+                    delete h;
+                }
+                hMap->Write();
+                delete hMap;
+            }
+
+            // The angle-combined results as functions of eta_Proxy, on the consumer's axis. These are
+            // what the eta dependence and the recombination closure in the summary macro are built on,
+            // including the yields each row needs as its own weight.
+            // Row order of the two sources, which this and the summary macro are both coupled to:
+            //   hCombinedSummary: 1 <R>_meas^FullMassRange, 2 <R>_meas^PeakWin,AccBins, 3 <R>_S,
+            //                     4 <R>_B, 5 <R>_S - <R>_B
+            //   hCombinedQuality: 1 purity, 2 significance, 3 signal, 4 background, 5 bins used,
+            //                     6 bins total, 7 full-range counts
+            // A row whose error is zero was not valid in that slice and is left empty, except the
+            // two counters, which carry no error by construction.
+            struct RowSpec { const char* src; int bin; const char* name; const char* yTitle; bool needsError; };
+            const std::vector<RowSpec> rowSpecs = {
+                {"hCombinedSummary", 1, "RMeasFullMass",   "<R>_{meas}^{fullMass}",     true},
+                {"hCombinedSummary", 2, "RMeasPeakWindow", "<R>_{meas}^{binnedInMass}", true},
+                {"hCombinedSummary", 3, "RSig",            "<R>_{S}",                   true},
+                {"hCombinedSummary", 4, "RBkg",            "<R>_{B}",                   true},
+                {"hCombinedSummary", 5, "RSigMinusRBkg",   "<R>_{S} - <R>_{B}",         true},
+                {"hCombinedQuality", 1, "Purity",          "Purity",                    true},
+                {"hCombinedQuality", 2, "Significance",    "S/#sqrt{S+B}",              true},
+                {"hCombinedQuality", 3, "SigYield",        "Signal yield",              true},
+                {"hCombinedQuality", 4, "BkgYield",        "Background yield",          true},
+                {"hCombinedQuality", 5, "BinsUsed",        "Angular bins used",         false},
+                {"hCombinedQuality", 7, "FullRangeCounts", "Candidates, full mass range", true}
+            };
+            for (const auto& rs : rowSpecs) {
+                TH1D* hV = new TH1D(Form("hVsEta_%s", rs.name),
+                                    Form("%s, angle-combined;%s;%s", rs.yTitle, etaAxis->GetTitle(), rs.yTitle),
+                                    int(etaEdges.size()) - 1, etaEdges.data());
+                hV->SetDirectory(nullptr);
+                for (int k : ran) {
+                    const TString sliceName = Form("EtaBin%02d", k - 1);
+                    TH1D* h = ReadWritten<TH1D>(pairDir, Form("%s/IntegratedCombined/%s_%s", sliceName.Data(),
+                                                             rs.src, sliceName.Data()));
+                    if (!h) continue;
+                    if (h->GetNbinsX() >= rs.bin && (!rs.needsError || h->GetBinError(rs.bin) > 0.0)) {
+                        hV->SetBinContent(k, h->GetBinContent(rs.bin));
+                        hV->SetBinError(k, h->GetBinError(rs.bin));
+                    }
+                    delete h;
+                }
+                hV->Write();
+                delete hV;
+            }
+
+            delete p3;
+            nPairsDone++;
+        }
+
+        if (etaOut)
+            std::cout << Form("  [AEE x eta_Proxy] %d pairs extracted (%d slices, %d empty slices skipped); "
+                              "%d refused on closure; %d profiles not in this file.",
+                              nPairsDone, nSlicesDone, nSlicesEmpty, nPairsFailedClosure, nPairsMissing)
+                      << std::endl;
+        else
+            std::cout << "\n[Step 2.8] No eta_Proxy-binned AEE profiles in this file; skipped. This is "
+                         "expected for consumer output produced before they were added." << std::endl;
+        outFile->cd();
     }
 
     // =========================================================================================
@@ -5279,7 +5959,7 @@ int main(int argc, char** argv) {
                             p2dRingObservableDeltaPhiVsMass, 
                             outDirVar,       // The parent TDirectory to save everything inside
                             "DeltaPhi",      // This creates a "DeltaPhi" subfolder for organized output
-                            "#Delta#phi",    // Axis title for generated histograms
+                            "",              // Axis title: taken from the profile booked in the consumer
                             massMin, 
                             massMax,
                             configs.perBin, configs.integrated);
@@ -5293,7 +5973,7 @@ int main(int argc, char** argv) {
                             p2dRingObservableDeltaThetaVsMass, 
                             outDirVar,       // The parent TDirectory to save everything inside
                             "DeltaTheta",    // This creates a "DeltaTheta" subfolder for organized output
-                            "#Delta(#theta)",   // Axis title for generated histograms
+                            "",              // Axis title: taken from the profile booked in the consumer
                             massMin, 
                             massMax,
                             configs.perBin, configs.integrated);
@@ -5325,6 +6005,37 @@ int main(int argc, char** argv) {
         }
 
         // -----------------------------------------------------------------------------------------
+        // KappaEff moments, through the same integrated extraction
+        // -----------------------------------------------------------------------------------------
+        // kappa = 3 <u^2>/<w> (README: "KappaEff"), so the signal-region kappa only needs <u^2>_S and
+        // <w>_S, and each is a per-candidate quantity profiled against mass exactly like R. They are
+        // written to KappaEff/<Proxy>_<Num|Den>/ with the usual object names; the ratio is taken by
+        // the summary. For the full ring w == 1 identically, so <w>_S = 1 and there is nothing to
+        // extract (a zero-spread profile would also leave the sideband fit with no errors to weigh).
+        // The ring definition is read from the file name, as everywhere downstream of the consumer.
+        if (inDir->GetDirectory("KappaEff")) {
+            const bool isRingZFile = inputFilePath.find("_useRingZ") != std::string::npos;
+            std::cout << "\n[Integrated] Extracting the KappaEff moments <u^2>_S"
+                      << (isRingZFile ? " and <w>_S" : "") << " per proxy..." << std::endl;
+            struct MomentSpec { const char* tag; const char* symbol; };
+            std::vector<MomentSpec> moments = {{"Num", "u^{2}"}};
+            if (isRingZFile) moments.push_back({"Den", "w"});
+            for (const auto& ps : proxySpecs) {
+                for (const auto& mo : moments) {
+                    const std::string path  = std::string("KappaEff/pKappa") + mo.tag + ps.name + "VsMass";
+                    const std::string name  = std::string(ps.name) + "_" + mo.tag;
+                    const std::string label = std::string(ps.label) + ", <" + mo.symbol + ">";
+                    const IntegratedProxySpec ms = {path.c_str(), name.c_str(), label.c_str()};
+                    TProfile* profMoment = (TProfile*)inDir->Get(path.c_str());
+                    ExtractIntegratedFromProfile(profMoment, hMassFine, outDirVar, ms, configs.integrated,
+                                                 "KappaEff", mo.symbol);
+                }
+            }
+        } else {
+            std::cout << "\n[Integrated] No KappaEff/ in this file (consumer predates it): kappa not extracted." << std::endl;
+        }
+
+        // -----------------------------------------------------------------------------------------
         // Extraction vs the eta of the jet-side proxy
         // -----------------------------------------------------------------------------------------
         // Same engine, different pair of input objects: ExtractObservable2D only ever needed a
@@ -5341,16 +6052,15 @@ int main(int argc, char** argv) {
             TH2D*        counts;
             TProfile2D*  profile;
             const char*  extractionName;
-            const char*  axisTitle;
             const char*  countsPath;  // Only for the "missing input" message
             const char*  profilePath;
         };
         const std::vector<EtaExtractionSpec> etaExtractions = {
-            {h2dCounterEtaLeadJetVsMass, p2dRingObsEtaLeadJetVsMass, "EtaLeadJet", "#eta_{Jet}",
+            {h2dCounterEtaLeadJetVsMass, p2dRingObsEtaLeadJetVsMass, "EtaLeadJet",
              "h2dCounterEtaLeadJetVsMass", "p2dRingObservableEtaLeadJetVsMass"},
-            {h2dCounterEtaLeadPVsMass, p2dRingObsEtaLeadPVsMass, "EtaLeadP", "#eta_{LeadP}",
+            {h2dCounterEtaLeadPVsMass, p2dRingObsEtaLeadPVsMass, "EtaLeadP",
              "h2dCounterLeadPEtaLeadPVsMass", "p2dRingObservableLeadPEtaLeadPVsMass"},
-            {h2dCounterEtaSubJetVsMass, p2dRingObsEtaSubJetVsMass, "EtaSubJet", "#eta_{SubJet}",
+            {h2dCounterEtaSubJetVsMass, p2dRingObsEtaSubJetVsMass, "EtaSubJet",
              "h2dCounter2ndJetEta2ndJetVsMass", "p2dRingObservable2ndJetEta2ndJetVsMass"}
         };
 
@@ -5367,7 +6077,7 @@ int main(int argc, char** argv) {
                                 spec.profile,
                                 outDirVar,
                                 spec.extractionName,
-                                spec.axisTitle,
+                                "",
                                 massMin,
                                 massMax,
                                 configs.perBin, configs.integrated);
@@ -5439,7 +6149,7 @@ int main(int argc, char** argv) {
             TProfile2D* p2dPhi_Lpt = ConvertToProfile2D(h2dCorrErrNumPhi_Lpt, h2dCountsPhi_Lpt, Form("p2dPhi_Lpt_%s", ptStr.Data()));
 
             // Send to helper!
-            ExtractObservable2D(h2dCountsPhi_Lpt, p2dPhi_Lpt, dir3D_LambdaPt, Form("DeltaPhi_%s", ptStr.Data()), "#Delta#phi", massMin, massMax, configs.perBin, configs.integrated,
+            ExtractObservable2D(h2dCountsPhi_Lpt, p2dPhi_Lpt, dir3D_LambdaPt, Form("DeltaPhi_%s", ptStr.Data()), "", massMin, massMax, configs.perBin, configs.integrated,
                             IntegralMode::ProjectThenExtract, false);
             delete p2dPhi_Lpt;          // We own all three now
             delete h2dCountsPhi_Lpt;
@@ -5459,7 +6169,7 @@ int main(int argc, char** argv) {
             TProfile2D* p2dTheta_Lpt = ConvertToProfile2D(h2dNumCorrErrTheta_Lpt, h2dCountsTheta_Lpt, Form("p2dTheta_Lpt_%s", ptStr.Data()));
 
             // Send to helper!
-            ExtractObservable2D(h2dCountsTheta_Lpt, p2dTheta_Lpt, dir3D_LambdaPt, Form("DeltaTheta_%s", ptStr.Data()), "#Delta#theta", massMin, massMax, configs.perBin, configs.integrated,
+            ExtractObservable2D(h2dCountsTheta_Lpt, p2dTheta_Lpt, dir3D_LambdaPt, Form("DeltaTheta_%s", ptStr.Data()), "", massMin, massMax, configs.perBin, configs.integrated,
                             IntegralMode::ProjectThenExtract, false);
             delete p2dTheta_Lpt;
             delete h2dCountsTheta_Lpt;
@@ -5491,7 +6201,7 @@ int main(int argc, char** argv) {
 
             // Convert the TH2D with corrected error bars into a TProfile2D so ExtractObservable2D can keep its TProfile2D signature:
             TProfile2D* p2dPhi_Jpt = ConvertToProfile2D(h2dNumCorrErrPhi_Jpt, h2dCountsPhi_Jpt, Form("p2dPhi_Jpt_%s", ptStr.Data()));
-            ExtractObservable2D(h2dCountsPhi_Jpt, p2dPhi_Jpt, dir3D_LeadJetPt, Form("DeltaPhi_%s", ptStr.Data()), "#Delta#phi", massMin, massMax, configs.perBin, configs.integrated,
+            ExtractObservable2D(h2dCountsPhi_Jpt, p2dPhi_Jpt, dir3D_LeadJetPt, Form("DeltaPhi_%s", ptStr.Data()), "", massMin, massMax, configs.perBin, configs.integrated,
                             IntegralMode::ProjectThenExtract, false);
             delete p2dPhi_Jpt;
             delete h2dCountsPhi_Jpt;
@@ -5508,7 +6218,7 @@ int main(int argc, char** argv) {
 
             // Convert the TH2D with corrected error bars into a TProfile2D so ExtractObservable2D can keep its TProfile2D signature:
             TProfile2D* p2dTheta_Jpt = ConvertToProfile2D(h2dNumCorrErrTheta_Jpt, h2dCountsTheta_Jpt, Form("p2dTheta_Jpt_%s", ptStr.Data()));
-            ExtractObservable2D(h2dCountsTheta_Jpt, p2dTheta_Jpt, dir3D_LeadJetPt, Form("DeltaTheta_%s", ptStr.Data()), "#Delta#theta", massMin, massMax, configs.perBin, configs.integrated,
+            ExtractObservable2D(h2dCountsTheta_Jpt, p2dTheta_Jpt, dir3D_LeadJetPt, Form("DeltaTheta_%s", ptStr.Data()), "", massMin, massMax, configs.perBin, configs.integrated,
                             IntegralMode::ProjectThenExtract, false);
             delete p2dTheta_Jpt;
             delete h2dCountsTheta_Jpt;

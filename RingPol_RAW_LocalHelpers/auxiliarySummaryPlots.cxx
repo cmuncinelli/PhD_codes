@@ -46,6 +46,15 @@
 #include "TString.h"
 #include "TSystem.h"
 #include "TDirectory.h"
+#include "TExec.h"  // Carries a map's palette inside its canvas; gStyle is not serialised
+#include "TColor.h" // TColor::GetColor, for the eta_Proxy slice colours
+#include "TKey.h"       // R_z relabel pass: walking the output file
+#include "TClass.h"
+#include "TGraph.h"
+#include "TText.h"
+#include "TLegendEntry.h"
+#include "TObjString.h"
+#include "THashList.h"
 
 // ---------------------------------------------------------
 // Configuration Data Structures
@@ -87,6 +96,8 @@ struct VariationConfig {
 struct FamilyConfig {
     std::string familyName;                 // e.g., "Lambda"
     std::string dataSuffix;                 // e.g., "JustLambda"
+    double alphaSq;                         // Squared decay constant of the selection (see AlphaSqBoth for the mixture)
+    bool isRingZ = false;                   // An R_z sibling of a full-ring family (see RINGZ_TAG)
 };
 
 /// @brief One 1D TProfile to extract, together with where it lives and how to label it.
@@ -173,6 +184,7 @@ std::string ObservableDisplayName(const ProfileConfig& profConfig) {
 bool SpeciesMatchesFamily(const std::string& speciesTag, const std::string& familyName) {
     if (speciesTag.empty()) return true;
     if (familyName == "BothHyperons") return true; // All three sets say something distinct here
+    // (R_z families pass their base name, see FamilySpecies)
     return speciesTag == familyName;               // "Lambda" / "AntiLambda"
 }
 
@@ -413,6 +425,9 @@ public:
                                       // which at this point is the output file
         return clone;
     }
+
+    /// @brief Records a path as absent without warning: for files whose absence is expected.
+    void MarkAbsent(const std::string& path) { fFiles.emplace(path, nullptr); }
 
     /// @brief Closes and releases every cached file. Safe to call more than once.
     void CloseAll() {
@@ -2189,6 +2204,176 @@ struct SigExtractProxy {
     std::string legendLabel;
 };
 
+/// @brief Colour for one eta_Proxy slice: blue below zero, red above, deeper the further out.
+/// The sign is the hue, so an antisymmetry reads at a glance; |eta| is the depth, so neighbouring
+/// slices stay apart. Used together with an open/filled marker split by sign, which survives a
+/// colour-blind reader and a black-and-white print.
+// int EtaSliceColor(double etaCentre, double etaMax) {
+//     const float t = static_cast<float>(std::min(1.0, std::fabs(etaCentre) / etaMax));
+//     const float light = 0.75f - 0.55f * t; // 0.75 next to zero --> 0.20 at the edge
+//     return (etaCentre < 0.0) ? TColor::GetColor(0.6f * light, 0.8f * light, 1.0f - 0.45f * t)
+//                              : TColor::GetColor(1.0f - 0.45f * t, 0.7f * light, 0.6f * light);
+// }
+// That implementation was kind of buggy and retrieving only grey and black colors -- here goes a more manual version:
+// int EtaSliceColor(double etaCentre, double etaMax)
+// {
+//     const double t = std::min(1.0, std::abs(etaCentre) / etaMax);
+//
+//     // Negative eta: light blue -> dark blue
+//     // Positive eta: light red -> dark red
+//     const double light = 0.78 - 0.48 * t;
+//
+//     const double r = etaCentre < 0.0 ? 0.15 * light : 1.00;
+//     const double g = etaCentre < 0.0 ? 0.45 * light : 0.35 * light;
+//     const double b = etaCentre < 0.0 ? 1.00 : 0.20 * light;
+//
+//     const int color = TColor::GetFreeColorIndex();
+//     new TColor(color, r, g, b);
+//     return color;
+// }
+// Actually, the TCanvas does not consistently store the custom color indices. I will try hardcoding some colors for now:
+int EtaSliceColor(double etaCentre, double etaMax)
+{
+    const double t = std::min(1.0, std::abs(etaCentre) / etaMax);
+
+    // Four shades on each side, from lighter near eta = 0
+    // to darker towards the edge.
+    static const int blue[] = {
+        kAzure + 1,
+        kAzure + 2,
+        kBlue + 1,
+        kBlue + 2
+    };
+
+    static const int red[] = {
+        kOrange + 1,
+        kRed + 1,
+        kRed + 2,
+        kRed + 3
+    };
+
+    const int n = sizeof(blue) / sizeof(blue[0]);
+    int i = std::min(n - 1, static_cast<int>(t * n));
+
+    return (etaCentre < 0.0) ? blue[i] : red[i];
+}
+
+/**
+ * @brief A per-cell map over (AEE angle, eta_Proxy), with the cells that produced no result hatched.
+ *
+ * A cell that was not extracted holds zero, which in a signed quantity paints exactly like a measured
+ * zero. Only the status map tells the two apart, so it is overlaid here rather than left to a separate
+ * canvas. Its code 1 means "extracted", as in signalExtractionRing's CellStatus.
+ *
+ * The palette travels with the canvas in a TExec: gStyle is not serialised, so without it a map would
+ * reopen in whatever palette the reader has active. Signed quantities get a diverging palette on a
+ * range symmetric about zero, so zero is the neutral colour and the sign reads from the hue.
+ */
+void DrawMapCanvas(TH2* hMap, TH2* hStatus, const std::string& canvasName,
+                   const std::string& canvasTitle, TDirectory* outDir,
+                   bool isSigned, bool drawText = false) {
+    if (!hMap || !outDir) return;
+    outDir->cd();
+
+    TH2* h = (TH2*)hMap->Clone((canvasName + "_map").c_str());
+    h->SetDirectory(nullptr);
+    h->SetStats(0);
+    h->GetZaxis()->SetTitleOffset(1.3);
+    if (isSigned) {
+        double aMax = 0.0;
+        for (int ix = 1; ix <= h->GetNbinsX(); ++ix)
+            for (int iy = 1; iy <= h->GetNbinsY(); ++iy)
+                aMax = std::max(aMax, std::fabs(h->GetBinContent(ix, iy)));
+        if (aMax > 0.0) { h->SetMinimum(-aMax); h->SetMaximum(aMax); }
+    }
+
+    TCanvas* c = new TCanvas(canvasName.c_str(), canvasTitle.c_str(), 1000, 650);
+    c->SetLeftMargin(0.11);
+    c->SetRightMargin(0.16);
+    c->SetBottomMargin(0.12);
+
+    const std::string opt = drawText ? "COLZ TEXT" : "COLZ";
+    TExec* palette = new TExec("ex_palette", isSigned ? "gStyle->SetPalette(kLightTemperature);"
+                                                      : "gStyle->SetPalette(kBird);");
+    palette->SetBit(kCanDelete);
+    // Draw, palette, draw again: the TExec only acts on what is painted after it
+    h->Draw(opt.c_str());
+    palette->Draw();
+    h->Draw((opt + " SAME").c_str());
+
+    if (hStatus) {
+        for (int ix = 1; ix <= hStatus->GetNbinsX(); ++ix) {
+            for (int iy = 1; iy <= hStatus->GetNbinsY(); ++iy) {
+                if (std::lround(hStatus->GetBinContent(ix, iy)) == 1) continue;
+                TBox* b = new TBox(hStatus->GetXaxis()->GetBinLowEdge(ix), hStatus->GetYaxis()->GetBinLowEdge(iy),
+                                   hStatus->GetXaxis()->GetBinUpEdge(ix), hStatus->GetYaxis()->GetBinUpEdge(iy));
+                b->SetFillColor(kGray + 1);
+                b->SetFillStyle(3354);
+                b->SetLineWidth(0);
+                b->SetBit(kCanDelete);
+                b->Draw();
+            }
+        }
+    }
+
+    c->Update(); // TCanvas::Write() does not paint
+    c->Write();
+    delete c;    // Before h, which the canvas still lists but does not own
+    delete h;
+    gStyle->SetPalette(kBird); // Leave nothing behind for the next canvas
+}
+
+/**
+ * @brief One integrated number per variation, drawn categorically, in its full and redux subsets.
+ *
+ * Entry 0 is the reference and is kept in every subset. Each subset gets the values and their
+ * Data - Variation differences, the latter in quadrature: every entry is a separate consumer run,
+ * which is the one situation where that is right (the mixed-event wagons reuse the V0 sample, so
+ * they over-cover slightly, as accepted throughout).
+ */
+void DrawCategoricalCrossSystem(const std::vector<std::string>& labels,
+                                const std::vector<VariationConfig>& cfgs,
+                                const std::vector<std::pair<double, double>>& vals,
+                                const std::string& nameStem, const std::string& title,
+                                TDirectory* outDir, const std::string& yTitle) {
+    if (!outDir || labels.size() < 2) return;
+
+    auto emit = [&](std::function<bool(const VariationConfig&)> keep, const std::string& suffix) {
+        std::vector<int> pick;
+        for (size_t i = 0; i < cfgs.size(); ++i)
+            if (i == 0 || keep(cfgs[i])) pick.push_back(static_cast<int>(i));
+        if (pick.size() < 2) return;
+
+        const int n = static_cast<int>(pick.size());
+        std::vector<std::string> lb;
+        std::vector<ProfileBundle> bV, bS;
+        std::vector<TH1*> del;
+        for (int k = 0; k < n; ++k) {
+            const int i = pick[k];
+            lb.push_back(labels[i]);
+            TH1D* hV = MakeCategoricalPoint(Form("%s%s_V_%d", nameStem.c_str(), suffix.c_str(), k),
+                                            k, n, vals[i].first, vals[i].second);
+            bV.push_back({hV, cfgs[i]});
+            del.push_back(hV);
+            if (k == 0) continue;
+            const double dd = vals[0].first - vals[i].first;
+            const double ee = std::sqrt(vals[0].second * vals[0].second + vals[i].second * vals[i].second);
+            TH1D* hS = MakeCategoricalPoint(Form("%s%s_S_%d", nameStem.c_str(), suffix.c_str(), k),
+                                            k, n, dd, ee);
+            bS.push_back({hS, cfgs[i]});
+            del.push_back(hS);
+        }
+        DrawIntegratedCanvas(bV, lb, nameStem + suffix, title, outDir, yTitle, false, false, true);
+        if (!bS.empty())
+            DrawIntegratedCanvas(bS, lb, nameStem + suffix + "_Subtracted", title + ", difference",
+                                 outDir, "#Delta" + yTitle + " (Data - Var)", true, false, true);
+        for (auto p : del) delete p;
+    };
+    // Full and redux from the same call, as everywhere else
+    emit([](const VariationConfig&) { return true; }, "");
+    emit([](const VariationConfig& c) { return c.inRedux; }, "_Redux");
+}
+
 /// @brief A value with its uncertainty, plus whether it was actually found.
 struct SigExtractPoint {
     double value = 0.0;
@@ -2290,12 +2475,14 @@ SigExtractPoint FetchSigExtractPoint(FileCache& cache,
                                      const std::string& cutFolder,
                                      const std::string& proxy,
                                      const std::string& histName,
-                                     bool requireValid = true) {
+                                     bool requireValid = true,
+                                     const std::string& summaryFolder = "IntegratedSummary") {
     SigExtractPoint out;
     if (sigExtractDir.empty()) return out;
 
+    // summaryFolder is "KappaEff" for the moment extractions, whose "proxy" is <Proxy>_<Num|Den>
     const std::string filePath = sigExtractDir + "/signalExtractionRing_" + fileSuffix + ".root";
-    const std::string dirPath = cutFolder + "/IntegratedSummary/" + proxy + "/";
+    const std::string dirPath = cutFolder + "/" + summaryFolder + "/" + proxy + "/";
 
     if (requireValid) {
         TH1D* hStatus = cache.FetchClone<TH1D>(filePath, dirPath + "hExtractionStatus_" + proxy, false);
@@ -2483,6 +2670,418 @@ SigExtractPoint DrawSigExtractSystematics(FileCache& cache,
     return dataPoint;
 }
 
+// ---------------------------------------------------------
+// R_z families (useRingZ consumer outputs). See the README, "The longitudinal ring".
+// ---------------------------------------------------------
+// A useRingZ consumer output carries this tag right after the family suffix, e.g.
+// ConsumerResults_BothHyperons_useRingZ_MixedEventProxies.root. A family whose dataSuffix ends in it
+// therefore resolves every variation, reference and signal-extraction file exactly like its full-ring
+// sibling, which is why R_z enters this macro as extra families and not as a separate code path.
+const std::string RINGZ_TAG = "_useRingZ";
+const std::string RINGZ_FAMILY_TAG = "_RingZ"; // Output folder of an R_z family: <family>_RingZ
+
+// Decay constants, as in the consumer. Only alpha^2 enters here (the exact full-ring inversion).
+constexpr double LambdaWeakDecayConstant = 0.749; // PDG 2025 update, same as DerivedDataConsumer's
+constexpr double AntiLambdaWeakDecayConstant = -0.758; // PDG 2025 update, same as DerivedDataConsumer's
+constexpr double AlphaSqLambda = LambdaWeakDecayConstant * LambdaWeakDecayConstant;
+constexpr double AlphaSqAntiLambda = AntiLambdaWeakDecayConstant * AntiLambdaWeakDecayConstant;
+// BothHyperons mixes the two, and the exact term is per species. The plain mean is within 1.2% of either
+// alpha^2, and the term it multiplies is itself a ~10% correction, so the choice moves P by <~0.2%.
+constexpr double AlphaSqBoth = 0.5 * (AlphaSqLambda + AlphaSqAntiLambda);
+
+/// @brief The hyperon selection of a family, which an R_z family shares with its full-ring sibling.
+std::string FamilySpecies(const FamilyConfig& fam) {
+    return fam.isRingZ ? fam.familyName.substr(0, fam.familyName.size() - RINGZ_FAMILY_TAG.size()) : fam.familyName;
+}
+
+/**
+ * @brief Swaps the full-ring symbol for R_z in one piece of display text.
+ *
+ * The titles here are built from many literals ("<R>", "Integrated <R>_{S}", a bare "R" y title, and
+ * "#Delta" + that title), so R_z files are relabelled in one pass at the end rather than at each of them.
+ * Only whole-token forms are touched: a jet-radius "R = 0.4" is left alone.
+ */
+std::string SwapRingText(std::string t) {
+    auto swapAll = [&t](const std::string& from, const std::string& to) {
+        for (size_t pos = t.find(from); pos != std::string::npos; pos = t.find(from, pos + to.size()))
+            t.replace(pos, from.size(), to);
+    };
+    if (t == "R") return "R_{z}";
+    if (t.rfind("#DeltaR ", 0) == 0) t.replace(0, 8, "#DeltaR_{z} ");
+    swapAll("<R>", "<R_{z}>");
+    swapAll("#it{R}", "#it{R}_{z}");
+    return t;
+}
+
+/// @brief Relabels every text an object carries: titles, axis titles, bin labels, legend and pave lines.
+void RelabelRingObject(TObject* obj) {
+    if (!obj) return;
+    if (auto* pad = dynamic_cast<TPad*>(obj)) { // TCanvas included; recurse into everything drawn on it
+        pad->SetTitle(SwapRingText(pad->GetTitle()).c_str());
+        TIter next(pad->GetListOfPrimitives());
+        while (TObject* prim = next()) RelabelRingObject(prim);
+    } else if (auto* h = dynamic_cast<TH1*>(obj)) {
+        h->SetTitle(SwapRingText(h->GetTitle()).c_str());
+        for (TAxis* ax : {h->GetXaxis(), h->GetYaxis(), h->GetZaxis()}) {
+            ax->SetTitle(SwapRingText(ax->GetTitle()).c_str());
+            if (THashList* labels = ax->GetLabels()) {
+                TIter nextLabel(labels);
+                while (auto* lab = static_cast<TObjString*>(nextLabel())) lab->SetString(SwapRingText(lab->GetString().Data()).c_str());
+            }
+        }
+    } else if (auto* g = dynamic_cast<TGraph*>(obj)) {
+        g->SetTitle(SwapRingText(g->GetTitle()).c_str());
+        if (TH1* frame = g->GetHistogram()) RelabelRingObject(frame);
+    } else if (auto* leg = dynamic_cast<TLegend*>(obj)) {
+        TIter nextEntry(leg->GetListOfPrimitives());
+        while (auto* e = static_cast<TLegendEntry*>(nextEntry())) e->SetLabel(SwapRingText(e->GetLabel()).c_str());
+    } else if (auto* pave = dynamic_cast<TPaveText*>(obj)) {
+        TIter nextLine(pave->GetListOfLines());
+        while (auto* line = dynamic_cast<TText*>(nextLine())) line->SetTitle(SwapRingText(line->GetTitle()).c_str());
+    } else if (auto* txt = dynamic_cast<TText*>(obj)) { // TLatex included
+        txt->SetTitle(SwapRingText(txt->GetTitle()).c_str());
+    }
+}
+
+/**
+ * @brief Relabels every canvas, histogram and graph under a directory, recursively, rewriting each in place.
+ *
+ * Key names are collected first: writing while iterating would add cycles to the very list being walked.
+ */
+void RelabelRingDirectory(TDirectory* dir) {
+    if (!dir) return;
+    std::vector<std::pair<std::string, TClass*>> items;
+    std::map<std::string, bool> seen; // Newest cycle only
+    TIter nextKey(dir->GetListOfKeys());
+    while (auto* key = static_cast<TKey*>(nextKey())) {
+        if (seen[key->GetName()]) continue;
+        seen[key->GetName()] = true;
+        items.push_back({key->GetName(), TClass::GetClass(key->GetClassName())});
+    }
+    for (const auto& item : items) {
+        const std::string& name = item.first;
+        TClass* cls = item.second;
+        if (!cls) continue;
+        if (cls->InheritsFrom(TDirectory::Class())) { RelabelRingDirectory(dir->GetDirectory(name.c_str())); continue; }
+        if (!cls->InheritsFrom(TPad::Class()) && !cls->InheritsFrom(TH1::Class()) && !cls->InheritsFrom(TGraph::Class())) continue;
+        TObject* obj = dir->Get(name.c_str());
+        RelabelRingObject(obj);
+        dir->cd();
+        obj->Write(name.c_str(), TObject::kOverwrite);
+        if (auto* h = dynamic_cast<TH1*>(obj)) h->SetDirectory(nullptr);
+        delete obj;
+    }
+}
+
+/// @brief Sum_i y_i and Sum_i y_i^2 over every candidate of a profile, underflow/overflow bins included.
+struct CandidateMoments {
+    double n = 0., sum = 0., sum2 = 0.;
+    double Mean() const { return n > 0. ? sum / n : 0.; }
+    double Var() const { return n > 0. ? sum2 / n - Mean() * Mean() : 0.; } // Per-candidate variance
+};
+// TODO: revise all the instances of CandidateMoments and check if it is indeed best to have overflow/underflow bins included or not.
+// It seemed like a good idea at the designing stage, but there may be some edge case where this is not the best idea.
+
+/// @brief Rebuilds the candidate moments from the per-cell means and spreads ("s" error option).
+template <typename P>
+CandidateMoments MomentsOfProfile(P* p) {
+    CandidateMoments m;
+    const TString opt = p->GetErrorOption();
+    p->SetErrorOption("s");
+    for (int b = 0; b < p->GetNcells(); ++b) {
+        const double n = p->GetBinEntries(b);
+        if (n <= 0.) continue;
+        const double mean = p->GetBinContent(b), s = p->GetBinError(b);
+        m.n += n;
+        m.sum += n * mean;
+        m.sum2 += n * (s * s + mean * mean);
+    }
+    p->SetErrorOption(opt);
+    return m;
+}
+
+/// @brief A simplified getter that wraps the call for either a TProfile2D or 1D.
+CandidateMoments MomentsOf(TH1* h) {
+    if (auto* p2 = dynamic_cast<TProfile2D*>(h)) return MomentsOfProfile(p2);
+    if (auto* p1 = dynamic_cast<TProfile*>(h)) return MomentsOfProfile(p1);
+    return {};
+}
+
+/**
+ * @brief Candidate moments of one consumer file, for one proxy: the ring and the KappaEff profiles.
+ *
+ * Every profile is mass-binned and filled on exactly the proxy's candidates, and every bin and flow is
+ * summed, so all five share one candidate set. The LeadJet ring comes from pRingObservableMass; the
+ * LeadP and SubJet rings come from their (eta_proxy, mass) maps, because the 1D LeadP and SubJet mass
+ * profiles are filled on the leading-jet sample instead. Nothing here is signal-extracted: these are
+ * all candidates, signal and background mixed.
+ */
+struct RingSample {
+    CandidateMoments ring;    // R (or R_z), with the prefactor
+    CandidateMoments num;     // u^2, u = R / prefactor
+    CandidateMoments den;     // w: 1 (full ring) or n_z^2 (R_z)
+    CandidateMoments numDen;  // u^2 w
+    CandidateMoments ringDen; // R w
+};
+
+bool LoadRingSample(FileCache& cache, const std::string& file, const std::string& cutFolder,
+                    const std::string& proxy, RingSample& s) {
+    static const std::map<std::string, std::string> kRingVsMass = {
+        {"LeadJet", "pRingObservableMass"},
+        {"LeadP",   "pRingObservableLeadPMass"},
+        {"SubJet",  "pRingObservable2ndJetMass"}};
+    if (gSystem->AccessPathName(file.c_str())) return false; // Absent config: quiet, it is the common case
+    const std::string base = TASK_DIR_IN_FILE + cutFolder + "/";
+    const std::string kap  = base + "KappaEff/";
+
+    TH1* h[5] = {cache.FetchClone<TH1>(file, base + kRingVsMass.at(proxy), false),
+                 cache.FetchClone<TH1>(file, kap + "pKappaNum" + proxy + "VsMass", false),
+                 cache.FetchClone<TH1>(file, kap + "pKappaDen" + proxy + "VsMass", false),
+                 cache.FetchClone<TH1>(file, kap + "pKappaNumTimesDen" + proxy + "VsMass", false),
+                 cache.FetchClone<TH1>(file, kap + "pRingTimesDen" + proxy + "VsMass", false)};
+    const bool ok = h[0] && h[1] && h[2] && h[3] && h[4];
+    if (ok) {
+        s.ring = MomentsOf(h[0]); s.num = MomentsOf(h[1]); s.den = MomentsOf(h[2]);
+        s.numDen = MomentsOf(h[3]); s.ringDen = MomentsOf(h[4]);
+    }
+    for (TH1* p : h) delete p;
+    if (!ok || s.ring.n < 2.) return false;
+    if (std::fabs(s.ring.n - s.num.n) > 0.5) {
+        std::cerr << "  [Warning] " << proxy << ": ring and KappaEff candidate counts differ in " << file << std::endl;
+        return false;
+    }
+    return true;
+}
+
+/// @brief <R> of a sample with its standard error.
+std::pair<double, double> MeanOf(const CandidateMoments& m) {
+    return {m.Mean(), std::sqrt(std::max(m.Var(), 0.) / m.n)};
+}
+
+/**
+ * @brief <a>/<b> over one candidate set, with the first-order error that keeps their covariance:
+ *   Var(r) = [ s_a^2 - 2 r C + r^2 s_b^2 ] / (n <b>^2),   r = <a>/<b>,   C = <ab> - <a><b>.
+ * For the full 3D ring, b = 1 (the full ring's "w" factor), and this becomes the plain standard error of <a>.
+ */
+std::pair<double, double> RatioOfMeans(const CandidateMoments& a, const CandidateMoments& b, double meanAB) {
+    const double bm = b.Mean();
+    if (bm <= 0. || a.n < 2.) return {0., -1.};
+    const double r = a.Mean() / bm;
+    const double cov = meanAB - a.Mean() * bm;
+    const double var = (a.Var() - 2. * r * cov + r * r * b.Var()) / (a.n * bm * bm);
+    return {r, std::sqrt(std::max(var, 0.))};
+}
+
+/// @brief kappa = 3 <u^2>/<w>, the same expression for both ring definitions.
+std::pair<double, double> KappaOf(const RingSample& s) {
+    const auto r = RatioOfMeans(s.num, s.den, s.numDen.Mean());
+    return {3. * r.first, 3. * r.second};
+}
+
+// TODO: rethink of this DrawSlotSeries function. The label on the middle one was not a good design.
+// We can just revert to the categorical plot where a bunch of points where spaced with a fraction in the X axis.
+/**
+ * @brief Several series side by side on one categorical axis: each column gets one sub-slot per series,
+ *        and its label goes on the middle one. A value with a negative error is treated as missing.
+ */
+void DrawSlotSeries(const std::vector<std::string>& columnLabels, const std::vector<VariationConfig>& series,
+                    const std::vector<std::vector<std::pair<double, double>>>& vals,
+                    const std::string& canvasName, const std::string& title, TDirectory* dir, const std::string& yTitle) {
+    const int nCols = static_cast<int>(columnLabels.size());
+    const int nSer  = static_cast<int>(series.size());
+    if (!dir || nCols == 0 || nSer == 0) return;
+    const int nBins = nSer * nCols;
+    std::vector<std::string> slotLabels(nBins, "");
+    for (int c = 0; c < nCols; ++c) slotLabels[nSer * c + nSer / 2] = columnLabels[c];
+
+    std::vector<ProfileBundle> bundles;
+    for (int s = 0; s < nSer; ++s) {
+        TH1D* h = new TH1D(Form("%s_series%d", canvasName.c_str(), s), "", nBins, 0, nBins);
+        h->SetDirectory(nullptr);
+        for (int c = 0; c < nCols; ++c) {
+            if (vals[s][c].second < 0.) continue;
+            h->SetBinContent(nSer * c + s + 1, vals[s][c].first);
+            h->SetBinError(nSer * c + s + 1, vals[s][c].second);
+        }
+        bundles.push_back({h, series[s]});
+    }
+    DrawIntegratedCanvas(bundles, slotLabels, canvasName, title, dir, yTitle, false, true, false);
+    for (auto& b : bundles) delete b.profile;
+}
+
+/**
+ * @brief The headline R_z check: <R>, <R_z> and <R_z>/<n_z^2>, per family and proxy, across configs.
+ *
+ * Columns are Data, then every in-wagon variation and consumer-style external reference present in BOTH
+ * ring definitions. If R_z does what it should, <R_z> is ~0 for MixedEv and pp and survives only in data,
+ * while the full ring carries its large fake everywhere. <R_z>/<n_z^2> is the per-candidate ring density,
+ * comparable with <R> once the latter's fake is removed (under ring alignment). RAW values: no signal
+ * extraction and no kappa (for those, see Corrections/). Nothing is written when no R_z file exists.
+ *
+ * @param families Untagged families: the R_z file of each is the same name plus RINGZ_TAG.
+ */
+void DrawRingVsRingZ(FileCache& cache, TDirectory* fileRoot, const std::string& consumerDir,
+                     const std::vector<FamilyConfig>& families, const VariationConfig& dataConfig,
+                     const std::vector<VariationConfig>& sysVariations, const std::vector<ExternalRef>& externals,
+                     const std::string& cutFolder) {
+    const std::vector<std::string> proxies = {"LeadP", "LeadJet", "SubJet"};
+    const std::vector<VariationConfig> series = {
+        {"", "<R> (full ring)",     kGray + 2, 1, 24, false},
+        {"", "<R_{z}>",             kBlue + 1, 1, 20, false},
+        {"", "<R_{z}>/<n_{z}^{2}>", kRed + 1,  1, 21, true}};
+
+    for (const auto& fam : families) {
+        // Every column is a (full-ring file, R_z file) pair; the R_z name is the full one plus the tag
+        struct Column { VariationConfig cfg; std::string base, suffix; };
+        std::vector<Column> columns = {{dataConfig, consumerDir, ""}};
+        for (const auto& sys : sysVariations) columns.push_back({sys, consumerDir, sys.suffix});
+        for (const auto& ext : externals)
+            if (!ext.basePath.empty() && ext.kind == ExternalRef::kConsumerDir) columns.push_back({ext.config, ext.basePath, ""});
+
+        TDirectory* famDir = nullptr;
+        for (const auto& proxy : proxies) {
+            std::vector<std::string> labels;
+            std::vector<VariationConfig> cfgs;
+            std::vector<std::vector<std::pair<double, double>>> vals(3);
+            for (const auto& col : columns) {
+                RingSample full, z;
+                const std::string stem = col.base + "/ConsumerResults_" + fam.dataSuffix;
+                if (!LoadRingSample(cache, stem + col.suffix + ".root", cutFolder, proxy, full)) continue;
+                if (!LoadRingSample(cache, stem + RINGZ_TAG + col.suffix + ".root", cutFolder, proxy, z)) continue;
+                const auto pFull = MeanOf(full.ring), pZ = MeanOf(z.ring);
+                const auto pZW = RatioOfMeans(z.ring, z.den, z.ringDen.Mean());
+                labels.push_back(col.cfg.legendLabel);
+                cfgs.push_back(col.cfg);
+                vals[0].push_back(pFull); vals[1].push_back(pZ); vals[2].push_back(pZW);
+                printf("    [RingVsRingZ %s, %s, %s] <R> = %+.3e +/- %.1e   <R_z> = %+.3e +/- %.1e   <R_z>/<n_z^2> = %+.3e +/- %.1e\n",
+                       fam.familyName.c_str(), proxy.c_str(), col.cfg.legendLabel.c_str(), pFull.first, pFull.second,
+                       pZ.first, pZ.second, pZW.first, pZW.second);
+            }
+            if (cfgs.empty() || !cfgs.front().isData) continue; // Differences need Data as the first column
+            if (!famDir) famDir = EnsureDir(EnsureDir(fileRoot, "RingVsRingZ"), fam.familyName);
+
+            DrawSlotSeries(labels, series, vals, "Canvas_RingVsRingZ_" + proxy,
+                           fam.familyName + ", " + proxy + ": full ring vs R_{z} (raw, all candidates)", famDir, "integrated value");
+            DrawCategoricalCrossSystem(labels, cfgs, vals[2], "Canvas_RzOverNz2_" + proxy,
+                                       fam.familyName + ", " + proxy + ": <R_{z}>/<n_{z}^{2}> (raw)", famDir,
+                                       "<R_{z}>/<n_{z}^{2}>");
+        }
+    }
+}
+
+/**
+ * @brief Corrections: the fake subtracted and the response divided out, with or without signal extraction.
+ *
+ * Both ring definitions are reduced to the same quantity, the ring density P_R (under ring alignment):
+ *   full ring  P = (R_d - R_f) / (kappa_eff - (alpha^2/3) R_d R_f)    exact inversion (eq:finalcorrection)
+ *   R_z        P = (R_z,d - R_z,f) / (3 <u^2>) = R_z,true / <n_z^2>   linear: R_z's own fake is small
+ * with d the data sample, f its mixed-event partner, and kappa and <u^2> measured on the data sample. For
+ * the full ring kappa_eff = 3 <u^2>, so both are the one expression P = (R_d - R_f) / (3 <u^2> - k R_d R_f),
+ * with k = alpha^2/3 for the full ring (FamilyConfig::alphaSq) and k = 0 for R_z.
+ *
+ * Errors are first order, with the full derivative. The data and fake rings are separate consumer runs,
+ * added in quadrature, although the mixed events reuse the data's Lambdas (the accepted over-coverage).
+ * The error of 3<u^2> is propagated; its covariance with R_d is not -- there is no <R u^2> profile. That is
+ * safe: every term in it carries dP/dD = -P/D, so the dropped term is at most ~2 P sigma_D/sigma_R ~ 10^-3
+ * of the leading one.
+ */
+
+/// @brief One sample's inputs: <R>, 3<u^2> and kappa, each with its error.
+struct CorrectionInputs { std::pair<double, double> ring, u2x3, kappa; };
+
+/// @brief A data sample and its fake estimate, and where their consumer and signal-extraction files live.
+struct FakePairing { std::string consumerBase, sigBase, dataSuffix, fakeSuffix, dataLabel, pairLabel; };
+
+/// @brief Fills the inputs of one sample (file suffix includes family and variation); false if unavailable.
+using CorrectionFetcher = std::function<bool(const FakePairing&, const std::string&, const std::string&, CorrectionInputs&)>;
+
+/// @brief P = (R_d - R_f) / (D0 - k R_d R_f), with its first-order error.
+std::pair<double, double> CorrectRing(const std::pair<double, double>& rd, const std::pair<double, double>& rf,
+                                      const std::pair<double, double>& d0, double k) {
+    const double den = d0.first - k * rd.first * rf.first;
+    if (!(den > 0.)) return {0., -1.};
+    const double p   = (rd.first - rf.first) / den;
+    const double dRd = 1. / den + p * k * rf.first / den;  // dP/dR_d
+    const double dRf = -1. / den + p * k * rd.first / den; // dP/dR_f
+    const double dD0 = -p / den;                           // dP/dD0
+    return {p, std::sqrt(dRd * dRd * rd.second * rd.second + dRf * dRf * rf.second * rf.second +
+                         dD0 * dD0 * d0.second * d0.second)};
+}
+
+/// @brief Data / fake pairs: the in-wagon two, then each consumer-style reference against its own mixed events.
+/// @note A reference's signal extraction is looked for where the pipeline puts it: <base>/../results_SigExtract.
+std::vector<FakePairing> MakeFakePairings(const std::string& consumerDir, const std::string& sigExtractDir,
+                                          const std::vector<ExternalRef>& externals) {
+    std::vector<FakePairing> pairings = {
+        {consumerDir, sigExtractDir, "", "_MixedEventProxies", "Data", "Data - MixedEv"},
+        {consumerDir, sigExtractDir, "_analysisCuts", "_MixedEventProxies_analysisCuts", "Data (AN-Cuts)", "AN-Cuts: Data - MixedEv"}};
+    for (const auto& ext : externals)
+        if (!ext.basePath.empty() && ext.kind == ExternalRef::kConsumerDir)
+            pairings.push_back({ext.basePath, ext.basePath + "/../results_SigExtract", "", "_MixedEventProxies",
+                                ext.config.legendLabel, ext.config.legendLabel + " - MixedEv"});
+    return pairings;
+}
+
+/**
+ * @brief Writes Corrections/<folder>/<Family>/: the kappa of every data-like sample and the corrected P per pair.
+ *
+ * The same code serves the raw and the signal-extracted inputs; only the fetcher differs. The full ring is
+ * drawn wherever its inputs exist, and R_z joins it wherever the R_z files do.
+ *
+ * @param families Full-ring families: the R_z sample of each is the same suffix plus RINGZ_TAG.
+ */
+void DrawCorrections(TDirectory* fileRoot, const std::vector<FamilyConfig>& families,
+                     const std::vector<FakePairing>& pairings, const std::string& folder,
+                     const std::string& tag, const CorrectionFetcher& fetch) {
+    const std::vector<std::string> proxies = {"LeadP", "LeadJet", "SubJet"};
+    const std::vector<VariationConfig> kappaSeries = {
+        {"", "#kappa_{eff} (full ring)", kGray + 2, 1, 24, false},
+        {"", "#kappa_{z}",               kBlue + 1, 1, 20, true}};
+    const std::vector<VariationConfig> corrSeries = {
+        {"", "full ring, exact inversion", kGray + 2, 1, 24, false},
+        {"", "R_{z}, linear",              kRed + 1,  1, 21, true}};
+    const std::pair<double, double> kMissing = {0., -1.};
+
+    for (const auto& fam : families) {
+        TDirectory* famDir = nullptr;
+        for (const auto& proxy : proxies) {
+            std::vector<std::string> kLabels, cLabels;
+            std::vector<std::vector<std::pair<double, double>>> kVals(2), cVals(2);
+
+            for (const auto& pr : pairings) {
+                CorrectionInputs dF, fF, dZ, fZ;
+                const bool hasDF = fetch(pr, fam.dataSuffix + pr.dataSuffix, proxy, dF);
+                const bool hasFF = fetch(pr, fam.dataSuffix + pr.fakeSuffix, proxy, fF);
+                const bool hasDZ = fetch(pr, fam.dataSuffix + RINGZ_TAG + pr.dataSuffix, proxy, dZ);
+                const bool hasFZ = fetch(pr, fam.dataSuffix + RINGZ_TAG + pr.fakeSuffix, proxy, fZ);
+                if (!hasDF && !hasDZ) continue;
+
+                kLabels.push_back(pr.dataLabel);
+                kVals[0].push_back(hasDF ? dF.kappa : kMissing);
+                kVals[1].push_back(hasDZ ? dZ.kappa : kMissing);
+
+                const auto pF = (hasDF && hasFF) ? CorrectRing(dF.ring, fF.ring, dF.u2x3, fam.alphaSq / 3.) : kMissing;
+                const auto pZ = (hasDZ && hasFZ) ? CorrectRing(dZ.ring, fZ.ring, dZ.u2x3, 0.) : kMissing;
+                if (pF.second >= 0. || pZ.second >= 0.) {
+                    cLabels.push_back(pr.pairLabel);
+                    cVals[0].push_back(pF);
+                    cVals[1].push_back(pZ);
+                }
+                printf("    [Corrections/%s %s, %s, %s] kappa_eff = %.4f  kappa_z = %.4f   P = %+.3e +/- %.1e   P_z = %+.3e +/- %.1e\n",
+                       folder.c_str(), fam.familyName.c_str(), proxy.c_str(), pr.pairLabel.c_str(),
+                       hasDF ? dF.kappa.first : 0., hasDZ ? dZ.kappa.first : 0., pF.first, pF.second, pZ.first, pZ.second);
+            }
+            if (kLabels.empty()) continue;
+            if (!famDir) famDir = EnsureDir(EnsureDir(EnsureDir(fileRoot, "Corrections"), folder), fam.familyName);
+            DrawSlotSeries(kLabels, kappaSeries, kVals, "Canvas_Kappa_" + proxy,
+                           fam.familyName + ", " + proxy + ": #kappa of the data sample (" + tag + ")", famDir, "#kappa");
+            if (!cLabels.empty())
+                DrawSlotSeries(cLabels, corrSeries, cVals, "Canvas_Corrected_" + proxy,
+                               fam.familyName + ", " + proxy + ": fake-subtracted ring density (" + tag + ")", famDir, "P_{R}");
+        }
+    }
+}
+
 void auxiliarySummaryPlots(const std::string& consumerDir,
                            const std::string& mcRefDir = "",
                            const std::string& ppRefDir = "",
@@ -2545,7 +3144,8 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
 
     // External reference datasets, in the order they should appear on the categorical axes.
     // An empty basePath simply drops that reference from every plot, with no index bookkeeping needed.
-    std::vector<ExternalRef> externals = {
+    // Each family reads them through its own list (see externalsNoToy), so they are "All" here.
+    std::vector<ExternalRef> externalsAll = {
         {mcConfig,  mcRefDir,      ExternalRef::kConsumerDir},
         {ppConfig,  ppRefDir,      ExternalRef::kConsumerDir},
         {toyConfig, toyModelPath,  ExternalRef::kToyModel}
@@ -2563,11 +3163,22 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
 
     // 2. Define the Families
     std::vector<FamilyConfig> families = {
-        {"Lambda",       "JustLambda"},
-        {"AntiLambda",   "JustAntiLambda"},
-        {"BothHyperons", "BothHyperons"} // BothHyperons_2GeVLeadP was already the standard LeadP pT, so I modified this to follow the usual
-                                         // naming scheme that was in place for other variations of BothHyperons configurables of the consumer
+        {"Lambda",       "JustLambda",     AlphaSqLambda},
+        {"AntiLambda",   "JustAntiLambda", AlphaSqAntiLambda},
+        {"BothHyperons", "BothHyperons",   AlphaSqBoth} // BothHyperons_2GeVLeadP was already the standard LeadP pT, so I modified this to follow the usual
+                                                        // naming scheme that was in place for other variations of BothHyperons configurables of the consumer
     };
+
+    // R_z families (README, "The longitudinal ring"). The consumer configs carry RINGZ_TAG right after the
+    // family, so an R_z output is just another family whose suffix ends in the tag: every variation, reference
+    // and signal-extraction file then resolves exactly as for its full-ring sibling. Added only where the R_z
+    // data file exists; fullFamilies keeps the originals for the blocks that pair the two definitions.
+    const std::vector<FamilyConfig> fullFamilies = families;
+    for (const auto& fam : fullFamilies) {
+        FamilyConfig z{fam.familyName + RINGZ_FAMILY_TAG, fam.dataSuffix + RINGZ_TAG, fam.alphaSq, true};
+        if (!gSystem->AccessPathName((consumerDir + "/ConsumerResults_" + z.dataSuffix + ".root").c_str()))
+            families.push_back(z);
+    }
 
     // 3. Define the Observable Groups
     // Split by what the x-axis actually is: the proxy's own eta, or the hyperon's eta.
@@ -2744,6 +3355,21 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
     // One cache for the whole run: every consumer/MC/pp/toy file is opened at most once
     FileCache cache;
 
+    // Only a subset of the variations is run in R_z. Their absence is expected, so it is recorded once
+    // here, quietly, instead of warned about per observable.
+    for (const auto& fam : families) {
+        if (!fam.isRingZ) continue;
+        std::string absent;
+        for (const auto* vars : {&sysVariations, &massVariations})
+            for (const auto& v : *vars) {
+                const std::string f = consumerDir + "/ConsumerResults_" + fam.dataSuffix + v.suffix + ".root";
+                if (!gSystem->AccessPathName(f.c_str())) continue;
+                cache.MarkAbsent(f);
+                absent += (absent.empty() ? "" : ", ") + v.suffix;
+            }
+        if (!absent.empty()) std::cout << " " << fam.familyName << ": variations not run: " << absent << "\n";
+    }
+
     std::cout << "========================================================\n";
     std::cout << " Generating Auxiliary Plots\n";
     std::cout << " Output:     " << outFilePath << "\n";
@@ -2794,9 +3420,16 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
     std::vector<std::vector<std::string>> crossFamilyLabels(proxyRepresentatives.size());
 
     // 5. Main Processing Loops
+    // The Toy Model predicts the full ring only, so R_z families see the references without it
+    std::vector<ExternalRef> externalsNoToy = externalsAll;
+    for (auto& ext : externalsNoToy)
+        if (ext.kind == ExternalRef::kToyModel) ext.basePath.clear(); // Kept in place: grand-summary rows stay aligned
+
     for (size_t famIdx = 0; famIdx < families.size(); ++famIdx) {
         const auto& fam = families[famIdx];
         std::cout << " -> Processing Family: " << fam.familyName << std::endl;
+        // This family's references: everything below reads them through this one name, so it needs no R_z branch
+        const std::vector<ExternalRef>& externals = fam.isRingZ ? externalsNoToy : externalsAll;
 
         // Directories are created lazily (only once something is actually written into them),
         // so a consumer file that does not enable the requested cut folder leaves no empty folders.
@@ -3256,7 +3889,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 // Species-specific observables only appear on the family they describe. See
                 // SpeciesMatchesFamily: a per-species profile read from a single-species file is
                 // either empty or a duplicate of that species' own curve.
-                if (!SpeciesMatchesFamily(profConfig.speciesTag, fam.familyName)) continue;
+                if (!SpeciesMatchesFamily(profConfig.speciesTag, FamilySpecies(fam))) continue;
 
 
                 const std::string profilePath = BuildProfilePath(profConfig, cutFolder);
@@ -3284,11 +3917,16 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 std::vector<TProfile*> profilesToDelete; // Track for memory cleanup
                 profilesToDelete.push_back(pData);
 
-                for (const auto& sys : sysVariations) {
+                // Only the variations present are kept, so allSystematics is NOT aligned with sysVariations.
+                // sysIndexOf[k - 1] records which variation allSystematics[k] came from.
+                std::vector<size_t> sysIndexOf;
+                for (size_t iSys = 0; iSys < sysVariations.size(); ++iSys) {
+                    const auto& sys = sysVariations[iSys];
                     std::string sysFile = consumerDir + "/ConsumerResults_" + fam.dataSuffix + sys.suffix + ".root";
                     TProfile* pSys = cache.FetchClone<TProfile>(sysFile, profilePath);
                     if (pSys) {
                         allSystematics.push_back({pSys, sys});
+                        sysIndexOf.push_back(iSys);
                         profilesToDelete.push_back(pSys);
                     }
                 }
@@ -3323,11 +3961,14 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 std::vector<ProfileBundle> allMassSystematics;
                 allMassSystematics.push_back({pData, dataConfig}); // Keep data as baseline
                 
-                for (const auto& mass : massVariations) {
+                std::vector<size_t> massIndexOf; // Same as sysIndexOf: allMassSystematics[k] <-- massVariations[massIndexOf[k - 1]]
+                for (size_t iMass = 0; iMass < massVariations.size(); ++iMass) {
+                    const auto& mass = massVariations[iMass];
                     std::string massFile = consumerDir + "/ConsumerResults_" + fam.dataSuffix + mass.suffix + ".root";
                     TProfile* pMass = cache.FetchClone<TProfile>(massFile, profilePath);
                     if (pMass) {
                         allMassSystematics.push_back({pMass, mass});
+                        massIndexOf.push_back(iMass);
                         profilesToDelete.push_back(pMass); // Track for standard cleanup
                     }
                 }
@@ -3596,21 +4237,16 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     grandDataVals.push_back(dataInteg);
                     grandLabels.push_back(ObservableDisplayName(profConfig));
 
-                    // (allSystematics[0] is the data, so sysVariations[i] corresponds to allSystematics[i+1])
-                    for (size_t i = 0; i < sysVariations.size(); ++i) {
-                        if (i + 1 < allSystematics.size()) {
-                            auto sysInteg = GetIntegratedProfile(dynamic_cast<TProfile*>(allSystematics[i+1].profile));
-                            grandSysVals[i].push_back(sysInteg);
-                        }
-                    }
+                    // Each value goes to its OWN variation's row (sysIndexOf), never by position: allSystematics
+                    // skips absent variations, and a positional match hands their rows to whoever comes next.
+                    // An absent variation's row then stays short and makeSeries drops it, as it should.
+                    for (size_t k = 1; k < allSystematics.size(); ++k)
+                        grandSysVals[sysIndexOf[k - 1]].push_back(GetIntegratedProfile(dynamic_cast<TProfile*>(allSystematics[k].profile)));
                     for (const auto& ext : presentExternals) {
                         grandExtVals[ext.first].push_back(GetIntegratedProfile(dynamic_cast<TProfile*>(ext.second.profile)));
                     }
-                    for (size_t i = 0; i < massVariations.size(); ++i) {
-                        if (i + 1 < allMassSystematics.size()) {
-                            grandMassVals[i].push_back(GetIntegratedProfile(dynamic_cast<TProfile*>(allMassSystematics[i+1].profile)));
-                        }
-                    }
+                    for (size_t k = 1; k < allMassSystematics.size(); ++k) // By index, as above
+                        grandMassVals[massIndexOf[k - 1]].push_back(GetIntegratedProfile(dynamic_cast<TProfile*>(allMassSystematics[k].profile)));
                 }
 
                 // NOTE: the per-observable IntegratedSummary block used to live here. It re-integrated
@@ -4046,22 +4682,29 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         }
 
         // -----------------------------------------------------------------------------------
-        // Signal extraction of the AEE angle: differential and angle-combined
+        // Signal extraction of the AEE angle: differential, angle-combined, and cross-system
         // -----------------------------------------------------------------------------------
         // These live at the TOP LEVEL of the extraction file, NOT under a cut folder, because the
         // consumer books the source profiles with a bare path rather than (folder + "/..."). That is
         // the reason nothing here uses cutFolder, and the reason a path built like the per-proxy
         // IntegratedSummary ones would find nothing.
         //
+        // The layout is proxy-major then split-major: everything about one (proxy, species) pair is
+        // under a single folder, so a question about the leading jet in Lambda never means opening
+        // three sibling folders in turn. The eta split rides in the canvas NAME instead, which puts
+        // its three variants side by side in one listing -- which is how they are actually read.
+        //
         // hRSigMinusRBkg is read, never recomputed: <R>_S and <R>_B share the sideband primitives
-        // and quadrature UNDERSTATES their difference by roughly a fifth.
+        // and quadrature UNDERSTATES their difference by roughly a fifth. The same correlation is
+        // why the decomposition canvases below carry no lower pad.
         if (!sigExtractDir.empty()) {
             const std::string sigFile = sigExtractDir + "/signalExtractionRing_" + fam.dataSuffix + ".root";
             const std::string aeeRoot = "HelicityEfficiencyQA_PhiLambdaPhiProtonStar/";
+            const std::string aeeConsumerRoot = "HelicityEfficiencyQA/PhiLambdaPhiProtonStar/";
 
-            // The extraction now writes three eta-split variants, each filled identically. Mirrored
-            // here one-for-one, so a folder in the summary output maps to a folder in the extraction
-            // output with no translation.
+            // The extraction writes three eta-split variants, each filled identically. Mirrored here
+            // one-for-one, so a name in the summary output maps to a folder in the extraction output
+            // with no translation.
             struct EtaSplitView { const char* dir; const char* label; int color; int marker; };
             const std::vector<EtaSplitView> etaSplits = {
                 {"NoEtaSplit",  "all #eta_{proxy}", kBlack,    20},
@@ -4070,32 +4713,112 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             };
             TDirectory* aeeSigDir = nullptr;
 
-            struct AeeSpec { std::string name, label, species; };
+            // measObj is the consumer's <R> vs AEE angle vs proxy-eta-sign profile. It has no mass
+            // axis at all, so it is the one measured curve that cannot lose candidates to a mass
+            // underflow/overflow bin, and it shares axisDeltaPhiCoarse with everything the extraction produced.
+            // Safer if we want to look at the full, uncut, observable!
+            struct AeeSpec { std::string name, label, species, measObj; };
             const std::vector<AeeSpec> aeeSpecs = {
-                {"LeadJet_LambdaLike", "Leading jet, #Lambda-like", "LambdaLike"},
-                {"LeadP_LambdaLike",   "Leading particle, #Lambda-like", "LambdaLike"},
-                {"SubJet_LambdaLike",  "Subleading jet, #Lambda-like", "LambdaLike"},
-                {"LeadJet_Lambda",     "Leading jet, #Lambda", "Lambda"},
-                {"LeadP_Lambda",       "Leading particle, #Lambda", "Lambda"},
-                {"SubJet_Lambda",      "Subleading jet, #Lambda", "Lambda"},
-                {"LeadJet_AntiLambda", "Leading jet, #bar{#Lambda}", "AntiLambda"},
-                {"LeadP_AntiLambda",   "Leading particle, #bar{#Lambda}", "AntiLambda"},
-                {"SubJet_AntiLambda",  "Subleading jet, #bar{#Lambda}", "AntiLambda"}
+                {"LeadJet_LambdaLike", "Leading jet, #Lambda-like", "LambdaLike",
+                 "p2dRingObservableLeadJetVsPhiLambdaLikePhiProtonStarVsProxyEtaSign"},
+                {"LeadP_LambdaLike", "Leading particle, #Lambda-like", "LambdaLike",
+                 "p2dRingObservableLeadPVsPhiLambdaLikePhiProtonStarVsProxyEtaSign"},
+                {"SubJet_LambdaLike", "Subleading jet, #Lambda-like", "LambdaLike",
+                 "p2dRingObservable2ndJetVsPhiLambdaLikePhiProtonStarVsProxyEtaSign"},
+                {"LeadJet_Lambda", "Leading jet, #Lambda", "Lambda",
+                 "p2dRingObservableLeadJetVsPhiLambdaPhiProtonStarVsProxyEtaSign"},
+                {"LeadP_Lambda", "Leading particle, #Lambda", "Lambda",
+                 "p2dRingObservableLeadPVsPhiLambdaPhiProtonStarVsProxyEtaSign"},
+                {"SubJet_Lambda", "Subleading jet, #Lambda", "Lambda",
+                 "p2dRingObservable2ndJetVsPhiLambdaPhiProtonStarVsProxyEtaSign"},
+                {"LeadJet_AntiLambda", "Leading jet, #bar{#Lambda}", "AntiLambda",
+                 "p2dRingObservableLeadJetVsPhiAntiLambdaPhiProtonStarVsProxyEtaSign"},
+                {"LeadP_AntiLambda", "Leading particle, #bar{#Lambda}", "AntiLambda",
+                 "p2dRingObservableLeadPVsPhiAntiLambdaPhiProtonStarVsProxyEtaSign"},
+                {"SubJet_AntiLambda", "Subleading jet, #bar{#Lambda}", "AntiLambda",
+                 "p2dRingObservable2ndJetVsPhiAntiLambdaPhiProtonStarVsProxyEtaSign"}
+            };
+
+            // Axis titles are not written here as part of a DRY philosophy.
+            // The consumer's booking string is the only place this axis should be named, minimizing the maintenance surface for me later on.
+            // The extraction code repeats it onto everything it produces, so the first object that carries one "wins" and nothing in this macro can drift from the consumer.
+            auto axisTitleOf = [](const std::vector<TH1*>& candidates) {
+                for (TH1* h : candidates) {
+                    if (!h || !h->GetXaxis()) continue;
+                    const TString t = h->GetXaxis()->GetTitle();
+                    if (t.Length() > 0) return std::string(t.Data());
+                }
+                return std::string("");
+            };
+
+            // The measured <R> over the FULL mass range, split by proxy eta, straight from the consumer and untouched by the extraction:
+            // The Y axis is the proxy eta SIGN, two bins filled at -0.5 and +0.5 they are addressed by VALUE rather than by index so the
+            // convention stays where the fill put it and a later reordering of that axis cannot silently swap the halves.
+            auto measuredFullRange = [&](const std::string& consumerFile, const std::string& obj,
+                                         const std::string& splitDir, const std::string& uniq) -> TH1D* {
+                TProfile2D* p2 = cache.FetchClone<TProfile2D>(consumerFile, aeeConsumerRoot + obj, false);
+                if (!p2) return nullptr;
+                const int bNeg = p2->GetYaxis()->FindBin(-0.5);
+                const int bPos = p2->GetYaxis()->FindBin(+0.5);
+                int lo = std::min(bNeg, bPos), hi = std::max(bNeg, bPos);
+                if (splitDir == "EtaProxyPos") { lo = bPos; hi = bPos; }
+                else if (splitDir == "EtaProxyNeg") { lo = bNeg; hi = bNeg; }
+
+                TH1D* h = nullptr;
+                TProfile* pr = p2->ProfileX((uniq + "_prof").c_str(), lo, hi);
+                if (pr) {
+                    // ProjectionX of a TProfile carries the mean in the content and the error OF THE
+                    // MEAN in the error, which is what every other <R> curve on these canvases is.
+                    h = pr->ProjectionX(uniq.c_str(), "e");
+                    if (h) {
+                        h->SetDirectory(nullptr);
+                        h->GetXaxis()->SetTitle(p2->GetXaxis()->GetTitle());
+                    }
+                    delete pr;
+                }
+                delete p2;
+                return h;
             };
 
             for (const auto& spec : aeeSpecs) {
                 if (!SpeciesMatchesFamily(spec.species, fam.familyName)) continue;
 
+                // One folder per (proxy, species):
+                // (created lazily, on the first split that has anything in it, so a family that never produced this spec leaves no empty folder)
+                TDirectory* specDir = nullptr;   // <Proxy_Species>/
+                TDirectory* angleDir = nullptr;  // <Proxy_Species>/AEEangle/
+                TDirectory* combDir = nullptr;   // <Proxy_Species>/Combined/
+                TDirectory* combQaDir = nullptr; // <Proxy_Species>/Combined/QA/
+                TDirectory* xAngDir = nullptr;   // <Proxy_Species>/AEEangle/CrossSystem_Angular/
+                TDirectory* xCatDir = nullptr;   // <Proxy_Species>/Combined/CrossSystem_Categorical/
+
+                auto ensureSpecDirs = [&]() {
+                    if (specDir) return;
+                    if (!aeeSigDir)
+                        aeeSigDir = EnsureDir(EnsureDir(fOut, fam.familyName), "AEE_SignalExtracted");
+                    specDir = EnsureDir(aeeSigDir, spec.name);
+                    angleDir = EnsureDir(specDir, "AEEangle");
+                    combDir = EnsureDir(specDir, "Combined");
+                    combQaDir = EnsureDir(combDir, "QA");
+                };
+
               for (const auto& esp : etaSplits) {
-                const std::string base = aeeRoot + esp.dir + "/" + spec.name + "/";
+                const std::string split = esp.dir;
+                const std::string base = aeeRoot + split + "/" + spec.name + "/";
                 TH1D* hSig = cache.FetchClone<TH1D>(sigFile, base + "Results/hRSig_" + spec.name, false);
                 TH1D* hBkg = cache.FetchClone<TH1D>(sigFile, base + "Results/hRBkg_" + spec.name, false);
+                TH1D* hMeas = cache.FetchClone<TH1D>(sigFile, base + "Results/hRMeas_" + spec.name, false);
                 TH1D* hDiff = cache.FetchClone<TH1D>(sigFile, base + "Results/hRSigMinusRBkg_" + spec.name, false);
-                if (!hSig || !hBkg) { delete hSig; delete hBkg; delete hDiff; continue; }
+                if (!hSig || !hBkg) { delete hSig; delete hBkg; delete hMeas; delete hDiff; continue; }
 
-                if (!aeeSigDir) aeeSigDir = EnsureDir(EnsureDir(fOut, fam.familyName), "AEE_SignalExtracted");
-                TDirectory* d = EnsureDir(EnsureDir(aeeSigDir, esp.dir), spec.name);
+                TH1D* hMeasFull = measuredFullRange(
+                    consumerDir + "/ConsumerResults_" + fam.dataSuffix + ".root", spec.measObj, split,
+                    "measFull_" + fam.familyName + "_" + spec.name + "_" + split);
 
+                ensureSpecDirs();
+
+                // Colour carries the QUANTITY on these canvases, because the wagon is fixed. On the
+                // cross-system canvases further down it is the other way round.
                 VariationConfig cS;
                 cS.legendLabel = "<R>_{S}";
                 cS.color = kRed + 1;
@@ -4108,14 +4831,53 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 cB.lineStyle = 1;
                 cB.markerStyle = 21;
                 cB.isData = false;
+                VariationConfig cM;
+                cM.color = kBlack;
+                cM.lineStyle = 1;
+                cM.markerStyle = 24;
+                cM.isData = false;
 
                 ProfileConfig pc;
-                pc.xAxisTitle = "#phi_{#Lambda}-#phi_{p}^{*}";
+                pc.xAxisTitle = axisTitleOf({hSig, hBkg, hMeasFull});
                 pc.yAxisTitle = "R";
 
-                std::vector<ProfileBundle> b = {{hSig, cS}, {hBkg, cB}};
-                const std::string t = fam.familyName + " " + spec.label + ", signal extracted";
-                DrawComparisonCanvas(b, "Canvas_SigVsBkg", t, d, pc, pc.xAxisTitle, pc.yAxisTitle);
+                const std::string t = fam.familyName + " " + spec.label + ", signal extracted, " +
+                                      esp.label;
+
+                //// The decomposition, two mass treatments: ////
+                // Both carry <R>_S and <R>_B unchanged and differ only in what "measured" means, so
+                // the pair isolates the cost of the mass window and the binning rather than mixing
+                // it into a single curve nobody can then unpick.
+                //
+                // NO LOWER PAD, on either. The three curves are functions of the same four sideband
+                // primitives, so the quadrature that kDifference and kPull both perform would
+                // overstate Var(<R>_meas - <R>_S) by roughly 60 percent. The one difference with a
+                // correctly propagated error is hRSigMinusRBkg, which gets its own canvas below.
+                {
+                    VariationConfig cMp = cM;
+                    cMp.legendLabel = "<R>_{meas}^{binnedInMass}";
+                    std::vector<ProfileBundle> b = {{hSig, cS}, {hBkg, cB}};
+                    if (hMeas) b.push_back({hMeas, cMp});
+                    // The identity <R>_meas = p <R>_S + (1-p) <R>_B holds bin by bin in the peak
+                    // window, so this canvas is also a closure test: a measured curve that does not
+                    // sit between the other two, weighted by purity, is a defect and not a
+                    // fluctuation.
+                    DrawComparisonCanvas(b, "Canvas_Decomposition_PeakWindow_" + split,
+                                         t + ", peak-window decomposition", angleDir, pc,
+                                         pc.xAxisTitle, pc.yAxisTitle);
+                }
+                if (hMeasFull) {
+                    VariationConfig cMf = cM;
+                    cMf.legendLabel = "<R>_{meas}^{fullMass}";
+                    // This measured curve obeys no identity with the other two: it counts every
+                    // candidate at every mass, while they describe the peak window only. It is here
+                    // because it is the one curve in the picture that no fit, window or bin
+                    // rejection has touched.
+                    std::vector<ProfileBundle> b = {{hSig, cS}, {hBkg, cB}, {hMeasFull, cMf}};
+                    DrawComparisonCanvas(b, "Canvas_Decomposition_FullMass_" + split,
+                                         t + ", full-mass-range measured", angleDir, pc,
+                                         pc.xAxisTitle, pc.yAxisTitle);
+                }
 
                 if (hDiff) {
                     VariationConfig cD;
@@ -4125,14 +4887,131 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     cD.markerStyle = 22;
                     cD.isData = true;
                     std::vector<ProfileBundle> bd = {{hDiff, cD}};
-                    DrawComparisonCanvas(bd, "Canvas_SigMinusBkg", t + ", difference", d, pc,
-                                         pc.xAxisTitle, "<R>_{S} - <R>_{B}");
+                    DrawComparisonCanvas(bd, "Canvas_SigMinusBkg_" + split, t + ", difference",
+                                         angleDir, pc, pc.xAxisTitle, "<R>_{S} - <R>_{B}");
                 }
 
-                // The angle-combined digests, two labelled histograms written by the extraction
-                // macro. They are drawn on SEPARATE canvases on purpose: purity and significance are
-                // of order 0.1 and order 100, while every <R> is of order 1e-2, so a shared axis
-                // would flatten the ring observables onto zero.
+                //// Cross-system, differential ////
+                // Curve against curve across wagons, as opposed to the categorical block below,
+                // which compares one integrated number per wagon. Both are wanted: a wagon can agree
+                // on the integral and disagree everywhere along the angle.
+                //
+                // Here the lower pad IS valid. Different wagons are separate consumer runs, so the
+                // quadrature kDifference performs is the right error for the comparison -- the same
+                // argument the systematics canvases rest on. (The mixed-event estimator reuses the
+                // same V0 sample, so its pad over-covers slightly; that is accepted here exactly as
+                // it is accepted everywhere else in this macro rather than special-cased.)
+                {
+                    struct XQuantity { const char* obj; const char* canvas; const char* legend;
+                                       const char* yTitle; int color; int marker; };
+                    const std::vector<XQuantity> xq = {
+                        {"hRSig", "RSig", "<R>_{S}", "<R>_{S}", kRed + 1, 20},
+                        {"hRBkg", "RBkg", "<R>_{B}", "<R>_{B}", kBlue + 1, 21},
+                        {"hRMeas", "RMeas", "<R>_{meas}^{binnedInMass}", "<R>_{meas}", kBlack, 24},
+                        {"hRSigMinusRBkg", "RSigMinusRBkg", "<R>_{S} - <R>_{B}",
+                         "<R>_{S} - <R>_{B}", kGreen + 3, 22}
+                    };
+
+                    // Not every systematic: the two pairings the eye actually compares. Adding a
+                    // wagon here multiplies the canvas count by the number of quantities, which is
+                    // why the exhaustive sweep stays in the categorical block.
+                    struct XWagonSet { const char* dirTag; const char* title;
+                                       std::vector<std::string> suffixes; };
+                    const std::vector<XWagonSet> wagonSets = {
+                        {"DataVsMixedEv", "data vs mixed-event", {"", "_MixedEventProxies"}},
+                        {"ANCuts", "analysis-level cuts",
+                         {"", "_analysisCuts", "_MixedEventProxies_analysisCuts"}}
+                    };
+
+                    for (const auto& ws : wagonSets) {
+                        // Fetched once and used twice: the per-quantity canvases and the overview
+                        // are built from the same pointers, so the two views cannot end up showing
+                        // different things under the same wagon label.
+                        struct XWagon { VariationConfig cfg; std::map<std::string, TH1D*> byQty; };
+                        std::vector<XWagon> wagons;
+                        std::vector<TH1*> ownX;
+
+                        for (const auto& sfx : ws.suffixes) {
+                            // Styling comes from the variation table, so these canvases cannot drift
+                            // from the colours used everywhere else in the file.
+                            VariationConfig vc = dataConfig;
+                            if (!sfx.empty()) {
+                                bool known = false;
+                                for (const auto& sys : sysVariations)
+                                    if (sys.suffix == sfx) { vc = sys; known = true; break; }
+                                if (!known) continue;
+                            }
+                            vc.isData = sfx.empty(); // The uncut data is the reference
+
+                            XWagon w;
+                            w.cfg = vc;
+                            const std::string wf = sigExtractDir + "/signalExtractionRing_" +
+                                                   fam.dataSuffix + sfx + ".root";
+                            for (const auto& q : xq) {
+                                TH1D* h = cache.FetchClone<TH1D>(
+                                    wf, aeeRoot + split + "/" + spec.name + "/Results/" +
+                                        std::string(q.obj) + "_" + spec.name, false);
+                                if (!h) continue;
+                                w.byQty[q.obj] = h;
+                                ownX.push_back(h);
+                            }
+                            if (!w.byQty.empty()) wagons.push_back(w);
+                        }
+
+                        if (wagons.size() < 2) { for (auto p : ownX) delete p; continue; }
+                        if (!xAngDir) xAngDir = EnsureDir(angleDir, "CrossSystem_Angular");
+                        TDirectory* wsDir = EnsureDir(xAngDir, ws.dirTag);
+
+                        // Per quantity: colour is the WAGON, since the quantity is fixed here.
+                        for (const auto& q : xq) {
+                            std::vector<ProfileBundle> perQ;
+                            for (const auto& w : wagons) {
+                                auto it = w.byQty.find(q.obj);
+                                if (it == w.byQty.end()) continue;
+                                perQ.push_back({it->second, w.cfg});
+                            }
+                            if (perQ.size() < 2) continue;
+                            DrawComparisonCanvas(perQ,
+                                                 "Canvas_" + std::string(q.canvas) + "_" + split,
+                                                 t + ", " + q.legend + " across wagons (" +
+                                                     ws.title + ")",
+                                                 wsDir, pc, pc.xAxisTitle, q.yTitle, kDifference);
+                        }
+
+                        // Everything at once: colour is the QUANTITY and the line style is the
+                        // wagon, so a reader follows one quantity across wagons by colour and one
+                        // wagon across quantities by dash pattern. Busy on purpose -- it is the QA
+                        // view for the canvases above, not the one to read a number from, and it
+                        // carries no lower pad because its curves are different quantities with no
+                        // common reference to subtract.
+                        std::vector<ProfileBundle> overview;
+                        for (size_t iw = 0; iw < wagons.size(); ++iw) {
+                            for (const auto& q : xq) {
+                                auto it = wagons[iw].byQty.find(q.obj);
+                                if (it == wagons[iw].byQty.end()) continue;
+                                VariationConfig ov;
+                                ov.legendLabel = std::string(q.legend) + ", " +
+                                                 wagons[iw].cfg.legendLabel;
+                                ov.color = q.color;
+                                ov.lineStyle = static_cast<int>(iw) + 1;
+                                ov.markerStyle = q.marker;
+                                ov.isData = false;
+                                overview.push_back({it->second, ov});
+                            }
+                        }
+                        if (overview.size() >= 2)
+                            DrawComparisonCanvas(overview, "Canvas_All_" + split,
+                                                 t + ", all quantities, " + ws.title, wsDir, pc,
+                                                 pc.xAxisTitle, pc.yAxisTitle, kNoLowerPad);
+
+                        for (auto p : ownX) delete p;
+                    }
+                }
+
+                //// The angle-combined digests ////
+                // Not differential anymore, so they sit in Combined/ rather than AEEangle/. 
+                // Part of the digest is drawn on SEPARATE canvases on purpose: purity and significance are of order 0.1 and order 100~1000 while
+                // every <R> is of order 1e-2, so a shared axis would flatten the ring observables onto zero.
                 auto drawDigest = [&](const std::string& obj, const std::string& canvas,
                                       const std::string& title, const std::string& yTitle,
                                       TDirectory* dest, const std::string& note = "") {
@@ -4153,22 +5032,19 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                                          kNoLowerPad, true);
                     delete h;
                 };
-                drawDigest("hCombinedSummary", "Canvas_Combined",
-                           t + ", angle-combined results", "Integrated <R>", d);
-
-                // Diagnostics away from the results, so the top level of this folder holds only
-                // quantities someone might quote.
-                TDirectory* qaDir = EnsureDir(d, "QA");
-                drawDigest("hCombinedQA", "Canvas_CombinedQA",
-                           t + ", cross-checks and acceptance diagnostics", "Value", qaDir,
+                drawDigest("hCombinedSummary", "Canvas_Combined_" + split,
+                           t + ", angle-combined results", "Integrated <R>", combDir);
+                drawDigest("hCombinedQA", "Canvas_CombinedQA_" + split,
+                           t + ", cross-checks and acceptance diagnostics", "Value", combQaDir,
                            "\"weighted-flat\" = integrating WITHOUT counts as weights");
-                drawDigest("hCombinedQuality", "Canvas_CombinedQuality",
-                           t + ", extraction quality", "Value", qaDir);
+                drawDigest("hCombinedQuality", "Canvas_CombinedQuality_" + split,
+                           t + ", extraction quality", "Value", combQaDir);
 
-                // --- Cross-system: the same quantity across every consumer variation ------------
-                // The variation machinery was being used on Data alone here, which wasted the one
-                // thing it is for. The angle-combined digest is read from each variation's own
-                // extraction file, and bins 2, 3 and 4 of it are <R>_S, <R>_B and their contrast.
+                //// Cross-system, categorical ////
+                // One integrated number per wagon, swept over every systematic in the table. The
+                // differential counterpart lives in AEEangle/CrossSystem_Angular/ and deliberately
+                // covers fewer wagons; the two are named apart because a TBrowser listing of
+                // "CrossSystem" holding both was a standing source of confusion.
                 // README: this couples to the row order of hCombinedSummary in signalExtractionRing.
                 {
                     struct XRow { int bin; const char* name; const char* title; const char* yTitle; };
@@ -4186,7 +5062,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         SigExtractPoint p;
                         const std::string f = sigExtractDir + "/signalExtractionRing_" + suffix + ".root";
                         TH1D* h = cache.FetchClone<TH1D>(
-                            f, aeeRoot + esp.dir + "/" + spec.name +
+                            f, aeeRoot + split + "/" + spec.name +
                                "/IntegratedCombined/hCombinedSummary_" + spec.name, false);
                         if (!h) return p;
                         if (h->GetNbinsX() >= bin && h->GetBinError(bin) > 0.0) {
@@ -4198,7 +5074,6 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         return p;
                     };
 
-                    TDirectory* xDir = nullptr;
                     for (const auto& xr : xrows) {
                         std::vector<std::string> xLabels;
                         std::vector<VariationConfig> xCfgs;
@@ -4219,67 +5094,29 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         }
                         if (xLabels.size() < 2) continue;
 
-                        if (!xDir) xDir = EnsureDir(d, "CrossSystem");
+                        if (!xCatDir) xCatDir = EnsureDir(combDir, "CrossSystem_Categorical");
 
-                        // Full and redux from the same call site, as everywhere else
-                        auto emitX = [&](std::function<bool(const VariationConfig&)> keep,
-                                         const std::string& suffix) {
-                            std::vector<int> pick;
-                            for (size_t i = 0; i < xCfgs.size(); ++i)
-                                if (i == 0 || keep(xCfgs[i])) pick.push_back(static_cast<int>(i));
-                            if (pick.size() < 2) return;
-
-                            const int n = static_cast<int>(pick.size());
-                            std::vector<std::string> lb;
-                            std::vector<ProfileBundle> bV, bS;
-                            std::vector<TH1*> del;
-                            for (int k = 0; k < n; ++k) {
-                                const int i = pick[k];
-                                lb.push_back(xLabels[i]);
-                                TH1D* hV = MakeCategoricalPoint(Form("%s%s_V_%d", xr.name,
-                                                                     suffix.c_str(), k),
-                                                                k, n, xVals[i].first, xVals[i].second);
-                                bV.push_back({hV, xCfgs[i]});
-                                del.push_back(hV);
-                                if (k == 0) continue;
-                                const double dd = xVals[0].first - xVals[i].first;
-                                const double ee = std::sqrt(xVals[0].second * xVals[0].second +
-                                                            xVals[i].second * xVals[i].second);
-                                TH1D* hS = MakeCategoricalPoint(Form("%s%s_S_%d", xr.name,
-                                                                     suffix.c_str(), k),
-                                                                k, n, dd, ee);
-                                bS.push_back({hS, xCfgs[i]});
-                                del.push_back(hS);
-                            }
-                            DrawIntegratedCanvas(bV, lb, xr.name + suffix,
-                                                 fam.familyName + " " + spec.label + " " + xr.title,
-                                                 xDir, xr.yTitle, false, false, true);
-                            if (!bS.empty())
-                                DrawIntegratedCanvas(bS, lb, xr.name + suffix + "_Subtracted",
-                                                     fam.familyName + " " + spec.label + " " +
-                                                         xr.title + ", difference",
-                                                     xDir, std::string("#Delta") + xr.yTitle +
-                                                         " (Data - Var)", true, false, true);
-                            for (auto p : del) delete p;
-                        };
-                        emitX([](const VariationConfig&) { return true; }, "");
-                        emitX([](const VariationConfig& c) { return c.inRedux; }, "_Redux");
+                        // The split is in the canvas name, not in a folder: the three variants then
+                        // list side by side, which is how they get compared.
+                        DrawCategoricalCrossSystem(xLabels, xCfgs, xVals, std::string(xr.name) + "_" + split,
+                                                   fam.familyName + " " + spec.label + " " + xr.title + ", " + esp.label,
+                                                   xCatDir, xr.yTitle);
                     }
                 }
 
-                delete hSig; delete hBkg; delete hDiff;
+                delete hSig; delete hBkg; delete hMeas; delete hDiff; delete hMeasFull;
               } // eta-split variants
 
                 // --- The eta splits on one canvas -------------------------------------------
                 // Same content as each variant's Canvas_Combined, overlaid, so "does the result
                 // depend on which side of the detector the proxy came from?" is one picture rather
-                // than three folders opened in turn. A split-dependent result points at acceptance
+                // than three canvases opened in turn. A split-dependent result points at acceptance
                 // rather than at physics.
                 //
                 // Built through a lambda so the same four-curve set can be produced for any consumer
                 // variation. Data alone, Data against MixedEv, and the analysis-cut wagons all reuse
                 // it rather than each assembling their own and drifting apart.
-                if (aeeSigDir) {
+                if (specDir) {
                     // Returns {NoEtaSplit, EtaProxyPos, EtaProxyNeg, recombined} for one wagon.
                     auto buildEtaSet = [&](const std::string& suffix, const std::string& tag,
                                            int lineStyle, std::vector<TH1*>& own) {
@@ -4342,11 +5179,8 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                                                                                 : SanitizeName(suffix).c_str()));
                             hAvg->SetDirectory(nullptr);
                             for (int ib = 1; ib <= hAvg->GetNbinsX(); ++ib) {
-                                // Each row of hCombinedSummary is a mean over a DIFFERENT population
-                                // and needs its own weights. Row order: 1 <R>_meas, 2 <R>_S,
-                                // 3 <R>_B, 4 <R>_S - <R>_B.
-                                // Every row is a mean over a DIFFERENT population, so every row gets
-                                // its own weight. Row order:
+                                // Every row of hCombinedSummary is a mean over a DIFFERENT population, so every row gets its own weight.
+                                // Row order:
                                 //   1 <R>_meas^FullMassRange  -> all candidates, all mass  -> full
                                 //   2 <R>_meas^PeakWin,AccBins-> peak window, kept bins    -> T=S+B
                                 //   3 <R>_S                                                -> S
@@ -4363,7 +5197,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                                 else if (ib == 3) { nP = yP.sig; nN = yN.sig; }
                                 else if (ib == 4) { nP = yP.bkg; nN = yN.bkg; }
                                 else if (ib == 5) {
-                                    // Row 4 is <R>_S - <R>_B, and it is THE result of this whole
+                                    // Row 5 is <R>_S - <R>_B, and it is THE result of this whole
                                     // construction, not a leftover diagnostic.
                                     //
                                     // <R>_S is not the observable on its own: a true Lambda is
@@ -4448,14 +5282,15 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         // ANCuts/ holds two different comparisons and they are easy to confuse from
                         // a TBrowser listing, so they go in named subfolders rather than side by
                         // side: these compare the eta SPLITS for one wagon, while the per-split
-                        // canvases further down compare the WAGONS for one split.
+                        // canvases further down compare the WAGONS for one split. Both now sit under
+                        // this spec's folder rather than once at the top of AEE_SignalExtracted.
                         TDirectory* dest = pr.dirName.empty()
-                                           ? aeeSigDir
-                                           : EnsureDir(EnsureDir(aeeSigDir, "ANCuts"), "BySplit");
+                                           ? EnsureDir(specDir, "EtaComparison")
+                                           : EnsureDir(EnsureDir(specDir, "ANCuts"), "BySplit");
 
                         if (dataSet.size() >= 2) {
                             DrawComparisonCanvas(dataSet,
-                                                 "Canvas_" + spec.name + "_EtaComparison" + pr.canvasSuffix,
+                                                 "Canvas_EtaComparison" + pr.canvasSuffix,
                                                  ctBase, dest, pcc, "", "Integrated <R>",
                                                  kNoLowerPad, true);
                         }
@@ -4466,8 +5301,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         both.insert(both.end(), mixedSet.begin(), mixedSet.end());
                         if (!mixedSet.empty() && both.size() >= 2) {
                             DrawComparisonCanvas(both,
-                                                 "Canvas_" + spec.name + "_EtaComparison_WithMixedEv" +
-                                                     pr.canvasSuffix,
+                                                 "Canvas_EtaComparison_WithMixedEv" + pr.canvasSuffix,
                                                  ctBase + ", data and mixed-event", dest, pcc, "",
                                                  "Integrated <R>", kNoLowerPad, true);
 
@@ -4476,8 +5310,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                             red.insert(red.end(), redM.begin(), redM.end());
                             if (red.size() >= 2)
                                 DrawComparisonCanvas(red,
-                                                     "Canvas_" + spec.name + "_EtaComparison_Reduced" +
-                                                         pr.canvasSuffix,
+                                                     "Canvas_EtaComparison_Reduced" + pr.canvasSuffix,
                                                      ctBase + ", unsplit vs recombined", dest, pcc, "",
                                                      "Integrated <R>", kNoLowerPad, true);
                         }
@@ -4494,7 +5327,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 //
                 // Complementary to the ANCuts canvases produced above: those compare the SPLITS for
                 // a given wagon, these compare the WAGONS for a given split.
-                if (aeeSigDir) {
+                if (specDir) {
                     const std::vector<std::string> cutVariations = {
                         "", "_analysisCuts", "_MixedEventProxies_analysisCuts"
                     };
@@ -4528,14 +5361,390 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                             ProfileConfig pcc;
                             pcc.xAxisTitle = "";
                             pcc.yAxisTitle = "Integrated <R>";
-                            DrawComparisonCanvas(cb, "Canvas_" + spec.name + "_" + esp.dir +
+                            DrawComparisonCanvas(cb, std::string("Canvas_") + esp.dir +
                                                      "_AnalysisCuts",
                                                  fam.familyName + " " + spec.label + ", " +
                                                      esp.label + ", analysis-level cuts",
-                                                 EnsureDir(EnsureDir(aeeSigDir, "ANCuts"), "ByWagon"),
+                                                 EnsureDir(EnsureDir(specDir, "ANCuts"), "ByWagon"),
                                                  pcc, "", "Integrated <R>", kNoLowerPad, true);
                         }
                         for (auto p : cbDel) delete p;
+                    }
+                }
+
+                //// The eta_Proxy-binned extraction ////
+                // Everything here reads the Summary/ folder the extraction's Step 2.8 writes: each
+                // quantity once, on the consumer's own axes, so no binning is rebuilt here and no
+                // slice folder is walked.
+                //
+                // There is no full-mass measured curve in this set, on purpose. The only mass-free
+                // source, p2d...VsProxyEta, is binned on an eta axis whose edges never meet the
+                // slices', and a curve on another binning is not comparable cell by cell. The
+                // FullMassRange row of each slice is used once, in the recombination closure, where it
+                // is the one row that must close.
+                {
+                    const std::string etaSum = "HelicityEfficiencyQA_PhiLambdaPhiProtonStar_EtaBinned/" +
+                                               spec.name + "/Summary/";
+                    auto sigFileOf = [&](const std::string& sfx) {
+                        return sigExtractDir + "/signalExtractionRing_" + fam.dataSuffix + sfx + ".root";
+                    };
+                    auto fetchMap = [&](const std::string& sfx, const std::string& q) {
+                        return cache.FetchClone<TH2D>(sigFileOf(sfx), etaSum + "hMap_" + q, false);
+                    };
+                    auto fetchVsEta = [&](const std::string& sfx, const std::string& q) {
+                        return cache.FetchClone<TH1D>(sigFileOf(sfx), etaSum + "hVsEta_" + q, false);
+                    };
+
+                    TH2D* hStatus = fetchMap("", "CellStatus");
+                    if (hStatus) {
+                        ensureSpecDirs();
+                        TDirectory* etaDir = EnsureDir(specDir, "EtaBinned");
+                        const TAxis* etaAxis = hStatus->GetYaxis();
+                        const double etaMax = std::max(std::fabs(etaAxis->GetXmin()), std::fabs(etaAxis->GetXmax()));
+                        const std::string tEta = fam.familyName + " " + spec.label + ", #eta_{Proxy}-binned";
+
+                        //// Maps over (angle, eta_Proxy) ////
+                        // The slope significance says whether THIS cell's background is measurably
+                        // tilted. It is not a flatness score to compare across binnings: at a fixed
+                        // true slope it scales with sqrt(N), so finer cells look flatter for purely
+                        // statistical reasons.
+                        TDirectory* mapDir = EnsureDir(etaDir, "Maps");
+                        struct MapView { const char* q; bool isSigned; };
+                        const std::vector<MapView> mapViews = {
+                            {"RSig", true}, {"RBkg", true}, {"RMeas", true}, {"RSigMinusRBkg", true},
+                            {"Purity", false}, {"SigStat", false}, {"SigYield", false},
+                            {"RingBkgSlopeSignif", true}, {"RingBkgChi2Ndf", false}
+                        };
+                        for (const auto& mv : mapViews) {
+                            TH2D* h = fetchMap("", mv.q);
+                            if (!h) continue;
+                            DrawMapCanvas(h, hStatus, std::string("Canvas_Map_") + mv.q,
+                                          tEta + ", " + h->GetTitle() + " (hatched: not extracted)",
+                                          mapDir, mv.isSigned);
+                            delete h;
+                        }
+                        // The status map itself, codes printed: which cells failed, and why
+                        DrawMapCanvas(hStatus, nullptr, "Canvas_Map_CellStatus",
+                                      tEta + ", cell status (1 extracted, 2 few entries, 3 peak fit, "
+                                             "4 sidebands, 5 bkg fit, 6 no signal; 0 slice skipped)",
+                                      mapDir, false, true);
+
+                        //// Every eta_Proxy bin against the angle, one quantity per canvas ////
+                        // No lower pad: there is no reference slice, and the message is the pattern
+                        // across all of them rather than any one difference.
+                        TDirectory* angDir = EnsureDir(etaDir, "AEEangle");
+                        struct AngView { const char* q; const char* yTitle; };
+                        const std::vector<AngView> angViews = {
+                            {"RSig", "<R>_{S}"}, {"RBkg", "<R>_{B}"},
+                            {"RMeas", "<R>_{meas}^{binnedInMass}"}, {"RSigMinusRBkg", "<R>_{S} - <R>_{B}"}
+                        };
+                        for (const auto& av : angViews) {
+                            TH2D* h = fetchMap("", av.q);
+                            if (!h) continue;
+                            std::vector<ProfileBundle> bs;
+                            std::vector<TH1*> own;
+                            for (int k = 1; k <= h->GetNbinsY(); ++k) {
+                                TH1D* row = h->ProjectionX(Form("%s_%s_eta%02d", spec.name.c_str(), av.q, k), k, k, "e");
+                                row->SetDirectory(nullptr);
+                                own.push_back(row);
+                                bool any = false;
+                                for (int ix = 1; ix <= row->GetNbinsX() && !any; ++ix)
+                                    any = (row->GetBinError(ix) > 0.0);
+                                if (!any) continue; // A skipped slice: no legend entry for nothing
+
+                                const double lo = etaAxis->GetBinLowEdge(k), hi = etaAxis->GetBinUpEdge(k);
+                                VariationConfig c;
+                                c.legendLabel = Form("#eta_{Proxy} #in [%+.2f, %+.2f)", lo, hi);
+                                c.color = EtaSliceColor(0.5 * (lo + hi), etaMax);
+                                c.lineStyle = 1;
+                                c.markerStyle = (0.5 * (lo + hi) < 0.0) ? 24 : 20;
+                                c.isData = false;
+                                bs.push_back({row, c});
+                            }
+                            if (!bs.empty()) {
+                                ProfileConfig pca;
+                                pca.xAxisTitle = h->GetXaxis()->GetTitle();
+                                pca.yAxisTitle = av.yTitle;
+                                DrawComparisonCanvas(bs, std::string("Canvas_") + av.q + "_AllEtaBins",
+                                                     tEta + ", " + av.yTitle + " in every #eta_{Proxy} bin",
+                                                     angDir, pca, pca.xAxisTitle, av.yTitle);
+                            }
+                            for (auto p : own) delete p;
+                            delete h;
+                        }
+
+                        //// Angle-combined, against eta_Proxy ////
+                        TDirectory* depDir = EnsureDir(etaDir, "EtaDependence");
+
+                        // One row of the Step 2.75 angle-combined result for an eta-sign split
+                        auto combinedRow = [&](const std::string& sfx, const std::string& split, int row) {
+                            SigExtractPoint p;
+                            TH1D* h = cache.FetchClone<TH1D>(sigFileOf(sfx), aeeRoot + split + "/" + spec.name +
+                                                                 "/IntegratedCombined/hCombinedSummary_" + spec.name, false);
+                            if (!h) return p;
+                            if (h->GetNbinsX() >= row && h->GetBinError(row) > 0.0) {
+                                p.value = h->GetBinContent(row);
+                                p.error = h->GetBinError(row);
+                                p.found = true;
+                            }
+                            delete h;
+                            return p;
+                        };
+                        // A coarser result repeated over the eta_Proxy bins it covers, so it overlays the
+                        // binned curve as a reference. Only where the binned curve has a point, so a jet
+                        // proxy's structurally empty edge bins stay empty.
+                        auto referenceOver = [&](TH1D* shape, const std::string& name, int row, bool bySign) -> TH1D* {
+                            const SigExtractPoint all = combinedRow("", "NoEtaSplit", row);
+                            const SigExtractPoint pos = combinedRow("", "EtaProxyPos", row);
+                            const SigExtractPoint neg = combinedRow("", "EtaProxyNeg", row);
+                            TH1D* r = (TH1D*)shape->Clone(name.c_str());
+                            r->SetDirectory(nullptr);
+                            r->Reset();
+                            bool any = false;
+                            for (int k = 1; k <= r->GetNbinsX(); ++k) {
+                                if (shape->GetBinError(k) <= 0.0) continue;
+                                const SigExtractPoint& p = !bySign ? all : (r->GetBinCenter(k) < 0.0 ? neg : pos);
+                                if (!p.found) continue;
+                                r->SetBinContent(k, p.value);
+                                r->SetBinError(k, p.error);
+                                any = true;
+                            }
+                            if (!any) { delete r; return nullptr; }
+                            return r;
+                        };
+
+                        ProfileConfig pce;
+                        pce.xAxisTitle = etaAxis->GetTitle();
+                        pce.yAxisTitle = "Angle-combined <R>";
+
+                        // The decomposition, as on the angular canvases. No lower pad, for the same
+                        // reason: the three are functions of the same sideband primitives.
+                        {
+                            struct Part { const char* q; const char* legend; int color; int marker; bool isData; };
+                            const std::vector<Part> parts = {
+                                {"RSig", "<R>_{S}", kRed + 1, 20, true},
+                                {"RBkg", "<R>_{B}", kBlue + 1, 21, false},
+                                {"RMeasPeakWindow", "<R>_{meas}^{binnedInMass}", kBlack, 24, false}
+                            };
+                            std::vector<ProfileBundle> b;
+                            std::vector<TH1*> own;
+                            for (const auto& pt : parts) {
+                                TH1D* h = fetchVsEta("", pt.q);
+                                if (!h) continue;
+                                VariationConfig c;
+                                c.legendLabel = pt.legend;
+                                c.color = pt.color;
+                                c.lineStyle = 1;
+                                c.markerStyle = pt.marker;
+                                c.isData = pt.isData;
+                                b.push_back({h, c});
+                                own.push_back(h);
+                            }
+                            if (!b.empty())
+                                DrawComparisonCanvas(b, "Canvas_Decomposition_VsEta",
+                                                     tEta + ", angle-combined decomposition", depDir, pce,
+                                                     pce.xAxisTitle, pce.yAxisTitle);
+                            for (auto p : own) delete p;
+                        }
+
+                        // Each result against the coarser splits it refines. Correlated with them --
+                        // the same candidates -- so no lower pad; the question is whether the binned
+                        // curve averages to the sign-split points, not how far apart they are.
+                        struct DepView { const char* q; int row; const char* yTitle; };
+                        const std::vector<DepView> depViews = {
+                            {"RSig", 3, "<R>_{S}"}, {"RBkg", 4, "<R>_{B}"}, {"RSigMinusRBkg", 5, "<R>_{S} - <R>_{B}"}
+                        };
+                        for (const auto& dv : depViews) {
+                            TH1D* hB = fetchVsEta("", dv.q);
+                            if (!hB) continue;
+                            TH1D* hSgn = referenceOver(hB, spec.name + "_refSign_" + dv.q, dv.row, true);
+                            TH1D* hAll = referenceOver(hB, spec.name + "_refAll_" + dv.q, dv.row, false);
+
+                            VariationConfig cB;
+                            cB.legendLabel = "#eta_{Proxy}-binned";
+                            cB.color = kBlack;
+                            cB.lineStyle = 1;
+                            cB.markerStyle = 20;
+                            cB.isData = true;
+                            VariationConfig cS;
+                            cS.legendLabel = "#eta_{Proxy} sign split, repeated per half";
+                            cS.color = kAzure + 2;
+                            cS.lineStyle = 2;
+                            cS.markerStyle = 25;
+                            cS.isData = false;
+                            VariationConfig cA;
+                            cA.legendLabel = "no #eta_{Proxy} split, repeated";
+                            cA.color = kGray + 2;
+                            cA.lineStyle = 3;
+                            cA.markerStyle = 27;
+                            cA.isData = false;
+
+                            std::vector<ProfileBundle> b = {{hB, cB}};
+                            if (hSgn) b.push_back({hSgn, cS});
+                            if (hAll) b.push_back({hAll, cA});
+                            DrawComparisonCanvas(b, std::string("Canvas_") + dv.q + "_VsEta",
+                                                 tEta + ", " + dv.yTitle + " against the coarser splits",
+                                                 depDir, pce, pce.xAxisTitle, dv.yTitle);
+                            delete hB; delete hSgn; delete hAll;
+                        }
+
+                        //// The eta_Proxy slices recombined ////
+                        // One weight per row, because each row of hCombinedSummary is a mean over a
+                        // different population -- the same argument as the Pos/Neg recombination above,
+                        // with N pieces instead of two. Row order, coupled to the extraction:
+                        //   1 <R>_meas^FullMassRange  -> full-range counts
+                        //   2 <R>_meas^PeakWin        -> S + B
+                        //   3 <R>_S                   -> S
+                        //   4 <R>_B                   -> B
+                        //   5 <R>_S - <R>_B           -> S (the fake part cancels inside each slice, not between slices)
+                        // The slices are disjoint, so quadrature across them is (should be) exact.
+                        auto recombine = [&](const std::string& sfx) -> TH1D* {
+                            // The unsplit result supplies the labelled five-row axis, and is the reference the closure (of this recombination) compares against
+                            // (see hRef below)
+                            TH1D* out = cache.FetchClone<TH1D>(sigFileOf(sfx), aeeRoot + "NoEtaSplit/" + spec.name +
+                                                                   "/IntegratedCombined/hCombinedSummary_" + spec.name, false);
+                            TH1D* hN = fetchVsEta(sfx, "FullRangeCounts");
+                            TH1D* hS = fetchVsEta(sfx, "SigYield");
+                            TH1D* hB = fetchVsEta(sfx, "BkgYield");
+                            if (!out || !hN || !hS || !hB) { delete out; delete hN; delete hS; delete hB; return nullptr; }
+                            out->SetName(Form("EtaBinnedRecomb_%s_%s", spec.name.c_str(),
+                                              sfx.empty() ? "data" : SanitizeName(sfx).c_str()));
+                            out->Reset();
+
+                            const char* rowQ[5] = {"RMeasFullMass", "RMeasPeakWindow", "RSig", "RBkg", "RSigMinusRBkg"};
+                            for (int r = 1; r <= std::min(5, out->GetNbinsX()); ++r) {
+                                TH1D* hv = fetchVsEta(sfx, rowQ[r - 1]);
+                                if (!hv) continue;
+                                double sw = 0.0, swv = 0.0, sw2e2 = 0.0;
+                                for (int k = 1; k <= hv->GetNbinsX(); ++k) {
+                                    const double e = hv->GetBinError(k);
+                                    if (!(e > 0.0)) continue; // Not valid in that slice
+                                    const double w = (r == 1) ? hN->GetBinContent(k)
+                                                   : (r == 2) ? hS->GetBinContent(k) + hB->GetBinContent(k)
+                                                   : (r == 4) ? hB->GetBinContent(k)
+                                                              : hS->GetBinContent(k);
+                                    if (!(w > 0.0)) continue;
+                                    sw += w;
+                                    swv += w * hv->GetBinContent(k);
+                                    sw2e2 += w * w * e * e;
+                                }
+                                if (sw > 0.0) {
+                                    out->SetBinContent(r, swv / sw);
+                                    out->SetBinError(r, std::sqrt(sw2e2) / sw);
+                                }
+                                delete hv;
+                            }
+                            delete hN; delete hS; delete hB;
+                            return out;
+                        };
+
+                        // Closure against the unsplit extraction. Only row 1 must close, and only up to
+                        // the candidates outside the eta_Proxy axis (reported by the extraction as
+                        // hSliceClosure): it involves no fit, no window and no bin rejection. The other
+                        // rows need not, and their gap is what the finer split changed.
+                        {
+                            TH1D* hRef = cache.FetchClone<TH1D>(sigFileOf(""), aeeRoot + "NoEtaSplit/" + spec.name +
+                                                                    "/IntegratedCombined/hCombinedSummary_" + spec.name, false);
+                            TH1D* hRec = recombine("");
+                            if (hRef && hRec) {
+                                VariationConfig cRef;
+                                cRef.legendLabel = "no #eta_{Proxy} split";
+                                cRef.color = kBlack;
+                                cRef.lineStyle = 1;
+                                cRef.markerStyle = 20;
+                                cRef.isData = true;
+                                VariationConfig cRec;
+                                cRec.legendLabel = "#eta_{Proxy} bins, recombined";
+                                cRec.color = kGreen + 3;
+                                cRec.lineStyle = 1;
+                                cRec.markerStyle = 33;
+                                cRec.isData = false;
+                                ProfileConfig pcc;
+                                pcc.xAxisTitle = "";
+                                pcc.yAxisTitle = "Integrated <R>";
+                                std::vector<ProfileBundle> b = {{hRef, cRef}, {hRec, cRec}};
+                                DrawComparisonCanvas(b, "Canvas_RecombinationClosure",
+                                                     tEta + ", recombined against the unsplit result (row 1 must close)",
+                                                     depDir, pcc, "", "Integrated <R>", kNoLowerPad, true);
+                            }
+                            delete hRef; delete hRec;
+                        }
+
+                        //// Data against the mixed-event estimator, differential in eta_Proxy ////
+                        // Separate consumer runs, so here the lower pad is a genuine Data - MixedEv.
+                        {
+                            const VariationConfig* mix = nullptr;
+                            for (const auto& sys : sysVariations)
+                                if (sys.suffix == "_MixedEventProxies") { mix = &sys; break; }
+                            if (mix) {
+                                TDirectory* dmDir = nullptr;
+                                struct MixView { const char* q; const char* yTitle; };
+                                const std::vector<MixView> mixViews = {
+                                    {"RSig", "<R>_{S}"}, {"RBkg", "<R>_{B}"},
+                                    {"RMeasPeakWindow", "<R>_{meas}^{binnedInMass}"},
+                                    {"RSigMinusRBkg", "<R>_{S} - <R>_{B}"}
+                                };
+                                for (const auto& mw : mixViews) {
+                                    TH1D* hD = fetchVsEta("", mw.q);
+                                    TH1D* hM = fetchVsEta(mix->suffix, mw.q);
+                                    if (hD && hM) {
+                                        if (!dmDir) dmDir = EnsureDir(depDir, "CrossSystem_DataVsMixedEv");
+                                        VariationConfig cD = dataConfig;
+                                        cD.isData = true;
+                                        VariationConfig cM = *mix;
+                                        cM.isData = false;
+                                        std::vector<ProfileBundle> b = {{hD, cD}, {hM, cM}};
+                                        DrawComparisonCanvas(b, std::string("Canvas_") + mw.q + "_VsEta",
+                                                             tEta + ", " + mw.yTitle + ", data vs mixed-event",
+                                                             dmDir, pce, pce.xAxisTitle, mw.yTitle, kDifference);
+                                    }
+                                    delete hD; delete hM;
+                                }
+                            }
+                        }
+
+                        //// Cross-system of the final result: the recombined numbers ////
+                        // Every systematic in the table, each recombined with its own yields, so a
+                        // variation that moves the signal between eta_Proxy bins is weighted as it
+                        // should be rather than with the data's weights.
+                        {
+                            struct Recomb { std::string label; VariationConfig cfg; TH1D* h; };
+                            std::vector<Recomb> rec;
+                            if (TH1D* h = recombine("")) rec.push_back({dataConfig.legendLabel, dataConfig, h});
+                            if (!rec.empty()) {
+                                for (const auto& sys : sysVariations)
+                                    if (TH1D* h = recombine(sys.suffix)) rec.push_back({sys.legendLabel, sys, h});
+
+                                struct XRow { int bin; const char* name; const char* title; const char* yTitle; };
+                                const std::vector<XRow> xrows = {
+                                    {3, "Canvas_CrossSystem_RSig", "<R>_{S} across variations", "<R>_{S}"},
+                                    {4, "Canvas_CrossSystem_RBkg", "<R>_{B} across variations", "<R>_{B}"},
+                                    {5, "Canvas_CrossSystem_RSigMinusRBkg", "<R>_{S} - <R>_{B} across variations",
+                                     "<R>_{S} - <R>_{B}"}
+                                };
+                                TDirectory* xDir = nullptr;
+                                for (const auto& xr : xrows) {
+                                    std::vector<std::string> labels;
+                                    std::vector<VariationConfig> cfgs;
+                                    std::vector<std::pair<double, double>> vals;
+                                    for (const auto& r : rec) {
+                                        if (r.h->GetNbinsX() < xr.bin || !(r.h->GetBinError(xr.bin) > 0.0)) {
+                                            if (labels.empty()) break; // No data point, nothing to compare against
+                                            continue;
+                                        }
+                                        labels.push_back(r.label);
+                                        cfgs.push_back(r.cfg);
+                                        vals.push_back({r.h->GetBinContent(xr.bin), r.h->GetBinError(xr.bin)});
+                                    }
+                                    if (labels.size() < 2) continue;
+                                    if (!xDir) xDir = EnsureDir(etaDir, "CrossSystem_Categorical");
+                                    DrawCategoricalCrossSystem(labels, cfgs, vals, xr.name,
+                                                               tEta + " recombined, " + xr.title, xDir, xr.yTitle);
+                                }
+                            }
+                            for (auto& r : rec) delete r.h;
+                        }
+                        delete hStatus;
                     }
                 }
             }
@@ -4733,6 +5942,9 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
 
             for (auto p : grandToDelete) delete p;
         }
+
+        // An R_z family is relabelled once complete (README: "R_z families"); nothing else is touched
+        if (fam.isRingZ) RelabelRingDirectory(fOut->GetDirectory(fam.familyName.c_str()));
     } // end of families loop
 
     // ---------------------------------------------------------
@@ -4753,6 +5965,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             std::vector<TH1*> famToDelete;
 
             for (size_t iFam = 0; iFam < families.size(); ++iFam) {
+                if (families[iFam].isRingZ) continue; // Full ring only: R_z is compared in RingVsRingZ/
                 const auto& vals = crossFamilyVals[iRep][iFam];
                 if (vals.size() != labels.size()) continue; // Family missing this observable entirely
 
@@ -4817,6 +6030,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             std::vector<std::string> famLabels;
             std::vector<int> famIndices;
             for (size_t f = 0; f < families.size(); ++f) {
+                if (families[f].isRingZ) continue; // Full ring only, as above
                 bool anyFound = false;
                 for (size_t iQ = 0; iQ < sigExtractQuantities.size(); ++iQ)
                     if (sigExtractCrossFamily[iQ][iProxy][f].found) anyFound = true;
@@ -4857,6 +6071,51 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         }
     }
 
+    // Cross-definition folders, from the full-ring families: each pairs a file with its R_z sibling and uses
+    // only the files it finds, so a wagon without R_z outputs still gets its full-ring corrections.
+    std::cout << " -> Full ring vs R_z...\n";
+    DrawRingVsRingZ(cache, fOut, consumerDir, fullFamilies, dataConfig, sysVariations, externalsAll, cutFolder);
+    const std::vector<FakePairing> pairings = MakeFakePairings(consumerDir, sigExtractDir, externalsAll);
+
+    // Raw: every candidate, from the consumer's mass-binned moments
+    std::cout << " -> Corrections, raw (no signal extraction)...\n";
+    const CorrectionFetcher fetchRaw = [&](const FakePairing& pr, const std::string& sfx, const std::string& proxy,
+                                           CorrectionInputs& in) {
+        RingSample smp;
+        if (!LoadRingSample(cache, pr.consumerBase + "/ConsumerResults_" + sfx + ".root", cutFolder, proxy, smp)) return false;
+        in.ring  = MeanOf(smp.ring);
+        in.u2x3  = {3. * smp.num.Mean(), 3. * std::sqrt(std::max(smp.num.Var(), 0.) / smp.num.n)};
+        in.kappa = KappaOf(smp);
+        return true;
+    };
+    DrawCorrections(fOut, fullFamilies, pairings, "Raw", "raw, all candidates", fetchRaw);
+
+    // Signal-extracted: <R>_S from IntegratedSummary/, <u^2>_S and <w>_S from KappaEff/ (signalExtractionRing).
+    // <w>_S is extracted for R_z files only: for the full ring w == 1 identically. kappa = 3<u^2>_S/<w>_S
+    // takes its two errors in quadrature; they are positively correlated (both scale as n_z^2), so this
+    // overstates it slightly, on a term that only enters P through dP/dkappa = -P/D anyway.
+    if (!sigExtractDir.empty()) {
+        std::cout << " -> Corrections, signal-extracted...\n";
+        const CorrectionFetcher fetchSig = [&](const FakePairing& pr, const std::string& sfx, const std::string& proxy,
+                                               CorrectionInputs& in) {
+            if (pr.sigBase.empty() || gSystem->AccessPathName((pr.sigBase + "/signalExtractionRing_" + sfx + ".root").c_str()))
+                return false; // Not extracted: quiet, it is the common case for references
+            const SigExtractPoint r = FetchSigExtractPoint(cache, pr.sigBase, sfx, cutFolder, proxy, "hIntegratedRSig");
+            const SigExtractPoint u = FetchSigExtractPoint(cache, pr.sigBase, sfx, cutFolder, proxy + "_Num", "hIntegratedRSig", true, "KappaEff");
+            if (!r.found || !u.found || !(u.value > 0.)) return false;
+            SigExtractPoint w; w.value = 1.; w.error = 0.; w.found = true;
+            if (sfx.find(RINGZ_TAG) != std::string::npos)
+                w = FetchSigExtractPoint(cache, pr.sigBase, sfx, cutFolder, proxy + "_Den", "hIntegratedRSig", true, "KappaEff");
+            if (!w.found || !(w.value > 0.)) return false;
+            in.ring = {r.value, r.error};
+            in.u2x3 = {3. * u.value, 3. * u.error};
+            const double kap = 3. * u.value / w.value;
+            in.kappa = {kap, kap * std::sqrt(std::pow(u.error / u.value, 2) + std::pow(w.error / w.value, 2))};
+            return true;
+        };
+        DrawCorrections(fOut, fullFamilies, pairings, "SignalExtracted", "signal-extracted", fetchSig);
+    }
+
     cache.CloseAll(); // Release every input file before closing the output
 
     fOut->Close();
@@ -4872,7 +6131,8 @@ int main(int argc, char** argv) {
                   << " <consumerDir> [mcRefDir] [ppRefDir] [toyModelPath] [cutFolder]"
                      " [doIndividualComparisons] [sigExtractDir]\n"
                      "  sigExtractDir defaults to <consumerDir>/../results_SigExtract;"
-                     " pass \"none\" to skip the signal-extraction plots.\n";
+                     " pass \"none\" to skip the signal-extraction plots.\n"
+                     "  useRingZ outputs in <consumerDir> are detected by name and summarised as <family>_RingZ.\n";
         return 1;
     }
     std::string consumerDir = argv[1];

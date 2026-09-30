@@ -123,14 +123,24 @@ AUX_DO_INDIVIDUAL_COMPARISONS=0
 LAMBDA_MASS=1.1156830
 SIGMA=0.0017127606
 # SIGEXTRACT_OPTS=(--bkgMethod=window)
+# SIGEXTRACT_OPTS=(
+#   --bkgMethod=window
+#   --signalMassMin=$(bc -l <<< "$LAMBDA_MASS - 1.5*$SIGMA")
+#   --signalMassMax=$(bc -l <<< "$LAMBDA_MASS + 1.5*$SIGMA")
+#   --leftSidebandMin=$(bc -l <<< "$LAMBDA_MASS - 7*$SIGMA")
+#   --leftSidebandMax=$(bc -l <<< "$LAMBDA_MASS - 5.5*$SIGMA")
+#   --rightSidebandMin=$(bc -l <<< "$LAMBDA_MASS + 5.5*$SIGMA")
+#   --rightSidebandMax=$(bc -l <<< "$LAMBDA_MASS + 7*$SIGMA")
+# )
+# Wider intervals:
 SIGEXTRACT_OPTS=(
   --bkgMethod=window
-  --signalMassMin=$(bc -l <<< "$LAMBDA_MASS - 1.5*$SIGMA")
-  --signalMassMax=$(bc -l <<< "$LAMBDA_MASS + 1.5*$SIGMA")
-  --leftSidebandMin=$(bc -l <<< "$LAMBDA_MASS - 7*$SIGMA")
+  --signalMassMin=$(bc -l <<< "$LAMBDA_MASS - 2.0*$SIGMA")
+  --signalMassMax=$(bc -l <<< "$LAMBDA_MASS + 2.0*$SIGMA")
+  --leftSidebandMin=$(bc -l <<< "$LAMBDA_MASS - 7.5*$SIGMA")
   --leftSidebandMax=$(bc -l <<< "$LAMBDA_MASS - 5.5*$SIGMA")
   --rightSidebandMin=$(bc -l <<< "$LAMBDA_MASS + 5.5*$SIGMA")
-  --rightSidebandMax=$(bc -l <<< "$LAMBDA_MASS + 7*$SIGMA")
+  --rightSidebandMax=$(bc -l <<< "$LAMBDA_MASS + 7.5*$SIGMA")
 )
 
 # Set executable paths
