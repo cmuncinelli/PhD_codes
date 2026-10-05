@@ -2905,6 +2905,24 @@ void DrawSeriesByColumn(const std::vector<std::string>& columnLabels, const std:
     for (auto& b : bundles) delete b.profile;
 }
 
+/// @brief One column of a full-ring vs R_z comparison: a config, read from both definitions.
+struct RingPairColumn { VariationConfig cfg; std::string base, suffix; };
+
+/**
+ * @brief Data, every in-wagon variation and every consumer-style reference. The file of a column is
+ *        <base>/ConsumerResults_<family><suffix>.root, and its R_z sibling the same with RINGZ_TAG after
+ *        the family; a column is drawn only where both exist.
+ */
+std::vector<RingPairColumn> MakeRingPairColumns(const std::string& consumerDir, const VariationConfig& dataConfig,
+                                                const std::vector<VariationConfig>& sysVariations,
+                                                const std::vector<ExternalRef>& externals) {
+    std::vector<RingPairColumn> columns = {{dataConfig, consumerDir, ""}};
+    for (const auto& sys : sysVariations) columns.push_back({sys, consumerDir, sys.suffix});
+    for (const auto& ext : externals)
+        if (!ext.basePath.empty() && ext.kind == ExternalRef::kConsumerDir) columns.push_back({ext.config, ext.basePath, ""});
+    return columns;
+}
+
 /**
  * @brief The headline R_z check: <R>, <R_z> and <R_z>/<n_z^2>, per family and proxy, across configs.
  *
@@ -2913,6 +2931,7 @@ void DrawSeriesByColumn(const std::vector<std::string>& columnLabels, const std:
  * while the full ring carries its large fake everywhere. <R_z>/<n_z^2> is the per-candidate ring density,
  * comparable with <R> once the latter's fake is removed (under ring alignment). RAW values: no signal
  * extraction and no kappa (for those, see Corrections/). Nothing is written when no R_z file exists.
+ * Written to RingVsRingZ/<Family>/<Proxy>/.
  *
  * @param families Untagged families: the R_z file of each is the same name plus RINGZ_TAG.
  */
@@ -2926,15 +2945,9 @@ void DrawRingVsRingZ(FileCache& cache, TDirectory* fileRoot, const std::string& 
         {"", "<R_{z}>",             kBlue + 1, 1, 20, false},
         {"", "<R_{z}>/<n_{z}^{2}>", kRed + 1,  1, 21, true}};
 
-    for (const auto& fam : families) {
-        // Every column is a (full-ring file, R_z file) pair; the R_z name is the full one plus the tag
-        struct Column { VariationConfig cfg; std::string base, suffix; };
-        std::vector<Column> columns = {{dataConfig, consumerDir, ""}};
-        for (const auto& sys : sysVariations) columns.push_back({sys, consumerDir, sys.suffix});
-        for (const auto& ext : externals)
-            if (!ext.basePath.empty() && ext.kind == ExternalRef::kConsumerDir) columns.push_back({ext.config, ext.basePath, ""});
+    const std::vector<RingPairColumn> columns = MakeRingPairColumns(consumerDir, dataConfig, sysVariations, externals);
 
-        TDirectory* famDir = nullptr;
+    for (const auto& fam : families) {
         for (const auto& proxy : proxies) {
             std::vector<std::string> labels;
             std::vector<VariationConfig> cfgs;
@@ -2954,13 +2967,70 @@ void DrawRingVsRingZ(FileCache& cache, TDirectory* fileRoot, const std::string& 
                        pZ.first, pZ.second, pZW.first, pZW.second);
             }
             if (cfgs.empty() || !cfgs.front().isData) continue; // Differences need Data as the first column
-            if (!famDir) famDir = EnsureDir(EnsureDir(fileRoot, "RingVsRingZ"), fam.familyName);
+            TDirectory* pxDir = EnsureDir(EnsureDir(EnsureDir(fileRoot, "RingVsRingZ"), fam.familyName), proxy);
 
             DrawSeriesByColumn(labels, series, vals, "Canvas_RingVsRingZ_" + proxy,
-                           fam.familyName + ", " + proxy + ": full ring vs R_{z} (raw, all candidates)", famDir, "integrated value");
+                               fam.familyName + ", " + proxy + ": full ring vs R_{z} (raw, all candidates)", pxDir, "integrated value");
             DrawCategoricalCrossSystem(labels, cfgs, vals[2], "Canvas_RzOverNz2_" + proxy,
-                                       fam.familyName + ", " + proxy + ": <R_{z}>/<n_{z}^{2}> (raw)", famDir,
+                                       fam.familyName + ", " + proxy + ": <R_{z}>/<n_{z}^{2}> (raw)", pxDir,
                                        "<R_{z}>/<n_{z}^{2}>");
+        }
+    }
+}
+
+/**
+ * @brief CheapSigExtract for both ring definitions: <R> and <R_z>, in and out of the mass peak, and
+ *        how far the background pulls each (in - out).
+ *
+ * Same columns as RingVsRingZ/, read from IntegratedCuts/p2dRingCuts*V0MassPeak (FetchIntegratedByMassPeak):
+ * no fit and no sideband model. In-peak and out-of-peak candidates are disjoint, so in - out is plain
+ * quadrature. There is no <R_z>/<n_z^2> here: the in-peak <n_z^2> would need the consumer's peak window,
+ * which only the consumer knows. Written to RingVsRingZ_CheapSigExtract/<Family>/<Proxy>/.
+ */
+void DrawCheapRingVsRingZ(FileCache& cache, TDirectory* fileRoot, const std::string& consumerDir,
+                          const std::vector<FamilyConfig>& families, const VariationConfig& dataConfig,
+                          const std::vector<VariationConfig>& sysVariations, const std::vector<ExternalRef>& externals) {
+    const std::vector<std::string> proxies = {"LeadP", "LeadJet", "SubJet"};
+    const std::vector<VariationConfig> series = {
+        {"", "<R> (full ring)", kGray + 2, 1, 24, false},
+        {"", "<R_{z}>",         kBlue + 1, 1, 20, true}};
+    const std::vector<RingPairColumn> columns = MakeRingPairColumns(consumerDir, dataConfig, sysVariations, externals);
+
+    for (const auto& fam : families) {
+        for (const auto& proxy : proxies) {
+            std::vector<std::string> labels;
+            // [state][series][column], state 0 in peak, 1 out of peak, 2 in - out
+            std::vector<std::vector<std::vector<std::pair<double, double>>>> vals(3, std::vector<std::vector<std::pair<double, double>>>(2));
+            for (const auto& col : columns) {
+                const std::string stem = col.base + "/ConsumerResults_" + fam.dataSuffix;
+                const std::string files[2] = {stem + col.suffix + ".root", stem + RINGZ_TAG + col.suffix + ".root"};
+                if (gSystem->AccessPathName(files[0].c_str()) || gSystem->AccessPathName(files[1].c_str())) continue;
+
+                SigExtractPoint in[2], out[2];
+                bool ok = true;
+                for (int d = 0; d < 2 && ok; ++d) {
+                    in[d]  = FetchIntegratedByMassPeak(cache, files[d], proxy, true);
+                    out[d] = FetchIntegratedByMassPeak(cache, files[d], proxy, false);
+                    ok = in[d].found && out[d].found;
+                }
+                if (!ok) continue;
+                labels.push_back(col.cfg.legendLabel);
+                for (int d = 0; d < 2; ++d) {
+                    vals[0][d].push_back({in[d].value, in[d].error});
+                    vals[1][d].push_back({out[d].value, out[d].error});
+                    vals[2][d].push_back({in[d].value - out[d].value, std::hypot(in[d].error, out[d].error)});
+                }
+            }
+            if (labels.empty()) continue;
+            TDirectory* pxDir = EnsureDir(EnsureDir(EnsureDir(fileRoot, "RingVsRingZ_CheapSigExtract"), fam.familyName), proxy);
+
+            const std::string head = fam.familyName + ", " + proxy + ": full ring vs R_{z}, ";
+            DrawSeriesByColumn(labels, series, vals[0], "Canvas_RingVsRingZ_InMassPeak_" + proxy,
+                               head + "in mass peak", pxDir, "integrated value");
+            DrawSeriesByColumn(labels, series, vals[1], "Canvas_RingVsRingZ_OutOfMassPeak_" + proxy,
+                               head + "out of mass peak", pxDir, "integrated value");
+            DrawSeriesByColumn(labels, series, vals[2], "Canvas_RingVsRingZ_InMinusOut_" + proxy,
+                               head + "in - out of mass peak", pxDir, "#Delta (in - out)");
         }
     }
 }
@@ -6076,6 +6146,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
     // only the files it finds, so a wagon without R_z outputs still gets its full-ring corrections.
     std::cout << " -> Full ring vs R_z...\n";
     DrawRingVsRingZ(cache, fOut, consumerDir, fullFamilies, dataConfig, sysVariations, externalsAll, cutFolder);
+    DrawCheapRingVsRingZ(cache, fOut, consumerDir, fullFamilies, dataConfig, sysVariations, externalsAll);
     const std::vector<FakePairing> pairings = MakeFakePairings(consumerDir, sigExtractDir, externalsAll);
 
     // Raw: every candidate, from the consumer's mass-binned moments
