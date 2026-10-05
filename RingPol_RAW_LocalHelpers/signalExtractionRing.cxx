@@ -5884,29 +5884,29 @@ int main(int argc, char** argv) {
 
         // Step 3.2: Fetching Histograms
         // 1D QA & Mass
-        TH1D* hMassSigExtract = (TH1D*)inDir->Get("hMassSigExtract");
+        TH1D* hMassSigExtract = (TH1D*)inDir->Get("LeadJet/hMassSigExtract");
         
         // 2D: Observable vs Invariant Mass (Now using TProfiles to get the proper errors!)
-        TProfile2D* p2dRingObservableDeltaPhiVsMass = (TProfile2D*)inDir->Get("p2dRingObservableDeltaPhiVsMass");
-        TProfile2D* p2dRingObservableDeltaThetaVsMass = (TProfile2D*)inDir->Get("p2dRingObservableDeltaThetaVsMass");
+        TProfile2D* p2dRingObservableDeltaPhiVsMass = (TProfile2D*)inDir->Get("LeadJet/p2dRingObservableDeltaPhiVsMass");
+        TProfile2D* p2dRingObservableDeltaThetaVsMass = (TProfile2D*)inDir->Get("LeadJet/p2dRingObservableDeltaThetaVsMass");
         
             // Counters
-        TH2D* h2dDeltaPhiVsMass = (TH2D*)inDir->Get("QA/h2dDeltaPhiVsMass");
-        TH2D* h2dDeltaThetaVsMass = (TH2D*)inDir->Get("QA/h2dDeltaThetaVsMass");
+        TH2D* h2dDeltaPhiVsMass = (TH2D*)inDir->Get("LeadJet/QA/h2dDeltaPhiVsMass");
+        TH2D* h2dDeltaThetaVsMass = (TH2D*)inDir->Get("LeadJet/QA/h2dDeltaThetaVsMass");
         
         // 3D: Observable vs Mass vs Lambda pT (Now using TProfiles to get the proper errors!)
-        TProfile3D* p3dRingObservableDeltaPhiVsMassVsLambdaPt = (TProfile3D*)inDir->Get("p3dRingObservableDeltaPhiVsMassVsLambdaPt");
-        TProfile3D* p3dRingObservableDeltaThetaVsMassVsLambdaPt = (TProfile3D*)inDir->Get("p3dRingObservableDeltaThetaVsMassVsLambdaPt");
+        TProfile3D* p3dRingObservableDeltaPhiVsMassVsLambdaPt = (TProfile3D*)inDir->Get("LeadJet/p3dRingObservableDeltaPhiVsMassVsLambdaPt");
+        TProfile3D* p3dRingObservableDeltaThetaVsMassVsLambdaPt = (TProfile3D*)inDir->Get("LeadJet/p3dRingObservableDeltaThetaVsMassVsLambdaPt");
             // Counters
-        TH3D* h3dDeltaPhiVsMassVsLambdaPt = (TH3D*)inDir->Get("QA/h3dDeltaPhiVsMassVsLambdaPt");
-        TH3D* h3dDeltaThetaVsMassVsLambdaPt = (TH3D*)inDir->Get("QA/h3dDeltaThetaVsMassVsLambdaPt");
+        TH3D* h3dDeltaPhiVsMassVsLambdaPt = (TH3D*)inDir->Get("LeadJet/QA/h3dDeltaPhiVsMassVsLambdaPt");
+        TH3D* h3dDeltaThetaVsMassVsLambdaPt = (TH3D*)inDir->Get("LeadJet/QA/h3dDeltaThetaVsMassVsLambdaPt");
 
         // 3D: Observable vs Mass vs Lead Jet pT (Now using TProfiles to get the proper errors!)
-        TProfile3D* p3dRingObservableDeltaPhiVsMassVsLeadJetPt = (TProfile3D*)inDir->Get("p3dRingObservableDeltaPhiVsMassVsLeadJetPt");
-        TProfile3D* p3dRingObservableDeltaThetaVsMassVsLeadJetPt = (TProfile3D*)inDir->Get("p3dRingObservableDeltaThetaVsMassVsLeadJetPt"); 
+        TProfile3D* p3dRingObservableDeltaPhiVsMassVsLeadJetPt = (TProfile3D*)inDir->Get("LeadJet/p3dRingObservableDeltaPhiVsMassVsLeadJetPt");
+        TProfile3D* p3dRingObservableDeltaThetaVsMassVsLeadJetPt = (TProfile3D*)inDir->Get("LeadJet/p3dRingObservableDeltaThetaVsMassVsLeadJetPt"); 
             // Counters
-        TH3D* h3dDeltaPhiVsMassVsLeadJetPt = (TH3D*)inDir->Get("QA/h3dDeltaPhiVsMassVsLeadJetPt");
-        TH3D* h3dDeltaThetaVsMassVsLeadJetPt = (TH3D*)inDir->Get("QA/h3dDeltaThetaVsMassVsLeadJetPt");
+        TH3D* h3dDeltaPhiVsMassVsLeadJetPt = (TH3D*)inDir->Get("LeadJet/QA/h3dDeltaPhiVsMassVsLeadJetPt");
+        TH3D* h3dDeltaThetaVsMassVsLeadJetPt = (TH3D*)inDir->Get("LeadJet/QA/h3dDeltaThetaVsMassVsLeadJetPt");
 
         // 2D: Observable vs eta of the jet-side proxy vs Invariant Mass.
         // OPTIONAL: these were added to the consumer well after the angular ones, so any
@@ -5915,13 +5915,13 @@ int main(int argc, char** argv) {
         // they are deliberately kept out of the essential-histogram check below.
         // Note the counters live at folder level rather than under QA/: they are inputs to the
         // extraction, not QA plots.
-        TProfile2D* p2dRingObsEtaLeadJetVsMass = (TProfile2D*)inDir->Get("p2dRingObservableEtaLeadJetVsMass");
-        TProfile2D* p2dRingObsEtaLeadPVsMass = (TProfile2D*)inDir->Get("p2dRingObservableLeadPEtaLeadPVsMass");
-        TProfile2D* p2dRingObsEtaSubJetVsMass = (TProfile2D*)inDir->Get("p2dRingObservable2ndJetEta2ndJetVsMass");
+        TProfile2D* p2dRingObsEtaLeadJetVsMass = (TProfile2D*)inDir->Get("LeadJet/p2dRingObservableEtaLeadJetVsMass");
+        TProfile2D* p2dRingObsEtaLeadPVsMass = (TProfile2D*)inDir->Get("LeadP/p2dRingObservableLeadPEtaLeadPVsMass");
+        TProfile2D* p2dRingObsEtaSubJetVsMass = (TProfile2D*)inDir->Get("SubJet/p2dRingObservable2ndJetEta2ndJetVsMass");
             // Counters
-        TH2D* h2dCounterEtaLeadJetVsMass = (TH2D*)inDir->Get("h2dCounterEtaLeadJetVsMass");
-        TH2D* h2dCounterEtaLeadPVsMass = (TH2D*)inDir->Get("h2dCounterLeadPEtaLeadPVsMass");
-        TH2D* h2dCounterEtaSubJetVsMass = (TH2D*)inDir->Get("h2dCounter2ndJetEta2ndJetVsMass");
+        TH2D* h2dCounterEtaLeadJetVsMass = (TH2D*)inDir->Get("LeadJet/h2dCounterEtaLeadJetVsMass");
+        TH2D* h2dCounterEtaLeadPVsMass = (TH2D*)inDir->Get("LeadP/h2dCounterLeadPEtaLeadPVsMass");
+        TH2D* h2dCounterEtaSubJetVsMass = (TH2D*)inDir->Get("SubJet/h2dCounter2ndJetEta2ndJetVsMass");
 
         // Basic check to ensure critical histograms were loaded correctly
         if (!h2dDeltaPhiVsMass || !hMassSigExtract || !p2dRingObservableDeltaPhiVsMass || !p2dRingObservableDeltaThetaVsMass || !p3dRingObservableDeltaPhiVsMassVsLambdaPt ||
@@ -5988,16 +5988,16 @@ int main(int argc, char** argv) {
         // is used, when present, to pin down (mu, sigma) far better than the 24-bin extraction axis
         // can. Nothing is COUNTED across the two axes -- their edges do not align and they do not
         // even cover the same range -- only the peak position and width are borrowed.
-        TH1D* hMassFine = (TH1D*)inDir->Get("QA/hMass");
+        TH1D* hMassFine = (TH1D*)inDir->Get("LeadJet/QA/hMass");
         std::cout << "\n[Integrated] Extracting <R>_measured, <R>_S and <R>_B per proxy"
                   << (hMassFine ? ", with (mu, sigma) from the fine QA mass axis"
                                 : " (no fine QA mass spectrum found; fitting the extraction axis)")
                   << "..." << std::endl;
 
         const std::vector<IntegratedProxySpec> proxySpecs = {
-            {"pRingObservableMass",        "LeadJet", "Leading jet"},
-            {"pRingObservableLeadPMass",   "LeadP",   "Leading particle"},
-            {"pRingObservable2ndJetMass",  "SubJet",  "Subleading jet"}
+            {"LeadJet/pRingObservableMass",       "LeadJet", "Leading jet"},
+            {"LeadP/pRingObservableLeadPMass",    "LeadP",   "Leading particle"},
+            {"SubJet/pRingObservable2ndJetMass",  "SubJet",  "Subleading jet"}
         };
         for (const auto& ps : proxySpecs) {
             TProfile* profMass = (TProfile*)inDir->Get(ps.profilePath);
@@ -6013,7 +6013,7 @@ int main(int argc, char** argv) {
         // the summary. For the full ring w == 1 identically, so <w>_S = 1 and there is nothing to
         // extract (a zero-spread profile would also leave the sideband fit with no errors to weigh).
         // The ring definition is read from the file name, as everywhere downstream of the consumer.
-        if (inDir->GetDirectory("KappaEff")) {
+        if (inDir->GetDirectory("LeadJet/KappaEff")) {
             const bool isRingZFile = inputFilePath.find("_useRingZ") != std::string::npos;
             std::cout << "\n[Integrated] Extracting the KappaEff moments <u^2>_S"
                       << (isRingZFile ? " and <w>_S" : "") << " per proxy..." << std::endl;
@@ -6022,7 +6022,7 @@ int main(int argc, char** argv) {
             if (isRingZFile) moments.push_back({"Den", "w"});
             for (const auto& ps : proxySpecs) {
                 for (const auto& mo : moments) {
-                    const std::string path  = std::string("KappaEff/pKappa") + mo.tag + ps.name + "VsMass";
+                    const std::string path  = std::string(ps.name) + "/KappaEff/pKappa" + mo.tag + ps.name + "VsMass";
                     const std::string name  = std::string(ps.name) + "_" + mo.tag;
                     const std::string label = std::string(ps.label) + ", <" + mo.symbol + ">";
                     const IntegratedProxySpec ms = {path.c_str(), name.c_str(), label.c_str()};
@@ -6057,11 +6057,11 @@ int main(int argc, char** argv) {
         };
         const std::vector<EtaExtractionSpec> etaExtractions = {
             {h2dCounterEtaLeadJetVsMass, p2dRingObsEtaLeadJetVsMass, "EtaLeadJet",
-             "h2dCounterEtaLeadJetVsMass", "p2dRingObservableEtaLeadJetVsMass"},
+             "LeadJet/h2dCounterEtaLeadJetVsMass", "LeadJet/p2dRingObservableEtaLeadJetVsMass"},
             {h2dCounterEtaLeadPVsMass, p2dRingObsEtaLeadPVsMass, "EtaLeadP",
-             "h2dCounterLeadPEtaLeadPVsMass", "p2dRingObservableLeadPEtaLeadPVsMass"},
+             "LeadP/h2dCounterLeadPEtaLeadPVsMass", "LeadP/p2dRingObservableLeadPEtaLeadPVsMass"},
             {h2dCounterEtaSubJetVsMass, p2dRingObsEtaSubJetVsMass, "EtaSubJet",
-             "h2dCounter2ndJetEta2ndJetVsMass", "p2dRingObservable2ndJetEta2ndJetVsMass"}
+             "SubJet/h2dCounter2ndJetEta2ndJetVsMass", "SubJet/p2dRingObservable2ndJetEta2ndJetVsMass"}
         };
 
         for (const auto& spec : etaExtractions) {
@@ -6275,11 +6275,11 @@ int main(int argc, char** argv) {
         TDirectory* outDirSig = outDirVar->mkdir("1D_Significance");
 
         // Fetching 1D TProfiles:
-        TProfile* pDeltaPhi = (TProfile*)inDir->Get("pRingObservableDeltaPhi");
-        TProfile* pDeltaTheta = (TProfile*)inDir->Get("pRingObservableDeltaTheta");
-        TProfile* pIntegrated = (TProfile*)inDir->Get("pRingObservableIntegrated");
-        TProfile* pLambdaPt = (TProfile*)inDir->Get("pRingObservableLambdaPt");
-        TProfile* pMass = (TProfile*)inDir->Get("pRingObservableMass"); 
+        TProfile* pDeltaPhi = (TProfile*)inDir->Get("LeadJet/pRingObservableDeltaPhi");
+        TProfile* pDeltaTheta = (TProfile*)inDir->Get("LeadJet/pRingObservableDeltaTheta");
+        TProfile* pIntegrated = (TProfile*)inDir->Get("LeadJet/pRingObservableIntegrated");
+        TProfile* pLambdaPt = (TProfile*)inDir->Get("LeadJet/pRingObservableLambdaPt");
+        TProfile* pMass = (TProfile*)inDir->Get("LeadJet/pRingObservableMass"); 
 
         outDirSig->cd();
 

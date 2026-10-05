@@ -325,10 +325,11 @@ int main(int argc, char** argv) {
         dirSEM->cd();
         
         // Explicit list of the exact TProfiles we want to preserve
+        // (Leading-jet profiles: they live in the family's LeadJet/ folder. Write() keeps the bare object name.)
         std::vector<std::string> targetSEMProfiles = {
-            "pRingObservableDeltaTheta",
-            "pRingObservableLambdaPt",
-            "pRingObservableMass"
+            "LeadJet/pRingObservableDeltaTheta",
+            "LeadJet/pRingObservableLambdaPt",
+            "LeadJet/pRingObservableMass"
         };
         for (const auto& semName : targetSEMProfiles) {
             std::string fullPath = taskDir + fam + "/" + semName;
@@ -352,7 +353,7 @@ int main(int argc, char** argv) {
     std::cout << " Saved summary histogram 'pRingCuts_Delta' to root directory.\n";
     
     // Copy the original pRingCuts TProfile from input to output root dir for direct comparison
-    std::string origRingPath = taskDir + "pRingCuts";
+    std::string origRingPath = taskDir + "IntegratedCuts/pRingCuts"; // Booked under IntegratedCuts/ by the consumer
     TProfile* pRingCutsOrig = (TProfile*)inFile->Get(origRingPath.c_str());
     if (pRingCutsOrig) {
         pRingCutsOrig->Write("pRingCuts_SEM");

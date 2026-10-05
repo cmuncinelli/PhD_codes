@@ -940,7 +940,7 @@ static void MakeAeeFoldCanvas(TDirectory* taskDir, TDirectory* outDir, const Fol
     TH2*        hCounts = static_cast<TH2*>(SafeGet(aeeDir, "h2dCountsVsPxAeePyAee", false));
     TProfile2D* hPt     = static_cast<TProfile2D*>(SafeGet(aeeDir, "p2dPtStar_vsPxAeePyAee", false));
     TProfile2D* hPz     = static_cast<TProfile2D*>(SafeGet(aeeDir, "p2dPzStar_vsPxAeePyAee", false));
-    TProfile2D* hRing   = static_cast<TProfile2D*>(SafeGet(folderDir, "p2dRingObservableVsPxAeePyAee", false));
+    TProfile2D* hRing   = static_cast<TProfile2D*>(SafeGet(folderDir, "RingMaps/p2dRingObservableVsPxAeePyAee", false));
 
     if (!hCounts || !hPt || !hPz || !hRing) {
         printf("WARNING: skipping AEE fold for '%s' (one or more (x_AEE, y_AEE) maps missing)\n", f.name);
@@ -1319,11 +1319,13 @@ static void MakeRingKernelCanvas(TDirectory* taskDir, TDirectory* outDir, const 
     TDirectory* folderDir = GetDir(taskDir, f.name);
     if (!folderDir) { printf("WARNING: skipping ring kernel for '%s' (folder missing)\n", f.name); return; }
 
-    TDirectory* kDir = GetDirPath(folderDir, "RingKernel");
-    if (!kDir) { printf("WARNING: skipping ring kernel for '%s' (RingKernel missing)\n", f.name); return; }
+    // Each proxy carries its own "RingKernel/". The LeadP one is optionally filled.
+    TDirectory* kDir = GetDirPath(folderDir, "LeadJet/RingKernel");
+    if (!kDir) { printf("WARNING: skipping ring kernel for '%s' (LeadJet/RingKernel missing)\n", f.name); return; }
+    TDirectory* kDirLeadP = GetDirPath(folderDir, "LeadP/RingKernel", false);
 
     TProfile2D* hJet = static_cast<TProfile2D*>(SafeGet(kDir, "p2dRingObservableCosDeltaThetaVsJetZ", false));
-    TProfile2D* hLeadP = static_cast<TProfile2D*>(SafeGet(kDir, "p2dRingObservableLeadPCosDeltaThetaVsLeadPZ", false));
+    TProfile2D* hLeadP = static_cast<TProfile2D*>(SafeGet(kDirLeadP, "p2dRingObservableLeadPCosDeltaThetaVsLeadPZ", false));
     if (!hJet) { printf("WARNING: skipping ring kernel for '%s' (jet surface missing)\n", f.name); return; }
 
     TDirectory* fitDir = nullptr;
@@ -1335,7 +1337,7 @@ static void MakeRingKernelCanvas(TDirectory* taskDir, TDirectory* outDir, const 
     const double cwJet = FullyAllowedCosWindow(static_cast<TProfile3D*>(
         SafeGet(kDir, "p3dRingObservableCosDeltaThetaVsJetZVsLambdaZ", false)));
     const double cwLeadP = FullyAllowedCosWindow(static_cast<TProfile3D*>(
-        SafeGet(kDir, "p3dRingObservableLeadPCosDeltaThetaVsLeadPZVsLambdaZ", false)));
+        SafeGet(kDirLeadP, "p3dRingObservableLeadPCosDeltaThetaVsLeadPZVsLambdaZ", false)));
 
     const std::vector<KernelSliceFit> fitJet =
         FitRingKernelSlices(hJet, cosRebin, maxAbsCos, minEntries, fitDir, Form("kJet_%s", f.name));
@@ -1723,13 +1725,14 @@ static void MakeKernelMomentsCanvas(TDirectory* taskDir, TDirectory* outDir, con
     TDirectory* folderDir = GetDir(taskDir, f.name);
     if (!folderDir) { printf("WARNING: skipping kernel moments for '%s' (folder missing)\n", f.name); return; }
 
-    TDirectory* kDir = GetDirPath(folderDir, "RingKernel");
-    if (!kDir) { printf("WARNING: skipping kernel moments for '%s' (RingKernel missing)\n", f.name); return; }
+    TDirectory* kDir = GetDirPath(folderDir, "LeadJet/RingKernel");
+    if (!kDir) { printf("WARNING: skipping kernel moments for '%s' (LeadJet/RingKernel missing)\n", f.name); return; }
+    TDirectory* kDirLeadP = GetDirPath(folderDir, "LeadP/RingKernel", false);
 
     TProfile3D* h3Jet = static_cast<TProfile3D*>(
         SafeGet(kDir, "p3dRingObservableCosDeltaThetaVsJetZVsLambdaZ", false));
     TProfile3D* h3LeadP = static_cast<TProfile3D*>(
-        SafeGet(kDir, "p3dRingObservableLeadPCosDeltaThetaVsLeadPZVsLambdaZ", false));
+        SafeGet(kDirLeadP, "p3dRingObservableLeadPCosDeltaThetaVsLeadPZVsLambdaZ", false));
     if (!h3Jet) { printf("WARNING: skipping kernel moments for '%s' (jet 3D profile missing)\n", f.name); return; }
 
     const std::vector<KernelBphiPoint> ptsJet = ExtractBphiFromKernel3D(h3Jet, maxAbsCos, minEntriesCell);
@@ -2011,13 +2014,13 @@ static KernelSectors DecomposeKernel3D(TProfile3D* h3, double minEntriesCell, co
  */
 // ==========================================================================
 static void MakeKernelSymmetryCanvas(TDirectory* taskDir, TDirectory* outDir, const FolderSpec& f,
-                                     const char* h3Name, const char* tag, const char* proxyLabel,
+                                     const char* kernelDir, const char* h3Name, const char* tag, const char* proxyLabel,
                                      double minEntriesCell = 30.)
 {
     TDirectory* folderDir = GetDir(taskDir, f.name);
     if (!folderDir) { printf("WARNING: skipping kernel symmetry for '%s' (folder missing)\n", f.name); return; }
-    TDirectory* kDir = GetDirPath(folderDir, "RingKernel");
-    if (!kDir) { printf("WARNING: skipping kernel symmetry for '%s' (RingKernel missing)\n", f.name); return; }
+    TDirectory* kDir = GetDirPath(folderDir, kernelDir);
+    if (!kDir) { printf("WARNING: skipping kernel symmetry for '%s' (%s missing)\n", f.name, kernelDir); return; }
 
     TProfile3D* h3 = static_cast<TProfile3D*>(SafeGet(kDir, h3Name, false));
     if (!h3) { printf("WARNING: skipping kernel symmetry %s for '%s' (%s missing)\n", tag, f.name, h3Name); return; }
@@ -2134,10 +2137,11 @@ static void MakeKappaEffCanvas(TDirectory* taskDir, TDirectory* outDir, const Fo
 {
     TDirectory* folderDir = GetDir(taskDir, f.name);
     if (!folderDir) { printf("WARNING: skipping KappaEff for '%s' (folder missing)\n", f.name); return; }
-    TDirectory* kDir = GetDirPath(folderDir, "KappaEff", false);
-    if (!kDir) { printf("WARNING: skipping KappaEff for '%s' (KappaEff/ missing: consumer older than the KappaEff moments?)\n", f.name); return; }
-
     static const char* kProxies[3] = {"LeadJet", "LeadP", "SubJet"};
+    if (!GetDirPath(folderDir, "LeadJet/KappaEff", false)) {
+        printf("WARNING: skipping KappaEff for '%s' (LeadJet/KappaEff/ missing: consumer older than the KappaEff moments?)\n", f.name);
+        return;
+    }
     const std::string kappaSym = (gRingSym == "#it{R}") ? "#kappa_{eff}" : "#kappa_{z}";
 
     TCanvas* c = new TCanvas(Form("cKappaEff_%s", f.name), "", 2100, 650);
@@ -2145,6 +2149,7 @@ static void MakeKappaEffCanvas(TDirectory* taskDir, TDirectory* outDir, const Fo
     std::vector<TH1D*> written;
 
     for (int i = 0; i < 3; ++i) {
+        TDirectory* kDir  = GetDirPath(folderDir, std::string(kProxies[i]) + "/KappaEff", false); // Each proxy's own
         TProfile* pNum    = static_cast<TProfile*>(SafeGet(kDir, Form("pKappaNum%sVsMass", kProxies[i]), false));
         TProfile* pDen    = static_cast<TProfile*>(SafeGet(kDir, Form("pKappaDen%sVsMass", kProxies[i]), false));
         TProfile* pNumDen = static_cast<TProfile*>(SafeGet(kDir, Form("pKappaNumTimesDen%sVsMass", kProxies[i]), false));
@@ -2288,7 +2293,7 @@ static void MakeDeltaPhiFoldCanvas(TDirectory* taskDir, TDirectory* outDir, cons
     TDirectory* folderDir = GetDir(taskDir, f.name);
     if (!folderDir) { printf("WARNING: skipping Delta phi fold for '%s' (folder missing)\n", f.name); return; }
 
-    static const char* kProfiles[3] = {"pRingObservableDeltaPhi", "pRingObservableLeadPDeltaPhi", "pRingObservable2ndJetDeltaPhi"};
+    static const char* kProfiles[3] = {"LeadJet/pRingObservableDeltaPhi", "LeadP/pRingObservableLeadPDeltaPhi", "SubJet/pRingObservable2ndJetDeltaPhi"};
     static const char* kProxies[3]  = {"LeadJet", "LeadP", "SubJet"};
 
     TCanvas* c = new TCanvas(Form("cDeltaPhiFold_%s", f.name), "", 2100, 1100);
@@ -2722,18 +2727,18 @@ int main(int argc, char** argv)
     // 2. Ring-observable 2D scalar canvases, per proxy and per coordinate system
     std::cout << " -> Drawing ring-observable 2D canvases...\n";
     for (const auto& f : folders) {
-        MakePanelCanvas(taskDir, dirRingObs2D, f, "", "cRingObservable2D", RingLabel("Ring observable <#it{R}>"),
+        MakePanelCanvas(taskDir, dirRingObs2D, f, "RingMaps", "cRingObservable2D", RingLabel("Ring observable <#it{R}>"),
                         MakeRingPanels("p2dRingObservable", labSuffixes, labX, labY, labBanners));
-        MakePanelCanvas(taskDir, dirRingObs2D, f, "", "cRingObservableAee2D", RingLabel("Ring observable <#it{R}>, AEE planes"),
+        MakePanelCanvas(taskDir, dirRingObs2D, f, "RingMaps", "cRingObservableAee2D", RingLabel("Ring observable <#it{R}>, AEE planes"),
                         MakeRingPanels("p2dRingObservable", aeeSuffixes, aeeX, aeeY, aeeBanners));
-        MakePanelCanvas(taskDir, dirRingObs2D, f, "", "cRingObservablePrimeJet2D", RingLabel("Ring observable <#it{R}>, jet frame"),
+        MakePanelCanvas(taskDir, dirRingObs2D, f, "RingMaps", "cRingObservablePrimeJet2D", RingLabel("Ring observable <#it{R}>, jet frame"),
                         MakeRingPanels("p2dRingObservable", jetSuffixes, jetX, jetY, jetBanners));
     }
 
     // 3. Ring-observable 2D scalar canvases (Leading Particle Proxy)
     std::cout << " -> Drawing ring-observable (Leading Particle) 2D canvases...\n";
     for (const auto& f : folders)
-        MakePanelCanvas(taskDir, dirRingObs2D, f, "", "cRingObservableLeadP2D", RingLabel("Ring observable <#it{R}>_{LeadP}"),
+        MakePanelCanvas(taskDir, dirRingObs2D, f, "RingMaps", "cRingObservableLeadP2D", RingLabel("Ring observable <#it{R}>_{LeadP}"),
                         MakeRingPanels("p2dRingObservableLeadP", labSuffixes, labX, labY, labBanners));
 
     // 4. AEE acceptance maps, one canvas per plane
@@ -2774,9 +2779,9 @@ int main(int argc, char** argv)
     // 9. Kernel symmetry sectors, per proxy: detector-induced vs genuine, and one null
     std::cout << " -> Decomposing kernel symmetry sectors...\n";
     for (const auto& f : folders) {
-        MakeKernelSymmetryCanvas(taskDir, dirKernelSymmetry, f,
+        MakeKernelSymmetryCanvas(taskDir, dirKernelSymmetry, f, "LeadJet/RingKernel",
                                  "p3dRingObservableCosDeltaThetaVsJetZVsLambdaZ", "Jet", "leading jet");
-        MakeKernelSymmetryCanvas(taskDir, dirKernelSymmetry, f,
+        MakeKernelSymmetryCanvas(taskDir, dirKernelSymmetry, f, "LeadP/RingKernel",
                                  "p3dRingObservableLeadPCosDeltaThetaVsLeadPZVsLambdaZ", "LeadP", "leading particle");
     }
 

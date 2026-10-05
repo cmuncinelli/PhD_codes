@@ -2827,12 +2827,12 @@ struct RingSample {
 bool LoadRingSample(FileCache& cache, const std::string& file, const std::string& cutFolder,
                     const std::string& proxy, RingSample& s) {
     static const std::map<std::string, std::string> kRingVsMass = {
-        {"LeadJet", "pRingObservableMass"},
-        {"LeadP",   "pRingObservableLeadPMass"},
-        {"SubJet",  "pRingObservable2ndJetMass"}};
+        {"LeadJet", "LeadJet/pRingObservableMass"},
+        {"LeadP",   "LeadP/pRingObservableLeadPMass"},
+        {"SubJet",  "SubJet/pRingObservable2ndJetMass"}};
     if (gSystem->AccessPathName(file.c_str())) return false; // Absent config: quiet, it is the common case
     const std::string base = TASK_DIR_IN_FILE + cutFolder + "/";
-    const std::string kap  = base + "KappaEff/";
+    const std::string kap  = base + proxy + "/KappaEff/"; // Each proxy carries its own KappaEff/
 
     TH1* h[5] = {cache.FetchClone<TH1>(file, base + kRingVsMass.at(proxy), false),
                  cache.FetchClone<TH1>(file, kap + "pKappaNum" + proxy + "VsMass", false),
@@ -3153,6 +3153,120 @@ void DrawCorrections(TDirectory* fileRoot, const std::vector<FamilyConfig>& fami
     }
 }
 
+/**
+ * @brief CheapSigExtract inputs of one consumer file, for one proxy: the four *VsMassRegion profiles.
+ *
+ * The consumer fills them from the same two flags as IntegratedCuts/p2dRingCuts*V0MassPeak:
+ * v0InMassWindow (bin 1, the sideband) and v0InMassPeak (bin 2). Index 0 is the sideband, 1 the peak.
+ */
+struct RegionSample {
+    CandidateMoments ring[2], num[2], den[2], numDen[2];
+};
+
+/// @brief The candidate moments of one bin of a TProfile, from its mean and spread ("s" error option).
+CandidateMoments BinMoments(TProfile* p, int bin) {
+    CandidateMoments m;
+    const double n = p->GetBinEntries(bin);
+    if (n <= 0.) return m;
+    const TString opt = p->GetErrorOption();
+    p->SetErrorOption("s"); // Just a cheap way of recovering the standard deviation using the error. There probably was a better way of doing this...
+    const double mean = p->GetBinContent(bin), sd = p->GetBinError(bin);
+    p->SetErrorOption(opt); // Restoring previous behavior before exiting
+    m.n = n;
+    m.sum = n * mean;
+    m.sum2 = n * (sd * sd + mean * mean);
+    return m;
+}
+
+bool LoadRegionSample(FileCache& cache, const std::string& file, const std::string& cutFolder,
+                      const std::string& proxy, RegionSample& r) {
+    if (gSystem->AccessPathName(file.c_str())) return false; // Absent config: quiet
+    const std::string kap = TASK_DIR_IN_FILE + cutFolder + "/" + proxy + "/KappaEff/";
+    TProfile* p[4] = {cache.FetchClone<TProfile>(file, kap + "pRing" + proxy + "VsMassRegion", false),
+                      cache.FetchClone<TProfile>(file, kap + "pKappaNum" + proxy + "VsMassRegion", false),
+                      cache.FetchClone<TProfile>(file, kap + "pKappaDen" + proxy + "VsMassRegion", false),
+                      cache.FetchClone<TProfile>(file, kap + "pKappaNumTimesDen" + proxy + "VsMassRegion", false)};
+    const bool ok = p[0] && p[1] && p[2] && p[3];
+    if (ok)
+        for (int i = 0; i < 2; ++i) {
+            r.ring[i] = BinMoments(p[0], i + 1); r.num[i] = BinMoments(p[1], i + 1);
+            r.den[i] = BinMoments(p[2], i + 1);  r.numDen[i] = BinMoments(p[3], i + 1);
+        }
+    for (TProfile* q : p) delete q;
+    return ok && r.ring[1].n > r.ring[0].n; // A peak no richer than its sideband has no signal to estimate
+}
+
+/**
+ * @brief The cheap signal mean of y: <y>_S = (Sum_P y - Sum_B y) / (N_P - N_B).
+ *
+ * Single sideband of the same total width as the peak window (the consumer enforces it), so for a background
+ * whose density and <y>_B are linear in mass, the sideband holds exactly the background under the peak.
+ * A linear density times a linear <y>_B is quadratic, and that curvature is what this misses; splitting the
+ * sideband into left and right would recover it (see the README).
+ *
+ * The two regions are disjoint, so they are independent. Treating each count as Poisson (a compound sum):
+ *   Var(A) = N_P <y^2>_P + N_B <y^2>_B,  Var(D) = N_P + N_B,  Cov(A, D) = Sum_P y + Sum_B y,
+ *   Var(<y>_S) = [Var(A) - 2 r Cov(A, D) + r^2 Var(D)] / D^2,   A = Sum_P - Sum_B,  D = N_P - N_B,  r = A/D.
+ * With no background it reduces to the standard error of <y>_P; for y == 1 it is exactly 1 with no error.
+ */
+std::pair<double, double> CheapSignalMean(const CandidateMoments& peak, const CandidateMoments& side) {
+    const double D = peak.n - side.n;
+    if (!(D > 0.)) return {0., -1.};
+    const double A = peak.sum - side.sum;
+    const double r = A / D;
+    const double varA = peak.sum2 + side.sum2;
+    const double varD = peak.n + side.n;
+    const double cov  = peak.sum + side.sum;
+    const double var  = (varA - 2. * r * cov + r * r * varD) / (D * D);
+    return {r, std::sqrt(std::max(var, 0.))};
+}
+
+/**
+ * @brief Corrections/CheapSigExtract/<Family>/Canvas_KappaByRegion_<Proxy>: the raw kappa of the peak and of the
+ *        sideband, for both ring definitions, per data-like sample.
+ *
+ * Each is 3 <u^2>/<w> over that region's candidates, with the ratio-of-means error that keeps their covariance.
+ * Where the two regions disagree, background candidates do not share the signal's response, which is exactly
+ * why the corrected P divides by the signal-region kappa and not by either of these.
+ */
+void DrawKappaByRegion(FileCache& cache, TDirectory* fileRoot, const std::vector<FamilyConfig>& families,
+                       const std::vector<FakePairing>& pairings, const std::string& cutFolder) {
+    const std::vector<std::string> proxies = {"LeadP", "LeadJet", "SubJet"};
+    const std::vector<VariationConfig> series = {
+        {"", "#kappa_{eff}, peak",     kGray + 2, 1, 20, false},
+        {"", "#kappa_{eff}, sideband", kGray + 2, 1, 24, false},
+        {"", "#kappa_{z}, peak",       kBlue + 1, 1, 21, true},
+        {"", "#kappa_{z}, sideband",   kBlue + 1, 1, 25, true}};
+    const std::pair<double, double> kMissing = {0., -1.};
+    auto kappaOf = [](const RegionSample& r, int i) {
+        const auto k = RatioOfMeans(r.num[i], r.den[i], r.numDen[i].Mean());
+        return std::make_pair(3. * k.first, 3. * k.second);
+    };
+
+    for (const auto& fam : families) {
+        for (const auto& proxy : proxies) {
+            std::vector<std::string> labels;
+            std::vector<std::vector<std::pair<double, double>>> vals(4);
+            for (const auto& pr : pairings) {
+                const std::string stem = pr.consumerBase + "/ConsumerResults_" + fam.dataSuffix;
+                RegionSample f, z;
+                const bool hasF = LoadRegionSample(cache, stem + pr.dataSuffix + ".root", cutFolder, proxy, f);
+                const bool hasZ = LoadRegionSample(cache, stem + RINGZ_TAG + pr.dataSuffix + ".root", cutFolder, proxy, z);
+                if (!hasF && !hasZ) continue;
+                labels.push_back(pr.dataLabel);
+                vals[0].push_back(hasF ? kappaOf(f, 1) : kMissing);
+                vals[1].push_back(hasF ? kappaOf(f, 0) : kMissing);
+                vals[2].push_back(hasZ ? kappaOf(z, 1) : kMissing);
+                vals[3].push_back(hasZ ? kappaOf(z, 0) : kMissing);
+            }
+            if (labels.empty()) continue;
+            TDirectory* famDir = EnsureDir(EnsureDir(EnsureDir(fileRoot, "Corrections"), "CheapSigExtract"), fam.familyName);
+            DrawSeriesByColumn(labels, series, vals, "Canvas_KappaByRegion_" + proxy,
+                               fam.familyName + ", " + proxy + ": #kappa in the mass peak and in the sideband (raw)", famDir, "#kappa");
+        }
+    }
+}
+
 void auxiliarySummaryPlots(const std::string& consumerDir,
                            const std::string& mcRefDir = "",
                            const std::string& ppRefDir = "",
@@ -3263,22 +3377,22 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         {
             "EtaProxy", // x-axis is the eta of the jet/leading-particle proxy
             {
-                {"EtaDependence/", "pRingObservableEtaLeadP", "#eta_{LeadP}", "R", true, true, "pRingProxyJetVsEtaJet", false, "LeadP"},
-                {"EtaDependence/", "pRingObservableEtaJet", "#eta_{Jet}", "R", true, false, "pRingProxyJetVsEtaJet", false, "LeadJet"},
-                {"EtaDependence/", "pRingObservableEta2ndJet", "#eta_{2ndJet}", "R", true, false, "pRingProxyJetVsEtaJet", false, "SubJet"},
+                {"LeadP/EtaDependence/", "pRingObservableEtaLeadP", "#eta_{LeadP}", "R", true, true, "pRingProxyJetVsEtaJet", false, "LeadP"},
+                {"LeadJet/EtaDependence/", "pRingObservableEtaJet", "#eta_{Jet}", "R", true, false, "pRingProxyJetVsEtaJet", false, "LeadJet"},
+                {"SubJet/EtaDependence/", "pRingObservableEta2ndJet", "#eta_{2ndJet}", "R", true, false, "pRingProxyJetVsEtaJet", false, "SubJet"},
                 // Fine-binned counterparts of the two above. Same axis, finer granularity: these are the
                 // ones that show the tanh-like shape cleanly in the Toy Model.
-                {"EtaDependence/", "pRingObservableEtaJetHighEtaRes", "#eta_{Jet}", "R", true, false, "pRingProxyJetVsEtaJet", true, "LeadJet"},
-                {"EtaDependence/", "pRingObservableEtaLeadPHighEtaRes", "#eta_{LeadP}", "R", true, true, "pRingProxyJetVsEtaJet", true, "LeadP"}
+                {"LeadJet/EtaDependence/", "pRingObservableEtaJetHighEtaRes", "#eta_{Jet}", "R", true, false, "pRingProxyJetVsEtaJet", true, "LeadJet"},
+                {"LeadP/EtaDependence/", "pRingObservableEtaLeadPHighEtaRes", "#eta_{LeadP}", "R", true, true, "pRingProxyJetVsEtaJet", true, "LeadP"}
             },
             true // Eta axis is symmetric about zero, so folding is meaningful
         },
         {
             "EtaV0", // x-axis is the eta of the hyperon itself, split by which proxy defined the ring
             {
-                {"EtaDependence/", "pRingObservableEtaLambda", "#eta_{#Lambda}", "R", true, false, "pRingProxyJetVsEta", false, "LeadJet"},
-                {"EtaDependence/", "pRingObservableEtaLambdaLeadP", "#eta_{#Lambda(LeadP)}", "R", true, true, "pRingProxyJetVsEta", false, "LeadP"},
-                {"EtaDependence/", "pRingObservableEtaLambda2ndJet", "#eta_{#Lambda(2ndJet)}", "R", true, false, "pRingProxyJetVsEta", false, "SubJet"}
+                {"LeadJet/EtaDependence/", "pRingObservableEtaLambda", "#eta_{#Lambda}", "R", true, false, "pRingProxyJetVsEta", false, "LeadJet"},
+                {"LeadP/EtaDependence/", "pRingObservableEtaLambdaLeadP", "#eta_{#Lambda(LeadP)}", "R", true, true, "pRingProxyJetVsEta", false, "LeadP"},
+                {"SubJet/EtaDependence/", "pRingObservableEtaLambda2ndJet", "#eta_{#Lambda(2ndJet)}", "R", true, false, "pRingProxyJetVsEta", false, "SubJet"}
             },
             true
         },
@@ -3314,9 +3428,9 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             // no "proxy pT" to bin against. Supplying one would mean inventing a jet momentum spectrum,
             // which is a modelling decision rather than a booking change. Deliberately left empty.
             {
-                {"ProxyPtDependence/", "pRingVsPtJet", "#it{p}_{T}^{Jet} (GeV/c)", "R", true, false, "", false, "LeadJet"},
-                {"ProxyPtDependence/", "pRingVsPtLeadP", "#it{p}_{T}^{LeadP} (GeV/c)", "R", true, true, "", false, "LeadP"},
-                {"ProxyPtDependence/", "pRingVsPt2ndJet", "#it{p}_{T}^{SubJet} (GeV/c)", "R", true, false, "", false, "SubJet"}
+                {"LeadJet/ProxyPtDependence/", "pRingVsPtJet", "#it{p}_{T}^{Jet} (GeV/c)", "R", true, false, "", false, "LeadJet"},
+                {"LeadP/ProxyPtDependence/", "pRingVsPtLeadP", "#it{p}_{T}^{LeadP} (GeV/c)", "R", true, true, "", false, "LeadP"},
+                {"SubJet/ProxyPtDependence/", "pRingVsPt2ndJet", "#it{p}_{T}^{SubJet} (GeV/c)", "R", true, false, "", false, "SubJet"}
             },
             false // pT is strictly positive: folding about zero is meaningless
         },
@@ -3326,10 +3440,10 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                                 // in the consumer too, but they multiply the plot count for little extra information.
                                 // No toy counterpart, for the same reason as ProxyPt above.
             {
-                {"ProxyPtDependence/", "pRingVsPtLeadP_PosEtaLeadP", "#it{p}_{T}^{LeadP} (GeV/c), #eta_{LeadP}>0", "R", true, true},
-                {"ProxyPtDependence/", "pRingVsPtLeadP_NegEtaLeadP", "#it{p}_{T}^{LeadP} (GeV/c), #eta_{LeadP}<0", "R", true, true},
-                {"ProxyPtDependence/", "pRingVsPtLeadP_PosEtaV0",    "#it{p}_{T}^{LeadP} (GeV/c), #eta_{V0}>0",    "R", true, true},
-                {"ProxyPtDependence/", "pRingVsPtLeadP_NegEtaV0",    "#it{p}_{T}^{LeadP} (GeV/c), #eta_{V0}<0",    "R", true, true}
+                {"LeadP/ProxyPtDependence/", "pRingVsPtLeadP_PosEtaLeadP", "#it{p}_{T}^{LeadP} (GeV/c), #eta_{LeadP}>0", "R", true, true},
+                {"LeadP/ProxyPtDependence/", "pRingVsPtLeadP_NegEtaLeadP", "#it{p}_{T}^{LeadP} (GeV/c), #eta_{LeadP}<0", "R", true, true},
+                {"LeadP/ProxyPtDependence/", "pRingVsPtLeadP_PosEtaV0",    "#it{p}_{T}^{LeadP} (GeV/c), #eta_{V0}>0",    "R", true, true},
+                {"LeadP/ProxyPtDependence/", "pRingVsPtLeadP_NegEtaV0",    "#it{p}_{T}^{LeadP} (GeV/c), #eta_{V0}<0",    "R", true, true}
             },
             false
         },
@@ -3337,9 +3451,9 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             "PVz", // Primary-vertex z dependence, a pure detector-geometry handle on the fake signal
                    // No toy counterpart by design: the toy has no primary vertex to displace.
             {
-                {"", "pRingObservableLeadJetPVz", "PVz (cm), LeadJet", "R", true, false, "", false, "LeadJet"},
-                {"", "pRingObservableLeadPPVz", "PVz (cm), LeadP", "R", true, true, "", false, "LeadP"},
-                {"", "pRingObservableSubLeadPVz", "PVz (cm), SubJet", "R", true, false, "", false, "SubJet"}
+                {"LeadJet/", "pRingObservableLeadJetPVz", "PVz (cm), LeadJet", "R", true, false, "", false, "LeadJet"},
+                {"LeadP/", "pRingObservableLeadPPVz", "PVz (cm), LeadP", "R", true, true, "", false, "LeadP"},
+                {"SubJet/", "pRingObservableSubLeadPVz", "PVz (cm), SubJet", "R", true, false, "", false, "SubJet"}
             },
             true // PVz is symmetric about zero, so folding it is meaningful
         },
@@ -3349,7 +3463,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                        // a fluctuating per-event multiplicity.
                        // No toy counterpart: the toy has neither a centrality nor a multiplicity concept.
             {
-                {"", "pRingVsCentrality", "Centrality (%)", "R", true, false, "", false, "LeadJet"},
+                {"LeadJet/", "pRingVsCentrality", "Centrality (%)", "R", true, false, "", false, "LeadJet"},
                 // Booked at task level rather than inside the kinematic-cut folders, hence underCutFolder = false
                 {"IntegratedCuts/", "pRingVsNV0s", "N_{#Lambda}+N_{#bar{#Lambda}}", "R", false, false, "", false, "LeadJet"}
             },
@@ -3362,8 +3476,8 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             // phi_Lambda is already being used as an axis by pPstarX/Y/Z_vsPhiLam, so the binning and the
             // variable both exist; only a <R>-weighted TProfile against it is missing.
             {
-                {"", "pRingObservablePhiJet", "#varphi_{Jet}", "R", true, false, "", false, "LeadJet"},
-                {"", "pRingObservablePhiLambda", "#varphi_{#Lambda}", "R", true, false, "", false, "LeadJet"}
+                {"LeadJet/", "pRingObservablePhiJet", "#varphi_{Jet}", "R", true, false, "", false, "LeadJet"},
+                {"LeadJet/", "pRingObservablePhiLambda", "#varphi_{#Lambda}", "R", true, false, "", false, "LeadJet"}
             },
             false // Lab-frame phi runs over [0, 2pi): there is no zero to fold about
         },
@@ -3375,9 +3489,9 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             // block, phi_Lambda from the hyperon kinematics), so it is a booking plus a single Fill, with
             // no new sampling and no extra runtime. Fill toyProfile below once it exists.
             {
-                {"", "pRingObservableDeltaPhi", "#Delta#varphi_{jet}", "R", true, false, "", false, "LeadJet"},
-                {"", "pRingObservableLeadPDeltaPhi", "#Delta#varphi_{LeadP}", "R", true, true, "", false, "LeadP"},
-                {"", "pRingObservable2ndJetDeltaPhi", "#Delta#varphi_{SubJet}", "R", true, false, "", false, "SubJet"}
+                {"LeadJet/", "pRingObservableDeltaPhi", "#Delta#varphi_{jet}", "R", true, false, "", false, "LeadJet"},
+                {"LeadP/", "pRingObservableLeadPDeltaPhi", "#Delta#varphi_{LeadP}", "R", true, true, "", false, "LeadP"},
+                {"SubJet/", "pRingObservable2ndJetDeltaPhi", "#Delta#varphi_{SubJet}", "R", true, false, "", false, "SubJet"}
             },
             false // DeltaPhi runs over a full period, not symmetric about zero
         },
@@ -3387,9 +3501,9 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             // TODO (Toy Model): same situation as DeltaPhi. cosThetaJet and the hyperon direction are both
             // already available at the ring computation, so <R> vs DeltaTheta is a booking plus one Fill.
             {
-                {"", "pRingObservableDeltaTheta", "#Delta#theta_{jet}", "R", true, false, "", false, "LeadJet"},
-                {"", "pRingObservableLeadPDeltaTheta", "#Delta#theta_{LeadP}", "R", true, true, "", false, "LeadP"},
-                {"", "pRingObservable2ndJetDeltaTheta", "#Delta#theta_{SubJet}", "R", true, false, "", false, "SubJet"}
+                {"LeadJet/", "pRingObservableDeltaTheta", "#Delta#theta_{jet}", "R", true, false, "", false, "LeadJet"},
+                {"LeadP/", "pRingObservableLeadPDeltaTheta", "#Delta#theta_{LeadP}", "R", true, true, "", false, "LeadP"},
+                {"SubJet/", "pRingObservable2ndJetDeltaTheta", "#Delta#theta_{SubJet}", "R", true, false, "", false, "SubJet"}
             },
             false
         }
@@ -6187,6 +6301,26 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         };
         DrawCorrections(fOut, fullFamilies, pairings, "SignalExtracted", "signal-extracted", fetchSig);
     }
+
+    // CheapSigExtract: peak minus sideband, from the consumer's *VsMassRegion moments (no fit, no sideband model).
+    // kappa = 3<u^2>_S/<w>_S takes its two errors in quadrature, as for the signal-extracted version.
+    std::cout << " -> Corrections, CheapSigExtract (peak - sideband)...\n";
+    const CorrectionFetcher fetchCheap = [&](const FakePairing& pr, const std::string& sfx, const std::string& proxy,
+                                             CorrectionInputs& in) {
+        RegionSample r;
+        if (!LoadRegionSample(cache, pr.consumerBase + "/ConsumerResults_" + sfx + ".root", cutFolder, proxy, r)) return false;
+        const auto ring = CheapSignalMean(r.ring[1], r.ring[0]);
+        const auto u    = CheapSignalMean(r.num[1], r.num[0]);
+        const auto w    = CheapSignalMean(r.den[1], r.den[0]);
+        if (ring.second < 0. || !(u.first > 0.) || !(w.first > 0.)) return false;
+        in.ring = ring;
+        in.u2x3 = {3. * u.first, 3. * u.second};
+        const double kap = 3. * u.first / w.first;
+        in.kappa = {kap, kap * std::sqrt(std::pow(u.second / u.first, 2) + std::pow(w.second / w.first, 2))};
+        return true;
+    };
+    DrawCorrections(fOut, fullFamilies, pairings, "CheapSigExtract", "peak - sideband", fetchCheap);
+    DrawKappaByRegion(cache, fOut, fullFamilies, pairings, cutFolder);
 
     cache.CloseAll(); // Release every input file before closing the output
 

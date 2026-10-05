@@ -119,6 +119,19 @@ Two consequences worth knowing:
 
 `Ring` is marked **mandatory**: its absence exits `1`, because at that point the input is not the consumer output it claims to be.
 
+### Inside a family
+
+Every family has the same internal layout, organised by proxy:
+
+| Folder | Holds |
+|---|---|
+| `LeadJet/`, `LeadP/`, `SubJet/` | everything that proxy's fill list fills, each with its own `QA/`, `EtaDependence/`, `ProxyPtDependence/`, `RingKernel/` (LeadJet, LeadP) and `KappaEff/` |
+| `RingMaps/` | the ring planes, `p2dRingObservable[LeadP]Vs*` |
+| `PolMaps/` | the polarization maps (proxy-agnostic, except `PrimeJet/`) |
+| `DeltaMethod/` | the leading-jet event tracker, internal bookkeeping read only by `extractDeltaErrors` |
+
+Object **names** carry their proxy as before (`LeadP/pRingObservableLeadPMass`); only the folders say it twice.
+
 ## Reporting: failures versus skips
 
 `run_all_wagons.sh` prints two tables at the end, and they mean different things.
@@ -179,7 +192,7 @@ The price is signal. $R_z$ keeps the ring with weight $n_z^2$, so near-side geom
 
 Several outputs of an $R_z$ run are **null tests**, and a non-zero value there is a finding, not a bug:
 
-- **The ring kernel (`RingKernel/`, and Sections 6--8 of `auxiliaryPerConfigPlots`).** The kernel exists to extract $B_\varphi$, which $R_z$ removes by construction. The profiles still fill and must be consistent with zero; the $B_\varphi$ and $M_0/M_1$ fits are meaningless and are read as nulls only.
+- **The ring kernel (`<Proxy>/RingKernel/`, and Sections 6--8 of `auxiliaryPerConfigPlots`).** The kernel exists to extract $B_\varphi$, which $R_z$ removes by construction. The profiles still fill and must be consistent with zero; the $B_\varphi$ and $M_0/M_1$ fits are meaningless and are read as nulls only.
 - **$\langle R_z\rangle$ vs $\varphi_{\rm AEE}$.** It must be flat. Unlike the full ring, where binning in $\varphi_{\rm AEE}$ biases $\hat p^{*}\!\cdot\hat\varphi$ purely kinematically, $\hat p^{*}_z$ is independent of $\varphi^{*}_p$ for isotropic decays, so any structure is instrumental and E--W imbalanced.
 - **`ringObservableOverJetZ`.** Built for the full ring's $\hat t_z$ invariance; not meaningful for $R_z$.
 - **MixedEv** should give $R_z\approx0$. This is necessary but not sufficient: mixing cannot see fakes tied to the real jet's environment, and its $A_{EW}$ is not the data's.
@@ -223,7 +236,7 @@ $P_e$ and the helicity component $P_p$ are parity-odd, so strong production cann
 
 **$R_\perp$ is filled, not subtracted.** $\langle R\rangle-\langle R_z\rangle$ has the right mean, but $R$ and $R_z$ share every candidate, so quadrature errors on that difference would be wrong.
 
-## `KappaEff/` (always booked, in every cut family)
+## `KappaEff/` (always booked, in every cut family, one per proxy folder)
 
 Both response coefficients share one form. With $u=R/c_\alpha$ the unitless ring ($c_\alpha$ the polarization prefactor) and $w$ its projection weight,
 
@@ -239,6 +252,8 @@ so the same four profiles per proxy, all vs mass, serve both modes:
 | `pRingTimesDen<Proxy>VsMass` | $R\,w$ | $\mathrm{Cov}(R,w)$, for the error on $R_z/\langle n_z^2\rangle$ |
 
 In full-ring mode $w\equiv1$, so the last three are trivially redundant. They are filled anyway so the post-processing never has to know the mode.
+
+The same moments are also filled **per CheapSigExtract mass region**, on a two-bin axis built from the consumer's own flags: bin 1 is the sideband (`v0InMassWindow`), bin 2 the peak (`v0InMassPeak`), and anything else goes to the underflow. These are `pRing<Proxy>VsMassRegion`, `pKappaNum<Proxy>VsMassRegion`, `pKappaDen<Proxy>VsMassRegion` and `pKappaNumTimesDen<Proxy>VsMassRegion`, all in `<Proxy>/KappaEff/`. They feed `Corrections/CheapSigExtract/` in the summary.
 
 Three design points:
 
@@ -1158,7 +1173,7 @@ but the moments are **cell-local**: averages over the $\Lambda$s in that $(c,t_z
 
 #### Input
 
-Booked by the consumer under `<folder>/RingKernel/`, jet-gated via `RING_OBSERVABLE_FILL_LIST` and `RING_OBSERVABLE_LEADP_FILL_LIST`:
+Booked by the consumer under `<folder>/LeadJet/RingKernel/` and `<folder>/LeadP/RingKernel/`, jet-gated via `RING_OBSERVABLE_FILL_LIST` and `RING_OBSERVABLE_LEADP_FILL_LIST`:
 
 | Histogram | Axes |
 |---|---|
@@ -1382,7 +1397,7 @@ Two folders need both definitions at once. They are drawn at the top level from 
 
 #### What both folders are built from
 
-Everything is computed from candidate moments -- $n$, $\sum y$, $\sum y^2$ -- rebuilt from each cell's mean and spread of mass-binned profiles, every bin and flow included. All of a proxy's profiles are filled on exactly its candidates, so they share one candidate set: the ring comes from `pRingObservableMass` (LeadJet) or from the $(\eta_{\rm proxy},m)$ maps (LeadP, SubJet, whose 1D mass profiles sit in the leading-jet list), and the $\kappa$ moments from `KappaEff/`. **Nothing here is signal-extracted:** these are all candidates, signal and background mixed. The signal-extracted versions come from `signalExtractionRing`.
+Everything is computed from candidate moments -- $n$, $\sum y$, $\sum y^2$ -- rebuilt from each cell's mean and spread of mass-binned profiles, every bin and flow included. All of a proxy's profiles are filled on exactly its candidates, so they share one candidate set: the ring comes from each proxy's own 1D mass profile (`<Proxy>/pRingObservable*Mass`), and the $\kappa$ moments from `<Proxy>/KappaEff/`. **Nothing here is signal-extracted:** these are all candidates, signal and background mixed. The signal-extracted versions come from `signalExtractionRing`.
 
 A ratio of two means over the same candidates keeps its covariance,
 
@@ -1416,8 +1431,17 @@ Since $\kappa_{\rm eff}=3\langle u^2\rangle$ for the full ring and $\kappa_z\lan
 |---|---|---|
 | `Corrections/Raw/` | all candidates, from the consumer's mass-binned profiles | all candidates, from `KappaEff/` |
 | `Corrections/SignalExtracted/` | $\langle R\rangle_S$, from `IntegratedSummary/` | $\langle u^2\rangle_S$, $\langle w\rangle_S$, from `KappaEff/` of `signalExtractionRing` |
+| `Corrections/CheapSigExtract/` | peak $-$ sideband, from `<Proxy>/KappaEff/*VsMassRegion` | the same, from the same profiles |
 
 A reference's signal extraction is looked for where the pipeline puts it, `<base>/../results_SigExtract`; when it is absent, that reference simply has no signal-extracted column.
+
+**The cheap estimator.** For any per-candidate quantity $y$ ($R$, $u^2$ or $w$),
+$$\langle y\rangle_S=\frac{\sum_Py-\sum_By}{N_P-N_B},$$
+with $P$ the peak window and $B$ the sideband. The consumer enforces equal total widths, so for a background whose density and $\langle y\rangle_B$ are both linear in mass, the sideband holds exactly the background under the peak. What this misses is the curvature of their product, a linear density times a linear $\langle y\rangle_B$; separate left and right sidebands would recover it, and are the natural extension. The two regions are disjoint and each count is treated as Poisson, so with $A=\sum_P-\sum_B$, $D=N_P-N_B$ and $r=A/D$,
+$$\mathrm{Var}(\langle y\rangle_S)=\frac{\mathrm{Var}(A)-2r\,\mathrm{Cov}(A,D)+r^2\,\mathrm{Var}(D)}{D^2},\quad \mathrm{Var}(A)=\textstyle\sum_Py^2+\sum_By^2,\ \mathrm{Var}(D)=N_P+N_B,\ \mathrm{Cov}(A,D)=\sum_Py+\sum_By .$$
+With no background this is the standard error of $\langle y\rangle_P$, and for $y\equiv1$ it gives exactly 1 with no error, so the full ring's $\langle w\rangle_S$ is handled with no special case. A Monte Carlo check (Poisson signal and background, sideband of equal population) confirmed both the mean and the error. Note the size of that error: about $\sigma_y\sqrt{S+2B}/S$, so the background costs precision as $\sqrt{1+2B/S}$, whatever estimator is used.
+
+**$\kappa$ per region.** `Canvas_KappaByRegion_<Proxy>`, also in `Corrections/CheapSigExtract/<Family>/`, shows the raw $\kappa_{\rm eff}$ and $\kappa_z$ of the peak and of the sideband for every data-like sample, each with the ratio-of-means error. Where the two disagree, the background does not share the signal's response, which is why $P$ divides by the signal-region value and not by either of these.
 
 **$\alpha$ is the family's own**, from the same decay constants as the consumer ($\alpha_\Lambda=0.749$, $\alpha_{\bar\Lambda}=-0.758$). `BothHyperons` mixes the two while the exact term is per species; it uses the mean of the two $\alpha^2$, which is within 1.2% of either, on a term that is itself a $\sim10\%$ correction, so the choice moves $P$ by $\lesssim0.2\%$.
 
