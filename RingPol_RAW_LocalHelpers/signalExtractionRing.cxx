@@ -46,6 +46,7 @@
  * With no options the historical windows are reproduced, so a default run stays comparable with
  * older output. See the TODO: block on MakeSharedSidebandConfig for where the defaults are headed.
  **************************************************************************************************/
+#include <sstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -6007,18 +6008,23 @@ int main(int argc, char** argv) {
         // -----------------------------------------------------------------------------------------
         // KappaEff moments, through the same integrated extraction
         // -----------------------------------------------------------------------------------------
-        // kappa = 3 <u^2>/<w> (README: "KappaEff"), so the signal-region kappa only needs <u^2>_S and
+        // kappa = 3 <u v>/<w> (README: "KappaEff"), so the signal-region kappa only needs <u v>_S and
         // <w>_S, and each is a per-candidate quantity profiled against mass exactly like R. They are
         // written to KappaEff/<Proxy>_<Num|Den>/ with the usual object names; the ratio is taken by
         // the summary. For the full ring w == 1 identically, so <w>_S = 1 and there is nothing to
         // extract (a zero-spread profile would also leave the sideband fit with no errors to weigh).
         // The ring definition is read from the file name, as everywhere downstream of the consumer.
         if (inDir->GetDirectory("LeadJet/KappaEff")) {
-            const bool isRingZFile = inputFilePath.find("_useRingZ") != std::string::npos;
-            std::cout << "\n[Integrated] Extracting the KappaEff moments <u^2>_S"
+            // Longitudinal rings (R_z, R_z^T): exact "_"-separated tokens of the file's basename, as everywhere downstream
+            const std::string baseName = inputFilePath.substr(inputFilePath.find_last_of('/') + 1);
+            bool isRingZFile = false;
+            std::stringstream nameTokens(baseName.substr(0, baseName.rfind('.')));
+            for (std::string token; std::getline(nameTokens, token, '_');)
+                isRingZFile = isRingZFile || token == "useRingZ" || token == "useRingZT";
+            std::cout << "\n[Integrated] Extracting the KappaEff moments <u v>_S"
                       << (isRingZFile ? " and <w>_S" : "") << " per proxy..." << std::endl;
             struct MomentSpec { const char* tag; const char* symbol; };
-            std::vector<MomentSpec> moments = {{"Num", "u^{2}"}};
+            std::vector<MomentSpec> moments = {{"Num", "u v"}};
             if (isRingZFile) moments.push_back({"Den", "w"});
             for (const auto& ps : proxySpecs) {
                 for (const auto& mo : moments) {

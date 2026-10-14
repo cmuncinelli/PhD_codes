@@ -175,13 +175,27 @@ Nothing else in the consumer changes. Every object filled with the ring -- the f
 
 An $R_z$ output is identified **by its file name alone**: the consumer configs carry `_useRingZ` right after the family, as in `dpl-config-DerivedConsumer-BothHyperons_useRingZ_MixedEventProxies.json`, so every output follows as `ConsumerResults_BothHyperons_useRingZ_MixedEventProxies.root`. There is no marker object inside the file.
 
+## The transverse variant, $R_z^T$ (`useRingZT`)
+
+A second configurable, `useRingZT` (default off, exclusive with `useRingZ`: enabling both is fatal), redefines the ring as $R_z$ minus its helicity term,
+
+$$R_z^T \;=\; \frac{3}{\alpha}\,\bigl(\hat p^{*}\!\cdot\hat z_T\bigr)\,n_z,\qquad \hat z_T=\hat z-(\hat z\cdot\hat p_\Lambda)\,\hat p_\Lambda ,$$
+
+the projection on the beam axis made transverse to the $\Lambda$. Per candidate it is exactly $R_z-\tfrac{3}{\alpha}(\hat p^{*}\!\cdot\hat p_\Lambda)\,\hat p_{\Lambda,z}\,n_z$. The consumer computes the beam-axis component of $\hat p^{*}$ once per candidate, reusing `cosFakePol` $=\hat p^{*}\!\cdot\hat p_\Lambda$, and both longitudinal modes share every other code path.
+
+Why it exists, in short (the derivations are in `LongitudinalRing.tex`): $R_z$ is exactly blind to every azimuthal structure of the acceptance, but $\hat z$ is not orthogonal to $\hat p_\Lambda$, so $R_z$ also sees the helicity component, which is frame dependent and where the HEE lives. $R_z^T$ removes it: it is frame independent and blind to the HEE and to the odd AEE harmonic, it has the **same signal** as $R_z$, and about $8\%$ more significance. What it gives up is the blindness to the even AEE harmonic. Which of the two handles this detector better is decided from data, by comparing both with the full ring.
+
+**File tag and detection.** The configs carry `_useRingZT` right after the family. Since `_useRingZ` is a prefix of `_useRingZT`, every macro matches the **`_`-separated tokens** of a file name exactly, and checks `useRingZT` before `useRingZ`; no substring test is used anywhere.
+
+**One semantic shift.** In this mode `pRingPerp*` holds the complement $R-R_z^T$, not $R-R_z$.
+
 ## Why it is cleaner
 
 Write $\hat n=\cos\chi\,\hat\varphi+\sin\chi\,\hat\theta$ in the $\Lambda$ basis $(\hat p,\hat\theta,\hat\varphi)$, with $\chi$ the bearing of the proxy seen from the $\Lambda$ (the same $\chi$ as in the ring-geometry note). Because $\hat\varphi$ has no $z$ component, $n_z=-\sin\theta_\Lambda\sin\chi$, and the whole azimuthal group of the master equation -- the AEE fake, global polarization and $P_N$ -- drops out of $R_z$ **exactly**, candidate by candidate. Exactly, per candidate,
 
 $$R_z=\sin^2\theta_\Lambda\,\bigl(\sin\chi\,P_\theta\bigr)\;-\;\sin\theta_\Lambda\cos\theta_\Lambda\,\sin\chi\,P_p .$$
 
-What is left enters only with $\sin\chi$, which is odd between the two sides of the $\Lambda$ ("east" and "west"). The non-ring remainder therefore cancels up to the east--west imbalance $A_{EW}$, and $R_z$ has no large fake of its own. Two consequences follow:
+What is left enters only with $\sin\chi$, which is odd between the two sides of the $\Lambda$ on which the proxy can sit (the **proxy sides**, $\Delta\varphi\gtrless0$; not to be confused with the A and C sides of the detector). The non-ring remainder therefore cancels up to the proxy-side imbalance $A_{\Delta\varphi}$, and $R_z$ has no large fake of its own. Two consequences follow:
 
 - The denominator of the exact inversion is negligible, and the **linear subtraction** $R_{z,\rm true}=(R_{z,\rm meas}-R_{z,\rm fake})/\kappa_z$ is safe. Do not feed $R_z$ quantities into the full-ring Mobius formula: its denominator is written in terms of the full ring's fake.
 - The response coefficient is $R_z$'s own, $\kappa_z$, not the full ring's $\kappa_{\rm eff}$ (see `KappaEff/` below).
@@ -193,26 +207,26 @@ The price is signal. $R_z$ keeps the ring with weight $n_z^2$, so near-side geom
 Several outputs of an $R_z$ run are **null tests**, and a non-zero value there is a finding, not a bug:
 
 - **The ring kernel (`<Proxy>/RingKernel/`, and Sections 6--8 of `auxiliaryPerConfigPlots`).** The kernel exists to extract $B_\varphi$, which $R_z$ removes by construction. The profiles still fill and must be consistent with zero; the $B_\varphi$ and $M_0/M_1$ fits are meaningless and are read as nulls only.
-- **$\langle R_z\rangle$ vs $\varphi_{\rm AEE}$.** It must be flat. Unlike the full ring, where binning in $\varphi_{\rm AEE}$ biases $\hat p^{*}\!\cdot\hat\varphi$ purely kinematically, $\hat p^{*}_z$ is independent of $\varphi^{*}_p$ for isotropic decays, so any structure is instrumental and E--W imbalanced.
+- **$\langle R_z\rangle$ vs $\varphi_{\rm AEE}$.** It must be flat. Unlike the full ring, where binning in $\varphi_{\rm AEE}$ biases $\hat p^{*}\!\cdot\hat\varphi$ purely kinematically, $\hat p^{*}_z$ is independent of $\varphi^{*}_p$ for isotropic decays, so any structure is instrumental and proxy-side imbalanced. (For $R_z^T$ this is not a strict null: its helicity-free projection is not kinematically flat in $\varphi_{\rm AEE}$.)
 - **`ringObservableOverJetZ`.** Built for the full ring's $\hat t_z$ invariance; not meaningful for $R_z$.
-- **MixedEv** should give $R_z\approx0$. This is necessary but not sufficient: mixing cannot see fakes tied to the real jet's environment, and its $A_{EW}$ is not the data's.
+- **MixedEv** should give $R_z\approx0$. This is necessary but not sufficient: mixing cannot see fakes tied to the real jet's environment, and its $A_{\Delta\varphi}$ is not the data's.
 - **pp** is zero only if vacuum fragmentation carries no ring. That is a physics question, not a closure test.
 
-What survives in data besides the signal: the jet-$v_2$ times $v_2$-induced $P_z$ leak (entirely along $z$, so about twice as important relative to the signal as in the full ring), and any **field-odd** instrumental part. The solenoid field is the only thing in ALICE that breaks the mirror symmetry through the $(\hat z,\hat p_\Lambda)$ plane, which is what E--W cancellation relies on.
+What survives in data besides the signal: the jet-$v_2$ times $v_2$-induced $P_z$ leak (entirely along $z$, so about twice as important relative to the signal as in the full ring), and any **field-odd** instrumental part. The solenoid field is the only thing in ALICE that breaks the mirror symmetry through the $(\hat z,\hat p_\Lambda)$ plane, which is what the proxy-side cancellation relies on.
 
-## East versus west, for free
+## The two proxy sides, for free
 
 Exactly, $n_z=\sin\Delta\varphi\,\sin\theta_t\sin\theta_\Lambda/\sin\Delta\theta$, so $\mathrm{sign}(n_z)=\mathrm{sign}(\sin\Delta\varphi)$, and zero is a bin edge of `axisDeltaPhi`. Hence:
 
-- $A_{EW}$ comes from the halves of the existing `QA/hDeltaPhi*` counters;
-- the east and west $\langle R_z\rangle$ come from integrating the halves of the existing `pRingObservable*DeltaPhi` profiles;
+- $A_{\Delta\varphi}$ comes from the halves of the existing `QA/hDeltaPhi*` counters;
+- the $\langle R_z\rangle$ of each proxy side comes from integrating the halves of the existing `pRingObservable*DeltaPhi` profiles;
 - the **odd part** of $\langle R_z\rangle(\Delta\varphi)$ is pure leak, and the even part is signal plus any field-odd residue.
 
 No dedicated object is booked for any of this.
 
-## `RzDiagnostics/` (booked only with `useRingZ`)
+## `RzDiagnostics/` (booked only with `useRingZ` or `useRingZT`)
 
-The full ring is computed alongside $R_z$ **only** in this mode, and only to fill this folder.
+The full ring is computed alongside the longitudinal ring **only** in these modes, and only to fill this folder. In what follows, $R_z$ stands for whichever longitudinal ring the file holds.
 
 | Object | Content |
 |---|---|
@@ -220,15 +234,18 @@ The full ring is computed alongside $R_z$ **only** in this mode, and only to fil
 | `p2dRingVsDeltaPhiVsDeltaEtaLeadJet` | the same sectors in detector variables |
 | `pRingPerpIntegrated`, `pRingPerp<Proxy>Vs{Mass,PhiAEE,DeltaPhi}` | the complement $R_\perp=R-R_z$, filled directly |
 | `pCosSqThetaStarZLeadJetVsMass` | the standard, unweighted $\langle\cos^2\theta^{*}_z\rangle$ |
+| `pHelicityTermIntegrated`, `pHelicityTerm<Proxy>VsEtaLambda`, `p2dHelicityTermLeadJetVsDeltaPhiVsMass` | the helicity term $R_z-R_z^T$: what $R_z$ contains, or what $R_z^T$ removed (the same quantity in both modes) |
+| `pNz<Proxy>VsEtaLambda`, `pNzSq<Proxy>VsEtaLambda` | $\langle n_z\rangle$ (proxy-side balance) and $\langle n_z^2\rangle$ (signal weight) vs $\eta_\Lambda$ |
+| `p2dRingLeadJetVsDeltaPhiVsMassEtaPos`, `...EtaNeg` | the ring vs $(\Delta\varphi, m)$ per A/C hemisphere of the $\Lambda$: the sideband-sine test |
 
-`<Proxy>` is `LeadJet`, `LeadP` or `SubJet`. The profile names read `Ring` rather than `RingZ` on purpose, since this whole folder only exists in $R_z$ mode.
+`<Proxy>` is `LeadJet`, `LeadP` or `SubJet`. The profile names read `Ring` rather than `RingZ` on purpose, since this whole folder only exists in the longitudinal modes.
 
 **The $\chi$ sectors.** Under the reflections $(\chi\to-\chi,\ \chi\to\pi-\chi)$:
 
 | Sector | Weight | What lives there |
 |---|---|---|
 | $(+,+)$ | $\sin^2\theta\sin^2\chi$ | the signal, plus field-odd instrumental parts only |
-| $(-,+)$ | $\sin\chi$ | $\Lambda$-kinematic fakes ($B_\theta$, HEE) times $A_{EW}$ |
+| $(-,+)$ | $\sin\chi$ | $\Lambda$-kinematic fakes ($B_\theta$, HEE) times $A_{\Delta\varphi}$ |
 | $(-,-)$ | $\sin 2\chi$ | the in-plane "towards-the-jet" component $P_e$, $\hat e=\hat p\times\hat n$ |
 | $(+,-)$ | -- | null (needs both the field and a $z$ asymmetry) |
 
@@ -238,22 +255,23 @@ $P_e$ and the helicity component $P_p$ are parity-odd, so strong production cann
 
 ## `KappaEff/` (always booked, in every cut family, one per proxy folder)
 
-Both response coefficients share one form. With $u=R/c_\alpha$ the unitless ring ($c_\alpha$ the polarization prefactor) and $w$ its projection weight,
+All response coefficients share one form, the **cross moment**. With $u=\hat p^{*}\!\cdot\vec e=R/c_\alpha$ the unitless ring ($c_\alpha$ the polarization prefactor), $v=\hat p^{*}\!\cdot\hat n$ the unitless full ring, and $w=\vec e\cdot\hat n$ the projection weight,
 
-$$\kappa=3\,\frac{\langle u^2\rangle}{\langle w\rangle},\qquad w=\begin{cases}1 & \text{full ring: } u=\hat p^{*}\!\cdot\hat n\\[2pt] n_z^2 & R_z:\ u=n_z\,\hat p^{*}_z\end{cases}$$
+$$\kappa=3\,\frac{\langle u\,v\rangle}{\langle w\rangle},\qquad
+\begin{array}{lll} \text{full ring:} & u=v=\hat p^{*}\!\cdot\hat n, & w=1\\ R_z: & u=n_z\,\hat p^{*}_z, & w=n_z^2\\ R_z^T: & u=n_z\,\hat p^{*}\!\cdot\hat z_T, & w=n_z^2 \end{array}$$
 
-so the same four profiles per proxy, all vs mass, serve both modes:
+The second moment $3\langle u^2\rangle/\langle w\rangle$, used before, is the response only when $\vec e$ is the signal direction itself, which is the case of the full ring and of no other projection. For $R_z$ it fails whenever the proxy sides or the A/C halves are unbalanced, and for $R_z^T$ it is off by the geometric factor $\langle n_z^2\sin^2\theta\rangle/\langle n_z^2\rangle\approx0.85$ even for a perfect detector (`LongitudinalRing.tex`, Sec. 4). The same four profiles per proxy, all vs mass, serve every mode:
 
 | Object | Filled with | Used for |
 |---|---|---|
-| `pKappaNum<Proxy>VsMass` | $u^2$ | $\kappa$ numerator |
+| `pKappaNum<Proxy>VsMass` | $u\,v$ | $\kappa$ numerator |
 | `pKappaDen<Proxy>VsMass` | $w$ | $\kappa$ denominator; the $R_z\to P_R$ conversion $R_z/\langle n_z^2\rangle$ |
-| `pKappaNumTimesDen<Proxy>VsMass` | $u^2 w$ | $\mathrm{Cov}(u^2,w)$, for the error on $\kappa$ |
+| `pKappaNumTimesDen<Proxy>VsMass` | $u\,v\,w$ | $\mathrm{Cov}(uv,w)$, for the error on $\kappa$ |
 | `pRingTimesDen<Proxy>VsMass` | $R\,w$ | $\mathrm{Cov}(R,w)$, for the error on $R_z/\langle n_z^2\rangle$ |
 
 In full-ring mode $w\equiv1$, so the last three are trivially redundant. They are filled anyway so the post-processing never has to know the mode.
 
-The same moments are also filled **per CheapSigExtract mass region**, on a two-bin axis built from the consumer's own flags: bin 1 is the sideband (`v0InMassWindow`), bin 2 the peak (`v0InMassPeak`), and anything else goes to the underflow. These are `pRing<Proxy>VsMassRegion`, `pKappaNum<Proxy>VsMassRegion`, `pKappaDen<Proxy>VsMassRegion` and `pKappaNumTimesDen<Proxy>VsMassRegion`, all in `<Proxy>/KappaEff/`. They feed `Corrections/CheapSigExtract/` in the summary.
+The same moments are also filled **per CheapSigExtract mass region**, on a two-bin axis built from the consumer's own flags: bin 1 is the sideband (`v0InMassWindow`), bin 2 the peak (`v0InMassPeak`), and anything else goes to the underflow. These are `pRing<Proxy>VsMassRegion`, `pKappaNum<Proxy>VsMassRegion`, `pKappaDen<Proxy>VsMassRegion`, `pKappaNumTimesDen<Proxy>VsMassRegion` and `pRingTimesDen<Proxy>VsMassRegion`, all in `<Proxy>/KappaEff/`. They feed `Corrections/CheapSigExtract/` and `RingVsLongitudinal_CheapSigExtract/` in the summary, and the last one gives $\langle R_z\rangle/\langle n_z^2\rangle$ of each region its exact covariance.
 
 Three design points:
 
@@ -261,14 +279,14 @@ Three design points:
 - **Vs mass, per cut family.** $\kappa$ must be measured on exactly the candidates that make $R$, and the background's $\hat p^{*}$ distribution is not isotropic, so $\kappa_B\neq\kappa_S$ in general. The signal-region value comes out of the same sideband machinery as $\langle R\rangle_S$.
 - **Ratios of means on one sample.** Each $\kappa$ and each $R_z/\langle n_z^2\rangle$ is a ratio of two means over the same candidates. First-order propagation needs only $\Sigma y$, $\Sigma y^2$ (which `TProfile` already stores) and the cross-product profile.
 
-The full ring's $\kappa_{\rm eff}=3\langle(\hat p^{*}\!\cdot\hat n)^2\rangle$ is the data-driven second moment of the note, valid up to $O(\alpha P_{\rm true})$. $R_z$'s $\kappa_z=3\langle n_z^2(\hat p^{*}_z)^2\rangle/\langle n_z^2\rangle$ reduces to the standard $n_z^2$-weighted $3\langle\cos^2\theta^{*}_z\rangle$ for a $\phi^{*}$-independent, forward--backward-symmetric acceptance about $\hat z$; comparing it with the unweighted factor in `RzDiagnostics/` shows whether the weighting matters.
+For the full ring the cross moment is the data-driven second moment of the correction framework, $\kappa_{\rm eff}=3\langle(\hat p^{*}\!\cdot\hat n)^2\rangle$, valid up to $O(\alpha P_{\rm true})$. For the longitudinal rings it is $\kappa=3\langle u\,v\rangle/\langle n_z^2\rangle$, which needs no symmetry of the acceptance at all.
 
 ## Post-processing in $R_z$ mode
 
 - **Pairing.** Data, MixedEv, pp and MC must be read in the same mode, which the suffix guarantees.
 - **Toy Model.** Its overlay is a full-ring prediction, so it is dropped for $R_z$ files.
 - **Titles.** Relabelled downstream from $\langle R\rangle$ to $\langle R_z\rangle$, only for $R_z$ files.
-- **Every macro reads the mode from the file names**, so `run_all_wagons.sh` needs no change: the per-config macros see one file at a time, and the summary picks up any `_useRingZ` outputs in the wagon as extra families (`<Family>_RingZ/`). See [its section](#auxiliarysummaryplotscxx).
+- **Every macro reads the mode from the file names**, so `run_all_wagons.sh` needs no change: the per-config macros see one file at a time, and the summary picks up any `_useRingZ` and `_useRingZT` outputs in the wagon as extra families (`<Family>_RingZ/`, `<Family>_RingZT/`). See [its section](#auxiliarysummaryplotscxx).
 
 ---
 
@@ -728,16 +746,16 @@ from "the extraction never ran". Every failure branch names itself in the log.
 
 ### The KappaEff moments
 
-The response coefficient is $\kappa=3\langle u^2\rangle/\langle w\rangle$ (see [The longitudinal ring](#the-longitudinal-ring-r_z-useringz)), so its signal-region value needs only $\langle u^2\rangle_S$ and $\langle w\rangle_S$. Each is a per-candidate quantity profiled against mass, exactly like $R$, so each goes through **the same integrated extraction** -- same peak, same windows, same sideband model, same error propagation -- with nothing written for it but a folder name and a symbol for the labels:
+The response coefficient is $\kappa=3\langle uv\rangle/\langle w\rangle$ (see [The longitudinal ring](#the-longitudinal-ring-r_z-useringz)), so its signal-region value needs only $\langle uv\rangle_S$ and $\langle w\rangle_S$. Each is a per-candidate quantity profiled against mass, exactly like $R$, so each goes through **the same integrated extraction** -- same peak, same windows, same sideband model, same error propagation -- with nothing written for it but a folder name and a symbol for the labels:
 
 ```
-<Family>/KappaEff/<Proxy>_Num/hIntegratedRSig_<Proxy>_Num   <-- <u^2>_S
+<Family>/KappaEff/<Proxy>_Num/hIntegratedRSig_<Proxy>_Num   <-- <u v>_S
 <Family>/KappaEff/<Proxy>_Den/hIntegratedRSig_<Proxy>_Den   <-- <w>_S, R_z files only
 ```
 
 The object names are the usual ones, so `hIntegratedRSig_<name>` is $\langle y\rangle_S$ for whatever $y$ was profiled; the titles carry the right symbol. The ratio is taken by the summary, in `Corrections/SignalExtracted/`.
 
-$\langle w\rangle_S$ is extracted for `_useRingZ` files only, the mode being read from the file name as everywhere downstream of the consumer. For the full ring $w\equiv1$, so $\langle w\rangle_S=1$ identically and there is nothing to extract; a zero-spread profile would also leave the sideband fit with no errors to weigh. A consumer output that predates `KappaEff/` is reported in one line and skipped.
+$\langle w\rangle_S$ is extracted for the longitudinal files only (`useRingZ` or `useRingZT` among the `_`-separated tokens of the file name, as everywhere downstream of the consumer). For the full ring $w\equiv1$, so $\langle w\rangle_S=1$ identically and there is nothing to extract; a zero-spread profile would also leave the sideband fit with no errors to weigh. A consumer output that predates `KappaEff/` is reported in one line and skipped.
 
 ### Assumptions this rests on
 
@@ -1148,7 +1166,7 @@ After an exact average over the decay, the mean ring at fixed kinematics is the 
 
 $$\langle R\rangle \;=\; P_\varphi\cos\chi \;+\; P_\theta\sin\chi, \qquad \cos\chi \;=\; \frac{t_z-\lambda_z c}{\lambda_T\sqrt{1-c^{2}}},$$
 
-where $\chi$ is the bearing of the reference axis as seen from the $\Lambda$, with the beam as north. $\cos\chi$ is the spherical law of cosines, and it is the origin of every $\tanh\eta_{\rm jet}$ in the ring. The sign of $\sin\chi$ records on which side of the $\Lambda$'s meridian the reference axis lies (east or west).
+where $\chi$ is the bearing of the reference axis as seen from the $\Lambda$, with the beam as north. $\cos\chi$ is the spherical law of cosines, and it is the origin of every $\tanh\eta_{\rm jet}$ in the ring. The sign of $\sin\chi$ records on which side of the $\Lambda$'s meridian the reference axis lies (the proxy side).
 
 Three structural facts follow, all properties of the projection rather than of any dataset:
 
@@ -1320,25 +1338,34 @@ For each proxy, `cKernelSymmetry{Jet,LeadP}` shows the four sectors over $(\cos\
 
 ### Section 9 -- KappaEff
 
-Written for both ring definitions, one canvas per family, one panel per proxy: the **raw** $\kappa$ per mass bin, $3\langle u^2\rangle/\langle w\rangle$, signal and background mixed. It is a QA of $\kappa$'s mass dependence, not a result -- $\kappa_S$ belongs to the signal extraction, like $\langle R\rangle_S$.
+Written for both ring definitions, one canvas per family, one panel per proxy: the **raw** $\kappa$ per mass bin, $3\langle uv\rangle/\langle w\rangle$, signal and background mixed. It is a QA of $\kappa$'s mass dependence, not a result -- $\kappa_S$ belongs to the signal extraction, like $\langle R\rangle_S$.
 
 Both means come from the same candidates, so the first-order error keeps their covariance,
 
-$$\mathrm{Var}(\kappa)=\frac{9}{n}\,\frac{\sigma_U^2-2\,(U/W)\,C+(U/W)^2\sigma_W^2}{W^2},\qquad C=\langle u^2w\rangle-UW,$$
+$$\mathrm{Var}(\kappa)=\frac{9}{n}\,\frac{\sigma_U^2-2\,(U/W)\,C+(U/W)^2\sigma_W^2}{W^2},\qquad C=\langle uvw\rangle-UW,$$
 
-with $U=\langle u^2\rangle$, $W=\langle w\rangle$ and the spreads $\sigma$ read from the profiles themselves. For the full ring $w\equiv1$, so $\sigma_W=C=0$ and this is the plain standard error of $3\langle u^2\rangle$. The histograms are written as `hKappaVsMass<Proxy>_<Family>`.
+with $U=\langle uv\rangle$, $W=\langle w\rangle$ and the spreads $\sigma$ read from the profiles themselves. For the full ring $w\equiv1$, so $\sigma_W=C=0$ and this is the plain standard error of $3\langle u^2\rangle$. The histograms are written as `hKappaVsMass<Proxy>_<Family>`.
 
-### Section 10 -- $R_z$ diagnostics
+### Section 10 -- longitudinal-ring diagnostics
 
-Only for `_useRingZ` files, into `RzDiagnostics_Canvases/`. The physics is in [The longitudinal ring](#the-longitudinal-ring-r_z-useringz); what the code does:
+Only for `useRingZ` and `useRingZT` files, into `RzDiagnostics_Canvases/`. The physics is in [The longitudinal ring](#the-longitudinal-ring-r_z-useringz); what the code does:
 
-- **East/west fold** (per family and proxy). The existing $\langle R_z\rangle(\Delta\varphi)$ is folded into its even (signal) and odd (leak) parts vs $\lvert\Delta\varphi\rvert$. The two halves are merged with `TProfile::Rebin`, which is exact, and summarised as: all, $\Delta\varphi>0$, $\Delta\varphi<0$, symmetrized $\tfrac12(R_++R_-)$, half-difference $D=\tfrac12(R_+-R_-)$, and the leak $A_{EW}D$. The identity $\langle R_z\rangle-\text{symmetrized}=A_{EW}D$ is exact, and $A_{EW}=(N_+-N_-)/(N_++N_-)$ comes from the profile's own entries, so it describes exactly the candidates that make $\langle R_z\rangle$.
+- **Proxy-side fold** (per family and proxy). The existing $\langle R_z\rangle(\Delta\varphi)$ is folded into its even (signal) and odd (leak) parts vs $\lvert\Delta\varphi\rvert$. The two halves are merged with `TProfile::Rebin`, which is exact, and summarised as: all, $\Delta\varphi>0$, $\Delta\varphi<0$, symmetrized $\tfrac12(R_++R_-)$, half-difference $D=\tfrac12(R_+-R_-)$, and the leak $A_{\Delta\varphi}D$. The identity $\langle R_z\rangle-\text{symmetrized}=A_{\Delta\varphi}D$ is exact, and $A_{\Delta\varphi}=(N_+-N_-)/(N_++N_-)$ comes from the profile's own entries, so it describes exactly the candidates that make $\langle R_z\rangle$.
 - **$\chi$ sectors** (per proxy, task level). $f_{s_a s_b}(\chi)=\tfrac14\bigl[f(\chi)+s_af(-\chi)+s_bf(\pi-\chi)+s_as_bf(\chi-\pi)\bigr]$ on $\chi\in[0,\pi/2]$, fitted with $\sin^2\chi$, $\sin\chi$, $\sin2\chi$ and a constant. The shapes are those of the weights with $\theta_\Lambda$ averaged, so the amplitudes are summaries, not measurements. The axis must be uniform on $[-\pi,\pi]$ with a multiple of 4 bins, so every orbit partner is a whole bin.
 - **$\varphi_{\rm AEE}$ flatness** (LeadJet and LeadP). $\langle R_z\rangle$ and $\langle R_\perp\rangle$ overlaid, with a constant fitted to $\langle R_z\rangle$; its $\chi^2$ is the test. Both profiles fill on the same candidates, but the $R_z$ one lives under `HelicityEfficiencyQA/`, so the canvas is skipped quietly when that QA is off.
 
 The symmetrized estimator removes the leak **without external input** under one assumption: at fixed $\lvert\Delta\varphi\rvert$, the fake does not know which side of the $\Lambda$ the proxy sits on. That holds exactly for mixed events. In data only a mirror-breaking effect -- the field, again -- can violate it, and the $(+,+)$ and $(+,-)$ sectors are where it would show.
 
-**Mode check.** `_useRingZ` in the file name and the presence of `RzDiagnostics/` must agree; a mismatch exits `1`. A mislabelled file would otherwise be drawn, and compared downstream, as the wrong observable.
+**Mode check.** The ring definition is read from the exact `_`-separated tokens of the file name, `useRingZT` before `useRingZ`, and must agree with the presence of `RzDiagnostics/`; a mismatch exits `1`. A mislabelled file would otherwise be drawn, and compared downstream, as the wrong observable.
+
+### Section 11 -- the sideband sine
+
+Into `SidebandSine_Canvases/`. Under an axis-blind acceptance, the fake of a longitudinal ring at fixed mass and $\Delta\varphi$ is $A(m)\sin\Delta\varphi$: the shape is geometric, since $n_z\propto\sin\Delta\varphi$, and the amplitude carries the detector (`LongitudinalRing.tex`, Prop. 5.6). Each mass bin of a $(\Delta\varphi,m)$ profile is fitted with $c_0+A\sin\Delta\varphi+B\cos\Delta\varphi$:
+
+- $A(m)$ is the sideband-sine amplitude, and $B(m)$ must vanish;
+- $c_0(m)$ absorbs the even part, the $n_z^2$-weighted signal.
+
+**Per folder, every ring definition**, from `LeadJet/p2dRingObservableDeltaPhiVsMass`; for the full ring this is a cheap QA of the same shape. **Longitudinal rings only**, from the two `RzDiagnostics/` maps split by the sign of $\eta_\Lambda$: $A(m)$ per A/C hemisphere, their half-sum (A/C-even: the polar term) and half-difference (A/C-odd: the helicity term), and $B(m)$ per hemisphere. A sign change of $A(m)$ between the sidebands that lives in the half-difference is the helicity mechanism of the note; one that lives in the half-sum is not. The fit histograms (`hSineFit{Const,Sin,Cos}_<tag>`) are written next to the canvases.
 
 ### On the duplicated `DrawVectorFieldPanel()`
 
@@ -1382,18 +1409,18 @@ from `signalExtractionRing`, and a per-family integrated summary with a cross-fa
 matches the pipeline layout, so `run_all_wagons.sh` needs no extra argument. Pass `"none"` to skip
 every signal-extraction plot.
 
-### $R_z$ families
+### Longitudinal families ($R_z$, $R_z^T$)
 
-The summary reads the ring definition of every input from its **name**, so one call covers both. The consumer configs carry `_useRingZ` right after the family, so an $R_z$ output is simply another family whose suffix ends in the tag: `BothHyperons_useRingZ` plus `_MixedEventProxies` is exactly the file an ordinary variation lookup builds. Each family whose $R_z$ data file exists therefore gets an **$R_z$ sibling**, flagged `isRingZ` and written to `<Family>_RingZ/`, and everything -- variations, the MC and pp references, the signal-extraction outputs -- resolves for it with no separate code path. Nothing changes for a wagon without $R_z$ outputs.
+The summary reads the ring definition of every input from its **name**, so one call covers all of them. The consumer configs carry `_useRingZ` or `_useRingZT` right after the family, so a longitudinal output is simply another family whose suffix ends in the tag: `BothHyperons_useRingZ` plus `_MixedEventProxies` is exactly the file an ordinary variation lookup builds. Both definitions sit in one table, `LONGITUDINAL_RINGS` (name, file tag, display symbol), and each family whose longitudinal data file exists gets a **sibling** per definition, pointing at its table entry and written to `<Family>_RingZ/` or `<Family>_RingZT/`. Everything -- variations, the MC and pp references, the signal-extraction outputs -- resolves for it with no separate code path, and nothing changes for a wagon without such outputs. Files are built from the tags and never matched against them, so the prefix overlap of the two tags is harmless here.
 
 The flag changes four things, and nothing else:
 
 - **Absent variations.** Only a subset is run in $R_z$. Their absence is expected, so it is recorded once per $R_z$ family, quietly, with one log line, instead of warned about per observable.
-- **Toy Model.** Off for $R_z$ families: it predicts the full ring. The references list keeps its toy entry with an empty path, so every per-reference row stays aligned.
-- **Cross-family blocks** (`CrossFamily_Integrated/`) stay full-ring. $R_z$ is compared against the full ring in `RingVsRingZ/` instead.
+- **Toy Model.** Off for longitudinal families: it predicts the full ring. The references list keeps its toy entry with an empty path, so every per-reference row stays aligned.
+- **Cross-family blocks** (`CrossFamily_Integrated/`) stay full-ring. The longitudinal rings are compared against the full ring in `RingVsLongitudinal/` instead.
 - **Titles.** They come from many literals (`"<R>"`, `"Integrated <R>_{S}"`, a bare `"R"` y title and `"#Delta"` plus that title). Rather than touching each, an $R_z$ family's folder is **relabelled in one pass** once it is complete: every canvas, histogram and graph under it is read back, its titles, axis titles, bin labels, legend entries and text lines are swapped to $R_z$, and it is rewritten in place. Only whole-token forms change, so a jet-radius "R = 0.4" is left alone, and no other folder is touched.
 
-Two folders need both definitions at once. They are drawn at the top level from the full-ring families, pairing each file with its `_useRingZ` sibling, and each uses only the files it finds.
+The cross-definition folders are drawn at the top level from the full-ring families, pairing each file with all its longitudinal siblings at once, and each uses only the files it finds.
 
 #### What both folders are built from
 
@@ -1403,54 +1430,127 @@ A ratio of two means over the same candidates keeps its covariance,
 
 $$\mathrm{Var}(r)=\frac{\sigma_a^2-2rC+r^2\sigma_b^2}{n\,\langle b\rangle^2},\qquad r=\frac{\langle a\rangle}{\langle b\rangle},\qquad C=\langle ab\rangle-\langle a\rangle\langle b\rangle ,$$
 
-which is used for both $\langle R_z\rangle/\langle n_z^2\rangle$ and $\kappa=3\langle u^2\rangle/\langle w\rangle$.
+which is used for both $\langle R_z\rangle/\langle n_z^2\rangle$ and $\kappa=3\langle uv\rangle/\langle w\rangle$.
 
-#### `RingVsRingZ/` -- the headline check
+#### `RingVsLongitudinal/` -- the headline check
 
-Per family and proxy, one column per config present in **both** definitions (Data, every variation, MC and pp), three numbers:
+Per family and proxy, one canvas, `Canvas_RingVsLongitudinal_<Proxy>`, with one column per config whose full-ring file and at least one longitudinal file exist (Data, every variation, MC and pp). A definition whose file is absent leaves a gap in its column instead of removing the column. Five series share the canvas:
 
 | Series | Meaning |
 |---|---|
-| $\langle R\rangle$ | the full ring, fake included |
-| $\langle R_z\rangle$ | the longitudinal ring |
-| $\langle R_z\rangle/\langle n_z^2\rangle$ | the ring density per candidate, comparable with $\langle R\rangle$ once the latter's fake is removed (under ring alignment) |
+| $\langle R\rangle$ (Full 3D Ring) | the full ring, fake included |
+| $\langle R_z\rangle$, $\langle R_z^T\rangle$ | the longitudinal rings (open markers) |
+| $\langle R_z\rangle/\langle n_z^2\rangle$, $\langle R_z^T\rangle/\langle n_z^2\rangle$ | the ring amplitude per candidate, comparable with $\langle R\rangle$ once the latter's fake is removed, under ring alignment (filled markers, emphasised) |
 
-If $R_z$ does what it should, $\langle R_z\rangle$ is about zero for MixedEv and pp and survives only in data, while $\langle R\rangle$ carries its large fake everywhere. A second canvas repeats $\langle R_z\rangle/\langle n_z^2\rangle$ alone, with its Data $-$ Var differences.
+Each definition keeps one colour everywhere in the summary (`LONG_RING_COLOR`, `LONG_RING_MARKER`): grey for the full ring, red for $R_z$ and green for $R_z^T$. If the longitudinal rings do what they should, $\langle R_z\rangle$ and $\langle R_z^T\rangle$ are about zero for MixedEv and pp and survive only in data, while $\langle R\rangle$ carries its large fake everywhere.
 
-#### `Corrections/` -- $\kappa$ and the corrected ring, raw and signal-extracted
+Each definition also gets its ratio alone, `Canvas_RzOverNz2_<Proxy>` and `Canvas_RzTOverNz2_<Proxy>`, with the Data $-$ Var differences and the redux subset. These are categorical canvases, which have no notion of a gap, so each holds only the columns where its definition exists, and it is skipped when Data is not among them (its differences are taken against Data).
 
-The fake is subtracted and the response divided out, reducing both definitions to the same quantity, the ring density $P_R$:
+#### `RingVsLongitudinal_CheapSigExtract/`
 
-$$P^{\rm full}=\frac{R_d-R_f}{\kappa_{\rm eff}-\tfrac{\alpha^2}{3}R_dR_f}\quad\text{(exact inversion)},\qquad P^{z}=\frac{R_{z,d}-R_{z,f}}{3\langle u^2\rangle}=\frac{R_{z,\rm true}}{\langle n_z^2\rangle}\quad\text{(linear)},$$
+The CheapSigExtract counterpart of the headline check, with the same columns, the same five series and the same `<Family>/<Proxy>/` layout. The rings are read from the consumer's `IntegratedCuts/p2dRingCuts*V0MassPeak`, so there is no fit and no sideband model. Per proxy there are three canvases (`_InMassPeak_`, `_OutOfMassPeak_`, `_InMinusOut_`): in the mass peak, in the sideband, and in $-$ out, which is how far the background pulls each definition. In-peak and sideband candidates are disjoint, so in $-$ out is plain quadrature.
 
-with $d$ the data sample, $f$ its mixed-event partner, and $\kappa$ and $\langle u^2\rangle$ measured on the data sample. The pairs are Data/MixedEv, the AN-cuts pair, and each MC or pp reference against its own `_MixedEventProxies` run when that exists. $R_z$ uses the linear form, and **not** because its own fake is small. The exact inversion is $R_{z,\rm true}=\bigl[R_{z,d}(1+\langle\delta\rangle_0)-R_{z,f}\bigr]/\kappa_z$, where $\langle\delta\rangle_0\approx\tfrac{\alpha^2}{3}R_{\rm true}R_{\rm fake}$ is the normalization of the whole sample, made of **full-ring** quantities whatever $R_z$'s own fake is. It multiplies $R_{z,d}$, so the linear form drops $\langle\delta\rangle_0R_{z,d}\sim10^{-4}R_{z,d}$: negligible even when $R_z$'s fake is as large as its signal. The full ring cannot drop the same term, because there it multiplies $R_d\approx0.8$. Plugging $R_z$ quantities into the full-ring formula would be wrong in form, since its denominator is written in terms of the full ring's fake.
+The peak and sideband canvases also show $\langle R_z\rangle/\langle n_z^2\rangle$ of that region, from the `<Proxy>/KappaEff/*VsMassRegion` profiles of the cut folder. The ring, $n_z^2$ and their product (`pRingTimesDen<Proxy>VsMassRegion`) come from the same candidates, so the ratio keeps its covariance with the ratio-of-means formula above. Consumer outputs that predate `pRingTimesDen<Proxy>VsMassRegion` leave the ratio as a gap, never replaced by a covariance-free approximation. The in $-$ out of a ratio is not drawn.
 
-Since $\kappa_{\rm eff}=3\langle u^2\rangle$ for the full ring and $\kappa_z\langle n_z^2\rangle=3\langle u^2\rangle$ for $R_z$, both are **one expression**, $P=(R_d-R_f)/(3\langle u^2\rangle-k\,R_dR_f)$, with $k=\alpha^2/3$ for the full ring and $k=0$ for $R_z$. One routine computes it; only its inputs change:
+**Which "out of peak".** Both `p2dRingCuts*V0MassPeak` (Y bin 1) and the `*VsMassRegion` profiles are filled from the same two consumer flags. `v0InMassPeak` selects $|m-m_\Lambda|\le$ `PeakWindowNSigma`$\,\sigma$, and `v0InMassWindow` selects the two side bands between `SidebandInnerNSigma` and `SidebandOuterNSigma`, whose total width the consumer forces to equal the peak's (a mismatch is fatal at init). "Out of peak" is therefore always the equal-width sideband, never everything outside the peak, and both objects see the same populations. One caveat remains: `FetchIntegratedByMassPeak` always reads the "All $\Lambda$" bin of `p2dRingCuts*`, which the consumer fills next to the `Ring` fill list, while `*VsMassRegion` comes from `cutFolder`. With a non-default `cutFolder`, the in $-$ out canvases and the corrections no longer see the same candidates.
 
-| Folder | $\langle R\rangle$ | $\langle u^2\rangle$, $\langle w\rangle$ |
-|---|---|---|
-| `Corrections/Raw/` | all candidates, from the consumer's mass-binned profiles | all candidates, from `KappaEff/` |
-| `Corrections/SignalExtracted/` | $\langle R\rangle_S$, from `IntegratedSummary/` | $\langle u^2\rangle_S$, $\langle w\rangle_S$, from `KappaEff/` of `signalExtractionRing` |
-| `Corrections/CheapSigExtract/` | peak $-$ sideband, from `<Proxy>/KappaEff/*VsMassRegion` | the same, from the same profiles |
+#### `Corrections/` -- $\kappa$ and the corrected ring
 
-A reference's signal extraction is looked for where the pipeline puts it, `<base>/../results_SigExtract`; when it is absent, that reference simply has no signal-extracted column.
+The fake is subtracted and the response divided out, reducing every definition to the same quantity, the ring amplitude $P_R$ (each canvas shows the full ring, $R_z$ and $R_z^T$ side by side, wherever their files exist):
 
-**The cheap estimator.** For any per-candidate quantity $y$ ($R$, $u^2$ or $w$),
-$$\langle y\rangle_S=\frac{\sum_Py-\sum_By}{N_P-N_B},$$
-with $P$ the peak window and $B$ the sideband. The consumer enforces equal total widths, so for a background whose density and $\langle y\rangle_B$ are both linear in mass, the sideband holds exactly the background under the peak. What this misses is the curvature of their product, a linear density times a linear $\langle y\rangle_B$; separate left and right sidebands would recover it, and are the natural extension. The two regions are disjoint and each count is treated as Poisson, so with $A=\sum_P-\sum_B$, $D=N_P-N_B$ and $r=A/D$,
+$$P^{\rm full}=\frac{R_d-R_f}{\kappa_{\rm eff}-\tfrac{\alpha^2}{3}R_dR_f}\quad\text{(exact inversion)},\qquad P^{z}=\frac{R_{z,d}-R_{z,f}}{3\langle uv\rangle}=\frac{R_{z,\rm true}}{\langle n_z^2\rangle}\quad\text{(linear, also for }R_z^T),$$
+
+with $d$ the data sample, $f$ its mixed-event partner, and $\kappa$ and $\langle uv\rangle$ measured on the data sample. $R_z$ uses the linear form, and **not** because its own fake is small. The exact inversion is $R_{z,\rm true}=\bigl[R_{z,d}(1+\langle\delta\rangle_0)-R_{z,f}\bigr]/\kappa_z$, where $\langle\delta\rangle_0\approx\tfrac{\alpha^2}{3}R_{\rm true}R_{\rm fake}$ is the normalization of the whole sample, made of **full-ring** quantities whatever $R_z$'s own fake is. It multiplies $R_{z,d}$, so the linear form drops $\langle\delta\rangle_0R_{z,d}\sim10^{-4}R_{z,d}$: negligible even when $R_z$'s fake is as large as its signal. The full ring cannot drop the same term, because there it multiplies $R_d\approx0.8$. Plugging $R_z$ quantities into the full-ring formula would be wrong in form, since its denominator is written in terms of the full ring's fake.
+
+Since $\kappa_{\rm eff}=3\langle uv\rangle$ for the full ring (where $u=v$) and $\kappa_z\langle n_z^2\rangle=3\langle uv\rangle$ for $R_z$ and $R_z^T$, all are **one expression**,
+
+$$P=\frac{R_d-R_f}{3\langle uv\rangle-k\,R_dR_f},\qquad k=\begin{cases}\alpha^2/3 & \text{full ring}\\ 0 & R_z,\ R_z^T.\end{cases}$$
+
+One routine computes it (`CorrectRing`), and only its inputs change between folders. Each input set is built by one function (`InputsOfSample`, `InputsOfSidebandSubtracted`), which the integrated and the differential folders share, so every formula exists once:
+
+| Folder | Candidates | $\langle R\rangle$, $\langle uv\rangle$, $\langle w\rangle$ from | $\kappa$ |
+|---|---|---|---|
+| `Raw/` | all | the mass-binned ring profile and `KappaEff/*VsMass`, every bin and flow | exact covariance |
+| `SignalExtracted/` | signal, from the fits | `IntegratedSummary/` and `KappaEff/` of `signalExtractionRing` | errors in quadrature |
+| `CheapSigExtract/InPeakQA/` | peak only (**QA**) | `KappaEff/*VsMassRegion`, peak bin | the peak's own, exact |
+| `CheapSigExtract/OffPeakQA/` | sideband only (**QA**) | `KappaEff/*VsMassRegion`, sideband bin | the sideband's own, exact |
+| `CheapSigExtract/SidebandSubtracted/` | signal, without a fit | `KappaEff/*VsMassRegion`, peak $-$ sideband sums | from the subtracted sums, exact |
+
+**The pairs.** Four in-wagon pairs, in this order: Data against `_MixedEventProxies` ("Data - MixedEv"), the AN-cuts pair, and the same two against the resampled mixed events, `_MixedEventProxies_10resamples` and `_MixedEventProxies_analysisCuts_10resamples` ("Data - MixedEv,10Resamp."). The tag lives in one constant, `MIXED_RESAMPLES_TAG`, and the "10" of every label is parsed from it, so the labels cannot drift from the file names. The resampled pairs subtract the same data from a fake with less jet-sampling noise (see the event-mixing section). Each MC or pp reference joins against its own `_MixedEventProxies` run when that exists. Its signal extraction is looked for where the pipeline puts it, `<base>/../results_SigExtract`. When that is absent, the reference simply has no signal-extracted column. Several pairs share a data sample, and $\kappa$ belongs to the data sample, so each `Canvas_Kappa_<Proxy>` has one column per data sample, not per pair.
+
+**$\alpha$ is the family's own**, from the same decay constants as the consumer ($\alpha_\Lambda=0.749$, $\alpha_{\bar\Lambda}=-0.758$). `BothHyperons` mixes the two while the exact term is per species. It uses the mean of the two $\alpha^2$, which is within 1.2% of either, on a term that is itself a $\sim10\%$ correction, so the choice moves $P$ by $\lesssim0.2\%$.
+
+Per family and proxy each folder holds two canvases: $\kappa_{\rm eff}$ and $\kappa_z$ for every data sample, and $P^{\rm full}$ and $P^z$ for every pair. The full ring is always drawn, and $R_z$ joins it wherever its files exist.
+
+##### CheapSigExtract: three cases, and the order of the subtractions
+
+`CheapSigExtract/` holds three folders built from the same two-bin `*VsMassRegion` moments, plus `Canvas_KappaByRegion_<Proxy>` at `CheapSigExtract/<Family>/`:
+
+- **`InPeakQA/`** corrects the peak region alone, background left in. It should show a nonzero signal if there is one, diluted by the background.
+- **`OffPeakQA/`** corrects the sideband alone. After Data $-$ MixedEv it should be near zero for every definition, unless the combinatorial background carries a polarization correlated with the jet. A nonzero value there is informative, not a failure.
+- **`SidebandSubtracted/`** is the signal estimate: every moment is sideband-subtracted first, and then corrected.
+
+The two QA folders are **QA only, never a result**: their $P$ and their $\kappa$ are purity-weighted mixtures of signal and background. Every one of their canvas titles says so, so that a canvas read out of context is not mistaken for a result. Their value lies in the comparison: `InPeakQA/` against `SidebandSubtracted/` shows how far the background moves the corrected answer.
+
+**Each region uses its own $\kappa$.** The inversion is a statement about one population: it divides that population's ring by that population's response. Applying the peak's $\kappa$ to the sideband would apply one population's response to another's candidates, so the QA folders never mix them.
+
+**The order of the subtractions.** For each sample separately (data $d$ and its mixed events $f$) and for each moment $y\in\{R,\ uv,\ w\}$, the sideband is subtracted **at the level of sums**, never of means:
+
+$$\langle y\rangle_S=\frac{\sum_Py-\sum_By}{N_P-N_B}.$$
+
+$\kappa_S$ and $P$ are then formed from these subtracted moments. $\kappa_S=3\langle uv\rangle_S/\langle w\rangle_S$ is therefore a dedicated $\kappa$ of the peak-minus-sideband population: neither the all-candidate $\kappa$ nor the peak's. No separate "$\kappa$ of the peak $-$ off-peak histograms" is needed, because this is exactly that object, built from the same moments.
+
+This order is correct because the response relation is **linear in candidate sums**. Under ring alignment, every candidate set obeys $\sum R=P\sum3uv+\text{fake}$, so subtracting the sideband sums from the peak sums leaves the same relation for the signal candidates alone. Dividing through gives
+
+$$P_S=\frac{R_{S,d}-R_{S,f}}{3\langle uv\rangle_{S,d}-k\,R_{S,d}R_{S,f}},$$
+
+and the counts cancel. The only nonlinear piece is the full ring's $k\,R_dR_f$ term.
+
+The other order, correcting each region first and subtracting afterwards, also works, but only with the right weights. With $U=\sum3uv$ the response sum of a region,
+
+$$P_S=\frac{U_PP_P-U_BP_B}{U_P-U_B},$$
+
+which reduces identically to the formula above. Weighting the two regions by their counts instead, $(N_PP_P-N_BP_B)/(N_P-N_B)$, is biased whenever $\langle uv\rangle_P\neq\langle uv\rangle_B$, which is the general case (see `Canvas_KappaByRegion_<Proxy>`). The relation above would be a natural closure test between the three folders, but it holds exactly only when data and mixed events have the same candidates in each region. A target that finds no mixing partner breaks it, and so do the empty resampling passes, so as a printed check it would raise false alarms. It is not implemented.
+
+**The difference of means is not a signal estimate.** The corrections never use $\langle R\rangle_P-\langle R\rangle_B$. That difference is the `_InMinusOut_` canvas of `RingVsLongitudinal_CheapSigExtract/`, and it measures the background's lever arm. With $f=S/N_P$ the purity of the peak,
+
+$$\langle R\rangle_P=f\,\langle R\rangle_S+(1-f)\,\langle R\rangle_B\quad\Longrightarrow\quad\langle R\rangle_P-\langle R\rangle_B=f\,\bigl(\langle R\rangle_S-\langle R\rangle_B\bigr),$$
+
+and the signal mean is the in-peak mean pushed along that lever arm,
+
+$$\langle y\rangle_S=\langle y\rangle_P+\frac{N_B}{N_P-N_B}\bigl(\langle y\rangle_P-\langle y\rangle_B\bigr)=\langle y\rangle_P+\frac{B}{S}\,(\text{in}-\text{out}).$$
+
+When $B/S$ is small, the sideband-subtracted mean and the in-peak mean agree even if in $-$ out is large.
+
+**The error bars are larger, as they should be.** The two regions are disjoint and each count is treated as Poisson, so with $A=\sum_P-\sum_B$, $D=N_P-N_B$ and $r=A/D$,
+
 $$\mathrm{Var}(\langle y\rangle_S)=\frac{\mathrm{Var}(A)-2r\,\mathrm{Cov}(A,D)+r^2\,\mathrm{Var}(D)}{D^2},\quad \mathrm{Var}(A)=\textstyle\sum_Py^2+\sum_By^2,\ \mathrm{Var}(D)=N_P+N_B,\ \mathrm{Cov}(A,D)=\sum_Py+\sum_By .$$
-With no background this is the standard error of $\langle y\rangle_P$, and for $y\equiv1$ it gives exactly 1 with no error, so the full ring's $\langle w\rangle_S$ is handled with no special case. A Monte Carlo check (Poisson signal and background, sideband of equal population) confirmed both the mean and the error. Note the size of that error: about $\sigma_y\sqrt{S+2B}/S$, so the background costs precision as $\sqrt{1+2B/S}$, whatever estimator is used.
 
-**$\kappa$ per region.** `Canvas_KappaByRegion_<Proxy>`, also in `Corrections/CheapSigExtract/<Family>/`, shows the raw $\kappa_{\rm eff}$ and $\kappa_z$ of the peak and of the sideband for every data-like sample, each with the ratio-of-means error. Where the two disagree, the background does not share the signal's response, which is why $P$ divides by the signal-region value and not by either of these.
+With no background this is the standard error of $\langle y\rangle_P$, and for $y\equiv1$ it gives exactly 1 with no error, so the full ring's $\langle w\rangle_S$ needs no special case. A Monte Carlo check (Poisson signal and background, sideband of equal population) confirmed both the mean and the error. Neglecting differences between the means, the error is about $\sigma_y\sqrt{S+2B}/S$, against $\sigma_y/\sqrt{S+B}$ in the peak alone. With $b=B/S$ under the peak, the ratio is
 
-**$\alpha$ is the family's own**, from the same decay constants as the consumer ($\alpha_\Lambda=0.749$, $\alpha_{\bar\Lambda}=-0.758$). `BothHyperons` mixes the two while the exact term is per species; it uses the mean of the two $\alpha^2$, which is within 1.2% of either, on a term that is itself a $\sim10\%$ correction, so the choice moves $P$ by $\lesssim0.2\%$.
+$$\frac{\sigma_{\rm sideband\text{-}subtracted}}{\sigma_{\rm in\ peak}}\simeq\sqrt{(1+2b)(1+b)},$$
 
-Per family and proxy each folder holds two canvases: $\kappa_{\rm eff}$ and $\kappa_z$ for every data-like sample, and $P^{\rm full}$ and $P^z$ for every pair. The full ring is always drawn; $R_z$ joins it wherever its files exist.
+about 1.15 at $b=0.1$. That is the honest cost of removing the background, whatever estimator is used.
 
-**Errors.** They are first order, with the full derivative of the exact inversion.
-- The data and fake rings come from separate consumer runs and are added in quadrature. The mixed events reuse the data's $\Lambda$s, so they over-cover slightly, as everywhere in this macro.
-- The error of $3\langle u^2\rangle$ is propagated, but its covariance with $R_d$ is not, because there is no $\langle Ru^2\rangle$ profile. This is safe: every term in it carries $\partial P/\partial D=-P/D$, so the dropped term is at most $\sim2P\sigma_D/\sigma_R\sim10^{-3}$ of the leading one.
-- $\kappa$ itself is only displayed, never used in $P$. The raw $\kappa$ keeps the covariance of $\langle u^2\rangle$ and $\langle w\rangle$ (the ratio-of-means formula above). The signal-extracted $\kappa_z$ takes their errors in quadrature: the two are positively correlated, both scaling as $n_z^2$, so this slightly overstates it.
+**The sideband-subtracted $\kappa$ keeps its covariance.** $\kappa_S=3A_{uv}/A_w$ with $A_y=\sum_Py-\sum_By$, since $N_P-N_B$ cancels in the ratio. Its first-order variance (`CheapSignalRatio`) needs only the cross sums $\sum uvw$ of each region, which `pKappaNumTimesDen<Proxy>VsMassRegion` holds:
+
+$$\mathrm{Var}(\rho)=\frac{\mathrm{Var}(A_a)-2\rho\,\mathrm{Cov}(A_a,A_b)+\rho^2\,\mathrm{Var}(A_b)}{A_b^2},\quad \rho=\frac{A_a}{A_b},\quad \mathrm{Var}(A_y)=\textstyle\sum_Py^2+\sum_By^2,\quad \mathrm{Cov}(A_a,A_b)=\sum_Pab+\sum_Bab .$$
+
+**Limits of the cheap estimator.** The consumer enforces equal total widths, so for a background whose density and $\langle y\rangle_B$ are both linear in mass, the sideband holds exactly the background under the peak. What it misses is the curvature of their product, a linear density times a linear $\langle y\rangle_B$. Separate left and right sidebands would recover it, and are the natural extension.
+
+**$\kappa$ per region.** `Canvas_KappaByRegion_<Proxy>` shows the raw $\kappa_{\rm eff}$ and $\kappa_z$ of the peak and of the sideband for every data sample, each with the ratio-of-means error. Where the two disagree, the background does not share the signal's response. That is why `SidebandSubtracted/` divides by the signal $\kappa$, and `InPeakQA/` and `OffPeakQA/` each by their own region's.
+
+##### Errors
+
+They are first order, with the full derivative of the exact inversion.
+
+- The data and fake rings come from separate consumer runs and are added in quadrature. The mixed events reuse the data's $\Lambda$s, so this over-covers slightly, as everywhere in this macro. It is the accepted convention, being the simplest to explain and to justify.
+- The error of $3\langle uv\rangle$ is propagated, but its covariance with $R_d$ is not, because there is no $\langle R\,uv\rangle$ profile. This is safe: every term in it carries $\partial P/\partial D=-P/D$, so the dropped term is at most $\sim2P\sigma_D/\sigma_R\sim10^{-3}$ of the leading one.
+- $\kappa$ itself is only displayed, never used in $P$. The raw $\kappa$ and all three CheapSigExtract $\kappa$ keep the covariance of $\langle uv\rangle$ and $\langle w\rangle$ (ratio of means, or `CheapSignalRatio` for the subtracted sums). Only the signal-extracted $\kappa_z$ takes their errors in quadrature, because the fits return no covariance. The two are positively correlated, both scaling as $n_z^2$, so this slightly overstates it.
+
+##### Species combination
+
+Each corrections folder also holds `SpeciesCombination/`, with $\tfrac12(P_\Lambda+P_{\bar\Lambda})$ and $\tfrac12(P_\Lambda-P_{\bar\Lambda})$ per proxy and pair, for every ring definition. A topological fake has the same unitless acceptance moment for both species, so it changes sign with $\alpha$, while a vorticity ring does not. The average therefore suppresses such fakes, to $0.6\%$ given $\lvert\alpha_\Lambda\rvert\neq\lvert\alpha_{\bar\Lambda}\rvert$, and the half-difference contains them with no vorticity signal (`LongitudinalRing.tex`, Prop. 6.2). Charge-driven fakes and a polarization from the magnetic field do not cancel; they land in the half-difference. The two species are disjoint samples, so their errors add in quadrature.
 
 ### Output layout
 

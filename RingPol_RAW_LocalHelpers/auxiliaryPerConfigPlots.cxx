@@ -36,8 +36,10 @@
 *      by the z-reflection and the antipodal reference axis, which separates detector-induced from
 *      genuine contributions and leaves one sector as a null test.
 *   9. KappaEff: the response coefficient kappa per mass bin, per proxy (both ring definitions).
-*  10. R_z only (useRingZ files, "_useRingZ" in the name): the Delta phi fold (east/west), the chi symmetry
+*  10. Longitudinal rings only (R_z, R_z^T): the Delta phi fold (proxy sides), the chi symmetry
 *      sectors, and the Phi_AEE flatness test. In R_z files Sections 6-8 are null tests.
+*  11. The sideband sine: c0 + A sin(Delta phi) + B cos(Delta phi) per mass bin (all definitions), and per
+*      A/C hemisphere of the Lambda (longitudinal rings only).
 *
 * All sections are produced once per kinematic-cut folder (see kFolders below): Ring, RingKinematicCuts,
 * JetKinematicCuts, JetAndLambdaKinematicCuts.
@@ -84,6 +86,7 @@
 #include <TPaveStats.h>
 #include <TLine.h>
 #include <TMath.h>
+#include <sstream> // HasNameToken
 
 #include <algorithm>
 #include <cmath>
@@ -640,9 +643,20 @@ static const char* kTaskDir = "lambdajetpolarizationionsderived"; // My O2Physic
 // Ring definition of the input file. A useRingZ consumer output is identified by its file name alone: the
 // config names carry "_useRingZ" right after the family (BothHyperons_useRingZ_MixedEventProxies), so the tag
 // is searched anywhere in the basename (see the README, "The longitudinal ring"). main() sets both globals.
-static const char* kRingZTag = "_useRingZ";
-static std::string gRingSym  = "#it{R}"; // "#it{R}_{z}" for R_z files
-static std::string gNullTag  = "";       // Prepended to the kernel titles, which are null tests for R_z
+// Tokens of the file name, "_"-separated, matched exactly: "useRingZT" would otherwise also match "useRingZ".
+static const char* kRingZToken  = "useRingZ";
+static const char* kRingZTToken = "useRingZT";
+static std::string gRingSym  = "#it{R}"; // "#it{R}_{z}" or "#it{R}_{z}^{T}" for the longitudinal rings
+static std::string gNullTag  = "";       // Prepended to the kernel titles, which are null tests for those rings
+
+/// @brief True when one of the "_"-separated tokens of name is exactly token.
+static bool HasNameToken(const std::string& name, const char* token)
+{
+    std::stringstream tokens(name);
+    for (std::string piece; std::getline(tokens, piece, '_');)
+        if (piece == token) return true;
+    return false;
+}
 
 /// @brief Swaps the full-ring symbol for the one of the current file (a no-op for full-ring files).
 static std::string RingLabel(std::string text)
@@ -1319,7 +1333,7 @@ static void MakeRingKernelCanvas(TDirectory* taskDir, TDirectory* outDir, const 
     TDirectory* folderDir = GetDir(taskDir, f.name);
     if (!folderDir) { printf("WARNING: skipping ring kernel for '%s' (folder missing)\n", f.name); return; }
 
-    // Each proxy carries its own "RingKernel/". The LeadP one is optionally filled.
+    // Each proxy carries its own RingKernel/; the LeadP one is optional
     TDirectory* kDir = GetDirPath(folderDir, "LeadJet/RingKernel");
     if (!kDir) { printf("WARNING: skipping ring kernel for '%s' (LeadJet/RingKernel missing)\n", f.name); return; }
     TDirectory* kDirLeadP = GetDirPath(folderDir, "LeadP/RingKernel", false);
@@ -2142,7 +2156,7 @@ static void MakeKappaEffCanvas(TDirectory* taskDir, TDirectory* outDir, const Fo
         printf("WARNING: skipping KappaEff for '%s' (LeadJet/KappaEff/ missing: consumer older than the KappaEff moments?)\n", f.name);
         return;
     }
-    const std::string kappaSym = (gRingSym == "#it{R}") ? "#kappa_{eff}" : "#kappa_{z}";
+    const std::string kappaSym = (gRingSym == "#it{R}") ? "#kappa_{eff}" : "#kappa" + gRingSym.substr(6); // "#it{R}_{z}" --> "#kappa_{z}"
 
     TCanvas* c = new TCanvas(Form("cKappaEff_%s", f.name), "", 2100, 650);
     c->Divide(3, 1, 0.005, 0.005);
@@ -2181,11 +2195,11 @@ static void MakeKappaEffCanvas(TDirectory* taskDir, TDirectory* outDir, const Fo
 //
 // Exactly, n_z = sin(Delta phi) sin(theta_t) sin(theta_Lambda) / sin(Delta theta), with
 // Delta phi = phi_Lambda - phi_proxy as the consumer defines it. So the two halves of the Delta phi axis
-// are the two sides of the Lambda ("east", "west"), and under R_z:
+// are the two sides of the Lambda on which the proxy can sit (the proxy sides), and under R_z:
 //   - the signal, weighted by n_z^2, is EVEN in Delta phi;
 //   - the Lambda-kinematic fakes, weighted by n_z, are ODD in Delta phi.
 // The odd part of <R_z>(Delta phi) is therefore pure leak, and it reaches the integrated value only
-// through the east/west imbalance A_EW: <R_z> - symmetrized = A_EW x (half-difference).
+// through the proxy-side imbalance A_dphi: <R_z> - symmetrized = A_dphi x (half-difference).
 // ==========================================================================
 
 // ==========================================================================
@@ -2230,19 +2244,19 @@ static TH1D* MakeProfileFoldX1D(TProfile* src, bool odd, double minEntries, cons
 
 // ==========================================================================
 /**
- * @brief Integrated east/west summary of one <R_z>(Delta phi) profile.
+ * @brief Integrated proxy-side summary of one <R_z>(Delta phi) profile.
  *
  * The halves are merged with TProfile::Rebin, which is exact (sums, not averages of means), so each half
  * carries its own candidates' mean and error. Bins:
  *   1 all, 2 Delta phi > 0, 3 Delta phi < 0, 4 symmetrized 0.5 (R+ + R-), 5 half-difference D = 0.5 (R+ - R-),
- *   6 leak in the integrated value, A_EW x D.
+ *   6 leak in the integrated value, A_dphi x D.
  * The weights in bins 4-6 are treated as fixed, which is safe while the counts are far better known than
- * the means. A_EW itself is returned through aEW.
+ * the means. A_dphi itself is returned through aDphi.
  */
 // ==========================================================================
-static TH1D* MakeEastWestSummary(TProfile* src, const char* newName, double& aEW)
+static TH1D* MakeProxySideSummary(TProfile* src, const char* newName, double& aDphi)
 {
-    aEW = 0.;
+    aDphi = 0.;
     if (!src || !IsMirrorPairable(src->GetXaxis())) return nullptr;
     const int n = src->GetNbinsX();
 
@@ -2255,7 +2269,7 @@ static TH1D* MakeEastWestSummary(TProfile* src, const char* newName, double& aEW
 
     const double nNeg = halves->GetBinEntries(1), nPos = halves->GetBinEntries(2);
     if (nNeg <= 0. || nPos <= 0.) { delete halves; delete all; return nullptr; }
-    aEW = (nPos - nNeg) / (nPos + nNeg);
+    aDphi = (nPos - nNeg) / (nPos + nNeg);
 
     const double rPos = halves->GetBinContent(2), ePos = halves->GetBinError(2);
     const double rNeg = halves->GetBinContent(1), eNeg = halves->GetBinError(1);
@@ -2263,9 +2277,9 @@ static TH1D* MakeEastWestSummary(TProfile* src, const char* newName, double& aEW
     const double d = 0.5 * (rPos - rNeg);
 
     static const char* kLabels[6] = {"All", "#Delta#varphi > 0", "#Delta#varphi < 0", "Symmetrized",
-                                     "Half-difference D", "A_{EW} #times D (leak)"};
-    const double vals[6] = {all->GetBinContent(1), rPos, rNeg, 0.5 * (rPos + rNeg), d, aEW * d};
-    const double errs[6] = {all->GetBinError(1), ePos, eNeg, eHalf, eHalf, std::fabs(aEW) * eHalf};
+                                     "Half-difference D", "A_{#Delta#varphi} #times D (leak)"};
+    const double vals[6] = {all->GetBinContent(1), rPos, rNeg, 0.5 * (rPos + rNeg), d, aDphi * d};
+    const double errs[6] = {all->GetBinError(1), ePos, eNeg, eHalf, eHalf, std::fabs(aDphi) * eHalf};
 
     TH1D* out = new TH1D(newName, "", 6, 0., 6.);
     out->SetDirectory(nullptr);
@@ -2284,8 +2298,8 @@ static TH1D* MakeEastWestSummary(TProfile* src, const char* newName, double& aEW
 /**
  * @brief One canvas per folder: the Delta phi fold of <R_z>, one column per proxy.
  *
- * Top pad: even (signal) and odd (leak) parts vs |Delta phi|. Bottom pad: the integrated east/west
- * summary, with A_EW in the banner. Fold and summary histograms are written next to the canvas.
+ * Top pad: even (signal) and odd (leak) parts vs |Delta phi|. Bottom pad: the integrated proxy-side
+ * summary, with A_dphi in the banner. Fold and summary histograms are written next to the canvas.
  */
 // ==========================================================================
 static void MakeDeltaPhiFoldCanvas(TDirectory* taskDir, TDirectory* outDir, const FolderSpec& f, double minEntries = 50.)
@@ -2309,8 +2323,8 @@ static void MakeDeltaPhiFoldCanvas(TDirectory* taskDir, TDirectory* outDir, cons
         }
         TH1D* even = MakeProfileFoldX1D(src, false, minEntries, Form("hRzDeltaPhiEven%s_%s", kProxies[i], f.name));
         TH1D* odd  = MakeProfileFoldX1D(src, true,  minEntries, Form("hRzDeltaPhiOdd%s_%s", kProxies[i], f.name));
-        double aEW = 0.;
-        TH1D* summary = MakeEastWestSummary(src, Form("hRzEastWest%s_%s", kProxies[i], f.name), aEW);
+        double aDphi = 0.;
+        TH1D* summary = MakeProxySideSummary(src, Form("hRzProxySides%s_%s", kProxies[i], f.name), aDphi);
         if (!even || !odd || !summary) continue;
 
         c->cd(i + 1);
@@ -2340,16 +2354,16 @@ static void MakeDeltaPhiFoldCanvas(TDirectory* taskDir, TDirectory* outDir, cons
         summary->SetTitle(RingLabel(" ; ;<#it{R}>").c_str());
         summary->SetMarkerStyle(20);
         summary->Draw("E1");
-        AddLabel(0.5, 0.95, Form("A_{EW} = %.4f", aEW), 0.045, 22);
+        AddLabel(0.5, 0.95, Form("A_{#Delta#varphi} = %.4f", aDphi), 0.045, 22);
 
         written.push_back(even);
         written.push_back(odd);
         written.push_back(summary);
-        printf("    [%s, %s] A_EW = %+.4f   symmetrized = %+.3e +/- %.1e   leak = %+.3e +/- %.1e\n", f.name, kProxies[i],
-               aEW, summary->GetBinContent(4), summary->GetBinError(4), summary->GetBinContent(6), summary->GetBinError(6));
+        printf("    [%s, %s] A_dphi = %+.4f   symmetrized = %+.3e +/- %.1e   leak = %+.3e +/- %.1e\n", f.name, kProxies[i],
+               aDphi, summary->GetBinContent(4), summary->GetBinError(4), summary->GetBinContent(6), summary->GetBinError(6));
     }
     c->cd(0);
-    AddLabel(0.5, 0.99, RingLabel(Form("<#it{R}> folded about #Delta#varphi = 0 (east/west)  --  %s", f.label)).c_str(), 0.025, 22);
+    AddLabel(0.5, 0.99, RingLabel(Form("<#it{R}> folded about #Delta#varphi = 0 (proxy sides)  --  %s", f.label)).c_str(), 0.025, 22);
 
     WriteCanvas(c, outDir);
     outDir->cd();
@@ -2363,7 +2377,7 @@ static void MakeDeltaPhiFoldCanvas(TDirectory* taskDir, TDirectory* outDir, cons
  *
  *   f_(sa,sb)(chi) = 1/4 [ f(chi) + sa f(-chi) + sb f(pi - chi) + sa sb f(chi - pi) ],   chi in [0, pi/2].
  *
- * Sector order: (+,+) signal, (-,+) Lambda-kinematic fakes x A_EW, (-,-) towards-the-jet P_e, (+,-) null.
+ * Sector order: (+,+) signal, (-,+) Lambda-kinematic fakes x A_dphi, (-,-) towards-the-jet P_e, (+,-) null.
  * The four partners of an orbit are disjoint bins, so their errors add in quadrature. Requires a uniform
  * axis on [-pi, pi] with a bin count divisible by 4, so that every partner is a whole bin.
  *
@@ -2414,7 +2428,7 @@ static bool DecomposeChi(TProfile* src, double minEntries, const std::string& ta
  * | Panel | Sector | Shape fitted | Content |
  * |---|---|---|---|
  * | 1 | (+,+) | A sin^2(chi)  | signal (plus field-odd instrumental parts only) |
- * | 2 | (-,+) | B sin(chi)    | Lambda-kinematic fakes (B_theta, HEE) x A_EW |
+ * | 2 | (-,+) | B sin(chi)    | Lambda-kinematic fakes (B_theta, HEE) x A_dphi |
  * | 3 | (-,-) | C sin(2 chi)  | towards-the-jet P_e, parity-odd, invisible to mixing |
  * | 4 | (+,-) | 0             | null |
  *
@@ -2434,7 +2448,7 @@ static void MakeChiSectorCanvas(TDirectory* taskDir, TDirectory* outDir, const c
         return;
     }
 
-    static const char* kBanner[4] = {"(+,+)  signal", "(-,+)  #Lambda-kinematic fakes #times A_{EW}",
+    static const char* kBanner[4] = {"(+,+)  signal", "(-,+)  #Lambda-kinematic fakes #times A_{#Delta#varphi}",
                                      "(-,-)  towards-the-jet P_{e}", "(+,-)  null"};
     static const char* kShape[4]  = {"[0]*sin(x)*sin(x)", "[0]*sin(x)", "[0]*sin(2*x)", "[0]"};
 
@@ -2497,7 +2511,7 @@ static void MakePhiAeeFlatnessCanvas(TDirectory* taskDir, TDirectory* outDir)
         TProfile* hZ    = static_cast<TProfile*>(pZ->Clone(Form("pZClone%s_%d", kProxies[i], gCloneIdx++)));
         hPerp->SetDirectory(nullptr);
         hZ->SetDirectory(nullptr);
-        hPerp->SetTitle(" ;#phi_{#Lambda-like}-#phi_{p-like}^{*};< #it{R}_{#perp} >,  < #it{R}_{z} >");
+        hPerp->SetTitle(RingLabel(" ;#phi_{#Lambda-like}-#phi_{p-like}^{*};< #it{R}_{#perp} >,  < #it{R} >").c_str());
         hPerp->SetMarkerStyle(24);
         hPerp->SetMarkerColor(kGray + 2);
         hPerp->SetLineColor(kGray + 2);
@@ -2513,16 +2527,193 @@ static void MakePhiAeeFlatnessCanvas(TDirectory* taskDir, TDirectory* outDir)
         TLegend* leg = new TLegend(0.14, 0.76, 0.60, 0.90);
         leg->SetBorderSize(0);
         leg->SetFillStyle(0);
-        leg->AddEntry(hPerp, "< #it{R}_{#perp} >: carries the AEE", "lp");
-        leg->AddEntry(hZ, Form("< #it{R}_{z} >: flat, #chi^{2}/ndf = %.1f/%d (p = %.2f)", flat->GetChisquare(), flat->GetNDF(), pVal), "lp");
+        leg->AddEntry(hPerp, RingLabel("< #it{R}_{#perp} > = full ring - < #it{R} >: carries the AEE").c_str(), "lp");
+        leg->AddEntry(hZ, Form("%s: constant fit, #chi^{2}/ndf = %.1f/%d (p = %.2f)", RingLabel("< #it{R} >").c_str(),
+                               flat->GetChisquare(), flat->GetNDF(), pVal), "lp");
         leg->Draw();
         AddLabel(0.5, 0.95, kProxies[i], 0.045, 22);
         printf("    [%s] R_z vs Phi_AEE constant: %+.3e +/- %.1e   chi2/ndf = %.1f/%d  (p = %.3f)\n", kProxies[i],
                flat->GetParameter(0), flat->GetParError(0), flat->GetChisquare(), flat->GetNDF(), pVal);
     }
     c->cd(0);
-    AddLabel(0.5, 0.98, "#Phi_{AEE} flatness: the AEE lives in #it{R}_{#perp}, not in #it{R}_{z}", 0.032, 22);
+    // R_z is flat by construction; R_z^T is not strictly (note, Sec. 3.6), so its fit is a check, not a null
+    AddLabel(0.5, 0.98, RingLabel(gRingSym == "#it{R}_{z}" ? "#Phi_{AEE} flatness: the AEE lives in #it{R}_{#perp}, not in #it{R}"
+                                                           : "#Phi_{AEE}: #it{R} is not strictly flat (even AEE harmonic)").c_str(), 0.032, 22);
     WriteCanvas(c, outDir);
+    delete c;
+}
+
+// ==========================================================================
+// Section 11: the sideband sine (README, "Section 11"; LongitudinalRing.tex, Prop. 5.6).
+//
+// Under an axis-blind acceptance the fake of a longitudinal ring at fixed (m, Delta phi) is
+// A(m) sin(Delta phi): the shape is geometric (n_z ~ sin Delta phi), the amplitude carries the
+// detector. Per mass bin we fit c0 + A sin(Delta phi) + B cos(Delta phi): A(m) is the amplitude, B(m)
+// must vanish, and c0 absorbs the even part (the signal, n_z^2-weighted). Run for every ring
+// definition, since the same fit is a cheap QA of the full ring as well.
+// ==========================================================================
+
+/// @brief c0(m), A(m) and B(m) of one (Delta phi, mass) profile, one fit per mass bin.
+struct SineVsMass { TH1D* c0 = nullptr; TH1D* sine = nullptr; TH1D* cosine = nullptr; };
+
+// ==========================================================================
+/**
+ * @brief Fits c0 + A sin(Delta phi) + B cos(Delta phi) in every mass bin of a (Delta phi, mass) profile.
+ *
+ * @param p2         x = Delta phi, y = mass.
+ * @param tag        Unique suffix for the returned histograms.
+ * @param minEntries Mass bins with fewer candidates are left empty.
+ */
+// ==========================================================================
+static SineVsMass FitSineVsMass(TProfile2D* p2, const std::string& tag, double minEntries = 200.)
+{
+    SineVsMass out;
+    if (!p2) return out;
+    const TAxis* ay = p2->GetYaxis();
+    const int ny = ay->GetNbins();
+    auto book = [&](const char* stem) {
+        TH1D* h = ay->GetXbins()->GetSize() ? new TH1D(Form("%s_%s", stem, tag.c_str()), "", ny, ay->GetXbins()->GetArray())
+                                            : new TH1D(Form("%s_%s", stem, tag.c_str()), "", ny, ay->GetXmin(), ay->GetXmax());
+        h->SetDirectory(nullptr);
+        h->SetStats(0);
+        return h;
+    };
+    out.c0 = book("hSineFitConst");
+    out.sine = book("hSineFitSin");
+    out.cosine = book("hSineFitCos");
+
+    TF1* f = new TF1(Form("fSineCos_%s", tag.c_str()), "[0] + [1]*sin(x) + [2]*cos(x)",
+                     p2->GetXaxis()->GetXmin(), p2->GetXaxis()->GetXmax());
+    for (int iy = 1; iy <= ny; ++iy) {
+        TProfile* slice = p2->ProfileX(Form("%s_m%d_%d", tag.c_str(), iy, gCloneIdx++), iy, iy);
+        slice->SetDirectory(nullptr);
+        int filled = 0;
+        double entries = 0.;
+        for (int ix = 1; ix <= slice->GetNbinsX(); ++ix) {
+            entries += slice->GetBinEntries(ix);
+            if (slice->GetBinEntries(ix) > 1.) ++filled;
+        }
+        if (entries >= minEntries && filled >= 4) {
+            f->SetParameters(0., 0., 0.);
+            if (slice->Fit(f, "Q0N") == 0) {
+                out.c0->SetBinContent(iy, f->GetParameter(0));     out.c0->SetBinError(iy, f->GetParError(0));
+                out.sine->SetBinContent(iy, f->GetParameter(1));   out.sine->SetBinError(iy, f->GetParError(1));
+                out.cosine->SetBinContent(iy, f->GetParameter(2)); out.cosine->SetBinError(iy, f->GetParError(2));
+            }
+        }
+        delete slice;
+    }
+    delete f;
+    return out;
+}
+
+/// @brief Draws a set of A(m)-like histograms on the current pad with a legend, symmetric about zero.
+static void DrawAmplitudes(const std::vector<std::pair<TH1D*, std::string>>& curves, const char* yTitle)
+{
+    static const int kColors[4] = {kBlue + 1, kRed + 1, kGreen + 2, kGray + 2};
+    static const int kMarkers[4] = {20, 24, 21, 25};
+    double yMax = 0.;
+    for (const auto& c : curves)
+        for (int b = 1; b <= c.first->GetNbinsX(); ++b)
+            if (c.first->GetBinError(b) > 0.)
+                yMax = std::max(yMax, std::fabs(c.first->GetBinContent(b)) + c.first->GetBinError(b));
+    if (yMax <= 0.) yMax = 1.;
+    TLegend* leg = new TLegend(0.14, 0.76, 0.62, 0.90);
+    leg->SetBorderSize(0);
+    leg->SetFillStyle(0);
+    for (size_t i = 0; i < curves.size(); ++i) {
+        TH1D* h = curves[i].first;
+        h->SetMarkerStyle(kMarkers[i % 4]);
+        h->SetMarkerColor(kColors[i % 4]);
+        h->SetLineColor(kColors[i % 4]);
+        if (i == 0) {
+            h->SetTitle(Form(" ;m_{p#pi} (GeV/c^{2});%s", yTitle));
+            h->GetYaxis()->SetRangeUser(-1.3 * yMax, 1.3 * yMax);
+            h->Draw("E1");
+        } else {
+            h->Draw("E1 SAME");
+        }
+        leg->AddEntry(h, curves[i].second.c_str(), "lp");
+    }
+    leg->Draw();
+}
+
+// ==========================================================================
+/**
+ * @brief Per folder: A(m), B(m) and c0(m) of the leading-jet ring vs (Delta phi, mass). All ring definitions.
+ */
+// ==========================================================================
+static void MakeSidebandSineCanvas(TDirectory* taskDir, TDirectory* outDir, const FolderSpec& f)
+{
+    TDirectory* folderDir = GetDir(taskDir, f.name);
+    TProfile2D* p2 = folderDir ? static_cast<TProfile2D*>(SafeGet(folderDir, "LeadJet/p2dRingObservableDeltaPhiVsMass", false)) : nullptr;
+    if (!p2) { printf("WARNING: skipping sideband sine for '%s' (LeadJet/p2dRingObservableDeltaPhiVsMass missing)\n", f.name); return; }
+
+    SineVsMass fit = FitSineVsMass(p2, f.name);
+    TCanvas* c = new TCanvas(Form("cSidebandSine_%s", f.name), "", 1400, 650);
+    c->Divide(2, 1, 0.005, 0.005);
+    c->cd(1);
+    SetupPadMargins();
+    DrawAmplitudes({{fit.sine, "A(m): sin #Delta#varphi"}, {fit.cosine, "B(m): cos #Delta#varphi (null)"}}, "fit amplitude");
+    c->cd(2);
+    SetupPadMargins();
+    DrawAmplitudes({{fit.c0, "c_{0}(m): even part"}}, RingLabel("<#it{R}>").c_str());
+    c->cd(0);
+    AddLabel(0.5, 0.98, RingLabel(Form("<#it{R}>(m, #Delta#varphi) = c_{0} + A sin#Delta#varphi + B cos#Delta#varphi, LeadJet  --  %s", f.label)).c_str(), 0.030, 22);
+
+    WriteCanvas(c, outDir);
+    outDir->cd();
+    for (TH1D* h : {fit.c0, fit.sine, fit.cosine}) h->Write();
+    delete c;
+}
+
+// ==========================================================================
+/**
+ * @brief Longitudinal rings only: A(m) and B(m) per A/C hemisphere of the Lambda (RzDiagnostics/).
+ *
+ * The helicity part of A(m) is odd under A/C, so it flips between eta_Lambda > 0 and < 0, while the
+ * polar part does not. Their half-sum and half-difference separate the two.
+ */
+// ==========================================================================
+static void MakeSidebandSineEtaSplitCanvas(TDirectory* taskDir, TDirectory* outDir)
+{
+    TDirectory* rzDir = GetDir(taskDir, "RzDiagnostics", false);
+    TProfile2D* pPos = rzDir ? static_cast<TProfile2D*>(SafeGet(rzDir, "p2dRingLeadJetVsDeltaPhiVsMassEtaPos", false)) : nullptr;
+    TProfile2D* pNeg = rzDir ? static_cast<TProfile2D*>(SafeGet(rzDir, "p2dRingLeadJetVsDeltaPhiVsMassEtaNeg", false)) : nullptr;
+    if (!pPos || !pNeg) { printf("WARNING: skipping the eta-split sideband sine (RzDiagnostics maps missing: consumer predates them?)\n"); return; }
+
+    SineVsMass fPos = FitSineVsMass(pPos, "EtaPos");
+    SineVsMass fNeg = FitSineVsMass(pNeg, "EtaNeg");
+    // Half-sum (A/C-even: the polar term) and half-difference (A/C-odd: the helicity term); the hemispheres are disjoint
+    TH1D* hEven = static_cast<TH1D*>(fPos.sine->Clone("hSineFitSin_AcEven"));
+    TH1D* hOdd  = static_cast<TH1D*>(fPos.sine->Clone("hSineFitSin_AcOdd"));
+    hEven->SetDirectory(nullptr);
+    hOdd->SetDirectory(nullptr);
+    for (int b = 1; b <= hEven->GetNbinsX(); ++b) {
+        const double ep = fPos.sine->GetBinError(b), en = fNeg.sine->GetBinError(b);
+        if (ep <= 0. || en <= 0.) { hEven->SetBinContent(b, 0.); hEven->SetBinError(b, 0.); hOdd->SetBinContent(b, 0.); hOdd->SetBinError(b, 0.); continue; }
+        const double err = 0.5 * std::sqrt(ep * ep + en * en);
+        hEven->SetBinContent(b, 0.5 * (fPos.sine->GetBinContent(b) + fNeg.sine->GetBinContent(b))); hEven->SetBinError(b, err);
+        hOdd->SetBinContent(b, 0.5 * (fPos.sine->GetBinContent(b) - fNeg.sine->GetBinContent(b)));  hOdd->SetBinError(b, err);
+    }
+
+    TCanvas* c = new TCanvas("cSidebandSineEtaSplit", "", 2100, 650);
+    c->Divide(3, 1, 0.005, 0.005);
+    c->cd(1);
+    SetupPadMargins();
+    DrawAmplitudes({{fPos.sine, "A(m), #eta_{#Lambda} > 0"}, {fNeg.sine, "A(m), #eta_{#Lambda} < 0"}}, "sine amplitude");
+    c->cd(2);
+    SetupPadMargins();
+    DrawAmplitudes({{hEven, "A/C-even: polar term"}, {hOdd, "A/C-odd: helicity term"}}, "sine amplitude");
+    c->cd(3);
+    SetupPadMargins();
+    DrawAmplitudes({{fPos.cosine, "B(m), #eta_{#Lambda} > 0"}, {fNeg.cosine, "B(m), #eta_{#Lambda} < 0"}}, "cosine amplitude (null)");
+    c->cd(0);
+    AddLabel(0.5, 0.98, RingLabel("Sideband sine of <#it{R}> per A/C hemisphere of the #Lambda, LeadJet").c_str(), 0.032, 22);
+
+    WriteCanvas(c, outDir);
+    outDir->cd();
+    for (TH1D* h : {fPos.sine, fPos.cosine, fPos.c0, fNeg.sine, fNeg.cosine, fNeg.c0, hEven, hOdd}) h->Write();
     delete c;
 }
 
@@ -2657,19 +2848,23 @@ int main(int argc, char** argv)
     // --- Ring definition: full ring or R_z, from the file suffix (see the README) ---
     // RzDiagnostics/ is booked only by useRingZ, so it cross-checks the suffix: a mislabelled file would be
     // drawn, and then compared downstream, as the wrong observable. That is fatal, not a warning.
-    const bool ringZMode = filename.find(kRingZTag) != std::string::npos;
+    // useRingZT is checked first, and both exactly: one token per definition
+    const std::string stem = filename.substr(0, filename.rfind('.'));
+    const bool ringZTMode = HasNameToken(stem, kRingZTToken);
+    const bool ringZMode = ringZTMode || HasNameToken(stem, kRingZToken); // Any longitudinal ring
     const bool hasRzDiagnostics = GetDir(taskDir, "RzDiagnostics", false) != nullptr;
     if (ringZMode != hasRzDiagnostics) {
-        std::cerr << " ERROR: the file suffix says " << (ringZMode ? "R_z" : "full ring") << ", but RzDiagnostics/ is "
+        std::cerr << " ERROR: the file name says " << (ringZTMode ? "R_z^T" : ringZMode ? "R_z" : "full ring") << ", but RzDiagnostics/ is "
                   << (hasRzDiagnostics ? "present" : "absent") << ". Check the useRingZ / suffix pairing of " << inPath << std::endl;
         fOut->Close(); fIn->Close();
         return 1;
     }
     if (ringZMode) {
-        gRingSym = "#it{R}_{z}";
-        gNullTag = "[null test for #it{R}_{z}]  ";
+        gRingSym = ringZTMode ? "#it{R}_{z}^{T}" : "#it{R}_{z}";
+        gNullTag = "[null test for " + gRingSym + "]  ";
     }
-    std::cout << " Ring definition: " << (ringZMode ? "R_z = P_z n_z (useRingZ)" : "full ring") << "\n";
+    std::cout << " Ring definition: " << (ringZTMode ? "R_z^T = R_z minus its helicity term (useRingZT)"
+                                          : ringZMode ? "R_z = P_z n_z (useRingZ)" : "full ring") << "\n";
 
     // --- Resolve which kinematic-cut families this config actually produced ---
     // Done once, before any drawing, so an absent optional family costs one summary line instead of
@@ -2711,6 +2906,7 @@ int main(int argc, char** argv)
     TDirectory* dirKernelMoments = fOut->mkdir("KernelMoments_Canvases");
     TDirectory* dirKernelSymmetry = fOut->mkdir("KernelSymmetry_Canvases");
     TDirectory* dirKappaEff    = fOut->mkdir("KappaEff_Canvases");
+    TDirectory* dirSideSine    = fOut->mkdir("SidebandSine_Canvases");
     TDirectory* dirRzDiag      = ringZMode ? fOut->mkdir("RzDiagnostics_Canvases") : nullptr; // Never an empty folder in full-ring files
 
     // 1. Polarization vector-field canvases, one per coordinate system
@@ -2790,7 +2986,7 @@ int main(int argc, char** argv)
     for (const auto& f : folders)
         MakeKappaEffCanvas(taskDir, dirKappaEff, f);
 
-    // 11. R_z only: east/west fold per folder, then the task-level chi sectors and Phi_AEE flatness
+    // 11. Longitudinal rings only: proxy-side fold per folder, then the task-level chi sectors and Phi_AEE flatness
     if (ringZMode) {
         std::cout << " -> Drawing R_z diagnostics...\n";
         for (const auto& f : folders)
@@ -2799,6 +2995,12 @@ int main(int argc, char** argv)
             MakeChiSectorCanvas(taskDir, dirRzDiag, proxy);
         MakePhiAeeFlatnessCanvas(taskDir, dirRzDiag);
     }
+
+    // 12. The sideband sine: every definition per folder, then the A/C split for the longitudinal rings
+    std::cout << " -> Drawing the sideband sine...\n";
+    for (const auto& f : folders)
+        MakeSidebandSineCanvas(taskDir, dirSideSine, f);
+    if (ringZMode) MakeSidebandSineEtaSplitCanvas(taskDir, dirSideSine);
 
     // ===========================================================
     // ADD MORE POST-PROCESSING SECTIONS HERE.

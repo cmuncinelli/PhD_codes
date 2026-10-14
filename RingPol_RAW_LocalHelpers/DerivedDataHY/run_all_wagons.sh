@@ -453,12 +453,29 @@ OPTIMIZATION_FLAGS="-O3 -march=native -fno-math-errno -flto=auto -fno-trapping-m
 ROOT_LIBS="$(root-config --glibs)"
 
 # Compile Step (Stops script if compilation fails)
+echo -n "Compiling $(basename "$EXTRACT_DELTA_MACRO")..."
 g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$EXTRACT_DELTA_EXE" "$EXTRACT_DELTA_MACRO" $ROOT_LIBS || exit 1
+echo " done!"
+
+echo -n "Compiling $(basename "$SIGNAL_EXTRACT_MACRO")..."
 g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$SIGNAL_EXTRACT_EXE" "$SIGNAL_EXTRACT_MACRO" $ROOT_LIBS || exit 1
+echo " done!"
+
+echo -n "Compiling $(basename "$CUMUL_DCA_MACRO")..."
 g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$CUMUL_DCA_EXE" "$CUMUL_DCA_MACRO" $ROOT_LIBS || exit 1
+echo " done!"
+
+echo -n "Compiling $(basename "$AUX_PERCONFIG_MACRO")..."
 g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$AUX_PERCONFIG_EXE" "$AUX_PERCONFIG_MACRO" $ROOT_LIBS || exit 1
+echo " done!"
+
+echo -n "Compiling $(basename "$AUXILIARY_PLOTS_MACRO")..."
 g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$AUXILIARY_PLOTS_EXE" "$AUXILIARY_PLOTS_MACRO" $ROOT_LIBS || exit 1
+echo " done!"
+
+echo -n "Compiling $(basename "$FORENSICS_MACRO")..."
 g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$FORENSICS_EXE" "$FORENSICS_MACRO" $ROOT_LIBS || exit 1
+echo " done!"
 
 echo "Compilation successful!"
 echo ""

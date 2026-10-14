@@ -23,6 +23,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
 #include <cmath>
 #include <algorithm>
 #include <utility>   // std::swap, used when canonicalising the tanh fit parameter signs
@@ -40,15 +41,17 @@
 #include "TPaveStats.h"
 #include "TGraphAsymmErrors.h"
 #include <functional> // std::function, for the subset-selection predicates
+#include <cctype>     // std::isalnum, for canvas-safe names
 #include "TStyle.h"
 #include "TMath.h"
 #include "TLine.h"
 #include "TString.h"
 #include "TSystem.h"
+#include <sstream> // IsLongitudinalSuffix
 #include "TDirectory.h"
 #include "TExec.h"  // Carries a map's palette inside its canvas; gStyle is not serialised
 #include "TColor.h" // TColor::GetColor, for the eta_Proxy slice colours
-#include "TKey.h"       // R_z relabel pass: walking the output file
+#include "TKey.h"   // Longitudinal relabel pass: walking the output file
 #include "TClass.h"
 #include "TGraph.h"
 #include "TText.h"
@@ -93,11 +96,19 @@ struct VariationConfig {
 
 /// @brief A hyperon selection (Lambda, AntiLambda, Both), i.e. one set of consumer output files.
 /// @note familyName names the output folder; dataSuffix is what actually appears in the filenames.
+/// @brief A longitudinal ring definition of the consumer (README, "The longitudinal ring"). See LONGITUDINAL_RINGS.
+struct LongitudinalRing {
+    std::string name;         // "RingZ": the output folders are <Family>_<name>
+    std::string fileTag;      // "_useRingZ": right after the family in the consumer config and file names
+    std::string symbolSuffix; // "_{z}": appended to the ring symbol in display text
+    std::string shortName;    // "Rz": used in canvas names
+};
+
 struct FamilyConfig {
     std::string familyName;                 // e.g., "Lambda"
     std::string dataSuffix;                 // e.g., "JustLambda"
     double alphaSq;                         // Squared decay constant of the selection (see AlphaSqBoth for the mixture)
-    bool isRingZ = false;                   // An R_z sibling of a full-ring family (see RINGZ_TAG)
+    const LongitudinalRing* ring = nullptr; // Set for the longitudinal siblings of a full-ring family
 };
 
 /// @brief One 1D TProfile to extract, together with where it lives and how to label it.
@@ -184,7 +195,7 @@ std::string ObservableDisplayName(const ProfileConfig& profConfig) {
 bool SpeciesMatchesFamily(const std::string& speciesTag, const std::string& familyName) {
     if (speciesTag.empty()) return true;
     if (familyName == "BothHyperons") return true; // All three sets say something distinct here
-    // (R_z families pass their base name, see FamilySpecies)
+    // (longitudinal families pass their base name, see FamilySpecies)
     return speciesTag == familyName;               // "Lambda" / "AntiLambda"
 }
 
@@ -1754,6 +1765,8 @@ void DrawFitSummaryCanvas(const std::vector<std::string>& labels,
  *                   this only shifts the marker and its vertical bar.
  * @param addSelfPullPad Adds a lower panel of each point divided by its own error, at the same
  *                   horizontal offsets, so a series lines up vertically between the two panels.
+ * @param bottomMargin Canvas bottom margin without the pull pad. The default leaves room for long
+ *                   angled labels; short column labels can afford much less.
  */
 void DrawOffsetSeriesCanvas(const std::vector<std::string>& labels,
                             const std::vector<ProfileBundle>& series,
@@ -1762,7 +1775,8 @@ void DrawOffsetSeriesCanvas(const std::vector<std::string>& labels,
                             TDirectory* outDir,
                             const std::string& yTitle,
                             double spreadFrac = 0.5,
-                            bool addSelfPullPad = false) {
+                            bool addSelfPullPad = false,
+                            double bottomMargin = 0.22) {
     if (series.empty() || labels.empty() || !outDir) return;
 
     const int nBins = static_cast<int>(labels.size());
@@ -1807,7 +1821,7 @@ void DrawOffsetSeriesCanvas(const std::vector<std::string>& labels,
         padUpper->cd();
     } else {
         c->SetLeftMargin(0.12);
-        c->SetBottomMargin(0.22); // Room for the angled labels
+        c->SetBottomMargin(bottomMargin); // Room for the angled labels
         c->SetGridy();
     }
 
@@ -1823,7 +1837,9 @@ void DrawOffsetSeriesCanvas(const std::vector<std::string>& labels,
     if (!addSelfPullPad && nBins > 4) frame->GetXaxis()->LabelsOption("u");
     frame->Draw();
 
-    TLegend* leg = new TLegend(0.14, 0.80, 0.44, 0.90);
+    // Grows with the series count past three, so canvases with up to three series are unchanged
+    const double legHeight = std::max(0.10, 0.034 * nSeries);
+    TLegend* leg = new TLegend(0.14, 0.90 - legHeight, 0.44, 0.90);
     leg->SetBorderSize(0);
     leg->SetFillStyle(0);
     leg->SetTextSize(0.032);
@@ -2671,14 +2687,32 @@ SigExtractPoint DrawSigExtractSystematics(FileCache& cache,
 }
 
 // ---------------------------------------------------------
-// R_z families (useRingZ consumer outputs). See the README, "The longitudinal ring".
+// Longitudinal families (useRingZ and useRingZT consumer outputs). See the README, "The longitudinal ring".
 // ---------------------------------------------------------
-// A useRingZ consumer output carries this tag right after the family suffix, e.g.
-// ConsumerResults_BothHyperons_useRingZ_MixedEventProxies.root. A family whose dataSuffix ends in it
+// A longitudinal consumer output carries its tag right after the family suffix, e.g.
+// ConsumerResults_BothHyperons_useRingZT_MixedEventProxies.root. A family whose dataSuffix ends in it
 // therefore resolves every variation, reference and signal-extraction file exactly like its full-ring
-// sibling, which is why R_z enters this macro as extra families and not as a separate code path.
-const std::string RINGZ_TAG = "_useRingZ";
-const std::string RINGZ_FAMILY_TAG = "_RingZ"; // Output folder of an R_z family: <family>_RingZ
+// sibling, which is why the longitudinal rings enter this macro as extra families and not as a separate
+// code path. Files are built from these tags, never matched against them, so "_useRingZ" being a prefix
+// of "_useRingZT" is harmless here (see IsLongitudinalSuffix for the one place that matches).
+const std::vector<LongitudinalRing> LONGITUDINAL_RINGS = {
+    {"RingZ",  "_useRingZ",  "_{z}",     "Rz"},   // R_z = P_z n_z
+    {"RingZT", "_useRingZT", "_{z}^{T}", "RzT"}}; // R_z^T = R_z minus its helicity term
+
+// Display style of each longitudinal definition, shared by every cross-definition canvas so a definition looks the
+// same everywhere. Indexed like LONGITUDINAL_RINGS (modulo 2); the full ring is always kGray + 2 with marker 24.
+const Color_t LONG_RING_COLOR[2] = {kRed + 1, kGreen + 2};
+const Style_t LONG_RING_MARKER[2] = {21, 22};      // Filled: the headline quantity of the definition
+const Style_t LONG_RING_MARKER_OPEN[2] = {25, 26}; // Open counterpart, for the raw mean beside it
+
+/// @brief True when a consumer file suffix is a longitudinal one: exact match on its "_"-separated tokens.
+bool IsLongitudinalSuffix(const std::string& suffix) {
+    std::stringstream tokens(suffix);
+    for (std::string token; std::getline(tokens, token, '_');)
+        for (const auto& lr : LONGITUDINAL_RINGS)
+            if ("_" + token == lr.fileTag) return true;
+    return false;
+}
 
 // Decay constants, as in the consumer. Only alpha^2 enters here (the exact full-ring inversion).
 constexpr double LambdaWeakDecayConstant = 0.749; // PDG 2025 update, same as DerivedDataConsumer's
@@ -2689,57 +2723,57 @@ constexpr double AlphaSqAntiLambda = AntiLambdaWeakDecayConstant * AntiLambdaWea
 // alpha^2, and the term it multiplies is itself a ~10% correction, so the choice moves P by <~0.2%.
 constexpr double AlphaSqBoth = 0.5 * (AlphaSqLambda + AlphaSqAntiLambda);
 
-/// @brief The hyperon selection of a family, which an R_z family shares with its full-ring sibling.
+/// @brief The hyperon selection of a family, which a longitudinal family shares with its full-ring sibling.
 std::string FamilySpecies(const FamilyConfig& fam) {
-    return fam.isRingZ ? fam.familyName.substr(0, fam.familyName.size() - RINGZ_FAMILY_TAG.size()) : fam.familyName;
+    return fam.ring ? fam.familyName.substr(0, fam.familyName.size() - fam.ring->name.size() - 1) : fam.familyName;
 }
 
 /**
- * @brief Swaps the full-ring symbol for R_z in one piece of display text.
+ * @brief Swaps the full-ring symbol for a longitudinal one (suffix sfx, e.g. "_{z}") in one piece of display text.
  *
  * The titles here are built from many literals ("<R>", "Integrated <R>_{S}", a bare "R" y title, and
- * "#Delta" + that title), so R_z files are relabelled in one pass at the end rather than at each of them.
+ * "#Delta" + that title), so longitudinal families are relabelled in one pass at the end rather than at each of them.
  * Only whole-token forms are touched: a jet-radius "R = 0.4" is left alone.
  */
-std::string SwapRingText(std::string t) {
+std::string SwapRingText(std::string t, const std::string& sfx) {
     auto swapAll = [&t](const std::string& from, const std::string& to) {
         for (size_t pos = t.find(from); pos != std::string::npos; pos = t.find(from, pos + to.size()))
             t.replace(pos, from.size(), to);
     };
-    if (t == "R") return "R_{z}";
-    if (t.rfind("#DeltaR ", 0) == 0) t.replace(0, 8, "#DeltaR_{z} ");
-    swapAll("<R>", "<R_{z}>");
-    swapAll("#it{R}", "#it{R}_{z}");
+    if (t == "R") return "R" + sfx;
+    if (t.rfind("#DeltaR ", 0) == 0) t.replace(0, 8, "#DeltaR" + sfx + " ");
+    swapAll("<R>", "<R" + sfx + ">");
+    swapAll("#it{R}", "#it{R}" + sfx);
     return t;
 }
 
 /// @brief Relabels every text an object carries: titles, axis titles, bin labels, legend and pave lines.
-void RelabelRingObject(TObject* obj) {
+void RelabelRingObject(TObject* obj, const std::string& sfx) {
     if (!obj) return;
     if (auto* pad = dynamic_cast<TPad*>(obj)) { // TCanvas included; recurse into everything drawn on it
-        pad->SetTitle(SwapRingText(pad->GetTitle()).c_str());
+        pad->SetTitle(SwapRingText(pad->GetTitle(), sfx).c_str());
         TIter next(pad->GetListOfPrimitives());
-        while (TObject* prim = next()) RelabelRingObject(prim);
+        while (TObject* prim = next()) RelabelRingObject(prim, sfx);
     } else if (auto* h = dynamic_cast<TH1*>(obj)) {
-        h->SetTitle(SwapRingText(h->GetTitle()).c_str());
+        h->SetTitle(SwapRingText(h->GetTitle(), sfx).c_str());
         for (TAxis* ax : {h->GetXaxis(), h->GetYaxis(), h->GetZaxis()}) {
-            ax->SetTitle(SwapRingText(ax->GetTitle()).c_str());
+            ax->SetTitle(SwapRingText(ax->GetTitle(), sfx).c_str());
             if (THashList* labels = ax->GetLabels()) {
                 TIter nextLabel(labels);
-                while (auto* lab = static_cast<TObjString*>(nextLabel())) lab->SetString(SwapRingText(lab->GetString().Data()).c_str());
+                while (auto* lab = static_cast<TObjString*>(nextLabel())) lab->SetString(SwapRingText(lab->GetString().Data(), sfx).c_str());
             }
         }
     } else if (auto* g = dynamic_cast<TGraph*>(obj)) {
-        g->SetTitle(SwapRingText(g->GetTitle()).c_str());
-        if (TH1* frame = g->GetHistogram()) RelabelRingObject(frame);
+        g->SetTitle(SwapRingText(g->GetTitle(), sfx).c_str());
+        if (TH1* frame = g->GetHistogram()) RelabelRingObject(frame, sfx);
     } else if (auto* leg = dynamic_cast<TLegend*>(obj)) {
         TIter nextEntry(leg->GetListOfPrimitives());
-        while (auto* e = static_cast<TLegendEntry*>(nextEntry())) e->SetLabel(SwapRingText(e->GetLabel()).c_str());
+        while (auto* e = static_cast<TLegendEntry*>(nextEntry())) e->SetLabel(SwapRingText(e->GetLabel(), sfx).c_str());
     } else if (auto* pave = dynamic_cast<TPaveText*>(obj)) {
         TIter nextLine(pave->GetListOfLines());
-        while (auto* line = dynamic_cast<TText*>(nextLine())) line->SetTitle(SwapRingText(line->GetTitle()).c_str());
+        while (auto* line = dynamic_cast<TText*>(nextLine())) line->SetTitle(SwapRingText(line->GetTitle(), sfx).c_str());
     } else if (auto* txt = dynamic_cast<TText*>(obj)) { // TLatex included
-        txt->SetTitle(SwapRingText(txt->GetTitle()).c_str());
+        txt->SetTitle(SwapRingText(txt->GetTitle(), sfx).c_str());
     }
 }
 
@@ -2748,7 +2782,7 @@ void RelabelRingObject(TObject* obj) {
  *
  * Key names are collected first: writing while iterating would add cycles to the very list being walked.
  */
-void RelabelRingDirectory(TDirectory* dir) {
+void RelabelRingDirectory(TDirectory* dir, const std::string& sfx) {
     if (!dir) return;
     std::vector<std::pair<std::string, TClass*>> items;
     std::map<std::string, bool> seen; // Newest cycle only
@@ -2762,10 +2796,10 @@ void RelabelRingDirectory(TDirectory* dir) {
         const std::string& name = item.first;
         TClass* cls = item.second;
         if (!cls) continue;
-        if (cls->InheritsFrom(TDirectory::Class())) { RelabelRingDirectory(dir->GetDirectory(name.c_str())); continue; }
+        if (cls->InheritsFrom(TDirectory::Class())) { RelabelRingDirectory(dir->GetDirectory(name.c_str()), sfx); continue; }
         if (!cls->InheritsFrom(TPad::Class()) && !cls->InheritsFrom(TH1::Class()) && !cls->InheritsFrom(TGraph::Class())) continue;
         TObject* obj = dir->Get(name.c_str());
-        RelabelRingObject(obj);
+        RelabelRingObject(obj, sfx);
         dir->cd();
         obj->Write(name.c_str(), TObject::kOverwrite);
         if (auto* h = dynamic_cast<TH1*>(obj)) h->SetDirectory(nullptr);
@@ -2817,10 +2851,10 @@ CandidateMoments MomentsOf(TH1* h) {
  * all candidates, signal and background mixed.
  */
 struct RingSample {
-    CandidateMoments ring;    // R (or R_z), with the prefactor
-    CandidateMoments num;     // u^2, u = R / prefactor
-    CandidateMoments den;     // w: 1 (full ring) or n_z^2 (R_z)
-    CandidateMoments numDen;  // u^2 w
+    CandidateMoments ring;    // R (or R_z, R_z^T), with the prefactor
+    CandidateMoments num;     // u v: u = R / prefactor, v = the unitless full ring (u^2 for the full ring)
+    CandidateMoments den;     // w: 1 (full ring) or n_z^2 (R_z, R_z^T)
+    CandidateMoments numDen;  // u v w
     CandidateMoments ringDen; // R w
 };
 
@@ -2872,7 +2906,7 @@ std::pair<double, double> RatioOfMeans(const CandidateMoments& a, const Candidat
     return {r, std::sqrt(std::max(var, 0.))};
 }
 
-/// @brief kappa = 3 <u^2>/<w>, the same expression for both ring definitions.
+/// @brief kappa = 3 <u v>/<w>, the cross moment: the same expression for every ring definition.
 std::pair<double, double> KappaOf(const RingSample& s) {
     const auto r = RatioOfMeans(s.num, s.den, s.numDen.Mean());
     return {3. * r.first, 3. * r.second};
@@ -2882,7 +2916,8 @@ std::pair<double, double> KappaOf(const RingSample& s) {
  * @brief Several series on one categorical axis, one bin per column, the series nudged sideways within it.
  * A thin adapter onto DrawOffsetSeriesCanvas: it only packs vals[series][column] into one histogram per
  * series. A value with a negative error is treated as missing and left empty, which the offset canvas
- * skips (no marker parked at zero).
+ * skips (no marker parked at zero). Its columns are sample labels, which are short, so the frame reaches
+ * much lower than the offset canvas default.
  */
 void DrawSeriesByColumn(const std::vector<std::string>& columnLabels, const std::vector<VariationConfig>& series,
                         const std::vector<std::vector<std::pair<double, double>>>& vals,
@@ -2901,256 +2936,8 @@ void DrawSeriesByColumn(const std::vector<std::string>& columnLabels, const std:
         }
         bundles.push_back({h, series[sIdx]});
     }
-    DrawOffsetSeriesCanvas(columnLabels, bundles, canvasName, title, dir, yTitle, 0.5, false);
+    DrawOffsetSeriesCanvas(columnLabels, bundles, canvasName, title, dir, yTitle, 0.5, false, 0.10);
     for (auto& b : bundles) delete b.profile;
-}
-
-/// @brief One column of a full-ring vs R_z comparison: a config, read from both definitions.
-struct RingPairColumn { VariationConfig cfg; std::string base, suffix; };
-
-/**
- * @brief Data, every in-wagon variation and every consumer-style reference. The file of a column is
- *        <base>/ConsumerResults_<family><suffix>.root, and its R_z sibling the same with RINGZ_TAG after
- *        the family; a column is drawn only where both exist.
- */
-std::vector<RingPairColumn> MakeRingPairColumns(const std::string& consumerDir, const VariationConfig& dataConfig,
-                                                const std::vector<VariationConfig>& sysVariations,
-                                                const std::vector<ExternalRef>& externals) {
-    std::vector<RingPairColumn> columns = {{dataConfig, consumerDir, ""}};
-    for (const auto& sys : sysVariations) columns.push_back({sys, consumerDir, sys.suffix});
-    for (const auto& ext : externals)
-        if (!ext.basePath.empty() && ext.kind == ExternalRef::kConsumerDir) columns.push_back({ext.config, ext.basePath, ""});
-    return columns;
-}
-
-/**
- * @brief The headline R_z check: <R>, <R_z> and <R_z>/<n_z^2>, per family and proxy, across configs.
- *
- * Columns are Data, then every in-wagon variation and consumer-style external reference present in BOTH
- * ring definitions. If R_z does what it should, <R_z> is ~0 for MixedEv and pp and survives only in data,
- * while the full ring carries its large fake everywhere. <R_z>/<n_z^2> is the per-candidate ring density,
- * comparable with <R> once the latter's fake is removed (under ring alignment). RAW values: no signal
- * extraction and no kappa (for those, see Corrections/). Nothing is written when no R_z file exists.
- * Written to RingVsRingZ/<Family>/<Proxy>/.
- *
- * @param families Untagged families: the R_z file of each is the same name plus RINGZ_TAG.
- */
-void DrawRingVsRingZ(FileCache& cache, TDirectory* fileRoot, const std::string& consumerDir,
-                     const std::vector<FamilyConfig>& families, const VariationConfig& dataConfig,
-                     const std::vector<VariationConfig>& sysVariations, const std::vector<ExternalRef>& externals,
-                     const std::string& cutFolder) {
-    const std::vector<std::string> proxies = {"LeadP", "LeadJet", "SubJet"};
-    const std::vector<VariationConfig> series = {
-        {"", "<R> (full ring)",     kGray + 2, 1, 24, false},
-        {"", "<R_{z}>",             kBlue + 1, 1, 20, false},
-        {"", "<R_{z}>/<n_{z}^{2}>", kRed + 1,  1, 21, true}};
-
-    const std::vector<RingPairColumn> columns = MakeRingPairColumns(consumerDir, dataConfig, sysVariations, externals);
-
-    for (const auto& fam : families) {
-        for (const auto& proxy : proxies) {
-            std::vector<std::string> labels;
-            std::vector<VariationConfig> cfgs;
-            std::vector<std::vector<std::pair<double, double>>> vals(3);
-            for (const auto& col : columns) {
-                RingSample full, z;
-                const std::string stem = col.base + "/ConsumerResults_" + fam.dataSuffix;
-                if (!LoadRingSample(cache, stem + col.suffix + ".root", cutFolder, proxy, full)) continue;
-                if (!LoadRingSample(cache, stem + RINGZ_TAG + col.suffix + ".root", cutFolder, proxy, z)) continue;
-                const auto pFull = MeanOf(full.ring), pZ = MeanOf(z.ring);
-                const auto pZW = RatioOfMeans(z.ring, z.den, z.ringDen.Mean());
-                labels.push_back(col.cfg.legendLabel);
-                cfgs.push_back(col.cfg);
-                vals[0].push_back(pFull); vals[1].push_back(pZ); vals[2].push_back(pZW);
-                printf("    [RingVsRingZ %s, %s, %s] <R> = %+.3e +/- %.1e   <R_z> = %+.3e +/- %.1e   <R_z>/<n_z^2> = %+.3e +/- %.1e\n",
-                       fam.familyName.c_str(), proxy.c_str(), col.cfg.legendLabel.c_str(), pFull.first, pFull.second,
-                       pZ.first, pZ.second, pZW.first, pZW.second);
-            }
-            if (cfgs.empty() || !cfgs.front().isData) continue; // Differences need Data as the first column
-            TDirectory* pxDir = EnsureDir(EnsureDir(EnsureDir(fileRoot, "RingVsRingZ"), fam.familyName), proxy);
-
-            DrawSeriesByColumn(labels, series, vals, "Canvas_RingVsRingZ_" + proxy,
-                               fam.familyName + ", " + proxy + ": full ring vs R_{z} (raw, all candidates)", pxDir, "integrated value");
-            DrawCategoricalCrossSystem(labels, cfgs, vals[2], "Canvas_RzOverNz2_" + proxy,
-                                       fam.familyName + ", " + proxy + ": <R_{z}>/<n_{z}^{2}> (raw)", pxDir,
-                                       "<R_{z}>/<n_{z}^{2}>");
-        }
-    }
-}
-
-/**
- * @brief CheapSigExtract for both ring definitions: <R> and <R_z>, in and out of the mass peak, and
- *        how far the background pulls each (in - out).
- *
- * Same columns as RingVsRingZ/, read from IntegratedCuts/p2dRingCuts*V0MassPeak (FetchIntegratedByMassPeak):
- * no fit and no sideband model. In-peak and out-of-peak candidates are disjoint, so in - out is plain
- * quadrature. There is no <R_z>/<n_z^2> here: the in-peak <n_z^2> would need the consumer's peak window,
- * which only the consumer knows. Written to RingVsRingZ_CheapSigExtract/<Family>/<Proxy>/.
- */
-void DrawCheapRingVsRingZ(FileCache& cache, TDirectory* fileRoot, const std::string& consumerDir,
-                          const std::vector<FamilyConfig>& families, const VariationConfig& dataConfig,
-                          const std::vector<VariationConfig>& sysVariations, const std::vector<ExternalRef>& externals) {
-    const std::vector<std::string> proxies = {"LeadP", "LeadJet", "SubJet"};
-    const std::vector<VariationConfig> series = {
-        {"", "<R> (full ring)", kGray + 2, 1, 24, false},
-        {"", "<R_{z}>",         kBlue + 1, 1, 20, true}};
-    const std::vector<RingPairColumn> columns = MakeRingPairColumns(consumerDir, dataConfig, sysVariations, externals);
-
-    for (const auto& fam : families) {
-        for (const auto& proxy : proxies) {
-            std::vector<std::string> labels;
-            // [state][series][column], state 0 in peak, 1 out of peak, 2 in - out
-            std::vector<std::vector<std::vector<std::pair<double, double>>>> vals(3, std::vector<std::vector<std::pair<double, double>>>(2));
-            for (const auto& col : columns) {
-                const std::string stem = col.base + "/ConsumerResults_" + fam.dataSuffix;
-                const std::string files[2] = {stem + col.suffix + ".root", stem + RINGZ_TAG + col.suffix + ".root"};
-                if (gSystem->AccessPathName(files[0].c_str()) || gSystem->AccessPathName(files[1].c_str())) continue;
-
-                SigExtractPoint in[2], out[2];
-                bool ok = true;
-                for (int d = 0; d < 2 && ok; ++d) {
-                    in[d]  = FetchIntegratedByMassPeak(cache, files[d], proxy, true);
-                    out[d] = FetchIntegratedByMassPeak(cache, files[d], proxy, false);
-                    ok = in[d].found && out[d].found;
-                }
-                if (!ok) continue;
-                labels.push_back(col.cfg.legendLabel);
-                for (int d = 0; d < 2; ++d) {
-                    vals[0][d].push_back({in[d].value, in[d].error});
-                    vals[1][d].push_back({out[d].value, out[d].error});
-                    vals[2][d].push_back({in[d].value - out[d].value, std::hypot(in[d].error, out[d].error)});
-                }
-            }
-            if (labels.empty()) continue;
-            TDirectory* pxDir = EnsureDir(EnsureDir(EnsureDir(fileRoot, "RingVsRingZ_CheapSigExtract"), fam.familyName), proxy);
-
-            const std::string head = fam.familyName + ", " + proxy + ": full ring vs R_{z}, ";
-            DrawSeriesByColumn(labels, series, vals[0], "Canvas_RingVsRingZ_InMassPeak_" + proxy,
-                               head + "in mass peak", pxDir, "integrated value");
-            DrawSeriesByColumn(labels, series, vals[1], "Canvas_RingVsRingZ_OutOfMassPeak_" + proxy,
-                               head + "out of mass peak", pxDir, "integrated value");
-            DrawSeriesByColumn(labels, series, vals[2], "Canvas_RingVsRingZ_InMinusOut_" + proxy,
-                               head + "in - out of mass peak", pxDir, "#Delta (in - out)");
-        }
-    }
-}
-
-/**
- * @brief Corrections: the fake subtracted and the response divided out, with or without signal extraction.
- *
- * Both ring definitions are reduced to the same quantity, the ring density P_R (under ring alignment):
- *   full ring  P = (R_d - R_f) / (kappa_eff - (alpha^2/3) R_d R_f)    exact inversion (eq:finalcorrection)
- *   R_z        P = (R_z,d - R_z,f) / (3 <u^2>) = R_z,true / <n_z^2>   linear, see below
- * with d the data sample, f its mixed-event partner, and kappa and <u^2> measured on the data sample.
- * The exact R_z inversion is R_z,true = [R_z,d (1 + <delta>_0) - R_z,f] / kappa_z, where <delta>_0 ~
- * (alpha^2/3) R_true R_fake is the normalization of the WHOLE sample -- full-ring quantities, whatever R_z's
- * own fake is. It multiplies R_z,d, so the dropped term is <delta>_0 R_z,d ~ 1e-4 x R_z,d: negligible even
- * with R_z's fake as large as its signal. The full ring cannot drop it, because there it multiplies R_d ~ 0.8.
- * For
- * the full ring kappa_eff = 3 <u^2>, so both are the one expression P = (R_d - R_f) / (3 <u^2> - k R_d R_f),
- * with k = alpha^2/3 for the full ring (FamilyConfig::alphaSq) and k = 0 for R_z.
- *
- * Errors are first order, with the full derivative. The data and fake rings are separate consumer runs,
- * added in quadrature, although the mixed events reuse the data's Lambdas (the accepted over-coverage).
- * The error of 3<u^2> is propagated; its covariance with R_d is not -- there is no <R u^2> profile. That is
- * safe: every term in it carries dP/dD = -P/D, so the dropped term is at most ~2 P sigma_D/sigma_R ~ 10^-3
- * of the leading one.
- */
-
-/// @brief One sample's inputs: <R>, 3<u^2> and kappa, each with its error.
-struct CorrectionInputs { std::pair<double, double> ring, u2x3, kappa; };
-
-/// @brief A data sample and its fake estimate, and where their consumer and signal-extraction files live.
-struct FakePairing { std::string consumerBase, sigBase, dataSuffix, fakeSuffix, dataLabel, pairLabel; };
-
-/// @brief Fills the inputs of one sample (file suffix includes family and variation); false if unavailable.
-using CorrectionFetcher = std::function<bool(const FakePairing&, const std::string&, const std::string&, CorrectionInputs&)>;
-
-/// @brief P = (R_d - R_f) / (D0 - k R_d R_f), with its first-order error.
-std::pair<double, double> CorrectRing(const std::pair<double, double>& rd, const std::pair<double, double>& rf,
-                                      const std::pair<double, double>& d0, double k) {
-    const double den = d0.first - k * rd.first * rf.first;
-    if (!(den > 0.)) return {0., -1.};
-    const double p   = (rd.first - rf.first) / den;
-    const double dRd = 1. / den + p * k * rf.first / den;  // dP/dR_d
-    const double dRf = -1. / den + p * k * rd.first / den; // dP/dR_f
-    const double dD0 = -p / den;                           // dP/dD0
-    return {p, std::sqrt(dRd * dRd * rd.second * rd.second + dRf * dRf * rf.second * rf.second +
-                         dD0 * dD0 * d0.second * d0.second)};
-}
-
-/// @brief Data / fake pairs: the in-wagon two, then each consumer-style reference against its own mixed events.
-/// @note A reference's signal extraction is looked for where the pipeline puts it: <base>/../results_SigExtract.
-std::vector<FakePairing> MakeFakePairings(const std::string& consumerDir, const std::string& sigExtractDir,
-                                          const std::vector<ExternalRef>& externals) {
-    std::vector<FakePairing> pairings = {
-        {consumerDir, sigExtractDir, "", "_MixedEventProxies", "Data", "Data - MixedEv"},
-        {consumerDir, sigExtractDir, "_analysisCuts", "_MixedEventProxies_analysisCuts", "Data (AN-Cuts)", "AN-Cuts: Data - MixedEv"}};
-    for (const auto& ext : externals)
-        if (!ext.basePath.empty() && ext.kind == ExternalRef::kConsumerDir)
-            pairings.push_back({ext.basePath, ext.basePath + "/../results_SigExtract", "", "_MixedEventProxies",
-                                ext.config.legendLabel, ext.config.legendLabel + " - MixedEv"});
-    return pairings;
-}
-
-/**
- * @brief Writes Corrections/<folder>/<Family>/: the kappa of every data-like sample and the corrected P per pair.
- *
- * The same code serves the raw and the signal-extracted inputs; only the fetcher differs. The full ring is
- * drawn wherever its inputs exist, and R_z joins it wherever the R_z files do.
- *
- * @param families Full-ring families: the R_z sample of each is the same suffix plus RINGZ_TAG.
- */
-void DrawCorrections(TDirectory* fileRoot, const std::vector<FamilyConfig>& families,
-                     const std::vector<FakePairing>& pairings, const std::string& folder,
-                     const std::string& tag, const CorrectionFetcher& fetch) {
-    const std::vector<std::string> proxies = {"LeadP", "LeadJet", "SubJet"};
-    const std::vector<VariationConfig> kappaSeries = {
-        {"", "#kappa_{eff} (full ring)", kGray + 2, 1, 24, false},
-        {"", "#kappa_{z}",               kBlue + 1, 1, 20, true}};
-    const std::vector<VariationConfig> corrSeries = {
-        {"", "full ring, exact inversion", kGray + 2, 1, 24, false},
-        {"", "R_{z}, linear",              kRed + 1,  1, 21, true}};
-    const std::pair<double, double> kMissing = {0., -1.};
-
-    for (const auto& fam : families) {
-        TDirectory* famDir = nullptr;
-        for (const auto& proxy : proxies) {
-            std::vector<std::string> kLabels, cLabels;
-            std::vector<std::vector<std::pair<double, double>>> kVals(2), cVals(2);
-
-            for (const auto& pr : pairings) {
-                CorrectionInputs dF, fF, dZ, fZ;
-                const bool hasDF = fetch(pr, fam.dataSuffix + pr.dataSuffix, proxy, dF);
-                const bool hasFF = fetch(pr, fam.dataSuffix + pr.fakeSuffix, proxy, fF);
-                const bool hasDZ = fetch(pr, fam.dataSuffix + RINGZ_TAG + pr.dataSuffix, proxy, dZ);
-                const bool hasFZ = fetch(pr, fam.dataSuffix + RINGZ_TAG + pr.fakeSuffix, proxy, fZ);
-                if (!hasDF && !hasDZ) continue;
-
-                kLabels.push_back(pr.dataLabel);
-                kVals[0].push_back(hasDF ? dF.kappa : kMissing);
-                kVals[1].push_back(hasDZ ? dZ.kappa : kMissing);
-
-                const auto pF = (hasDF && hasFF) ? CorrectRing(dF.ring, fF.ring, dF.u2x3, fam.alphaSq / 3.) : kMissing;
-                const auto pZ = (hasDZ && hasFZ) ? CorrectRing(dZ.ring, fZ.ring, dZ.u2x3, 0.) : kMissing;
-                if (pF.second >= 0. || pZ.second >= 0.) {
-                    cLabels.push_back(pr.pairLabel);
-                    cVals[0].push_back(pF);
-                    cVals[1].push_back(pZ);
-                }
-                printf("    [Corrections/%s %s, %s, %s] kappa_eff = %.4f  kappa_z = %.4f   P = %+.3e +/- %.1e   P_z = %+.3e +/- %.1e\n",
-                       folder.c_str(), fam.familyName.c_str(), proxy.c_str(), pr.pairLabel.c_str(),
-                       hasDF ? dF.kappa.first : 0., hasDZ ? dZ.kappa.first : 0., pF.first, pF.second, pZ.first, pZ.second);
-            }
-            if (kLabels.empty()) continue;
-            if (!famDir) famDir = EnsureDir(EnsureDir(EnsureDir(fileRoot, "Corrections"), folder), fam.familyName);
-            DrawSeriesByColumn(kLabels, kappaSeries, kVals, "Canvas_Kappa_" + proxy,
-                           fam.familyName + ", " + proxy + ": #kappa of the data sample (" + tag + ")", famDir, "#kappa");
-            if (!cLabels.empty())
-                DrawSeriesByColumn(cLabels, corrSeries, cVals, "Canvas_Corrected_" + proxy,
-                               fam.familyName + ", " + proxy + ": fake-subtracted ring density (" + tag + ")", famDir, "P_{R}");
-        }
-    }
 }
 
 /**
@@ -3161,6 +2948,7 @@ void DrawCorrections(TDirectory* fileRoot, const std::vector<FamilyConfig>& fami
  */
 struct RegionSample {
     CandidateMoments ring[2], num[2], den[2], numDen[2];
+    CandidateMoments ringDen[2]; // R w: only in consumer outputs that book it (empty, n = 0, in older ones)
 };
 
 /// @brief The candidate moments of one bin of a TProfile, from its mean and spread ("s" error option).
@@ -3169,9 +2957,9 @@ CandidateMoments BinMoments(TProfile* p, int bin) {
     const double n = p->GetBinEntries(bin);
     if (n <= 0.) return m;
     const TString opt = p->GetErrorOption();
-    p->SetErrorOption("s"); // Just a cheap way of recovering the standard deviation using the error. There probably was a better way of doing this...
+    p->SetErrorOption("s");
     const double mean = p->GetBinContent(bin), sd = p->GetBinError(bin);
-    p->SetErrorOption(opt); // Restoring previous behavior before exiting
+    p->SetErrorOption(opt);
     m.n = n;
     m.sum = n * mean;
     m.sum2 = n * (sd * sd + mean * mean);
@@ -3193,6 +2981,12 @@ bool LoadRegionSample(FileCache& cache, const std::string& file, const std::stri
             r.den[i] = BinMoments(p[2], i + 1);  r.numDen[i] = BinMoments(p[3], i + 1);
         }
     for (TProfile* q : p) delete q;
+    // <R w> only serves the <R_long>/<n_z^2> ratio, so its absence costs that ratio alone (left as a gap), never the sample:
+    if (ok)
+        if (TProfile* rw = cache.FetchClone<TProfile>(file, kap + "pRingTimesDen" + proxy + "VsMassRegion", false)) {
+            for (int i = 0; i < 2; ++i) r.ringDen[i] = BinMoments(rw, i + 1);
+            delete rw;
+        }
     return ok && r.ring[1].n > r.ring[0].n; // A peak no richer than its sideband has no signal to estimate
 }
 
@@ -3221,22 +3015,572 @@ std::pair<double, double> CheapSignalMean(const CandidateMoments& peak, const Ca
     return {r, std::sqrt(std::max(var, 0.))};
 }
 
+/// @brief Adds one candidate set's moments to another's (disjoint sets: n, Sum y and Sum y^2 all add up).
+void AddMoments(CandidateMoments& to, const CandidateMoments& m) {
+    to.n += m.n; to.sum += m.sum; to.sum2 += m.sum2;
+}
+
+/// @brief The candidate moments of one cell of a TProfile2D (global bin), from its mean and spread ("s" error option).
+CandidateMoments CellMoments(TProfile2D* p, int globalBin) {
+    CandidateMoments m;
+    const double n = p->GetBinEntries(globalBin);
+    if (n <= 0.) return m;
+    const TString opt = p->GetErrorOption();
+    p->SetErrorOption("s");
+    const double mean = p->GetBinContent(globalBin), sd = p->GetBinError(globalBin);
+    p->SetErrorOption(opt);
+    m.n = n;
+    m.sum = n * mean;
+    m.sum2 = n * (sd * sd + mean * mean);
+    return m;
+}
+
+/**
+ * @brief Per-bin candidate moments of one proxy, vs proxy pT or centrality (<Proxy>/KappaEff/Differential/).
+ *
+ * Per x bin: all candidates (every mass-region cell, underflow included, as in the integrated Raw) and the two
+ * CheapSigExtract regions. Binning and title are read from the consumer's profiles, which share the event mixing
+ * axes, so each bin holds the same Lambdas in data and in its mixed events.
+ */
+struct DifferentialSample {
+    std::vector<double> edges;        // x bin edges, nBins + 1
+    std::string xTitle;
+    std::vector<RingSample> all;      // One per x bin
+    std::vector<RegionSample> region; // One per x bin
+};
+
+/**
+ * @brief Loads the differential moments of one file, proxy and variable ("Pt" or "Centrality").
+ *
+ * Closure: summed over every cell, x flows included, they must hold exactly the integrated candidates (same fill
+ * list, same gate). A mismatch is reported, not fatal: the five differential profiles stay consistent among
+ * themselves, but they no longer describe the integrated sample.
+ */
+bool LoadDifferentialSample(FileCache& cache, const std::string& file, const std::string& cutFolder,
+                            const std::string& proxy, const std::string& var, DifferentialSample& d) {
+    if (gSystem->AccessPathName(file.c_str())) return false; // Absent config: quiet
+    static const char* kMoment[5] = {"Ring", "KappaNum", "KappaDen", "KappaNumTimesDen", "RingTimesDen"};
+    const std::string dir = TASK_DIR_IN_FILE + cutFolder + "/" + proxy + "/KappaEff/Differential/p2d";
+    TProfile2D* p[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    bool ok = true;
+    for (int k = 0; k < 5; ++k) {
+        p[k] = cache.FetchClone<TProfile2D>(file, dir + kMoment[k] + proxy + "Vs" + var + "VsMassRegion", false);
+        ok = ok && p[k];
+    }
+    if (ok) {
+        const TAxis* ax = p[0]->GetXaxis();
+        const int nx = ax->GetNbins(), ny = p[0]->GetNbinsY();
+        d.xTitle = ax->GetTitle();
+        d.edges.clear();
+        for (int ix = 1; ix <= nx + 1; ++ix) d.edges.push_back(ax->GetBinLowEdge(ix));
+        d.all.assign(nx, RingSample{});
+        d.region.assign(nx, RegionSample{});
+        double nTotal = 0.;
+        for (int ix = 0; ix <= nx + 1; ++ix)
+            for (int iy = 0; iy <= ny + 1; ++iy) {
+                const int g = p[0]->GetBin(ix, iy);
+                CandidateMoments m[5];
+                for (int k = 0; k < 5; ++k) m[k] = CellMoments(p[k], g);
+                nTotal += m[0].n;
+                if (ix < 1 || ix > nx) continue; // x flows only enter the closure
+                RingSample& a = d.all[ix - 1];
+                AddMoments(a.ring, m[0]); AddMoments(a.num, m[1]); AddMoments(a.den, m[2]);
+                AddMoments(a.numDen, m[3]); AddMoments(a.ringDen, m[4]);
+                if (iy == 1 || iy == 2) { // Mass-region bins: 1 sideband (index 0), 2 peak (index 1)
+                    RegionSample& r = d.region[ix - 1];
+                    const int i = iy - 1;
+                    r.ring[i] = m[0]; r.num[i] = m[1]; r.den[i] = m[2]; r.numDen[i] = m[3]; r.ringDen[i] = m[4];
+                }
+            }
+        static std::set<std::string> checked; // Every folder reloads the same files: check each one once
+        RingSample integrated;
+        if (checked.insert(file + "|" + proxy + "|" + var).second && LoadRingSample(cache, file, cutFolder, proxy, integrated) &&
+            std::fabs(integrated.ring.n - nTotal) > 0.5)
+            std::cerr << "  [Warning] " << proxy << " vs " << var << ": " << nTotal << " differential candidates against "
+                      << integrated.ring.n << " integrated in " << file << std::endl;
+    }
+    for (TProfile2D* q : p) delete q;
+    return ok;
+}
+
+/**
+ * @brief The cheap signal ratio <a>_S/<b>_S = A_a/A_b, with A_y = Sum_P y - Sum_B y (the N_P - N_B cancels).
+ *
+ * Same compound-Poisson treatment as CheapSignalMean, with the a-b covariance from Sum ab of each region:
+ *   Var(A_y) = Sum_P y^2 + Sum_B y^2,   Cov(A_a, A_b) = Sum_P ab + Sum_B ab,
+ *   Var(rho) = [Var(A_a) - 2 rho Cov(A_a, A_b) + rho^2 Var(A_b)] / A_b^2,   rho = A_a/A_b.
+ * This is exact to first order, so kappa_S = 3 rho(u v, w) no longer needs its two errors in quadrature.
+ *
+ * @param abPeak, abSide The moments of the product a b in each region (only their sums are read).
+ */
+std::pair<double, double> CheapSignalRatio(const CandidateMoments& aPeak, const CandidateMoments& aSide,
+                                           const CandidateMoments& bPeak, const CandidateMoments& bSide,
+                                           const CandidateMoments& abPeak, const CandidateMoments& abSide) {
+    const double Ab = bPeak.sum - bSide.sum;
+    if (!(Ab > 0.) || abPeak.n <= 0.) return {0., -1.};
+    const double rho  = (aPeak.sum - aSide.sum) / Ab;
+    const double varA = aPeak.sum2 + aSide.sum2;
+    const double varB = bPeak.sum2 + bSide.sum2;
+    const double cov  = abPeak.sum + abSide.sum;
+    const double var  = (varA - 2. * rho * cov + rho * rho * varB) / (Ab * Ab);
+    return {rho, std::sqrt(std::max(var, 0.))};
+}
+
+/// @brief One column of a full-ring vs longitudinal comparison: a config, read from both definitions.
+struct RingPairColumn { VariationConfig cfg; std::string base, suffix; };
+
+/**
+ * @brief Data, every in-wagon variation and every consumer-style reference. The file of a column is
+ *        <base>/ConsumerResults_<family><suffix>.root, and its longitudinal siblings the same with their tag after
+ *        the family; a column is drawn only where both exist.
+ */
+std::vector<RingPairColumn> MakeRingPairColumns(const std::string& consumerDir, const VariationConfig& dataConfig,
+                                                const std::vector<VariationConfig>& sysVariations,
+                                                const std::vector<ExternalRef>& externals) {
+    std::vector<RingPairColumn> columns = {{dataConfig, consumerDir, ""}};
+    for (const auto& sys : sysVariations) columns.push_back({sys, consumerDir, sys.suffix});
+    for (const auto& ext : externals)
+        if (!ext.basePath.empty() && ext.kind == ExternalRef::kConsumerDir) columns.push_back({ext.config, ext.basePath, ""});
+    return columns;
+}
+
+/**
+ * @brief The series of every Full 3D Ring vs longitudinal canvas: <R> of the full ring, then <R_long> and
+ *        <R_long>/<n_z^2> for each of LONGITUDINAL_RINGS. Series 1 + 2l and 2 + 2l belong to definition l.
+ *
+ * One colour per definition, as in Corrections/; the raw mean is open and the per-candidate amplitude filled,
+ * the latter being the one emphasised.
+ */
+std::vector<VariationConfig> MakeRingVsLongitudinalSeries() {
+    std::vector<VariationConfig> series = {{"", "<R> (Full 3D Ring)", kGray + 2, 1, 24, false}};
+    for (size_t l = 0; l < LONGITUDINAL_RINGS.size(); ++l) {
+        const std::string sym = "R" + LONGITUDINAL_RINGS[l].symbolSuffix;
+        series.push_back({"", "<" + sym + ">", LONG_RING_COLOR[l % 2], 1, LONG_RING_MARKER_OPEN[l % 2], false});
+        series.push_back({"", "<" + sym + ">/<n_{z}^{2}>", LONG_RING_COLOR[l % 2], 1, LONG_RING_MARKER[l % 2], true});
+    }
+    return series;
+}
+
+/**
+ * @brief The headline check: <R> of the Full 3D Ring against <R_long> and <R_long>/<n_z^2> of every longitudinal
+ *        definition, per family and proxy, across configs, all on one canvas.
+ *
+ * Columns are Data, then every in-wagon variation and consumer-style external reference that has its full-ring
+ * file and at least one longitudinal one; a definition whose file is absent is left as a gap. If the longitudinal
+ * rings do what they should, they are ~0 for MixedEv and survive only in data, while the full ring carries its
+ * large fake everywhere. <R_long>/<n_z^2> is the per-candidate ring amplitude, comparable with <R> once the
+ * latter's fake is removed (under ring alignment). RAW values: no signal extraction and no kappa (for those, see
+ * Corrections/). Nothing is written when no such file exists. Each definition also gets its <R_long>/<n_z^2>
+ * alone, with its Data - Var differences and redux subset, over the columns where that definition exists.
+ * Written to RingVsLongitudinal/<Family>/<Proxy>/.
+ *
+ * @param families Untagged families: the longitudinal files of each are the same name plus each fileTag.
+ */
+void DrawRingVsLongitudinal(FileCache& cache, TDirectory* fileRoot, const std::string& consumerDir,
+                            const std::vector<FamilyConfig>& families, const VariationConfig& dataConfig,
+                            const std::vector<VariationConfig>& sysVariations, const std::vector<ExternalRef>& externals,
+                            const std::string& cutFolder) {
+    const std::vector<std::string> proxies = {"LeadP", "LeadJet", "SubJet"};
+    const std::vector<VariationConfig> series = MakeRingVsLongitudinalSeries();
+    const std::pair<double, double> kMissing = {0., -1.};
+    const std::vector<RingPairColumn> columns = MakeRingPairColumns(consumerDir, dataConfig, sysVariations, externals);
+
+    for (const auto& fam : families) {
+        for (const auto& proxy : proxies) {
+            std::vector<std::string> labels;
+            std::vector<VariationConfig> cfgs;
+            std::vector<std::vector<std::pair<double, double>>> vals(series.size()); // [series][column]
+            bool dataFirst = false;
+            for (const auto& col : columns) {
+                RingSample full;
+                const std::string stem = col.base + "/ConsumerResults_" + fam.dataSuffix;
+                if (!LoadRingSample(cache, stem + col.suffix + ".root", cutFolder, proxy, full)) continue;
+
+                std::vector<std::pair<double, double>> row(series.size(), kMissing); // This column, every series
+                row[0] = MeanOf(full.ring);
+                bool anyLong = false;
+                for (size_t l = 0; l < LONGITUDINAL_RINGS.size(); ++l) {
+                    RingSample lng;
+                    if (!LoadRingSample(cache, stem + LONGITUDINAL_RINGS[l].fileTag + col.suffix + ".root", cutFolder, proxy, lng))
+                        continue;
+                    row[1 + 2 * l] = MeanOf(lng.ring);
+                    row[2 + 2 * l] = RatioOfMeans(lng.ring, lng.den, lng.ringDen.Mean());
+                    anyLong = true;
+                }
+                if (!anyLong) continue;
+
+                if (labels.empty()) dataFirst = col.cfg.isData;
+                labels.push_back(col.cfg.legendLabel);
+                cfgs.push_back(col.cfg);
+                for (size_t s = 0; s < series.size(); ++s) vals[s].push_back(row[s]);
+                printf("    [RingVsLongitudinal %s, %s, %s] <R> = %+.3e +/- %.1e", fam.familyName.c_str(), proxy.c_str(),
+                       col.cfg.legendLabel.c_str(), row[0].first, row[0].second);
+                for (size_t l = 0; l < LONGITUDINAL_RINGS.size(); ++l) {
+                    const char* sn = LONGITUDINAL_RINGS[l].shortName.c_str();
+                    if (row[1 + 2 * l].second < 0.) { printf("   <%s>: absent", sn); continue; }
+                    printf("   <%s> = %+.3e +/- %.1e   <%s>/<n_z^2> = %+.3e +/- %.1e", sn, row[1 + 2 * l].first,
+                           row[1 + 2 * l].second, sn, row[2 + 2 * l].first, row[2 + 2 * l].second);
+                }
+                printf("\n");
+            }
+            if (!dataFirst) continue; // Differences need Data as the first column
+            TDirectory* pxDir = EnsureDir(EnsureDir(EnsureDir(fileRoot, "RingVsLongitudinal"), fam.familyName), proxy);
+
+            DrawSeriesByColumn(labels, series, vals, "Canvas_RingVsLongitudinal_" + proxy,
+                               fam.familyName + ", " + proxy + ": Full 3D Ring vs longitudinal rings (raw, all candidates)",
+                               pxDir, "integrated value");
+
+            // <R_long>/<n_z^2> of each definition alone. The categorical canvas has no notion of a gap, so it gets
+            // only the columns where this definition has a value, and still needs Data first for its differences.
+            for (size_t l = 0; l < LONGITUDINAL_RINGS.size(); ++l) {
+                const auto& lr = LONGITUDINAL_RINGS[l];
+                const auto& ratio = vals[2 + 2 * l];
+                std::vector<std::string> subLabels;
+                std::vector<VariationConfig> subCfgs;
+                std::vector<std::pair<double, double>> subVals;
+                for (size_t c = 0; c < labels.size(); ++c) {
+                    if (ratio[c].second < 0.) continue;
+                    subLabels.push_back(labels[c]);
+                    subCfgs.push_back(cfgs[c]);
+                    subVals.push_back(ratio[c]);
+                }
+                if (subCfgs.empty() || !subCfgs.front().isData) continue;
+                const std::string sym = "R" + lr.symbolSuffix;
+                DrawCategoricalCrossSystem(subLabels, subCfgs, subVals, "Canvas_" + lr.shortName + "OverNz2_" + proxy,
+                                           fam.familyName + ", " + proxy + ": <" + sym + ">/<n_{z}^{2}> (raw)", pxDir,
+                                           "<" + sym + ">/<n_{z}^{2}>");
+            }
+        }
+    }
+}
+
+/**
+ * @brief CheapSigExtract of the same comparison: <R> and every <R_long>, in and out of the mass peak, and how far
+ *        the background pulls each (in - out).
+ *
+ * Same columns and series as RingVsLongitudinal/, read from IntegratedCuts/p2dRingCuts*V0MassPeak
+ * (FetchIntegratedByMassPeak): no fit and no sideband model. In-peak and out-of-peak candidates are disjoint, so
+ * in - out is plain quadrature. The peak and sideband canvases add <R_long>/<n_z^2> of that region, from the
+ * consumer's <Proxy>/KappaEff/xxxxVsMassRegion profiles of the cut folder: ring, n_z^2 and their product on the same
+ * candidates, so the ratio keeps its covariance. Consumer outputs without pRingTimesDen*VsMassRegion leave it as a gap.
+ * Written to RingVsLongitudinal_CheapSigExtract/<Family>/<Proxy>/.
+ */
+void DrawCheapRingVsLongitudinal(FileCache& cache, TDirectory* fileRoot, const std::string& consumerDir,
+                                 const std::vector<FamilyConfig>& families, const VariationConfig& dataConfig,
+                                 const std::vector<VariationConfig>& sysVariations, const std::vector<ExternalRef>& externals,
+                                 const std::string& cutFolder) {
+    const std::vector<std::string> proxies = {"LeadP", "LeadJet", "SubJet"};
+    const std::vector<VariationConfig> series = MakeRingVsLongitudinalSeries();
+    const std::pair<double, double> kMissing = {0., -1.};
+    const std::vector<RingPairColumn> columns = MakeRingPairColumns(consumerDir, dataConfig, sysVariations, externals);
+    using StateSeries = std::vector<std::vector<std::pair<double, double>>>; // [state][series], state 0 in, 1 out, 2 in - out
+
+    // Fills the three states of one series from a file's in-peak and out-of-peak points; false if either is absent
+    auto fillInOut = [&](StateSeries& row, size_t s, const std::string& file, const std::string& proxy) {
+        const SigExtractPoint in = FetchIntegratedByMassPeak(cache, file, proxy, true);
+        const SigExtractPoint out = FetchIntegratedByMassPeak(cache, file, proxy, false);
+        if (!in.found || !out.found) return false;
+        row[0][s] = {in.value, in.error};
+        row[1][s] = {out.value, out.error};
+        row[2][s] = {in.value - out.value, std::hypot(in.error, out.error)};
+        return true;
+    };
+
+    for (const auto& fam : families) {
+        for (const auto& proxy : proxies) {
+            std::vector<std::string> labels;
+            std::vector<StateSeries> vals(3, StateSeries(series.size())); // [state][series][column]
+            for (const auto& col : columns) {
+                const std::string stem = col.base + "/ConsumerResults_" + fam.dataSuffix;
+                const std::string fullFile = stem + col.suffix + ".root";
+                if (gSystem->AccessPathName(fullFile.c_str())) continue;
+
+                StateSeries row(3, std::vector<std::pair<double, double>>(series.size(), kMissing)); // This column
+                if (!fillInOut(row, 0, fullFile, proxy)) continue;
+                bool anyLong = false;
+                for (size_t l = 0; l < LONGITUDINAL_RINGS.size(); ++l) {
+                    const std::string lngFile = stem + LONGITUDINAL_RINGS[l].fileTag + col.suffix + ".root";
+                    if (gSystem->AccessPathName(lngFile.c_str())) continue;
+                    if (!fillInOut(row, 1 + 2 * l, lngFile, proxy)) continue;
+                    anyLong = true;
+                    // <R_long>/<n_z^2> per region (index 1 peak, 0 sideband); in - out of a ratio is not drawn
+                    RegionSample region;
+                    if (!LoadRegionSample(cache, lngFile, cutFolder, proxy, region)) continue;
+                    for (int r = 0; r < 2; ++r) {
+                        const int idx = (r == 0) ? 1 : 0; // State 0 is the peak (region index 1), state 1 the sideband
+                        if (region.ringDen[idx].n > 0.)
+                            row[r][2 + 2 * l] = RatioOfMeans(region.ring[idx], region.den[idx], region.ringDen[idx].Mean());
+                    }
+                }
+                if (!anyLong) continue;
+
+                labels.push_back(col.cfg.legendLabel);
+                for (int st = 0; st < 3; ++st)
+                    for (size_t s = 0; s < series.size(); ++s) vals[st][s].push_back(row[st][s]);
+            }
+            if (labels.empty()) continue;
+            TDirectory* pxDir = EnsureDir(EnsureDir(EnsureDir(fileRoot, "RingVsLongitudinal_CheapSigExtract"), fam.familyName), proxy);
+
+            const std::string head = fam.familyName + ", " + proxy + ": Full 3D Ring vs longitudinal rings, ";
+            const std::string stemName = "Canvas_RingVsLongitudinal";
+            DrawSeriesByColumn(labels, series, vals[0], stemName + "_InMassPeak_" + proxy,
+                               head + "in mass peak", pxDir, "integrated value");
+            DrawSeriesByColumn(labels, series, vals[1], stemName + "_OutOfMassPeak_" + proxy,
+                               head + "out of mass peak", pxDir, "integrated value");
+            DrawSeriesByColumn(labels, series, vals[2], stemName + "_InMinusOut_" + proxy,
+                               head + "in - out of mass peak", pxDir, "#Delta (in - out)");
+        }
+    }
+}
+
+/**
+ * @brief Corrections: the fake subtracted and the response divided out, with or without signal extraction.
+ *
+ * Both ring definitions are reduced to the same quantity, the ring density P_R (under ring alignment):
+ *   full ring  P = (R_d - R_f) / (kappa_eff - (alpha^2/3) R_d R_f)    exact inversion (eq:finalcorrection)
+ *   R_z, R_z^T P = (R_z,d - R_z,f) / (3 <u v>) = R_z,true / <n_z^2>   linear, see below
+ * with d the data sample, f its mixed-event partner, and kappa and <u v> measured on the data sample.
+ * The exact R_z inversion is R_z,true = [R_z,d (1 + <delta>_0) - R_z,f] / kappa_z, where <delta>_0 ~
+ * (alpha^2/3) R_true R_fake is the normalization of the WHOLE sample -- full-ring quantities, whatever R_z's
+ * own fake is. It multiplies R_z,d, so the dropped term is <delta>_0 R_z,d ~ 1e-4 x R_z,d: negligible even
+ * with R_z's fake as large as its signal. The full ring cannot drop it, because there it multiplies R_d ~ 0.8.
+ * For
+ * the full ring kappa_eff = 3 <u v> = 3 <u^2>, so all are the one expression P = (R_d - R_f) / (3 <u v> - k R_d R_f),
+ * with k = alpha^2/3 for the full ring (FamilyConfig::alphaSq) and k = 0 for R_z and R_z^T.
+ *
+ * Errors are first order, with the full derivative. The data and fake rings are separate consumer runs,
+ * added in quadrature, although the mixed events reuse the data's Lambdas (the accepted over-coverage).
+ * The error of 3<u v> is propagated; its covariance with R_d is not -- there is no <R u v> profile. That is
+ * safe: every term in it carries dP/dD = -P/D, so the dropped term is at most ~2 P sigma_D/sigma_R ~ 10^-3
+ * of the leading one.
+ */
+
+/// @brief One sample's inputs: <R>, 3<u v> and kappa, each with its error.
+struct CorrectionInputs { std::pair<double, double> ring, uvx3, kappa; };
+
+/// @brief A data sample and its fake estimate, where their consumer and signal-extraction files live, and how the
+///        corrected curve is drawn wherever pairings are series (the differential canvases).
+struct FakePairing { std::string consumerBase, sigBase, dataSuffix, fakeSuffix, dataLabel, pairLabel; VariationConfig style; };
+
+/// @brief Fills the inputs of one sample (file suffix includes family and variation); false if unavailable.
+using CorrectionFetcher = std::function<bool(const FakePairing&, const std::string&, const std::string&, CorrectionInputs&)>;
+
+/// @brief The inputs of one candidate set (all candidates, or one mass region): kappa keeps the exact <u v w> covariance.
+bool InputsOfSample(const RingSample& smp, CorrectionInputs& in) {
+    if (smp.ring.n < 2.) return false;
+    in.ring  = MeanOf(smp.ring);
+    in.uvx3  = {3. * smp.num.Mean(), 3. * std::sqrt(std::max(smp.num.Var(), 0.) / smp.num.n)};
+    in.kappa = KappaOf(smp);
+    return true;
+}
+
+/// @brief One mass region of a RegionSample as a sample (index 1 peak, 0 sideband); ringDen comes along when booked.
+RingSample RegionAsSample(const RegionSample& r, int region) {
+    RingSample smp;
+    smp.ring = r.ring[region]; smp.num = r.num[region]; smp.den = r.den[region];
+    smp.numDen = r.numDen[region]; smp.ringDen = r.ringDen[region];
+    return smp;
+}
+
+/**
+ * @brief The sideband-subtracted inputs: every moment as Sum_P - Sum_B, then the usual correction.
+ *
+ * kappa_S = 3 <u v>_S/<w>_S is a ratio of two subtracted sums, with the exact covariance of CheapSignalRatio.
+ */
+bool InputsOfSidebandSubtracted(const RegionSample& r, CorrectionInputs& in) {
+    if (!(r.ring[1].n > r.ring[0].n)) return false; // A peak no richer than its sideband has no signal to estimate
+    const auto ring = CheapSignalMean(r.ring[1], r.ring[0]);
+    const auto u    = CheapSignalMean(r.num[1], r.num[0]);
+    const auto k    = CheapSignalRatio(r.num[1], r.num[0], r.den[1], r.den[0], r.numDen[1], r.numDen[0]);
+    if (ring.second < 0. || u.second < 0. || k.second < 0.) return false;
+    in.ring  = ring;
+    in.uvx3  = {3. * u.first, 3. * u.second};
+    in.kappa = {3. * k.first, 3. * k.second};
+    return true;
+}
+
+/// @brief P = (R_d - R_f) / (D0 - k R_d R_f), with its first-order error.
+std::pair<double, double> CorrectRing(const std::pair<double, double>& rd, const std::pair<double, double>& rf,
+                                      const std::pair<double, double>& d0, double k) {
+    const double den = d0.first - k * rd.first * rf.first;
+    if (!(den > 0.)) return {0., -1.};
+    const double p   = (rd.first - rf.first) / den;
+    const double dRd = 1. / den + p * k * rf.first / den;  // dP/dR_d
+    const double dRf = -1. / den + p * k * rd.first / den; // dP/dR_f
+    const double dD0 = -p / den;                           // dP/dD0
+    return {p, std::sqrt(dRd * dRd * rd.second * rd.second + dRf * dRf * rf.second * rf.second +
+                         dD0 * dD0 * d0.second * d0.second)};
+}
+
+/// @brief Tag of the resampled mixed-event wagons (nProxyResamples in the consumer), after the usual mixed-event suffix.
+const std::string MIXED_RESAMPLES_TAG = "_10resamples";
+
+/// @brief The count in a resampling tag ("10" from "_10resamples"), so labels take it from the tag and never disagree.
+std::string ResampleCountOf(const std::string& tag) {
+    const size_t first = tag.find_first_of("0123456789");
+    if (first == std::string::npos) return "";
+    return tag.substr(first, tag.find_first_not_of("0123456789", first) - first);
+}
+
+/// @brief Data / fake pairs: the in-wagon two, the same two against resampled mixed events, then each consumer-style
+///        reference against its own mixed events.
+/// @note A reference's signal extraction is looked for where the pipeline puts it: <base>/../results_SigExtract.
+std::vector<FakePairing> MakeFakePairings(const std::string& consumerDir, const std::string& sigExtractDir,
+                                          const std::vector<ExternalRef>& externals) {
+    const std::string resampled = "," + ResampleCountOf(MIXED_RESAMPLES_TAG) + "Resamp.";
+    // Styles: black for the single borrow, the resampled mixed events' dark grey and diamond; AN-Cuts dashed and open
+    std::vector<FakePairing> pairings = {
+        {consumerDir, sigExtractDir, "", "_MixedEventProxies", "Data", "Data - MixedEv",
+         {"", "Data - MixedEv", kBlack, 1, 20, true}},
+        {consumerDir, sigExtractDir, "_analysisCuts", "_MixedEventProxies_analysisCuts", "Data (AN-Cuts)", "AN-Cuts: Data - MixedEv",
+         {"", "AN-Cuts: Data - MixedEv", kBlack, 2, 24, false}},
+        // Same data, same Lambdas, each now against several distinct mixed jets: the fake with less jet-sampling noise
+        {consumerDir, sigExtractDir, "", "_MixedEventProxies" + MIXED_RESAMPLES_TAG, "Data", "Data - MixedEv" + resampled,
+         {"", "Data - MixedEv" + resampled, kGray + 3, 1, 33, false}},
+        {consumerDir, sigExtractDir, "_analysisCuts", "_MixedEventProxies_analysisCuts" + MIXED_RESAMPLES_TAG, "Data (AN-Cuts)",
+         "AN-Cuts: Data - MixedEv" + resampled, {"", "AN-Cuts: Data - MixedEv" + resampled, kGray + 3, 2, 27, false}}};
+    for (const auto& ext : externals)
+        if (!ext.basePath.empty() && ext.kind == ExternalRef::kConsumerDir) {
+            VariationConfig style = ext.config;
+            style.legendLabel = ext.config.legendLabel + " - MixedEv";
+            style.isData = false;
+            pairings.push_back({ext.basePath, ext.basePath + "/../results_SigExtract", "", "_MixedEventProxies",
+                                ext.config.legendLabel, style.legendLabel, style});
+        }
+    return pairings;
+}
+
+/// @brief One series per ring definition: the full ring first, then LONGITUDINAL_RINGS in order (shared styles).
+std::vector<VariationConfig> MakeDefinitionSeries(const std::string& fullLabel, const std::string& longSymbol) {
+    std::vector<VariationConfig> series = {{"", fullLabel, kGray + 2, 1, 24, false}};
+    for (size_t l = 0; l < LONGITUDINAL_RINGS.size(); ++l)
+        series.push_back({"", longSymbol + LONGITUDINAL_RINGS[l].symbolSuffix, LONG_RING_COLOR[l % 2], 1, LONG_RING_MARKER[l % 2], true});
+    return series;
+}
+
+/**
+ * @brief Writes Corrections/<folder>/<Family>/: the kappa of every data-like sample and the corrected P per pair.
+ *
+ * The same code serves the raw and the signal-extracted inputs; only the fetcher differs. The full ring is
+ * drawn wherever its inputs exist, and R_z joins it wherever the R_z files do.
+ *
+ * @param families Full-ring families: the longitudinal samples of each are the same suffix plus each tag.
+ */
+void DrawCorrections(TDirectory* fileRoot, const std::vector<FamilyConfig>& families,
+                     const std::vector<FakePairing>& pairings, const std::string& folder,
+                     const std::string& tag, const CorrectionFetcher& fetch) {
+    const std::vector<std::string> proxies = {"LeadP", "LeadJet", "SubJet"};
+    // One series per ring definition: the full ring first, then LONGITUDINAL_RINGS in order
+    const std::vector<VariationConfig> kappaSeries = MakeDefinitionSeries("#kappa_{eff} (Full 3D Ring)", "#kappa");
+    const std::vector<VariationConfig> corrSeries = MakeDefinitionSeries("Full 3D Ring", "R");
+    std::vector<std::string> fileTags = {""};
+    for (const auto& lr : LONGITUDINAL_RINGS) fileTags.push_back(lr.fileTag);
+    const size_t nDef = fileTags.size();
+    const std::pair<double, double> kMissing = {0., -1.};
+    // Corrected rows of every family, kept for the species combination at the end: [family + "|" + proxy] --> rows
+    struct CorrectedRow { std::string pairLabel; std::vector<std::pair<double, double>> perDefinition; };
+    std::map<std::string, std::vector<CorrectedRow>> rowsByFamilyProxy;
+
+    for (const auto& fam : families) {
+        TDirectory* famDir = nullptr;
+        for (const auto& proxy : proxies) {
+            std::vector<std::string> kLabels, cLabels;
+            std::vector<std::vector<std::pair<double, double>>> kVals(nDef), cVals(nDef);
+            std::set<std::string> kappaSamplesDrawn; // Pairings share data samples, and kappa is the data's: one column each
+
+            for (const auto& pr : pairings) {
+                std::vector<std::pair<double, double>> kappa(nDef, kMissing), corrected(nDef, kMissing);
+                bool anyData = false, anyCorrected = false;
+                for (size_t d = 0; d < nDef; ++d) {
+                    CorrectionInputs data, fake;
+                    if (!fetch(pr, fam.dataSuffix + fileTags[d] + pr.dataSuffix, proxy, data)) continue;
+                    anyData = true;
+                    kappa[d] = data.kappa;
+                    if (!fetch(pr, fam.dataSuffix + fileTags[d] + pr.fakeSuffix, proxy, fake)) continue;
+                    // Exact inversion for the full ring (k = alpha^2/3), linear for the longitudinal rings (k = 0)
+                    corrected[d] = CorrectRing(data.ring, fake.ring, data.uvx3, d == 0 ? fam.alphaSq / 3. : 0.);
+                    anyCorrected = anyCorrected || corrected[d].second >= 0.;
+                }
+                if (!anyData) continue;
+                if (kappaSamplesDrawn.insert(pr.consumerBase + "|" + pr.dataSuffix).second) {
+                    kLabels.push_back(pr.dataLabel);
+                    for (size_t d = 0; d < nDef; ++d) kVals[d].push_back(kappa[d]);
+                }
+                if (anyCorrected) {
+                    cLabels.push_back(pr.pairLabel);
+                    for (size_t d = 0; d < nDef; ++d) cVals[d].push_back(corrected[d]);
+                    rowsByFamilyProxy[fam.familyName + "|" + proxy].push_back({pr.pairLabel, corrected});
+                }
+                printf("    [Corrections/%s %s, %s, %s]", folder.c_str(), fam.familyName.c_str(), proxy.c_str(), pr.pairLabel.c_str());
+                for (size_t d = 0; d < nDef; ++d)
+                    printf("  %s: kappa = %.4f, P = %+.3e +/- %.1e", d == 0 ? "R" : LONGITUDINAL_RINGS[d - 1].shortName.c_str(),
+                           kappa[d].first, corrected[d].first, corrected[d].second);
+                printf("\n");
+            }
+            if (kLabels.empty()) continue;
+            if (!famDir) famDir = EnsureDir(EnsureDir(EnsureDir(fileRoot, "Corrections"), folder), fam.familyName);
+            DrawSeriesByColumn(kLabels, kappaSeries, kVals, "Canvas_Kappa_" + proxy,
+                               fam.familyName + ", " + proxy + ": #kappa of the data sample (" + tag + ")", famDir, "#kappa");
+            if (!cLabels.empty())
+                DrawSeriesByColumn(cLabels, corrSeries, cVals, "Canvas_Corrected_" + proxy,
+                                   fam.familyName + ", " + proxy + ": fake-subtracted ring amplitude (" + tag + ")", famDir, "P_{R}");
+        }
+    }
+
+    // ---- Species combination (LongitudinalRing.tex, Prop. 6.2) ----
+    // A topological fake has the same unitless moment for Lambda and antiLambda, so it flips with alpha, while a
+    // vorticity ring does not: the average of the two corrected results suppresses such fakes (to 0.6%, from
+    // |alpha_Lambda| != |alpha_antiLambda|), and the half-difference holds them, with no vorticity signal. The two
+    // species are disjoint samples, so their errors add in quadrature. Charge-driven fakes and a magnetic-field
+    // polarization do NOT cancel; they land in the half-difference.
+    for (const auto& proxy : proxies) {
+        const auto itL = rowsByFamilyProxy.find("Lambda|" + proxy);
+        const auto itA = rowsByFamilyProxy.find("AntiLambda|" + proxy);
+        if (itL == rowsByFamilyProxy.end() || itA == rowsByFamilyProxy.end()) continue;
+        std::vector<std::string> labels;
+        std::vector<std::vector<std::pair<double, double>>> avg(nDef), half(nDef);
+        for (const auto& rowL : itL->second)
+            for (const auto& rowA : itA->second) {
+                if (rowA.pairLabel != rowL.pairLabel) continue;
+                labels.push_back(rowL.pairLabel);
+                for (size_t d = 0; d < nDef; ++d) {
+                    const auto& pl = rowL.perDefinition[d];
+                    const auto& pa = rowA.perDefinition[d];
+                    if (pl.second < 0. || pa.second < 0.) { avg[d].push_back(kMissing); half[d].push_back(kMissing); continue; }
+                    const double err = 0.5 * std::hypot(pl.second, pa.second);
+                    avg[d].push_back({0.5 * (pl.first + pa.first), err});
+                    half[d].push_back({0.5 * (pl.first - pa.first), err});
+                }
+            }
+        if (labels.empty()) continue;
+        TDirectory* spDir = EnsureDir(EnsureDir(EnsureDir(fileRoot, "Corrections"), folder), "SpeciesCombination");
+        DrawSeriesByColumn(labels, corrSeries, avg, "Canvas_SpeciesAverage_" + proxy,
+                           proxy + ": #frac{1}{2}(#Lambda + #bar{#Lambda}), topological fakes cancel (" + tag + ")", spDir, "P_{R}");
+        DrawSeriesByColumn(labels, corrSeries, half, "Canvas_SpeciesHalfDifference_" + proxy,
+                           proxy + ": #frac{1}{2}(#Lambda - #bar{#Lambda}), topological fakes only (" + tag + ")", spDir, "#Delta P_{R}");
+    }
+}
+
 /**
  * @brief Corrections/CheapSigExtract/<Family>/Canvas_KappaByRegion_<Proxy>: the raw kappa of the peak and of the
- *        sideband, for both ring definitions, per data-like sample.
+ *        sideband, for every ring definition, per data-like sample.
  *
- * Each is 3 <u^2>/<w> over that region's candidates, with the ratio-of-means error that keeps their covariance.
+ * Each is 3 <u v>/<w> over that region's candidates, with the ratio-of-means error that keeps their covariance.
  * Where the two regions disagree, background candidates do not share the signal's response, which is exactly
- * why the corrected P divides by the signal-region kappa and not by either of these.
+ * why SidebandSubtracted/ divides by the signal kappa, and InPeakQA/ and OffPeakQA/ each by their own region's.
  */
 void DrawKappaByRegion(FileCache& cache, TDirectory* fileRoot, const std::vector<FamilyConfig>& families,
                        const std::vector<FakePairing>& pairings, const std::string& cutFolder) {
     const std::vector<std::string> proxies = {"LeadP", "LeadJet", "SubJet"};
-    const std::vector<VariationConfig> series = {
-        {"", "#kappa_{eff}, peak",     kGray + 2, 1, 20, false},
-        {"", "#kappa_{eff}, sideband", kGray + 2, 1, 24, false},
-        {"", "#kappa_{z}, peak",       kBlue + 1, 1, 21, true},
-        {"", "#kappa_{z}, sideband",   kBlue + 1, 1, 25, true}};
+    // Two series (peak, sideband) per ring definition: the full ring first, then LONGITUDINAL_RINGS in order
+    static const Color_t kColor[3] = {kGray + 2, kBlue + 1, kGreen + 2};
+    std::vector<VariationConfig> series;
+    std::vector<std::string> fileTags = {""}, symbols = {"_{eff}"};
+    for (const auto& lr : LONGITUDINAL_RINGS) { fileTags.push_back(lr.fileTag); symbols.push_back(lr.symbolSuffix); }
+    for (size_t d = 0; d < fileTags.size(); ++d) {
+        series.push_back({"", "#kappa" + symbols[d] + ", peak",     kColor[d % 3], 1, 20, d > 0});
+        series.push_back({"", "#kappa" + symbols[d] + ", sideband", kColor[d % 3], 1, 24, d > 0});
+    }
     const std::pair<double, double> kMissing = {0., -1.};
     auto kappaOf = [](const RegionSample& r, int i) {
         const auto k = RatioOfMeans(r.num[i], r.den[i], r.numDen[i].Mean());
@@ -3246,18 +3590,23 @@ void DrawKappaByRegion(FileCache& cache, TDirectory* fileRoot, const std::vector
     for (const auto& fam : families) {
         for (const auto& proxy : proxies) {
             std::vector<std::string> labels;
-            std::vector<std::vector<std::pair<double, double>>> vals(4);
+            std::vector<std::vector<std::pair<double, double>>> vals(series.size());
+            std::set<std::string> samplesDrawn; // Pairings share data samples: one column each
             for (const auto& pr : pairings) {
+                if (!samplesDrawn.insert(pr.consumerBase + "|" + pr.dataSuffix).second) continue;
                 const std::string stem = pr.consumerBase + "/ConsumerResults_" + fam.dataSuffix;
-                RegionSample f, z;
-                const bool hasF = LoadRegionSample(cache, stem + pr.dataSuffix + ".root", cutFolder, proxy, f);
-                const bool hasZ = LoadRegionSample(cache, stem + RINGZ_TAG + pr.dataSuffix + ".root", cutFolder, proxy, z);
-                if (!hasF && !hasZ) continue;
+                std::vector<std::pair<double, double>> row(series.size(), kMissing);
+                bool any = false;
+                for (size_t d = 0; d < fileTags.size(); ++d) {
+                    RegionSample r;
+                    if (!LoadRegionSample(cache, stem + fileTags[d] + pr.dataSuffix + ".root", cutFolder, proxy, r)) continue;
+                    any = true;
+                    row[2 * d] = kappaOf(r, 1);     // Peak
+                    row[2 * d + 1] = kappaOf(r, 0); // Sideband
+                }
+                if (!any) continue;
                 labels.push_back(pr.dataLabel);
-                vals[0].push_back(hasF ? kappaOf(f, 1) : kMissing);
-                vals[1].push_back(hasF ? kappaOf(f, 0) : kMissing);
-                vals[2].push_back(hasZ ? kappaOf(z, 1) : kMissing);
-                vals[3].push_back(hasZ ? kappaOf(z, 0) : kMissing);
+                for (size_t k = 0; k < series.size(); ++k) vals[k].push_back(row[k]);
             }
             if (labels.empty()) continue;
             TDirectory* famDir = EnsureDir(EnsureDir(EnsureDir(fileRoot, "Corrections"), "CheapSigExtract"), fam.familyName);
@@ -3265,6 +3614,262 @@ void DrawKappaByRegion(FileCache& cache, TDirectory* fileRoot, const std::vector
                                fam.familyName + ", " + proxy + ": #kappa in the mass peak and in the sideband (raw)", famDir, "#kappa");
         }
     }
+}
+
+// ===============================
+// Differential corrections and ring comparisons (vs proxy pT, vs centrality)
+// ===============================
+
+/// @brief The consumer's differential variables ("Pt" is each proxy's own pT): binning and titles come from its files.
+const std::vector<std::string> DIFFERENTIAL_VARIABLES = {"Pt", "Centrality"};
+
+/// @brief A canvas-safe name: letters and digits only ("Data (AN-Cuts)" --> "DataANCuts").
+std::string CanvasSafe(const std::string& s) {
+    std::string out;
+    for (char c : s)
+        if (std::isalnum(static_cast<unsigned char>(c))) out += c;
+    return out;
+}
+
+/// @brief An empty TH1D on the consumer's own x binning. Bins left unset are skipped when drawn, never parked at zero.
+TH1D* MakeVsXHist(const std::string& stem, const std::vector<double>& edges) {
+    static int counter = 0; // Unique names: no "Replacing existing TH1" across families, proxies and samples
+    TH1D* h = new TH1D((stem + "_" + std::to_string(counter++)).c_str(), "", static_cast<int>(edges.size()) - 1, edges.data());
+    h->SetDirectory(nullptr);
+    return h;
+}
+
+/// @brief Sets one bin from a (value, error) pair; a negative error marks a missing value and leaves the bin empty.
+void SetVsXPoint(TH1D* h, int bin, const std::pair<double, double>& v) {
+    if (!h || v.second < 0.) return;
+    h->SetBinContent(bin, v.first);
+    h->SetBinError(bin, v.second);
+}
+
+/// @brief The inputs of one x bin of a sample: the integrated fetchers' formulas, applied per bin.
+using DifferentialBinInputs = std::function<bool(const DifferentialSample&, size_t, CorrectionInputs&)>;
+
+/**
+ * @brief Writes Corrections/<folder>/Differential/<Family>/<Proxy>/: the corrected P and kappa vs proxy pT and vs
+ *        centrality, bin by bin with the same formulas as the integrated folder.
+ *
+ * Canvas_Corrected_Vs<Var>_<Definition>: one curve per pairing, so the estimates of the fake compare at a glance.
+ * Canvas_Kappa_Vs<Var>_<Sample>: one curve per ring definition, for every data sample. Each bin holds the same Lambdas
+ * in data and in its mixed events, as the consumer bins on the event mixing axes; a pairing whose two files disagree
+ * on the binning is skipped with a warning rather than subtracted across different bins.
+ */
+void DrawDifferentialCorrections(FileCache& cache, TDirectory* fileRoot, const std::vector<FamilyConfig>& families,
+                                 const std::vector<FakePairing>& pairings, const std::string& cutFolder,
+                                 const std::string& folder, const std::string& tag, const DifferentialBinInputs& binInputs) {
+    const std::vector<std::string> proxies = {"LeadP", "LeadJet", "SubJet"};
+    const std::vector<VariationConfig> kappaSeries = MakeDefinitionSeries("#kappa_{eff} (Full 3D Ring)", "#kappa");
+    const std::vector<VariationConfig> corrSeries = MakeDefinitionSeries("Full 3D Ring", "R");
+    std::vector<std::string> fileTags = {""}, defNames = {"FullRing"};
+    for (const auto& lr : LONGITUDINAL_RINGS) { fileTags.push_back(lr.fileTag); defNames.push_back(lr.name); }
+    const size_t nDef = fileTags.size();
+    const ProfileConfig pc{}; // Every title is passed explicitly
+
+    for (const auto& fam : families)
+        for (const auto& proxy : proxies)
+            for (const auto& var : DIFFERENTIAL_VARIABLES) {
+                TDirectory* pxDir = nullptr;
+                auto dirOf = [&]() {
+                    if (!pxDir) pxDir = EnsureDir(fileRoot, "Corrections/" + folder + "/Differential/" + fam.familyName + "/" + proxy);
+                    return pxDir;
+                };
+                std::string xTitle;
+                std::vector<std::vector<ProfileBundle>> corrBundles(nDef); // [definition] --> one curve per pairing
+                std::vector<TH1*> owned;
+                std::set<std::string> kappaSamplesDrawn; // Pairings share data samples: one kappa canvas each
+
+                for (const auto& pr : pairings) {
+                    std::vector<TH1D*> kappa(nDef, nullptr), corrected(nDef, nullptr);
+                    for (size_t d = 0; d < nDef; ++d) {
+                        const std::string stem = pr.consumerBase + "/ConsumerResults_" + fam.dataSuffix + fileTags[d];
+                        DifferentialSample dataS, fakeS;
+                        if (!LoadDifferentialSample(cache, stem + pr.dataSuffix + ".root", cutFolder, proxy, var, dataS)) continue;
+                        xTitle = dataS.xTitle;
+                        kappa[d] = MakeVsXHist("hKappa", dataS.edges);
+                        owned.push_back(kappa[d]);
+                        bool haveFake = LoadDifferentialSample(cache, stem + pr.fakeSuffix + ".root", cutFolder, proxy, var, fakeS);
+                        if (haveFake && fakeS.edges != dataS.edges) {
+                            std::cerr << "  [Warning] " << pr.pairLabel << ", " << proxy << " vs " << var
+                                      << ": data and fake binnings differ, pairing skipped" << std::endl;
+                            haveFake = false;
+                        }
+                        if (haveFake) {
+                            corrected[d] = MakeVsXHist("hCorrected", dataS.edges);
+                            owned.push_back(corrected[d]);
+                        }
+                        for (size_t i = 0; i < dataS.all.size(); ++i) {
+                            CorrectionInputs data, fake;
+                            if (!binInputs(dataS, i, data)) continue;
+                            SetVsXPoint(kappa[d], static_cast<int>(i) + 1, data.kappa);
+                            // Exact inversion for the full ring (k = alpha^2/3), linear for the longitudinal rings (k = 0)
+                            if (haveFake && binInputs(fakeS, i, fake))
+                                SetVsXPoint(corrected[d], static_cast<int>(i) + 1,
+                                            CorrectRing(data.ring, fake.ring, data.uvx3, d == 0 ? fam.alphaSq / 3. : 0.));
+                        }
+                    }
+                    for (size_t d = 0; d < nDef; ++d)
+                        if (corrected[d]) corrBundles[d].push_back({corrected[d], pr.style});
+
+                    // Kappa belongs to the data sample, so each is drawn once, all definitions together
+                    std::vector<ProfileBundle> kb;
+                    for (size_t d = 0; d < nDef; ++d)
+                        if (kappa[d]) kb.push_back({kappa[d], kappaSeries[d]});
+                    if (kb.empty() || !kappaSamplesDrawn.insert(pr.consumerBase + "|" + pr.dataSuffix).second) continue;
+                    DrawComparisonCanvas(kb, "Canvas_Kappa_Vs" + var + "_" + CanvasSafe(pr.dataLabel),
+                                         fam.familyName + ", " + proxy + ": #kappa of " + pr.dataLabel + " (" + tag + ")",
+                                         dirOf(), pc, xTitle, "#kappa");
+                }
+
+                for (size_t d = 0; d < nDef; ++d) {
+                    if (corrBundles[d].empty()) continue;
+                    DrawComparisonCanvas(corrBundles[d], "Canvas_Corrected_Vs" + var + "_" + defNames[d],
+                                         fam.familyName + ", " + proxy + ": " + corrSeries[d].legendLabel +
+                                             ", fake-subtracted ring amplitude (" + tag + ")",
+                                         dirOf(), pc, xTitle, "P_{R}");
+                }
+                for (TH1* h : owned) delete h;
+            }
+}
+
+/**
+ * @brief RingVsLongitudinal{,_CheapSigExtract}/Differential/<Family>/<Proxy>/: the five series of the integrated
+ *        comparison (<R>, then <R_long> and <R_long>/<n_z^2> per definition) vs proxy pT and vs centrality.
+ *
+ * One canvas per sample, so only the samples of the Data - MixedEv pairings are drawn (data and mixed events alike),
+ * as every systematic would multiply them. Raw uses all candidates; CheapSigExtract the peak, the sideband and the
+ * in - out of the means, exactly as the integrated version (the in - out of a ratio is not drawn).
+ * A _DataOnly canvas then overlays the in-wagon data samples (Data, AN-Cuts), each in its own line style, so the
+ * selections compare by eye on every series at once.
+ */
+void DrawDifferentialRingVsLongitudinal(FileCache& cache, TDirectory* fileRoot, const std::string& consumerDir,
+                                        const std::vector<FamilyConfig>& families, const VariationConfig& dataConfig,
+                                        const std::vector<VariationConfig>& sysVariations, const std::vector<ExternalRef>& externals,
+                                        const std::vector<FakePairing>& pairings, const std::string& cutFolder) {
+    const std::vector<std::string> proxies = {"LeadP", "LeadJet", "SubJet"};
+    const std::vector<VariationConfig> series = MakeRingVsLongitudinalSeries();
+    const ProfileConfig pc{}; // Every title is passed explicitly
+
+    // The samples of the pairings, styled and labelled by the column table (one source for both)
+    std::set<std::string> wanted;
+    for (const auto& pr : pairings) { wanted.insert(pr.consumerBase + "|" + pr.dataSuffix); wanted.insert(pr.consumerBase + "|" + pr.fakeSuffix); }
+    std::vector<RingPairColumn> columns;
+    for (const auto& col : MakeRingPairColumns(consumerDir, dataConfig, sysVariations, externals))
+        if (wanted.count(col.base + "|" + col.suffix)) columns.push_back(col);
+    // The in-wagon data samples, which also go to the _DataOnly canvas
+    std::set<std::string> dataOnly;
+    for (const auto& pr : pairings)
+        if (pr.consumerBase == consumerDir) dataOnly.insert(pr.consumerBase + "|" + pr.dataSuffix);
+
+    // States: all candidates, then the CheapSigExtract peak, sideband and in - out (series 0 is <R>, 1 + 2l <R_long>, 2 + 2l the ratio)
+    struct State { std::string folder, nameTag, titleTag; };
+    const std::vector<State> states = {{"RingVsLongitudinal", "", "raw, all candidates"},
+                                       {"RingVsLongitudinal_CheapSigExtract", "_InMassPeak", "in mass peak"},
+                                       {"RingVsLongitudinal_CheapSigExtract", "_OutOfMassPeak", "out of mass peak"},
+                                       {"RingVsLongitudinal_CheapSigExtract", "_InMinusOut", "in - out of mass peak"}};
+    // <R> (or <R_long>) and the ratio of one candidate set; the ratio keeps the R-w covariance
+    auto meanAndRatio = [](const RingSample& s, std::pair<double, double>& mean, std::pair<double, double>& ratio) {
+        mean = (s.ring.n >= 2.) ? MeanOf(s.ring) : std::make_pair(0., -1.);
+        ratio = RatioOfMeans(s.ring, s.den, s.ringDen.Mean());
+    };
+
+    for (const auto& fam : families)
+        for (const auto& proxy : proxies)
+            for (const auto& var : DIFFERENTIAL_VARIABLES) {
+                // Curves of the data samples, kept past their own canvases for the _DataOnly one: [sample] --> [state][series]
+                struct KeptCurves { std::string label; std::vector<std::vector<TH1D*>> h; };
+                std::vector<KeptCurves> dataCurves;
+                std::string xTitle;
+                for (const auto& col : columns) {
+                    const std::string stem = col.base + "/ConsumerResults_" + fam.dataSuffix;
+                    DifferentialSample full;
+                    if (!LoadDifferentialSample(cache, stem + col.suffix + ".root", cutFolder, proxy, var, full)) continue;
+                    std::vector<DifferentialSample> lng(LONGITUDINAL_RINGS.size());
+                    std::vector<bool> haveLong(LONGITUDINAL_RINGS.size(), false);
+                    bool anyLong = false;
+                    for (size_t l = 0; l < LONGITUDINAL_RINGS.size(); ++l) {
+                        haveLong[l] = LoadDifferentialSample(cache, stem + LONGITUDINAL_RINGS[l].fileTag + col.suffix + ".root",
+                                                             cutFolder, proxy, var, lng[l]) && lng[l].edges == full.edges;
+                        anyLong = anyLong || haveLong[l];
+                    }
+                    if (!anyLong) continue;
+
+                    // [state][series] --> one curve over x
+                    std::vector<std::vector<TH1D*>> h(states.size(), std::vector<TH1D*>(series.size(), nullptr));
+                    for (auto& row : h)
+                        for (auto& p : row) p = MakeVsXHist("hRingVsLong", full.edges);
+                    for (size_t i = 0; i < full.all.size(); ++i) {
+                        const int bin = static_cast<int>(i) + 1;
+                        // The three candidate sets of this bin, for one file: all, peak (region 1), sideband (region 0)
+                        auto setsOf = [&](const DifferentialSample& d) {
+                            return std::vector<RingSample>{d.all[i], RegionAsSample(d.region[i], 1), RegionAsSample(d.region[i], 0)};
+                        };
+                        const std::vector<RingSample> fullSets = setsOf(full);
+                        std::pair<double, double> mean, ratio;
+                        for (size_t st = 0; st < 3; ++st) {
+                            meanAndRatio(fullSets[st], mean, ratio);
+                            SetVsXPoint(h[st][0], bin, mean);
+                        }
+                        for (size_t l = 0; l < LONGITUDINAL_RINGS.size(); ++l) {
+                            if (!haveLong[l]) continue;
+                            const std::vector<RingSample> sets = setsOf(lng[l]);
+                            for (size_t st = 0; st < 3; ++st) {
+                                meanAndRatio(sets[st], mean, ratio);
+                                SetVsXPoint(h[st][1 + 2 * l], bin, mean);
+                                SetVsXPoint(h[st][2 + 2 * l], bin, ratio);
+                            }
+                        }
+                        // In - out of the means: disjoint candidates, so plain quadrature
+                        for (size_t s = 0; s < series.size(); s += (s == 0 ? 1 : 2)) {
+                            const double eIn = h[1][s]->GetBinError(bin), eOut = h[2][s]->GetBinError(bin);
+                            if (eIn > 0. && eOut > 0.)
+                                SetVsXPoint(h[3][s], bin, {h[1][s]->GetBinContent(bin) - h[2][s]->GetBinContent(bin), std::hypot(eIn, eOut)});
+                        }
+                    }
+
+                    for (size_t st = 0; st < states.size(); ++st) {
+                        std::vector<ProfileBundle> bundles;
+                        for (size_t s = 0; s < series.size(); ++s) bundles.push_back({h[st][s], series[s]});
+                        TDirectory* pxDir = EnsureDir(fileRoot, states[st].folder + "/Differential/" + fam.familyName + "/" + proxy);
+                        DrawComparisonCanvas(bundles, "Canvas_RingVsLongitudinal_Vs" + var + states[st].nameTag + "_" + CanvasSafe(col.cfg.legendLabel),
+                                             fam.familyName + ", " + proxy + ", " + col.cfg.legendLabel + ": Full 3D Ring vs longitudinal rings (" +
+                                                 states[st].titleTag + ")",
+                                             pxDir, pc, full.xTitle, st == 3 ? "#Delta (in - out)" : "value");
+                    }
+                    if (dataOnly.count(col.base + "|" + col.suffix)) {
+                        dataCurves.push_back({col.cfg.legendLabel, h});
+                        xTitle = full.xTitle;
+                        continue; // Deleted after the _DataOnly canvas
+                    }
+                    for (auto& row : h)
+                        for (TH1D* p : row) delete p;
+                }
+
+                // Data samples only: the series' own styles, one line style per sample (solid for the first, i.e. Data)
+                if (dataCurves.size() >= 2)
+                    for (size_t st = 0; st < states.size(); ++st) {
+                        std::vector<ProfileBundle> bundles;
+                        for (size_t k = 0; k < dataCurves.size(); ++k)
+                            for (size_t s = 0; s < series.size(); ++s) {
+                                VariationConfig cfg = series[s];
+                                cfg.legendLabel = series[s].legendLabel + ", " + dataCurves[k].label;
+                                cfg.lineStyle = 1 + static_cast<int>(k);
+                                cfg.isData = cfg.isData && k == 0; // Emphasis stays on the first sample
+                                bundles.push_back({dataCurves[k].h[st][s], cfg});
+                            }
+                        TDirectory* pxDir = EnsureDir(fileRoot, states[st].folder + "/Differential/" + fam.familyName + "/" + proxy);
+                        DrawComparisonCanvas(bundles, "Canvas_RingVsLongitudinal_Vs" + var + states[st].nameTag + "_DataOnly",
+                                             fam.familyName + ", " + proxy + ", data samples: Full 3D Ring vs longitudinal rings (" +
+                                                 states[st].titleTag + ")",
+                                             pxDir, pc, xTitle, st == 3 ? "#Delta (in - out)" : "value");
+                    }
+                for (auto& kept : dataCurves)
+                    for (auto& row : kept.h)
+                        for (TH1D* p : row) delete p;
+            }
 }
 
 void auxiliarySummaryPlots(const std::string& consumerDir,
@@ -3278,6 +3883,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
     // 1. Define Systematic Variations (the list of all useful variations I would like to track into this plot)
     // The data config (empty suffix) is handled separately in the logic to ensure it is always first
     // Field order after isData: inRedux, inPtGateStudy, inEtaGateStudy.
+    const std::string resampCount = ResampleCountOf(MIXED_RESAMPLES_TAG); // Legends take the count from the file tag
     std::vector<VariationConfig> sysVariations = {
         // suffix                          legend                      colour     ls mk  data   redux  ptGate etaGate
         {"_forceRandJet",                 "Rand Jet",                  kBlue,     1, 20, false, false,  true,  true}, // Full circle
@@ -3292,6 +3898,10 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         {"_MixedEventProxies_10ColGap",     "MixedEv Jet (10coll gap)",  kGray+1,   2, 25, false, false, false, false}, // Open circle, dashed line
         {"_analysisCuts",                   "Data (AN-Cuts)",            kBlack,    2, 24, false, true,  false, false}, // Open circle, dashed line
         {"_MixedEventProxies_analysisCuts", "MixedEv Jet (AN-Cuts)",     kGray+2,   2, 24, false, true,  false, false}, // Open circle
+        // The same mixed events, each target now borrowing nProxyResamples distinct jets: darker grey and an open
+        // diamond, solid or dashed exactly as its single-borrow parent (off the reduced canvases)
+        {"_MixedEventProxies" + MIXED_RESAMPLES_TAG,               "MixedEv Jet (" + resampCount + " resamp.)",         kGray+3, 1, 27, false, false, false, false}, // Open diamond
+        {"_MixedEventProxies_analysisCuts" + MIXED_RESAMPLES_TAG, "MixedEv Jet (AN-Cuts, " + resampCount + " resamp.)", kGray+3, 2, 27, false, false, false, false}, // Open diamond, dashed line
 
         // Do the artificial proxies survive a minimum-pT gate? The pT of an invented direction is rebuilt from
         // the original |p| (see gatePtOnArtificialProxies in applyProxyDistortion), so gating on it is a genuine
@@ -3354,16 +3964,17 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                                                         // naming scheme that was in place for other variations of BothHyperons configurables of the consumer
     };
 
-    // R_z families (README, "The longitudinal ring"). The consumer configs carry RINGZ_TAG right after the
-    // family, so an R_z output is just another family whose suffix ends in the tag: every variation, reference
-    // and signal-extraction file then resolves exactly as for its full-ring sibling. Added only where the R_z
-    // data file exists; fullFamilies keeps the originals for the blocks that pair the two definitions.
+    // Longitudinal families (README, "The longitudinal ring"). The consumer configs carry the definition's tag
+    // right after the family, so a longitudinal output is just another family whose suffix ends in that tag:
+    // every variation, reference and signal-extraction file then resolves exactly as for its full-ring sibling.
+    // Added only where the data file exists; fullFamilies keeps the originals for the blocks that pair definitions.
     const std::vector<FamilyConfig> fullFamilies = families;
-    for (const auto& fam : fullFamilies) {
-        FamilyConfig z{fam.familyName + RINGZ_FAMILY_TAG, fam.dataSuffix + RINGZ_TAG, fam.alphaSq, true};
-        if (!gSystem->AccessPathName((consumerDir + "/ConsumerResults_" + z.dataSuffix + ".root").c_str()))
-            families.push_back(z);
-    }
+    for (const auto& lr : LONGITUDINAL_RINGS)
+        for (const auto& fam : fullFamilies) {
+            FamilyConfig sibling{fam.familyName + "_" + lr.name, fam.dataSuffix + lr.fileTag, fam.alphaSq, &lr};
+            if (!gSystem->AccessPathName((consumerDir + "/ConsumerResults_" + sibling.dataSuffix + ".root").c_str()))
+                families.push_back(sibling);
+        }
 
     // 3. Define the Observable Groups
     // Split by what the x-axis actually is: the proxy's own eta, or the hyperon's eta.
@@ -3543,7 +4154,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
     // Only a subset of the variations is run in R_z. Their absence is expected, so it is recorded once
     // here, quietly, instead of warned about per observable.
     for (const auto& fam : families) {
-        if (!fam.isRingZ) continue;
+        if (!fam.ring) continue;
         std::string absent;
         for (const auto* vars : {&sysVariations, &massVariations})
             for (const auto& v : *vars) {
@@ -3605,7 +4216,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
     std::vector<std::vector<std::string>> crossFamilyLabels(proxyRepresentatives.size());
 
     // 5. Main Processing Loops
-    // The Toy Model predicts the full ring only, so R_z families see the references without it
+    // The Toy Model predicts the full ring only, so longitudinal families see the references without it
     std::vector<ExternalRef> externalsNoToy = externalsAll;
     for (auto& ext : externalsNoToy)
         if (ext.kind == ExternalRef::kToyModel) ext.basePath.clear(); // Kept in place: grand-summary rows stay aligned
@@ -3614,7 +4225,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         const auto& fam = families[famIdx];
         std::cout << " -> Processing Family: " << fam.familyName << std::endl;
         // This family's references: everything below reads them through this one name, so it needs no R_z branch
-        const std::vector<ExternalRef>& externals = fam.isRingZ ? externalsNoToy : externalsAll;
+        const std::vector<ExternalRef>& externals = fam.ring ? externalsNoToy : externalsAll;
 
         // Directories are created lazily (only once something is actually written into them),
         // so a consumer file that does not enable the requested cut folder leaves no empty folders.
@@ -5103,9 +5714,9 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     struct XWagonSet { const char* dirTag; const char* title;
                                        std::vector<std::string> suffixes; };
                     const std::vector<XWagonSet> wagonSets = {
-                        {"DataVsMixedEv", "data vs mixed-event", {"", "_MixedEventProxies"}},
+                        {"DataVsMixedEv", "data vs mixed-event", {"", "_MixedEventProxies", "_MixedEventProxies" + MIXED_RESAMPLES_TAG}},
                         {"ANCuts", "analysis-level cuts",
-                         {"", "_analysisCuts", "_MixedEventProxies_analysisCuts"}}
+                         {"", "_analysisCuts", "_MixedEventProxies_analysisCuts", "_MixedEventProxies_analysisCuts" + MIXED_RESAMPLES_TAG}}
                     };
 
                     for (const auto& ws : wagonSets) {
@@ -5514,7 +6125,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 // a given wagon, these compare the WAGONS for a given split.
                 if (specDir) {
                     const std::vector<std::string> cutVariations = {
-                        "", "_analysisCuts", "_MixedEventProxies_analysisCuts"
+                        "", "_analysisCuts", "_MixedEventProxies_analysisCuts", "_MixedEventProxies_analysisCuts" + MIXED_RESAMPLES_TAG
                     };
 
                     for (const auto& esp : etaSplits) {
@@ -5856,11 +6467,16 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         }
 
                         //// Data against the mixed-event estimator, differential in eta_Proxy ////
-                        // Separate consumer runs, so here the lower pad is a genuine Data - MixedEv.
-                        {
+                        // Separate consumer runs, so here the lower pad is a genuine Data - MixedEv. Once per
+                        // mixed-event wagon: single borrow, then resampled (canvas name and title tagged).
+                        struct MixWagon { std::string suffix, nameTag, titleTag; };
+                        const std::vector<MixWagon> mixWagons = {
+                            {"_MixedEventProxies", "", ""},
+                            {"_MixedEventProxies" + MIXED_RESAMPLES_TAG, "_" + resampCount + "Resamp", " (" + resampCount + " resamp.)"}};
+                        for (const auto& mxw : mixWagons) {
                             const VariationConfig* mix = nullptr;
                             for (const auto& sys : sysVariations)
-                                if (sys.suffix == "_MixedEventProxies") { mix = &sys; break; }
+                                if (sys.suffix == mxw.suffix) { mix = &sys; break; }
                             if (mix) {
                                 TDirectory* dmDir = nullptr;
                                 struct MixView { const char* q; const char* yTitle; };
@@ -5879,8 +6495,8 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                                         VariationConfig cM = *mix;
                                         cM.isData = false;
                                         std::vector<ProfileBundle> b = {{hD, cD}, {hM, cM}};
-                                        DrawComparisonCanvas(b, std::string("Canvas_") + mw.q + "_VsEta",
-                                                             tEta + ", " + mw.yTitle + ", data vs mixed-event",
+                                        DrawComparisonCanvas(b, std::string("Canvas_") + mw.q + "_VsEta" + mxw.nameTag,
+                                                             tEta + ", " + mw.yTitle + ", data vs mixed-event" + mxw.titleTag,
                                                              dmDir, pce, pce.xAxisTitle, mw.yTitle, kDifference);
                                     }
                                     delete hD; delete hM;
@@ -6128,8 +6744,8 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             for (auto p : grandToDelete) delete p;
         }
 
-        // An R_z family is relabelled once complete (README: "R_z families"); nothing else is touched
-        if (fam.isRingZ) RelabelRingDirectory(fOut->GetDirectory(fam.familyName.c_str()));
+        // A longitudinal family is relabelled once complete, with its own symbol; nothing else is touched
+        if (fam.ring) RelabelRingDirectory(fOut->GetDirectory(fam.familyName.c_str()), fam.ring->symbolSuffix);
     } // end of families loop
 
     // ---------------------------------------------------------
@@ -6150,7 +6766,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             std::vector<TH1*> famToDelete;
 
             for (size_t iFam = 0; iFam < families.size(); ++iFam) {
-                if (families[iFam].isRingZ) continue; // Full ring only: R_z is compared in RingVsRingZ/
+                if (families[iFam].ring) continue; // Full ring only: the longitudinal rings are compared in RingVsLongitudinal*/
                 const auto& vals = crossFamilyVals[iRep][iFam];
                 if (vals.size() != labels.size()) continue; // Family missing this observable entirely
 
@@ -6215,7 +6831,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             std::vector<std::string> famLabels;
             std::vector<int> famIndices;
             for (size_t f = 0; f < families.size(); ++f) {
-                if (families[f].isRingZ) continue; // Full ring only, as above
+                if (families[f].ring) continue; // Full ring only, as above
                 bool anyFound = false;
                 for (size_t iQ = 0; iQ < sigExtractQuantities.size(); ++iQ)
                     if (sigExtractCrossFamily[iQ][iProxy][f].found) anyFound = true;
@@ -6256,12 +6872,14 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         }
     }
 
-    // Cross-definition folders, from the full-ring families: each pairs a file with its R_z sibling and uses
-    // only the files it finds, so a wagon without R_z outputs still gets its full-ring corrections.
-    std::cout << " -> Full ring vs R_z...\n";
-    DrawRingVsRingZ(cache, fOut, consumerDir, fullFamilies, dataConfig, sysVariations, externalsAll, cutFolder);
-    DrawCheapRingVsRingZ(cache, fOut, consumerDir, fullFamilies, dataConfig, sysVariations, externalsAll);
+    // Cross-definition folders, from the full-ring families: each pairs a file with its longitudinal siblings and uses
+    // only the files it finds, so a wagon without longitudinal outputs still gets its full-ring corrections.
+    std::cout << " -> Full ring vs the longitudinal rings...\n";
+    DrawRingVsLongitudinal(cache, fOut, consumerDir, fullFamilies, dataConfig, sysVariations, externalsAll, cutFolder);
+    DrawCheapRingVsLongitudinal(cache, fOut, consumerDir, fullFamilies, dataConfig, sysVariations, externalsAll, cutFolder);
     const std::vector<FakePairing> pairings = MakeFakePairings(consumerDir, sigExtractDir, externalsAll);
+    std::cout << " -> Full ring vs the longitudinal rings, differential...\n";
+    DrawDifferentialRingVsLongitudinal(cache, fOut, consumerDir, fullFamilies, dataConfig, sysVariations, externalsAll, pairings, cutFolder);
 
     // Raw: every candidate, from the consumer's mass-binned moments
     std::cout << " -> Corrections, raw (no signal extraction)...\n";
@@ -6269,15 +6887,14 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                                            CorrectionInputs& in) {
         RingSample smp;
         if (!LoadRingSample(cache, pr.consumerBase + "/ConsumerResults_" + sfx + ".root", cutFolder, proxy, smp)) return false;
-        in.ring  = MeanOf(smp.ring);
-        in.u2x3  = {3. * smp.num.Mean(), 3. * std::sqrt(std::max(smp.num.Var(), 0.) / smp.num.n)};
-        in.kappa = KappaOf(smp);
-        return true;
+        return InputsOfSample(smp, in);
     };
     DrawCorrections(fOut, fullFamilies, pairings, "Raw", "raw, all candidates", fetchRaw);
+    DrawDifferentialCorrections(cache, fOut, fullFamilies, pairings, cutFolder, "Raw", "raw, all candidates",
+                                [](const DifferentialSample& d, size_t i, CorrectionInputs& in) { return InputsOfSample(d.all[i], in); });
 
-    // Signal-extracted: <R>_S from IntegratedSummary/, <u^2>_S and <w>_S from KappaEff/ (signalExtractionRing).
-    // <w>_S is extracted for R_z files only: for the full ring w == 1 identically. kappa = 3<u^2>_S/<w>_S
+    // Signal-extracted: <R>_S from IntegratedSummary/, <u v>_S and <w>_S from KappaEff/ (signalExtractionRing).
+    // <w>_S is extracted for longitudinal files only: for the full ring w == 1 identically. kappa = 3<u v>_S/<w>_S
     // takes its two errors in quadrature; they are positively correlated (both scale as n_z^2), so this
     // overstates it slightly, on a term that only enters P through dP/dkappa = -P/D anyway.
     if (!sigExtractDir.empty()) {
@@ -6290,11 +6907,11 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             const SigExtractPoint u = FetchSigExtractPoint(cache, pr.sigBase, sfx, cutFolder, proxy + "_Num", "hIntegratedRSig", true, "KappaEff");
             if (!r.found || !u.found || !(u.value > 0.)) return false;
             SigExtractPoint w; w.value = 1.; w.error = 0.; w.found = true;
-            if (sfx.find(RINGZ_TAG) != std::string::npos)
+            if (IsLongitudinalSuffix(sfx))
                 w = FetchSigExtractPoint(cache, pr.sigBase, sfx, cutFolder, proxy + "_Den", "hIntegratedRSig", true, "KappaEff");
             if (!w.found || !(w.value > 0.)) return false;
             in.ring = {r.value, r.error};
-            in.u2x3 = {3. * u.value, 3. * u.error};
+            in.uvx3 = {3. * u.value, 3. * u.error};
             const double kap = 3. * u.value / w.value;
             in.kappa = {kap, kap * std::sqrt(std::pow(u.error / u.value, 2) + std::pow(w.error / w.value, 2))};
             return true;
@@ -6302,24 +6919,40 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         DrawCorrections(fOut, fullFamilies, pairings, "SignalExtracted", "signal-extracted", fetchSig);
     }
 
-    // CheapSigExtract: peak minus sideband, from the consumer's *VsMassRegion moments (no fit, no sideband model).
-    // kappa = 3<u^2>_S/<w>_S takes its two errors in quadrature, as for the signal-extracted version.
-    std::cout << " -> Corrections, CheapSigExtract (peak - sideband)...\n";
+    // CheapSigExtract: the consumer's *VsMassRegion moments (no fit, no sideband model), three ways, each region corrected
+    // with its OWN kappa -- the inversion is a statement about one population, so one region's response is never applied
+    // to another's candidates:
+    //   InPeakQA/, OffPeakQA/  one region alone, background left in. QA ONLY, never a result: P and kappa are mixes of
+    //                          signal and background (InPeakQA against SidebandSubtracted shows how far the background moves it)
+    //   SidebandSubtracted/    the signal estimate: every moment sideband-subtracted first, then corrected
+    std::cout << " -> Corrections, CheapSigExtract (in peak, off peak, sideband-subtracted)...\n";
+
+    // One region's moments as a sample (index 1 peak, 0 sideband), with kappa's exact <u v w> covariance, as in Raw
+    auto makeRegionFetcher = [&](int region) -> CorrectionFetcher {
+        return [&, region](const FakePairing& pr, const std::string& sfx, const std::string& proxy, CorrectionInputs& in) {
+            RegionSample r;
+            if (!LoadRegionSample(cache, pr.consumerBase + "/ConsumerResults_" + sfx + ".root", cutFolder, proxy, r)) return false;
+            return InputsOfSample(RegionAsSample(r, region), in);
+        };
+    };
+    DrawCorrections(fOut, fullFamilies, pairings, "CheapSigExtract/InPeakQA", "in peak only, QA: background not removed", makeRegionFetcher(1));
+    DrawCorrections(fOut, fullFamilies, pairings, "CheapSigExtract/OffPeakQA", "sideband only, QA: background candidates", makeRegionFetcher(0));
+    DrawDifferentialCorrections(cache, fOut, fullFamilies, pairings, cutFolder, "CheapSigExtract/InPeakQA", "in peak only, QA: background not removed",
+                                [](const DifferentialSample& d, size_t i, CorrectionInputs& in) { return InputsOfSample(RegionAsSample(d.region[i], 1), in); });
+    DrawDifferentialCorrections(cache, fOut, fullFamilies, pairings, cutFolder, "CheapSigExtract/OffPeakQA", "sideband only, QA: background candidates",
+                                [](const DifferentialSample& d, size_t i, CorrectionInputs& in) { return InputsOfSample(RegionAsSample(d.region[i], 0), in); });
+
+    // Sideband-subtracted: <y>_S = (Sum_P y - Sum_B y) / (N_P - N_B) for each of R, u v and w, then the usual correction
+    // (see InputsOfSidebandSubtracted: kappa_S keeps its exact covariance)
     const CorrectionFetcher fetchCheap = [&](const FakePairing& pr, const std::string& sfx, const std::string& proxy,
                                              CorrectionInputs& in) {
         RegionSample r;
         if (!LoadRegionSample(cache, pr.consumerBase + "/ConsumerResults_" + sfx + ".root", cutFolder, proxy, r)) return false;
-        const auto ring = CheapSignalMean(r.ring[1], r.ring[0]);
-        const auto u    = CheapSignalMean(r.num[1], r.num[0]);
-        const auto w    = CheapSignalMean(r.den[1], r.den[0]);
-        if (ring.second < 0. || !(u.first > 0.) || !(w.first > 0.)) return false;
-        in.ring = ring;
-        in.u2x3 = {3. * u.first, 3. * u.second};
-        const double kap = 3. * u.first / w.first;
-        in.kappa = {kap, kap * std::sqrt(std::pow(u.second / u.first, 2) + std::pow(w.second / w.first, 2))};
-        return true;
+        return InputsOfSidebandSubtracted(r, in);
     };
-    DrawCorrections(fOut, fullFamilies, pairings, "CheapSigExtract", "peak - sideband", fetchCheap);
+    DrawCorrections(fOut, fullFamilies, pairings, "CheapSigExtract/SidebandSubtracted", "sideband-subtracted", fetchCheap);
+    DrawDifferentialCorrections(cache, fOut, fullFamilies, pairings, cutFolder, "CheapSigExtract/SidebandSubtracted", "sideband-subtracted",
+                                [](const DifferentialSample& d, size_t i, CorrectionInputs& in) { return InputsOfSidebandSubtracted(d.region[i], in); });
     DrawKappaByRegion(cache, fOut, fullFamilies, pairings, cutFolder);
 
     cache.CloseAll(); // Release every input file before closing the output
