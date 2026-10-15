@@ -8,6 +8,9 @@
 * experimental signal with increasingly higher minDCAdau cuts, to test for robustness
 * of the ring observable wrt the AEE effect's main source.
 *
+* Input: the consumer's FakePolDrivers/PhiStar/DCACorrelations/LeadJet/ folder, booked only with
+*        doFakePolDiagnosticsQA. Without it there is nothing to do: the macro says so and writes no output file.
+*
 * Usage: ./makeCumulativeDCAdauProfile.exe <inputFilePath> <outputDirectory>
 * (outputDirectory is created recursively if it does not already exist -- this
 *  keeps post-processing output out of results_consumer/, see run_all_wagons.sh)
@@ -31,7 +34,42 @@
 #include "TLegend.h"
 #include "TSystem.h"
 
+// ---------------------------------------------------------
+// Input location and naming tables
+// ---------------------------------------------------------
+// The consumer fills the (phi*, DCA) correlations for the leading jet only. The proxy folder name also goes into every
+// title (<R>_{LeadJet}, #eta_{LeadJet}), so the "Proxy" tokens in the object names are never ambiguous.
+const std::string kProxyFolder = "LeadJet";
+const std::string kInputDir = "lambdajetpolarizationionsderived/FakePolDrivers/PhiStar/DCACorrelations/" + kProxyFolder;
+const std::string kRingLabel = "<#it{R}>_{" + kProxyFolder + "}"; // Same convention as the consumer titles
+
+// One entry per DCA definition. The tag is the consumer's token, used for the input and the output names alike.
+// The daughters are told apart by species (proton-like, pion-like), not by charge: for an AntiLambda the proton-like one is negative.
+struct DCASpec { std::string tag; std::string axisTitle; std::string legendLabel; };
+const std::vector<DCASpec> kDCASpecs = {
+    { "DCAdau",     "min DCA_{V0 daughters} (cm)", "DCA_{V0 daughters}" },
+    { "DCAProLike", "min DCA_{p-like, PV} (cm)",   "DCA_{p-like, PV}"   },
+    { "DCAPiLike",  "min DCA_{#pi-like, PV} (cm)", "DCA_{#pi-like, PV}" }
+};
+
+// One entry per eta classifier of the TProfile3Ds (the third axis carries the sign of this eta):
+struct EtaSplitSpec { std::string tag; std::string etaLabel; };
+const std::vector<EtaSplitSpec> kEtaSplitSpecs = {
+    { "ProxyEta",  "#eta_{" + kProxyFolder + "}" },
+    { "EtaLambda", "#eta_{#Lambda}" }
+};
+
+// Output names follow the consumer convention: dimension prefix, then the quantity (RingObservable for <R>, Counts for
+// entries), then <X>Vs<Y>. "Cumul" marks the cumulative versions, whose X axis is the minimum DCA cut.
+// Shared by the producers below and by DrawComparisonCanvases, which reads the 1D ones back.
+// sliceSuffix is empty for the plain (phi*, DCA) profiles, or "_<eta tag><All|Neg|Pos>" for the eta slices.
+std::string CumulCountsName(const DCASpec& dca) { return "h2dCumulCountsMin" + dca.tag + "VsPhiStar"; }
+std::string Cumul2DName(const DCASpec& dca, const std::string& sliceSuffix = "") { return "p2dCumulRingObservableMin" + dca.tag + "VsPhiStar" + sliceSuffix; }
+std::string Cumul1DName(const DCASpec& dca, const std::string& sliceSuffix = "") { return "pCumulRingObservableMin" + dca.tag + sliceSuffix; }
+std::string SliceSuffix(const EtaSplitSpec& split, const std::string& slice) { return "_" + split.tag + slice; }
+
 // Declaring helper functions to process all TProfiles and THDs that could benefit from accumulation to draw minDCAcut plots:
+
 
 // ---------------------------------------------------------
 // Helper 1: Core TProfile2D Processing (Outputs 2D)
@@ -41,22 +79,13 @@ TProfile2D* MakeCumulativeProfile2D(TProfile2D* pDiff, const char* outName, cons
     // returns nullptr rather than dereferencing it. Callers must check the result before writing.
     if (!pDiff) return nullptr;
 
-    // Create a cleaned version of the outName without the "pFakePolSignalJet_" string cluttering it
-    std::string cleanName = outName;
-    std::string pattern = "pFakePolSignalJet_";
-    size_t pos = cleanName.find(pattern);
-    if (pos != std::string::npos) {
-        // Replaces "pFakePolSignalJet_" with "pSignal_" right where it found it
-        cleanName.replace(pos, pattern.length(), "pSignal_");
-    }
-
     int nPhi = pDiff->GetNbinsX();
     int nDCA = pDiff->GetNbinsY();
 
     // Transpose the output: X-axis becomes DCA (from input Y), Y-axis becomes phi* (from input X)
     // Kept as a TProfile2D (not a TH2F) so the per-bin sum/entries/sum-of-squares survive,
     // which is what lets TBrowser rebin this histogram correctly on the fly.
-    TProfile2D* hCumul = new TProfile2D(cleanName.c_str(), outTitle,
+    TProfile2D* hCumul = new TProfile2D(outName, outTitle,
         nDCA, pDiff->GetYaxis()->GetXmin(), pDiff->GetYaxis()->GetXmax(),
         nPhi, pDiff->GetXaxis()->GetXmin(), pDiff->GetXaxis()->GetXmax());
 
@@ -105,27 +134,14 @@ TProfile* MakeCumulativeProfile1D(TProfile2D* pDiff, const char* outName, const 
     // Same contract as MakeCumulativeProfile2D: if nullptr in, then nullptr out.
     if (!pDiff) return nullptr;
 
-    // Create a cleaned version of the outName without the "pFakePolSignalJet_" string cluttering it
-    // (mirrors MakeCumulativeProfile2D, so 1D and 2D outputs share the same naming convention
-    // regardless of whether the caller already pre-cleaned the name it passed in)
-    std::string cleanName = outName;
-    std::string pattern = "pFakePolSignalJet_";
-    size_t pos = cleanName.find(pattern);
-    if (pos != std::string::npos) {
-        cleanName.replace(pos, pattern.length(), "pSignal_");
-    }
-
     int nPhi = pDiff->GetNbinsX();
     int nDCA = pDiff->GetNbinsY();
 
     // The X-axis of this 1D histogram corresponds to the Y-axis (DCA) of the 2D profile
     // Kept as a TProfile (not a TH1F) for the same reason as MakeCumulativeProfile2D:
     // preserving entries/sum/sum-of-squares per bin allows correct TBrowser rebinning.
-    TProfile* hCumul1D = new TProfile(cleanName.c_str(), outTitle,
+    TProfile* hCumul1D = new TProfile(outName, outTitle,
         nDCA, pDiff->GetYaxis()->GetXmin(), pDiff->GetYaxis()->GetXmax());
-    
-    hCumul1D->GetXaxis()->SetTitle("min DCA cut");
-    hCumul1D->GetYaxis()->SetTitle("Integrated <R>");
 
     // Accumulators spanning across ALL phi* bins, holding RAW profile statistics
     double total_sum_N  = 0.0; // -> bin entries
@@ -192,83 +208,61 @@ TH2D* MakeCumulativeTH2D(TH2D* hDiff, const char* outName, const char* outTitle)
 // ---------------------------------------------------------
 // Helper 4: TProfile3D Projection & Processing
 // ---------------------------------------------------------
-// Notice that the TProfile3D is actually just a set of two TProfile2Ds, one for each Jet or Lambda eta:
+// Notice that the TProfile3D is actually just a set of two TProfile2Ds, one for each sign of the split eta:
 // Bin 1 is -0.9 to 0 (Negative Eta), Bin 2 is 0 to 0.9 (Positive Eta)
 // Extracts All, Positive, and Negative Eta variations and generates both 2D and 1D cumulatives
-void ProcessProfile3D(TProfile3D* p3D, TDirectory* dir2D, TDirectory* dir1D, const std::string& baseName) {
-    // Create a cleaned version of the baseName without the "pFakePolSignalJet_" string cluttering it
-    std::string cleanName = baseName;
-    std::string pattern = "pFakePolSignalJet_";
-    size_t pos = cleanName.find(pattern);
-    if (pos != std::string::npos) {
-        // Replaces "pFakePolSignalJet_" with "pSignal_" right where it found it
-        cleanName.replace(pos, pattern.length(), "pSignal_");
-    }
-
+// -- Note: "All" is NOT a copy of the plain (phi*, DCA) profile. The projection excludes the under- and overflow of the
+//    eta axis, so "All" drops the candidates with |eta| >= 0.9 (jets in particular can sit beyond it).
+void ProcessProfile3D(TProfile3D* p3D, TDirectory* dir2D, TDirectory* dir1D, const DCASpec& dca, const EtaSplitSpec& split) {
     // Pass "yx" so the 2D projection maintains native mapping (X = phi*, Y = DCA)
     // We assign names manually afterward.
     //
     // Project3DProfile returns nullptr on a rejected option string or an unusable axis range, so each result is checked before it is named:
     // (Dereferencing it blind turns a recoverable ROOT complaint into a segfault, which the coordinator can only report as an opaque crash)
         // Thus, we create a small lambda to encapsulate everything:
-    auto project = [&](int zLo, int zHi, const char* tag) -> TProfile2D* {
+    auto project = [&](int zLo, int zHi, const std::string& slice) -> TProfile2D* {
         p3D->GetZaxis()->SetRange(zLo, zHi);
         TProfile2D* p2D = p3D->Project3DProfile("yx");
         if (!p2D) {
-            std::cerr << "    [Warning] Project3DProfile(\"yx\") failed for " << cleanName
-                      << " (" << tag << "). Skipping this eta slice.\n";
+            std::cerr << "    [Warning] Project3DProfile(\"yx\") failed for " << p3D->GetName()
+                      << " (" << slice << "). Skipping this eta slice.\n";
             return nullptr;
         }
-        p2D->SetName(Form("%s_xy_%s", cleanName.c_str(), tag));
+        p2D->SetName((std::string(p3D->GetName()) + "_yx_" + slice).c_str()); // Temporary: deleted below
         return p2D;
     };
 
-    // 1. All Eta (Project across all Z bins)
-    TProfile2D* p2D_all = project(1, p3D->GetNbinsZ(), "all");
-    // 2. Negative Eta (Z bin 1: -0.9 to 0)
-    TProfile2D* p2D_neg = project(1, 1, "neg");
-    // 3. Positive Eta (Z bin 2: 0 to 0.9)
-    TProfile2D* p2D_pos = project(2, 2, "pos");
+    // The three slices: name suffix, Z bin range and title tag
+    struct EtaSlice { std::string slice; int zLo; int zHi; std::string titleTag; };
+    const std::vector<EtaSlice> slices = {
+        { "All", 1, p3D->GetNbinsZ(), "all " + split.etaLabel }, // 1. All Eta (Project across all Z bins)
+        { "Neg", 1, 1,                split.etaLabel + " < 0" },  // 2. Negative Eta (Z bin 1: -0.9 to 0)
+        { "Pos", 2, 2,                split.etaLabel + " #geq 0" } // 3. Positive Eta (Z bin 2: 0 to 0.9)
+    };
+
+    for (const auto& sl : slices) {
+        TProfile2D* p2D = project(sl.zLo, sl.zHi, sl.slice);
+        const std::string suffix = SliceSuffix(split, sl.slice);
+
+        // Generate the 2D (transposed now: X = min DCA, Y = phi*) and the 1D integrated cumulatives
+        TProfile2D* hCumul2D = MakeCumulativeProfile2D(p2D, Cumul2DName(dca, suffix).c_str(),
+            ("Cumulative " + kRingLabel + ", " + sl.titleTag + ";" + dca.axisTitle + ";#phi^{*}").c_str());
+        TProfile* hCumul1D = MakeCumulativeProfile1D(p2D, Cumul1DName(dca, suffix).c_str(),
+            ("Cumulative " + kRingLabel + ", #phi^{*}-integrated, " + sl.titleTag + ";" + dca.axisTitle + ";" + kRingLabel).c_str());
+
+        // Written individually: a failed projection leaves its cumulative null, and the other two slices
+        // are still perfectly good output.
+        if (dir2D && hCumul2D) { dir2D->cd(); hCumul2D->Write(); }
+        if (dir1D && hCumul1D) { dir1D->cd(); hCumul1D->Write(); }
+
+        delete p2D; delete hCumul2D; delete hCumul1D;
+    }
 
     // Restore the full Z range: the caller's TProfile3D is shared, and leaving it clipped to bin 2
     // would silently bias anything that reads the same histogram afterwards (if we ever intend to use it afterwards).
     p3D->GetZaxis()->SetRange(1, p3D->GetNbinsZ());
-
-    // Resolve Precise DCA Label
-    std::string dcaLabel = "min DCA";
-    if (cleanName.find("DCAdau") != std::string::npos) dcaLabel = "min DCA_{V0 Daughters}";
-    else if (cleanName.find("DCAProLike") != std::string::npos) dcaLabel = "min DCA_{PosPV}";
-    else if (cleanName.find("DCAPiLike") != std::string::npos) dcaLabel = "min DCA_{NegPV}";
-
-    // Generate 2D Cumulatives (Transposed now: X = min DCA, Y = phi*)
-    TProfile2D* hCumul2D_all = MakeCumulativeProfile2D(p2D_all, Form("hCumul2D_%s_AllEta", cleanName.c_str()), Form("Cumul. %s (All Eta); %s; #phi^{*}", cleanName.c_str(), dcaLabel.c_str()));
-    TProfile2D* hCumul2D_neg = MakeCumulativeProfile2D(p2D_neg, Form("hCumul2D_%s_NegEta", cleanName.c_str()), Form("Cumul. %s (Eta < 0); %s; #phi^{*}", cleanName.c_str(), dcaLabel.c_str()));
-    TProfile2D* hCumul2D_pos = MakeCumulativeProfile2D(p2D_pos, Form("hCumul2D_%s_PosEta", cleanName.c_str()), Form("Cumul. %s (Eta > 0); %s; #phi^{*}", cleanName.c_str(), dcaLabel.c_str()));
-
-    // Generate 1D Integrated Cumulatives
-    TProfile* hCumul1D_all = MakeCumulativeProfile1D(p2D_all, Form("hCumul1D_%s_AllEta", cleanName.c_str()), Form("Integrated Cumul. %s (All Eta); %s; Integrated <R>", cleanName.c_str(), dcaLabel.c_str()));
-    TProfile* hCumul1D_neg = MakeCumulativeProfile1D(p2D_neg, Form("hCumul1D_%s_NegEta", cleanName.c_str()), Form("Integrated Cumul. %s (Eta < 0); %s; Integrated <R>", cleanName.c_str(), dcaLabel.c_str()));
-    TProfile* hCumul1D_pos = MakeCumulativeProfile1D(p2D_pos, Form("hCumul1D_%s_PosEta", cleanName.c_str()), Form("Integrated Cumul. %s (Eta > 0); %s; Integrated <R>", cleanName.c_str(), dcaLabel.c_str()));
-
-    // Written individually: a failed projection leaves its cumulative null, and the other two slices
-    // are still perfectly good output.
-    if (dir2D) {
-        dir2D->cd();
-        if (hCumul2D_all) hCumul2D_all->Write();
-        if (hCumul2D_neg) hCumul2D_neg->Write();
-        if (hCumul2D_pos) hCumul2D_pos->Write();
-    }
-    if (dir1D) {
-        dir1D->cd();
-        if (hCumul1D_all) hCumul1D_all->Write();
-        if (hCumul1D_neg) hCumul1D_neg->Write();
-        if (hCumul1D_pos) hCumul1D_pos->Write();
-    }
-
-    delete p2D_all; delete p2D_neg; delete p2D_pos;
-    delete hCumul2D_all; delete hCumul2D_neg; delete hCumul2D_pos;
-    delete hCumul1D_all; delete hCumul1D_neg; delete hCumul1D_pos;
 }
+
 
 
 // ---------------------------------------------------------
@@ -276,9 +270,9 @@ void ProcessProfile3D(TProfile3D* p3D, TDirectory* dir2D, TDirectory* dir1D, con
 // ---------------------------------------------------------
 // Produces 11 canvases in total, saved to dirCanvases:
 //   A (1): phi*-integrated, all three DCA types overlaid
-//   B (3): jet eta splits (All/Neg/Pos), one canvas per DCA type
+//   B (3): leading-jet (proxy) eta splits (All/Neg/Pos), one canvas per DCA type
 //   C (3): Lambda eta splits (All/Neg/Pos), one canvas per DCA type
-//   D (4): fixed eta hemisphere (EtaJet/EtaLambda x Pos/Neg), all three DCAs overlaid
+//   D (4): fixed eta hemisphere (ProxyEta/EtaLambda x Pos/Neg), all three DCAs overlaid
 void DrawComparisonCanvases(TDirectory* dir1D, TDirectory* dirCanvases) {
 
     // Retrieve a 1D cumulative from dir1D by name; warn if absent.
@@ -379,78 +373,55 @@ void DrawComparisonCanvases(TDirectory* dir1D, TDirectory* dirCanvases) {
     const int kColNeg = kRed+1,   kMkrNeg = 25;
     const int kColPos = kAzure+2, kMkrPos = 24;
 
+    // Markers and colours of the DCA-overlay canvases (A and D) follow kDCASpecs order: V0 daughters, p-like, pi-like
+    const std::vector<int> kColDCA = { kColDau, kColPro, kColPi };
+    const std::vector<int> kMkrDCA = { kMkrDau, kMkrPro, kMkrPi };
+    std::vector<const char*> dcaLegends;
+    for (const auto& d : kDCASpecs) dcaLegends.push_back(d.legendLabel.c_str());
+
+    // Fetches and styles the three DCA types for one name suffix (shared by canvases A and D)
+    auto GetAllDCA = [&](const std::string& sliceSuffix) {
+        std::vector<TProfile*> hv;
+        for (size_t k = 0; k < kDCASpecs.size(); ++k) {
+            TProfile* h = Get1D(Cumul1DName(kDCASpecs[k], sliceSuffix));
+            Style(h, kColDCA[k], kMkrDCA[k]);
+            hv.push_back(h);
+        }
+        return hv;
+    };
+
     // A. phi*-integrated, all three DCA types overlaid
-    {
-        TProfile* hDau = Get1D("hCumul1D_pSignal_PhiStarVsDCAdau"); // Now cleaned these titles to match cleanName string structure
-        TProfile* hPro = Get1D("hCumul1D_pSignal_PhiStarVsDCAProLike");
-        TProfile* hPi  = Get1D("hCumul1D_pSignal_PhiStarVsDCAPiLike");
-        Style(hDau, kColDau, kMkrDau); Style(hPro, kColPro, kMkrPro); Style(hPi, kColPi, kMkrPi);
-        WriteCanvas("cComp_AllDCA_IntegratedEta",
-                    "Integrated <R> vs min DCA (#phi^{*}-integrated, all #eta); min DCA cut (cm); <R>",
-                    { hDau, hPro, hPi },
-                    { "DCA_{V0 daughters}", "DCA_{pro-like, PV}", "DCA_{#pi-like, PV}" });
-    }
+    WriteCanvas("cCumulRingObservable_AllDCA",
+                ("Cumulative " + kRingLabel + " vs min DCA (#phi^{*}-integrated); min DCA cut (cm); " + kRingLabel).c_str(),
+                GetAllDCA(""), dcaLegends);
 
     // B/C. Eta-slice variations per DCA type (2 eta classifiers x 3 DCA types = 6 canvases)
-    struct DCASpec { std::string tag; const char* xTitle; };
-    const std::vector<DCASpec> dcaSpecs = {
-        { "DCAdau",     "min DCA_{V0 daughters} (cm)" },
-        { "DCAProLike", "min DCA_{pro-like, PV} (cm)" },
-        { "DCAPiLike",  "min DCA_{#pi-like, PV} (cm)" }
-    };
-
-    struct EtaConfig { std::string infix; const char* cSuffix; const char* titleEtaType;
-                       const char* legAll; const char* legNeg; const char* legPos; };
-    const std::vector<EtaConfig> etaCfgs = {
-        { "VsEtaJet",    "EtaJetSplit",    "jet #eta",
-          "All jet #eta", "Jet #eta < 0", "Jet #eta > 0" },
-        { "VsEtaLambda", "EtaLambdaSplit", "#Lambda #eta",
-          "All #Lambda #eta", "#Lambda #eta < 0", "#Lambda #eta > 0" }
-    };
-
-    for (const auto& d : dcaSpecs) {
-        for (const auto& e : etaCfgs) {
-            std::string base = "hCumul1D_pSignal_PhiStarVs" + d.tag + e.infix; // Also cleaned to use cleanName
-            TProfile* hAll = Get1D(base + "_AllEta");
-            TProfile* hNeg = Get1D(base + "_NegEta");
-            TProfile* hPos = Get1D(base + "_PosEta");
+    for (const auto& d : kDCASpecs) {
+        for (const auto& e : kEtaSplitSpecs) {
+            TProfile* hAll = Get1D(Cumul1DName(d, SliceSuffix(e, "All")));
+            TProfile* hNeg = Get1D(Cumul1DName(d, SliceSuffix(e, "Neg")));
+            TProfile* hPos = Get1D(Cumul1DName(d, SliceSuffix(e, "Pos")));
             Style(hAll, kColAll, kMkrAll); Style(hNeg, kColNeg, kMkrNeg); Style(hPos, kColPos, kMkrPos);
 
-            std::string cName  = "cComp_" + d.tag + "_" + e.cSuffix;
-            std::string cTitle = std::string("<R> vs ") + d.xTitle + " (" + e.titleEtaType
-                                 + " splits); " + d.xTitle + "; <R>";
+            const std::string cName  = "cCumulRingObservable_" + d.tag + "_" + e.tag + "Split";
+            const std::string cTitle = "Cumulative " + kRingLabel + " vs " + d.axisTitle + " (" + e.etaLabel
+                                       + " splits);" + d.axisTitle + ";" + kRingLabel;
+            const std::string legAll = "All " + e.etaLabel, legNeg = e.etaLabel + " < 0", legPos = e.etaLabel + " #geq 0";
             WriteCanvas(cName.c_str(), cTitle.c_str(),
                         { hAll, hNeg, hPos },
-                        { e.legAll, e.legNeg, e.legPos });
+                        { legAll.c_str(), legNeg.c_str(), legPos.c_str() });
         }
     }
 
     // D. Fixed eta hemisphere, all three DCA types overlaid (4 canvases)
     // Isolates which DCA type is responsible for the AEE signal in each eta hemisphere.
-    struct EtaSlice { const char* infix; const char* suffix; const char* cTag; const char* titleEta; };
-    const std::vector<EtaSlice> slices = {
-        { "VsEtaJet",    "_PosEta", "EtaJet_Pos",    "jet #eta > 0"     },
-        { "VsEtaJet",    "_NegEta", "EtaJet_Neg",    "jet #eta < 0"     },
-        { "VsEtaLambda", "_PosEta", "EtaLambda_Pos", "#Lambda #eta > 0" },
-        { "VsEtaLambda", "_NegEta", "EtaLambda_Neg", "#Lambda #eta < 0" }
-    };
-
-    for (const auto& sl : slices) {
-        auto get = [&](const char* dcaTag) {
-            return std::string("hCumul1D_pSignal_PhiStarVs") // Also uses cleanName
-                   + dcaTag + sl.infix + sl.suffix;
-        };
-        TProfile* hDau = Get1D(get("DCAdau"));
-        TProfile* hPro = Get1D(get("DCAProLike"));
-        TProfile* hPi  = Get1D(get("DCAPiLike"));
-        Style(hDau, kColDau, kMkrDau); Style(hPro, kColPro, kMkrPro); Style(hPi, kColPi, kMkrPi);
-
-        std::string cName  = std::string("cComp_AllDCA_") + sl.cTag;
-        std::string cTitle = std::string("Integrated <R> vs min DCA cut (") + sl.titleEta
-                             + "); min DCA cut (cm); <R>";
-        WriteCanvas(cName.c_str(), cTitle.c_str(),
-                    { hDau, hPro, hPi },
-                    { "DCA_{V0 daughters}", "DCA_{pro-like, PV}", "DCA_{#pi-like, PV}" });
+    for (const auto& e : kEtaSplitSpecs) {
+        for (const std::string slice : { "Pos", "Neg" }) {
+            const std::string etaRange = e.etaLabel + (slice == "Pos" ? " #geq 0" : " < 0");
+            const std::string cName  = "cCumulRingObservable_AllDCA_" + e.tag + slice;
+            const std::string cTitle = "Cumulative " + kRingLabel + " vs min DCA cut (" + etaRange + "); min DCA cut (cm); " + kRingLabel;
+            WriteCanvas(cName.c_str(), cTitle.c_str(), GetAllDCA(SliceSuffix(e, slice)), dcaLegends);
+        }
     }
 }
 
@@ -510,6 +481,17 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // Check the input folder before anything is written. It is booked only with doFakePolDiagnosticsQA: without it this
+    // config has nothing to accumulate, which is reported once and is not a failure (no output file is created).
+    if (!fIn->Get(kInputDir.c_str())) {
+        std::cout << " No " << kInputDir << " folder in this file (doFakePolDiagnosticsQA off in this config).\n"
+                  << " Nothing to do: no output file written.\n";
+        std::cout << "=======================================================\n\n";
+        fIn->Close();
+        delete fIn;
+        return 0;
+    }
+
     TFile* fOut = TFile::Open(outFileStr.c_str(), "RECREATE");
     // Checking output file before closing:
     if (!fOut || fOut->IsZombie()) {
@@ -526,47 +508,36 @@ int main(int argc, char** argv) {
     TDirectory* dir1D       = fOut->mkdir("Cumulative_1D");
     TDirectory* dirCanvases = fOut->mkdir("Comparison_Canvases");
 
-    std::string baseDir = "lambdajetpolarizationionsderived/HelicityEfficiencyQA/";
+    const std::string inDir = kInputDir + "/";
 
     // 1. Process TH2D (Counts)
-    std::vector<std::string> countsList = {
-        "hFakePolCountsJet_PhiStarVsDCAdau",
-        "hFakePolCountsJet_PhiStarVsDCAProLike",
-        "hFakePolCountsJet_PhiStarVsDCAPiLike"
-    };
-
     std::cout << " -> Processing TH2D Count Histograms...\n";
-    for(const auto& name : countsList) {
-        TH2D* hIn = (TH2D*)fIn->Get((baseDir + name).c_str());
+    for (const auto& dca : kDCASpecs) {
+        const std::string name = "h2dFakePolCounts_PhiStarVs" + dca.tag;
+        TH2D* hIn = (TH2D*)fIn->Get((inDir + name).c_str());
         if(hIn) {
-            TH2D* hCumul = MakeCumulativeTH2D(hIn, ("hCumul_" + name).c_str(), hIn->GetTitle());
+            // Title built here rather than copied: the output axes are transposed (X = min DCA, Y = phi*)
+            TH2D* hCumul = MakeCumulativeTH2D(hIn, CumulCountsName(dca).c_str(),
+                ("Cumulative counts (" + kProxyFolder + ");" + dca.axisTitle + ";#phi^{*}").c_str());
             dirCounts->cd(); hCumul->Write();
+            delete hCumul;
         } else {
              std::cerr << "    [Warning] Missing: " << name << std::endl;
         }
     }
 
     // 2. Process TProfile2D (Signals) -> Generates both 2D and 1D versions
-    std::vector<std::string> prof2DList = {
-        "pFakePolSignalJet_PhiStarVsDCAdau",
-        "pFakePolSignalJet_PhiStarVsDCAProLike",
-        "pFakePolSignalJet_PhiStarVsDCAPiLike"
-    };
-
     std::cout << " -> Processing TProfile2D Signal Histograms...\n";
-    for(const auto& name : prof2DList) {
-        TProfile2D* pIn = (TProfile2D*)fIn->Get((baseDir + name).c_str());
+    for (const auto& dca : kDCASpecs) {
+        const std::string name = "p2dFakePolSignal_PhiStarVs" + dca.tag;
+        TProfile2D* pIn = (TProfile2D*)fIn->Get((inDir + name).c_str());
         if(pIn) {
-            // Smart labeling
-            std::string dcaLabel = "min DCA";
-            if (name.find("DCAdau") != std::string::npos) dcaLabel = "min DCA_{V0 Daughters}";
-            else if (name.find("DCAProLike") != std::string::npos) dcaLabel = "min DCA_{PosPV}";
-            else if (name.find("DCAPiLike") != std::string::npos) dcaLabel = "min DCA_{NegPV}";
-
-            TProfile2D* pCumul2D = MakeCumulativeProfile2D(pIn, ("hCumul2D_" + name).c_str(), ("Cumul. " + name + "; " + dcaLabel + "; #phi^{*}").c_str());
+            TProfile2D* pCumul2D = MakeCumulativeProfile2D(pIn, Cumul2DName(dca).c_str(),
+                ("Cumulative " + kRingLabel + ";" + dca.axisTitle + ";#phi^{*}").c_str());
             dir2D->cd(); pCumul2D->Write();
 
-            TProfile* pCumul1D = MakeCumulativeProfile1D(pIn, ("hCumul1D_" + name).c_str(), ("Integrated Cumul. " + name + "; " + dcaLabel + "; Integrated <R>").c_str());
+            TProfile* pCumul1D = MakeCumulativeProfile1D(pIn, Cumul1DName(dca).c_str(),
+                ("Cumulative " + kRingLabel + ", #phi^{*}-integrated;" + dca.axisTitle + ";" + kRingLabel).c_str());
             dir1D->cd(); pCumul1D->Write();
 
             // Deleting to avoid leaks:
@@ -577,22 +548,16 @@ int main(int argc, char** argv) {
     }
 
     // 3. Process TProfile3D (Signals with Eta splits)
-    std::vector<std::string> prof3DList = {
-        "pFakePolSignalJet_PhiStarVsDCAdauVsEtaJet",
-        "pFakePolSignalJet_PhiStarVsDCAdauVsEtaLambda",
-        "pFakePolSignalJet_PhiStarVsDCAProLikeVsEtaJet",
-        "pFakePolSignalJet_PhiStarVsDCAProLikeVsEtaLambda",
-        "pFakePolSignalJet_PhiStarVsDCAPiLikeVsEtaJet",
-        "pFakePolSignalJet_PhiStarVsDCAPiLikeVsEtaLambda"
-    };
-
     std::cout << " -> Processing TProfile3D Eta-Split Histograms...\n";
-    for(const auto& name : prof3DList) {
-        TProfile3D* p3DIn = (TProfile3D*)fIn->Get((baseDir + name).c_str());
-        if(p3DIn) {
-            ProcessProfile3D(p3DIn, dir2D, dir1D, name);
-        } else {
-             std::cerr << "    [Warning] Missing: " << name << std::endl;
+    for (const auto& dca : kDCASpecs) {
+        for (const auto& split : kEtaSplitSpecs) {
+            const std::string name = "p3dFakePolSignal_PhiStarVs" + dca.tag + "Vs" + split.tag;
+            TProfile3D* p3DIn = (TProfile3D*)fIn->Get((inDir + name).c_str());
+            if(p3DIn) {
+                ProcessProfile3D(p3DIn, dir2D, dir1D, dca, split);
+            } else {
+                 std::cerr << "    [Warning] Missing: " << name << std::endl;
+            }
         }
     }
 

@@ -85,52 +85,54 @@ Every per-config macro takes the same two arguments, in essence:
 
 The output directory is explicit, not inferred from the input path, and is created recursively if absent. The output filename is derived from the input basename by substituting the prefix, e.g. `ConsumerResults_BothHyperons.root` becomes `ErrorPropagation_BothHyperons.root`.
 
-The two per-wagon macros differ: `auxiliarySummaryPlots.exe` takes `<consumerDir> [mcRefDir] [ppRefDir] [toyModelPath] [cutFolder] [doIndividualComparisons] [sigExtractDir]`, and `zvtxBitForensics.exe` takes a manifest and an output file (see its [appendix](#appendix----ao2d-bit-forensics-in-detail)).
+The two per-wagon macros differ: `auxiliarySummaryPlots.exe` takes `<consumerDir> [mcRefDir] [ppRefDir] [toyModelPath] [doIndividualComparisons] [sigExtractDir]`, and `zvtxBitForensics.exe` takes a manifest and an output file (see its [appendix](#appendix----ao2d-bit-forensics-in-detail)).
 
-## Kinematic-cut families
+## The consumer layout
 
-The consumer books its ring-observable histograms under four sibling folders, one per selection
-scenario:
-
-| Folder | Selection |
-|---|---|
-| `Ring` | no kinematic cuts -- **always booked** |
-| `RingKinematicCuts` | $\Lambda$ cuts: $p_{\rm T}^{\Lambda} \in [0.5,\,1.5]$, $\lvert y_{\Lambda}\rvert < 0.5$ |
-| `JetKinematicCuts` | jet cuts: $\lvert \eta_{\rm jet}\rvert < 0.5$ |
-| `JetAndLambdaKinematicCuts` | both |
-
-Only `Ring` is unconditional. The other three sit behind consumer configurables and are simply
-**absent from the output file** when switched off. That is a feature, not a fault: a config studying
-one scenario should not pay for the other three.
-
-Every macro that iterates these folders therefore does a **presence scan once, up front**, prints a
-single summary line, and drives its sections from the resolved list:
-
-```
- Families present : Ring, JetKinematicCuts
- Families absent  : RingKinematicCuts, JetAndLambdaKinematicCuts  (optional, not enabled in this config)
-```
-
-Two consequences worth knowing:
-
-- A `WARNING` from inside a drawing or extraction section now always means something genuinely
-  unexpected -- a family that *is* present but is missing a histogram it should contain. Absence of the family itself never reaches that code path.
-- Nothing is written for an absent family. No empty `<Family>/` directory appears in the output, so a trimmed run and a complete one are distinguishable in a `TBrowser`.
-
-`Ring` is marked **mandatory**: its absence exits `1`, because at that point the input is not the consumer output it claims to be.
-
-### Inside a family
-
-Every family has the same internal layout, organised by proxy:
+Every ring observable lives under a single folder, `Ring/`. The four kinematic-cut families of the
+old consumer (`Ring`, `RingKinematicCuts`, `JetKinematicCuts`, `JetAndLambdaKinematicCuts`) are gone:
+a cut variation is now a consumer configuration of its own, with its own output file, like every other
+systematic. No macro scans for families or takes a cut-folder argument any more.
 
 | Folder | Holds |
 |---|---|
-| `LeadJet/`, `LeadP/`, `SubJet/` | everything that proxy's fill list fills, each with its own `QA/`, `EtaDependence/`, `ProxyPtDependence/`, `RingKernel/` (LeadJet, LeadP) and `KappaEff/` |
-| `RingMaps/` | the ring planes, `p2dRingObservable[LeadP]Vs*` |
-| `PolMaps/` | the polarization maps (proxy-agnostic, except `PrimeJet/`) |
-| `DeltaMethod/` | the leading-jet event tracker, internal bookkeeping read only by `extractDeltaErrors` |
+| `Ring/<Proxy>/` | everything filled with that proxy's ring (see below) |
+| `Ring/DeltaMethod/` | the leading-jet event tracker, read only by `extractDeltaErrors` |
+| `IntegratedCuts/<Proxy>/` | the integrated $\langle R\rangle$ (`pRingCuts`, bin 1) and its mass split (`p2dRingCutsV0MassPeak`) |
+| `RawPolarization/` | the polarization maps (`PolMaps/`) and the raw $P^{*}$ projections |
+| `FakePolDrivers/` | the fake-polarization drivers: `ProxyEta/`, `PhiAEE/`, `CosHEE/`, `PhiStar/`, `ProxyZ/`, `CosHEEVsPhiStar/` |
+| `EventMixingQA/` | the event-mixing QA |
+| `RzDiagnostics/` | the longitudinal-ring diagnostics (see [below](#rzdiagnostics-booked-only-with-useringz-or-useringzt)) |
+| `SelectionFlow/`, `KinematicsQA/` | the V0 selection flow and the kinematic QA |
 
-Object **names** carry their proxy as before (`LeadP/pRingObservableLeadPMass`); only the folders say it twice.
+`<Proxy>` is `LeadJet`, `LeadP` or `SubJet`. `FakePolDrivers/` sits behind `doFakePolDiagnosticsQA`,
+`EventMixingQA/` behind `doEventMixingQA` (with `doMixedEventProxies`), and `RzDiagnostics/` behind
+`useRingZ` or `useRingZT`. A folder behind a switch is simply **absent** when the switch is off. That
+is a feature, not a fault: a config studying one thing should not pay for the rest.
+
+For the per-config macros `Ring/` is **mandatory**: its absence exits `1`, because at that point the input is not the consumer
+output it claims to be. Everything else is optional, and a missing optional object is reported, never
+fatal.
+
+### Inside `Ring/<Proxy>/`
+
+| Subfolder | Holds |
+|---|---|
+| `AngularDependence/`, `EtaDependence/`, `PtDependence/`, `MassDependence/`, `EventLevelDependence/` | $\langle R\rangle$ against each variable |
+| `KappaEff/` | the response moments (see [below](#kappaeff-always-booked-one-per-proxy-folder)) |
+| `V0ProxyPairQA/` | the V0--proxy pair QA ($\Delta\varphi$, $\Delta\theta$, ...) |
+| `RingMaps/`, `RingKernel/` | the ring planes and the projection kernel (LeadJet and LeadP) |
+| `SigExtract3DInput/` | the three-dimensional inputs of `signalExtractionRing` (LeadJet) |
+
+**Every proxy folder holds the same object names**: `Ring/LeadP/EtaDependence/pRingObservableProxyEta`
+and `Ring/SubJet/EtaDependence/pRingObservableProxyEta` differ only by their folder. The folder says
+which proxy, the name says what. Where a name refers to the proxy's own variable it says `Proxy`
+(`ProxyEta`, `ProxyPt`, `ProxyPhi`). `nameMap_S0_to_C3b.txt` maps every path of the old layout to
+its new one.
+
+**No name carries a species either.** The species is chosen by the configuration (BothHyperons,
+JustLambda and JustAntiLambda files), so every object holds whichever species its file carries, and
+species comparisons are read across files.
 
 ## Reporting: failures versus skips
 
@@ -142,10 +144,9 @@ Object **names** carry their proxy as before (`LeadP/pRingObservableLeadPMass`);
   (config x step), which is what previously turned a single unprocessed wagon into a couple of dozen
   entries and buried the real failures underneath them.
 
-Macro exit codes are binary on purpose: `0` for "ran", non-zero for "did not". A third code meaning
-"ran, but some optional families were absent" was considered and rejected -- absent families are the
-*common* case here, so encoding them as an exceptional status would make the exceptional path the
-default one.
+Macro exit codes are binary on purpose: `0` for "ran", non-zero for "did not". A third code meaning "ran, but some optional folders were absent" was considered and rejected -- absent optional folders are the *common* case here, so encoding them as an exceptional status would make the exceptional path the default one.
+
+Inside a macro, **nothing is skipped silently** (or at least, nothing in the last macro. I am still thinking if the other macros will have a proper no-silent-skip implementation). `auxiliarySummaryPlots` ends its log with a skip summary (see [its section](#the-skip-summary)); the per-config macros are still to follow.
 
 ## Logging
 
@@ -171,7 +172,7 @@ The consumer configurable `useRingZ` (default off) redefines the ring observable
 
 $$R_z \;=\; P_z\,n_z,\qquad \hat n=\frac{\hat t\times\vec p_\Lambda}{\lVert\hat t\times\vec p_\Lambda\rVert}.$$
 
-Nothing else in the consumer changes. Every object filled with the ring -- the four cut families, `IntegratedCuts/`, `EtaStudy/`, the `HelicityEfficiencyQA/` AEE profiles and the Delta-method trackers -- then holds $\langle R_z\rangle$ under its usual name. The titles still read $\langle R\rangle$; the post-processing relabels them for $R_z$ files, and only where the meaning actually changes.
+Nothing else in the consumer changes. Every object filled with the ring -- everything under `Ring/` and `IntegratedCuts/`, the `FakePolDrivers/` profiles and the Delta-method tracker -- then holds $\langle R_z\rangle$ under its usual name. The titles still read $\langle R\rangle$; the post-processing relabels them for $R_z$ files, and only where the meaning actually changes.
 
 An $R_z$ output is identified **by its file name alone**: the consumer configs carry `_useRingZ` right after the family, as in `dpl-config-DerivedConsumer-BothHyperons_useRingZ_MixedEventProxies.json`, so every output follows as `ConsumerResults_BothHyperons_useRingZ_MixedEventProxies.root`. There is no marker object inside the file.
 
@@ -206,7 +207,7 @@ The price is signal. $R_z$ keeps the ring with weight $n_z^2$, so near-side geom
 
 Several outputs of an $R_z$ run are **null tests**, and a non-zero value there is a finding, not a bug:
 
-- **The ring kernel (`<Proxy>/RingKernel/`, and Sections 6--8 of `auxiliaryPerConfigPlots`).** The kernel exists to extract $B_\varphi$, which $R_z$ removes by construction. The profiles still fill and must be consistent with zero; the $B_\varphi$ and $M_0/M_1$ fits are meaningless and are read as nulls only.
+- **The ring kernel (`Ring/<Proxy>/RingKernel/`, and Sections 6--8 of `auxiliaryPerConfigPlots`).** The kernel exists to extract $B_\varphi$, which $R_z$ removes by construction. The profiles still fill and must be consistent with zero; the $B_\varphi$ and $M_0/M_1$ fits are meaningless and are read as nulls only.
 - **$\langle R_z\rangle$ vs $\varphi_{\rm AEE}$.** It must be flat. Unlike the full ring, where binning in $\varphi_{\rm AEE}$ biases $\hat p^{*}\!\cdot\hat\varphi$ purely kinematically, $\hat p^{*}_z$ is independent of $\varphi^{*}_p$ for isotropic decays, so any structure is instrumental and proxy-side imbalanced. (For $R_z^T$ this is not a strict null: its helicity-free projection is not kinematically flat in $\varphi_{\rm AEE}$.)
 - **`ringObservableOverJetZ`.** Built for the full ring's $\hat t_z$ invariance; not meaningful for $R_z$.
 - **MixedEv** should give $R_z\approx0$. This is necessary but not sufficient: mixing cannot see fakes tied to the real jet's environment, and its $A_{\Delta\varphi}$ is not the data's.
@@ -218,8 +219,8 @@ What survives in data besides the signal: the jet-$v_2$ times $v_2$-induced $P_z
 
 Exactly, $n_z=\sin\Delta\varphi\,\sin\theta_t\sin\theta_\Lambda/\sin\Delta\theta$, so $\mathrm{sign}(n_z)=\mathrm{sign}(\sin\Delta\varphi)$, and zero is a bin edge of `axisDeltaPhi`. Hence:
 
-- $A_{\Delta\varphi}$ comes from the halves of the existing `QA/hDeltaPhi*` counters;
-- the $\langle R_z\rangle$ of each proxy side comes from integrating the halves of the existing `pRingObservable*DeltaPhi` profiles;
+- $A_{\Delta\varphi}$ comes from the halves of the existing `Ring/<Proxy>/V0ProxyPairQA/hDeltaPhi` counters;
+- the $\langle R_z\rangle$ of each proxy side comes from integrating the halves of the existing `Ring/<Proxy>/AngularDependence/pRingObservableDeltaPhi` profiles;
 - the **odd part** of $\langle R_z\rangle(\Delta\varphi)$ is pure leak, and the even part is signal plus any field-odd residue.
 
 No dedicated object is booked for any of this.
@@ -230,15 +231,15 @@ The full ring is computed alongside the longitudinal ring **only** in these mode
 
 | Object | Content |
 |---|---|
-| `pRingVsChi<Proxy>`, `p2dRingVsChiVsMass<Proxy>` | $\langle R_z\rangle$ vs $\chi$, integrated and vs mass |
-| `p2dRingVsDeltaPhiVsDeltaEtaLeadJet` | the same sectors in detector variables |
-| `pRingPerpIntegrated`, `pRingPerp<Proxy>Vs{Mass,PhiAEE,DeltaPhi}` | the complement $R_\perp=R-R_z$, filled directly |
-| `pCosSqThetaStarZLeadJetVsMass` | the standard, unweighted $\langle\cos^2\theta^{*}_z\rangle$ |
-| `pHelicityTermIntegrated`, `pHelicityTerm<Proxy>VsEtaLambda`, `p2dHelicityTermLeadJetVsDeltaPhiVsMass` | the helicity term $R_z-R_z^T$: what $R_z$ contains, or what $R_z^T$ removed (the same quantity in both modes) |
-| `pNz<Proxy>VsEtaLambda`, `pNzSq<Proxy>VsEtaLambda` | $\langle n_z\rangle$ (proxy-side balance) and $\langle n_z^2\rangle$ (signal weight) vs $\eta_\Lambda$ |
-| `p2dRingLeadJetVsDeltaPhiVsMassEtaPos`, `...EtaNeg` | the ring vs $(\Delta\varphi, m)$ per A/C hemisphere of the $\Lambda$: the sideband-sine test |
+| `<Proxy>/pRingVsChi`, `<Proxy>/p2dRingVsChiVsMass` | $\langle R_z\rangle$ vs $\chi$, integrated and vs mass |
+| `LeadJet/p2dRingVsDeltaPhiVsDeltaEta` | the same sectors in detector variables |
+| `pRingPerpIntegrated`, `<Proxy>/pRingPerpVs{Mass,PhiAEE,DeltaPhi}` | the complement $R_\perp=R-R_z$, filled directly |
+| `LeadJet/pCosSqThetaStarZVsMass` | the standard, unweighted $\langle\cos^2\theta^{*}_z\rangle$ |
+| `pHelicityTermIntegrated`, `<Proxy>/pHelicityTermVsEtaLambda`, `LeadJet/p2dHelicityTermVsDeltaPhiVsMass` | the helicity term $R_z-R_z^T$: what $R_z$ contains, or what $R_z^T$ removed (the same quantity in both modes) |
+| `<Proxy>/pNzVsEtaLambda`, `<Proxy>/pNzSqVsEtaLambda` | $\langle n_z\rangle$ (proxy-side balance) and $\langle n_z^2\rangle$ (signal weight) vs $\eta_\Lambda$ |
+| `LeadJet/p2dRingVsDeltaPhiVsMassEtaPos`, `...EtaNeg` | the ring vs $(\Delta\varphi, m)$ per A/C hemisphere of the $\Lambda$: the sideband-sine test |
 
-`<Proxy>` is `LeadJet`, `LeadP` or `SubJet`. The profile names read `Ring` rather than `RingZ` on purpose, since this whole folder only exists in the longitudinal modes.
+Paths are relative to `RzDiagnostics/`; `<Proxy>` is `LeadJet`, `LeadP` or `SubJet`. The profile names read `Ring` rather than `RingZ` on purpose, since this whole folder only exists in the longitudinal modes.
 
 **The $\chi$ sectors.** Under the reflections $(\chi\to-\chi,\ \chi\to\pi-\chi)$:
 
@@ -253,30 +254,30 @@ $P_e$ and the helicity component $P_p$ are parity-odd, so strong production cann
 
 **$R_\perp$ is filled, not subtracted.** $\langle R\rangle-\langle R_z\rangle$ has the right mean, but $R$ and $R_z$ share every candidate, so quadrature errors on that difference would be wrong.
 
-## `KappaEff/` (always booked, in every cut family, one per proxy folder)
+## `KappaEff/` (always booked, one per proxy folder)
 
 All response coefficients share one form, the **cross moment**. With $u=\hat p^{*}\!\cdot\vec e=R/c_\alpha$ the unitless ring ($c_\alpha$ the polarization prefactor), $v=\hat p^{*}\!\cdot\hat n$ the unitless full ring, and $w=\vec e\cdot\hat n$ the projection weight,
 
 $$\kappa=3\,\frac{\langle u\,v\rangle}{\langle w\rangle},\qquad
 \begin{array}{lll} \text{full ring:} & u=v=\hat p^{*}\!\cdot\hat n, & w=1\\ R_z: & u=n_z\,\hat p^{*}_z, & w=n_z^2\\ R_z^T: & u=n_z\,\hat p^{*}\!\cdot\hat z_T, & w=n_z^2 \end{array}$$
 
-The second moment $3\langle u^2\rangle/\langle w\rangle$, used before, is the response only when $\vec e$ is the signal direction itself, which is the case of the full ring and of no other projection. For $R_z$ it fails whenever the proxy sides or the A/C halves are unbalanced, and for $R_z^T$ it is off by the geometric factor $\langle n_z^2\sin^2\theta\rangle/\langle n_z^2\rangle\approx0.85$ even for a perfect detector (`LongitudinalRing.tex`, Sec. 4). The same four profiles per proxy, all vs mass, serve every mode:
+The second moment $3\langle u^2\rangle/\langle w\rangle$, used before, is the response only when $\vec e$ is the signal direction itself, which is the case of the full ring and of no other projection. For $R_z$ it fails whenever the proxy sides or the A/C halves are unbalanced, and for $R_z^T$ it is off by the geometric factor $\langle n_z^2\sin^2\theta\rangle/\langle n_z^2\rangle\approx0.85$ even for a perfect detector (`LongitudinalRing.tex`, Sec. 4). The same four profiles per proxy, all vs mass and all in `Ring/<Proxy>/KappaEff/`, serve every mode:
 
 | Object | Filled with | Used for |
 |---|---|---|
-| `pKappaNum<Proxy>VsMass` | $u\,v$ | $\kappa$ numerator |
-| `pKappaDen<Proxy>VsMass` | $w$ | $\kappa$ denominator; the $R_z\to P_R$ conversion $R_z/\langle n_z^2\rangle$ |
-| `pKappaNumTimesDen<Proxy>VsMass` | $u\,v\,w$ | $\mathrm{Cov}(uv,w)$, for the error on $\kappa$ |
-| `pRingTimesDen<Proxy>VsMass` | $R\,w$ | $\mathrm{Cov}(R,w)$, for the error on $R_z/\langle n_z^2\rangle$ |
+| `pKappaNumVsMass` | $u\,v$ | $\kappa$ numerator |
+| `pKappaDenVsMass` | $w$ | $\kappa$ denominator; the $R_z\to P_R$ conversion $R_z/\langle n_z^2\rangle$ |
+| `pKappaNumTimesDenVsMass` | $u\,v\,w$ | $\mathrm{Cov}(uv,w)$, for the error on $\kappa$ |
+| `pRingTimesDenVsMass` | $R\,w$ | $\mathrm{Cov}(R,w)$, for the error on $R_z/\langle n_z^2\rangle$ |
 
 In full-ring mode $w\equiv1$, so the last three are trivially redundant. They are filled anyway so the post-processing never has to know the mode.
 
-The same moments are also filled **per CheapSigExtract mass region**, on a two-bin axis built from the consumer's own flags: bin 1 is the sideband (`v0InMassWindow`), bin 2 the peak (`v0InMassPeak`), and anything else goes to the underflow. These are `pRing<Proxy>VsMassRegion`, `pKappaNum<Proxy>VsMassRegion`, `pKappaDen<Proxy>VsMassRegion`, `pKappaNumTimesDen<Proxy>VsMassRegion` and `pRingTimesDen<Proxy>VsMassRegion`, all in `<Proxy>/KappaEff/`. They feed `Corrections/CheapSigExtract/` and `RingVsLongitudinal_CheapSigExtract/` in the summary, and the last one gives $\langle R_z\rangle/\langle n_z^2\rangle$ of each region its exact covariance.
+The same moments are also filled **per CheapSigExtract mass region**, on a two-bin axis built from the consumer's own flags: bin 1 is the sideband (`v0InMassWindow`), bin 2 the peak (`v0InMassPeak`), and anything else goes to the underflow. These are `pRingVsMassRegion`, `pKappaNumVsMassRegion`, `pKappaDenVsMassRegion`, `pKappaNumTimesDenVsMassRegion` and `pRingTimesDenVsMassRegion`, again in `Ring/<Proxy>/KappaEff/`, and their versions vs proxy $p_{\rm T}$ and vs centrality in `KappaEff/Differential/`. They feed `Corrections/CheapSigExtract/` and `RingVsLongitudinal_CheapSigExtract/` in the summary, and the last one gives $\langle R_z\rangle/\langle n_z^2\rangle$ of each region its exact covariance.
 
 Three design points:
 
 - **Unitless, on purpose.** $u$ carries no $\alpha$. $\langle R^2\rangle$ read off the existing profiles' spread would mix $\lvert\alpha_\Lambda\rvert\neq\lvert\alpha_{\bar\Lambda}\rvert$ in `BothHyperons`, and would not give the covariances.
-- **Vs mass, per cut family.** $\kappa$ must be measured on exactly the candidates that make $R$, and the background's $\hat p^{*}$ distribution is not isotropic, so $\kappa_B\neq\kappa_S$ in general. The signal-region value comes out of the same sideband machinery as $\langle R\rangle_S$.
+- **Vs mass, per proxy.** $\kappa$ must be measured on exactly the candidates that make $R$, and the background's $\hat p^{*}$ distribution is not isotropic, so $\kappa_B\neq\kappa_S$ in general. The signal-region value comes out of the same sideband machinery as $\langle R\rangle_S$.
 - **Ratios of means on one sample.** Each $\kappa$ and each $R_z/\langle n_z^2\rangle$ is a ratio of two means over the same candidates. First-order propagation needs only $\Sigma y$, $\Sigma y^2$ (which `TProfile` already stores) and the cross-product profile.
 
 For the full ring the cross moment is the data-driven second moment of the correction framework, $\kappa_{\rm eff}=3\langle(\hat p^{*}\!\cdot\hat n)^2\rangle$, valid up to $O(\alpha P_{\rm true})$. For the longitudinal rings it is $\kappa=3\langle u\,v\rangle/\langle n_z^2\rangle$, which needs no symmetry of the acceptance at all.
@@ -331,6 +332,24 @@ leading-jet $p_{\rm T}$):
 
 Every window is a command-line option; none is hardcoded, including in the plot labels. Run with
 `--help` for the full list and the current defaults.
+
+### Inputs
+
+Everything comes from the consumer's `Ring/` folder, plus three QA folders read before it. Paths are relative to `lambdajetpolarizationionsderived/`.
+
+| Step | Reads | Notes |
+|---|---|---|
+| 2.6 | `SelectionFlow/h2dAnalysisLevelSelectionV0sVsMass`, `hAnalysisLevelSelectionV0s` | only with `doAnalysisLevelCuts` |
+| 2.75, 2.8 | `FakePolDrivers/PhiAEE/<Proxy>/p2dRingObservableVsPhiAEEVsMass[Pos,Neg]ProxyEta`, `p3dRingObservableVsPhiAEEVsProxyEtaVsMass` | only with `doFakePolDiagnosticsQA` |
+| 3--6 | `Ring/LeadJet/MassDependence/` (`hMassSigExtract`, the $\Delta\phi$ and $\Delta\theta$ profiles and their counters) | essential |
+| 3 (integrated, eta) | `Ring/<Proxy>/MassDependence/pRingObservableMass`, `{p2dRingObservable,h2dCounter}ProxyEtaVsMass`, `Ring/LeadJet/V0ProxyPairQA/hPairedV0Mass` (fine peak reference) | per proxy, a missing one is skipped |
+| 3 (kappa) | `Ring/<Proxy>/KappaEff/pKappa{Num,Den}VsMass` | |
+| 7 | `Ring/LeadJet/SigExtract3DInput/p3dRingObservableDelta{Phi,Theta}VsMassVs{LambdaPt,ProxyPt}` | essential |
+| 8 | `Ring/LeadJet/{AngularDependence,PtDependence,MassDependence}/pRingObservable*`, `Ring/LeadJet/pRingObservableIntegrated` | a missing one is skipped |
+
+`<Proxy>` is `LeadJet`, `LeadP` or `SubJet`. A missing `Ring/` or a missing essential input exits with `1`: at that point the input is not the consumer output it claims to be, and an almost empty output file must not count as a successful run.
+
+The AEE probe has one set of profiles per proxy: the species is chosen by the configuration (BothHyperons, JustLambda and JustAntiLambda files), not by the object. Its output folders and object suffixes are therefore the proxy alone (`HelicityEfficiencyQA_PhiLambdaPhiProtonStar[_EtaBinned]/.../<Proxy>/`), which is what `auxiliarySummaryPlots` reads.
 
 ### Two background methods
 
@@ -570,10 +589,12 @@ $$\text{bin content} = \bar R \cdot N = \sum_i r_i, \qquad
 the absolute sum and its correct error, which *are* additive under projection. Do not reintroduce a
 direct `Project3D` on the profile.
 
+The counts come from the same profile. The consumer no longer books 3D counters next to the `TProfile3D`s, since their bin entries hold the same numbers, so `CountsFromProfile3D` builds the `TH3D` of counts from `GetBinEntries` (Poisson errors, flows included). Its axes are rebuilt from the bin edges rather than through `TProfile3D::ProjectionXYZ`, which refuses the mixed fixed and variable-width axes the consumer books.
+
 **A `TProfile2D` carries its own denominator.** `GetBinEntries` counts exactly the candidates that
 went into the profile, so `CountsFromProfile2D` pairs a numerator and a denominator that cannot
-describe different selections. That is what lets the AEE probe run with no separately booked counts
-histogram, and it is the safer pairing even where one exists.
+describe different selections. That is what lets the AEE probe and the 3D slices run with no separately
+booked counts histogram, and it is the safer pairing even where one exists.
 
 ### Error propagation
 
@@ -749,8 +770,8 @@ from "the extraction never ran". Every failure branch names itself in the log.
 The response coefficient is $\kappa=3\langle uv\rangle/\langle w\rangle$ (see [The longitudinal ring](#the-longitudinal-ring-r_z-useringz)), so its signal-region value needs only $\langle uv\rangle_S$ and $\langle w\rangle_S$. Each is a per-candidate quantity profiled against mass, exactly like $R$, so each goes through **the same integrated extraction** -- same peak, same windows, same sideband model, same error propagation -- with nothing written for it but a folder name and a symbol for the labels:
 
 ```
-<Family>/KappaEff/<Proxy>_Num/hIntegratedRSig_<Proxy>_Num   <-- <u v>_S
-<Family>/KappaEff/<Proxy>_Den/hIntegratedRSig_<Proxy>_Den   <-- <w>_S, R_z files only
+Ring/KappaEff/<Proxy>_Num/hIntegratedRSig_<Proxy>_Num   <-- <u v>_S
+Ring/KappaEff/<Proxy>_Den/hIntegratedRSig_<Proxy>_Den   <-- <w>_S, R_z files only
 ```
 
 The object names are the usual ones, so `hIntegratedRSig_<name>` is $\langle y\rangle_S$ for whatever $y$ was profiled; the titles carry the right symbol. The ratio is taken by the summary, in `Corrections/SignalExtracted/`.
@@ -844,16 +865,16 @@ $S_r$ and $S_n$ -- which is more than adequate at the statistics involved here.
 ### What it actually bought
 
 Honestly: **not much.** The delta-method errors come out close to the SEM ones on real data. The
-output keeps both side by side (`DeltaMethod_err/` and `SEM_method_err/` per family, plus
+output keeps both side by side (`Ring/DeltaMethod_err/` and `Ring/SEM_method_err/`, plus
 `pRingCuts_Delta` and `pRingCuts_SEM` at the top level) precisely so that this can be re-checked
 rather than taken on trust. The value is in knowing that the agreement is a result and not an
 accident.
 
 Bootstrapping and jackknifing are the natural next additions to this file, but I wouldn't expect too much from them right now.
 
-### Note on the summary histogram (and on the new behavior of error-reporting for the missing consumer families)
+### Note on the summary histogram
 
-`pRingCuts_Delta` has four fixed, labelled bins, one per kinematic-cut family, and bin $i+1$ always means the same family whether or not its neighbours were produced. An absent family leaves its bin empty rather than shifting the others.
+`pRingCuts_Delta` has a single bin: the integrated $\langle R\rangle$ of `Ring/`, labelled like bin 1 of `pRingCuts_SEM` (the label is read from the consumer's `IntegratedCuts/LeadJet/pRingCuts`). The consumer no longer has the per-family event trackers that filled the other three bins. A cut variation is now a configuration of its own, so its Delta Method value is the `pRingCuts_Delta` of that configuration's own output. `pRingCuts_SEM` keeps its four bins, since the consumer still fills `pRingCuts` by hand with the old cut definitions.
 
 ---
 
@@ -863,11 +884,13 @@ Bootstrapping and jackknifing are the natural next additions to this file, but I
 
 ### Why it exists
 
-This is a robustness probe for the **Azimuthal Emission Efficiency (AEE)**: the daughter DCA cuts, combined with the magnetic field, make the reconstruction efficiency depend on $\phi^{*}$, which manufactures a fake polarization signal. If AEE drives what we measure, tightening the minimum DCA cut should move $\langle R\rangle$ systematically. If $\langle R\rangle$ is flat against that cut, the observable is robust against the dominant AEE source.
+This is a robustness probe for the **Azimuthal Efficiency Effect (AEE)**: the daughter DCA cuts, combined with the magnetic field, make the reconstruction efficiency depend on $\phi^{*}$, which manufactures a fake polarization signal. If AEE drives what we measure, tightening the minimum DCA cut should move $\langle R\rangle$ systematically. If $\langle R\rangle$ is flat against that cut, the observable is robust against the dominant AEE source.
 
 The consumer books $\langle R\rangle$ differentially in $(\phi^{*}, \mathrm{DCA})$. This macro turns those into **cumulative** profiles, in which bin $j$ holds $\langle R\rangle$ over every candidate with $\mathrm{DCA} >$ the lower edge of bin $j$ -- that is, the value the analysis *would* have measured under that minimum-DCA cut. Reading along the axis is then reading a cut scan.
 
 Three DCA definitions are treated separately, which is what localises the effect: DCA between the V0 daughters, DCA of the proton-like daughter to the PV, and DCA of the pion-like daughter to the PV. Each is additionally split by the sign of $\eta_{\rm jet}$ and of $\eta_{\Lambda}$, since the ring fake signal is known to appear linearly in jet pseudorapidity (maybe a $\tanh\eta_{\text{Jet}}$, but this is very preliminary).
+
+The inputs are the consumer's `FakePolDrivers/PhiStar/DCACorrelations/LeadJet/` objects, booked only with `doFakePolDiagnosticsQA`. A config without them is reported in one line and produces no output file (exit code 0: nothing to do is not a failure).
 
 ### Design constraints worth preserving
 
@@ -885,12 +908,18 @@ Three DCA definitions are treated separately, which is what localises the effect
 > comparison, and a $\chi^2$ against a flat line computed from them would be meaningless. Judge
 > flatness from the overall trend, not from the scatter.
 
+**The `All` eta slice is not the plain profile.** The eta axis of the consumer's `TProfile3D`s is `{2, -0.9, 0.9}`, and the projection excludes its under- and overflow. The `All` slice therefore drops the candidates with $\lvert\eta\rvert \geq 0.9$ (the jets in particular can sit beyond it), while the plain $(\phi^{*}, \mathrm{DCA})$ profile keeps them.
+
 ### Output
 
-`Cumulative_Counts/`, `Cumulative_2D/`, `Cumulative_1D/`, and `Comparison_Canvases/` -- the last
-holding 11 canvases: one $\phi^{*}$-integrated comparison of all three DCA types, three jet-$\eta$
-splits, three $\Lambda$-$\eta$ splits, and four fixed-hemisphere canvases overlaying all three DCA
-types.
+Names follow the consumer convention: dimension prefix, then the quantity (`RingObservable` for $\langle R\rangle$, `Counts` for entries), then `<X>Vs<Y>`, with `Cumul` marking the cumulative versions. `<DCA>` is `DCAdau`, `DCAProLike` or `DCAPiLike`, and the eta slices add `_<Split><Slice>`, with `<Split>` = `ProxyEta` (the leading jet, as every title says) or `EtaLambda`, and `<Slice>` = `All`, `Neg` or `Pos`.
+
+| Folder | Objects |
+|---|---|
+| `Cumulative_Counts/` | `h2dCumulCountsMin<DCA>VsPhiStar` |
+| `Cumulative_2D/` | `p2dCumulRingObservableMin<DCA>VsPhiStar[_<Split><Slice>]` |
+| `Cumulative_1D/` | `pCumulRingObservableMin<DCA>[_<Split><Slice>]` ($\phi^{*}$-integrated) |
+| `Comparison_Canvases/` | 11 canvases: `cCumulRingObservable_AllDCA` (all three DCA types, $\phi^{*}$-integrated), `cCumulRingObservable_<DCA>_<Split>Split` (six, one per DCA type and eta classifier) and `cCumulRingObservable_AllDCA_<Split>{Pos,Neg}` (four fixed hemispheres, all three DCA types) |
 
 ---
 
@@ -900,9 +929,11 @@ types.
 
 The general home for **per-config derivative plots** -- anything cheap to build from a finished `ConsumerResults_*.root` that does not belong inside the O2Physics consumer and does not need cross-config aggregation. It is deliberately not scoped to one quantity; new sections are expected (see the `ADD MORE POST-PROCESSING SECTIONS HERE` marker in `main()`).
 
+It reads the consumer's `Ring/` folder (one subfolder per proxy, all with the same layout and object names), `RawPolarization/PolMaps/`, and, when they are booked, `RzDiagnostics/<Proxy>/` and `FakePolDrivers/PhiAEE/<Proxy>/`. The paths are built from three constants (`kRingDir`, `kPolMapsDir`, `kProxyFolders`). A missing `Ring/` exits with `1`. Nothing downstream reads this macro's output, so its object and canvas names carry no folder or family suffix.
+
 ### Coordinate systems used by the polarization maps
 
-The consumer books the polarization maps in **three** rotated frames, under `<folder>/PolMaps/<frame>/`. They are not competing definitions of the same picture: each answers a question the others cannot, and two of them are *not* vector fields at all. This subsection is the reference for why.
+The consumer books the polarization maps in **three** rotated frames, under `RawPolarization/PolMaps/<frame>/`. They are not competing definitions of the same picture: each answers a question the others cannot, and two of them are *not* vector fields at all. This subsection is the reference for why.
 
 Throughout, $\vec p^{\,*}$ is the unit vector along the proton-like daughter's momentum boosted into the $\Lambda$ rest frame, still expressed in **lab Cartesian axes** (a pure boost does not rotate the axes). $\vec P^{*} = (3/\alpha)\,\vec p^{\,*}$ is what the profiles actually hold. $\hat p_\Lambda$ is the unit vector along the $\Lambda$ **lab momentum**, $\hat t$ the jet direction, and
 
@@ -1051,9 +1082,9 @@ Folding the map about $\Phi_{AEE}=0$ leaves an antisymmetric residue that *is* t
 
 $\langle \vec{P}^{*}\rangle$ drawn over momentum planes, in the same visual language as the Helicity Efficiency Toy Model's plotter ["PhD_codes/ToyModels/plotHelicityEfficiency.cxx"](../ToyModels/plotHelicityEfficiency.cxx), so that real data and toy model can be compared by eye.
 
-One canvas per coordinate system, per kinematic-cut folder.
+One canvas per coordinate system.
 
-**`cVectorFieldLab`** -- read from `PolMaps/Lab/`:
+**`cVectorFieldLab`** -- read from `RawPolarization/PolMaps/Lab/`:
 
 | Panel | COLZ background | Arrows |
 |---|---|---|
@@ -1061,9 +1092,9 @@ One canvas per coordinate system, per kinematic-cut folder.
 | Z--X plane | $\langle P^{*}_y\rangle$ | $(\langle P^{*}_z\rangle,\ \langle P^{*}_x\rangle)$ |
 | Y--Z plane | $\langle P^{*}_x\rangle$ | $(\langle P^{*}_y\rangle,\ \langle P^{*}_z\rangle)$ |
 
-**`cVectorFieldPrimeJet`** -- read from `PolMaps/PrimeJet/`, the same three planes in primed components. The X'--Y' panel is the measurement itself (see above).
+**`cVectorFieldPrimeJet`** -- read from `RawPolarization/PolMaps/PrimeJet/`, the same three planes in primed components. The X'--Y' panel is the measurement itself (see above).
 
-**`cVectorFieldPrimeV0`** -- read from `PolMaps/PrimeV0/`: the production-plane panel described above, plus its counts map.
+**`cVectorFieldPrimeV0`** -- read from `RawPolarization/PolMaps/PrimeV0/`: the production-plane panel described above, plus its counts map.
 
 Arrows are **block-averaged** over `arrowBlockSize` x `arrowBlockSize` tiles of the underlying `TProfile2D`, because one arrow per histogram bin is unreadable (and too unstable in error!). Bins below `minEntries` are excluded from the tile average rather than diluting it.
 
@@ -1191,18 +1222,15 @@ but the moments are **cell-local**: averages over the $\Lambda$s in that $(c,t_z
 
 #### Input
 
-Booked by the consumer under `<folder>/LeadJet/RingKernel/` and `<folder>/LeadP/RingKernel/`, jet-gated via `RING_OBSERVABLE_FILL_LIST` and `RING_OBSERVABLE_LEADP_FILL_LIST`:
+Booked by the consumer under `Ring/LeadJet/RingKernel/` and `Ring/LeadP/RingKernel/`, with the same names in both folders, and filled for every V0 paired with that proxy:
 
-| Histogram | Axes |
-|---|---|
-| `p2dRingObservableCosDeltaThetaVsJetZ` | `axisCosTheta` x `axisJetZ` |
-| `h2dCountsCosDeltaThetaVsJetZ` | same |
-| `p3dRingObservableCosDeltaThetaVsJetZVsLambdaZ` | `axisCosThetaCoarse` x `axisJetZ` x `axisLambdaZ` |
-| `p2dRingObservableLeadPCosDeltaThetaVsLeadPZ` | `axisCosTheta` x `axisLeadPZ` |
-| `h2dCountsLeadPCosDeltaThetaVsLeadPZ` | same |
-| `p3dRingObservableLeadPCosDeltaThetaVsLeadPZVsLambdaZ` | `axisCosThetaCoarse` x `axisLeadPZ` x `axisLambdaZ` |
+| Histogram | Axes (LeadJet) | Axes (LeadP) |
+|---|---|---|
+| `p2dRingObservableCosDeltaThetaVsProxyZ` | `axisCosTheta` x `axisJetZ` | `axisCosTheta` x `axisLeadPZ` |
+| `h2dCountsCosDeltaThetaVsProxyZ` | same | same |
+| `p3dRingObservableCosDeltaThetaVsProxyZVsLambdaZ` | `axisCosThetaCoarse` x `axisJetZ` x `axisLambdaZ` | `axisCosThetaCoarse` x `axisLeadPZ` x `axisLambdaZ` |
 
-The two proxy axes differ on purpose. FastJet at $R = 0.4$ inside $|\eta| < 0.9$ confines jets to $|\eta| < 0.5$, i.e. $|t_z| \le \tanh 0.5$; leading particles reach $|\eta| < 0.9$. `axisJetZ` and `axisLeadPZ` follow each proxy's fiducial range rather than wasting bins on structurally empty space. `axisProxyZ` keeps the older full-range binning for `pRingVsJetZcomponent`. Every axis used by Sections 7 and 8 must be symmetric about zero with an even bin count; both sections verify this at runtime.
+The two proxy axes differ on purpose. FastJet at $R = 0.4$ inside $|\eta| < 0.9$ confines jets to $|\eta| < 0.5$, i.e. $|t_z| \le \tanh 0.5$; leading particles reach $|\eta| < 0.9$. `axisJetZ` and `axisLeadPZ` follow each proxy's fiducial range rather than wasting bins on structurally empty space. `axisProxyZ` keeps the older full-range binning for `FakePolDrivers/ProxyZ/LeadJet/pRingVsProxyZ`. Every axis used by Sections 7 and 8 must be symmetric about zero with an even bin count; both sections verify this at runtime.
 
 The consumer only books and fills these. **All fitting happens here**, per the ALICE convention that no post-processing lives in an O2Physics task.
 
@@ -1224,7 +1252,7 @@ and since the geometric $M_1$ is odd in $c$, the correction $-c\,\partial M_1/\p
 
 The dashed lines on panels 2 and 3 mark each proxy's **fully allowed window**, $|\cos\Delta\theta|\le-\cos(\vartheta_t+\vartheta_\Lambda)$, with $\vartheta$ the smallest polar angle in each acceptance. Inside it no $\Lambda$ in the acceptance is kinematically excluded; outside it, kinematic truncation steepens the bowl further, in a way that depends on how the bins sample the edge of the domain, and no simple shape should be expected there. The acceptance edges are read off the 3D profile's own occupancy -- conservatively, at the outer edge of the outermost populated bin -- so the window follows whatever the consumer actually accepted instead of repeating its cuts here.
 
-Per-slice fit canvases go to `RingKernel_Canvases/Fits_<folder>/`, and the four `TGraphErrors` are written alongside for downstream use.
+Per-slice fit canvases go to `RingKernel_Canvases/Fits/`, and the four `TGraphErrors` are written alongside for downstream use.
 
 **Design constraints worth preserving:**
 
@@ -1241,7 +1269,7 @@ Defaults (`cosRebin = 5`, `maxAbsCos = 0.95`, `minEntries = 200`) are parameters
 - The minimum of panel 2 against Section 7's $M_0$. They should be close but need not be equal: the minimum is the cell-local $M_0$ at $(c,t_z)\approx(0,0)$, weighted by the phase-space Jacobian there, while Section 7's is a sample-wide average. The exact comparison predicts the whole bowl from Section 7's $K(\lambda_z)$ and the 3D occupancy (not yet implemented).
 - Jet against leading particle. For azimuthally uncorrelated proxies their minima should agree, but their bowls need not: the fitted slope depends on the $t_z$ range, which differs, and on each proxy's correlation with the $\Lambda$. Proxy independence is exact only at fixed $\lambda_z$ (Section 7).
 - Panel 3 odd in $\cos\Delta\theta$. An even part is signal, or a branch term.
-- The per-slice $\chi^{2}/\text{ndf}$ in `Fits_<folder>/`, and the counts histogram, to see where the plane is kinematically forbidden before reading anything into its edges.
+- The per-slice $\chi^{2}/\text{ndf}$ in `Fits/`, and the counts histogram, to see where the plane is kinematically forbidden before reading anything into its edges.
 
 ### Section 7 -- kernel moments
 
@@ -1273,11 +1301,11 @@ Each $\cos\Delta\theta$ column gives an independent estimate of the same $K$. Th
 | 2 | $\bar P_\varphi(\lambda_z)$, jet and leading particle | coincide -- at fixed $\lambda_z$ the component does not know the proxy |
 | 3 | $K = \bar P_\varphi\cosh\eta_\Lambda$, with $M_0$, $M_1$, $M_1^{\rm sym}$, the yield asymmetry and $M_0^{\rm LeadP}$ | read together with panel 1 |
 
-The same numbers are printed to stdout per folder, since they are what the cross-config stage consumes.
+The same numbers are printed to stdout, since they are what the cross-config stage consumes.
 
 **Design constraints worth preserving:**
 
-- **The per-column fits are closed-form, not Minuit.** `WeightedLineFit()` solves the two-parameter weighted least squares exactly. There are hundreds of these per folder and none is meant to be inspected, so routing each through `TF1` would buy only overhead and transient ROOT objects. Section 6's fits go through ROOT precisely because their canvases *are* meant to be looked at.
+- **The per-column fits are closed-form, not Minuit.** `WeightedLineFit()` solves the two-parameter weighted least squares exactly. There are hundreds of these per file and none is meant to be inspected, so routing each through `TF1` would buy only overhead and transient ROOT objects. Section 6's fits go through ROOT precisely because their canvases *are* meant to be looked at.
 - **The $\cos\theta_\Lambda$ axis must mirror-pair.** Symmetrising pairs slab $i_z$ with slab $N+1-i_z$, which `axisLambdaZ` supports. It is a `ConfigurableAxis`, so `ComputeKernelMoments()` verifies the pairing and reports $M_1^{\rm sym}$ as unavailable rather than computing it on a mis-paired axis.
 - **The validation used a known truth.** The extraction was checked on a synthetic profile carrying a prescribed azimuthal component, a deliberate yield asymmetry, and a non-trivial ring. Re-run such a check after any change to the extraction: the ring must not leak into $K$, and symmetrising must remove the yield asymmetry without moving $M_0$ appreciably.
 
@@ -1338,21 +1366,21 @@ For each proxy, `cKernelSymmetry{Jet,LeadP}` shows the four sectors over $(\cos\
 
 ### Section 9 -- KappaEff
 
-Written for both ring definitions, one canvas per family, one panel per proxy: the **raw** $\kappa$ per mass bin, $3\langle uv\rangle/\langle w\rangle$, signal and background mixed. It is a QA of $\kappa$'s mass dependence, not a result -- $\kappa_S$ belongs to the signal extraction, like $\langle R\rangle_S$.
+Written for both ring definitions, one canvas, one panel per proxy: the **raw** $\kappa$ per mass bin, $3\langle uv\rangle/\langle w\rangle$, signal and background mixed. It is a QA of $\kappa$'s mass dependence, not a result -- $\kappa_S$ belongs to the signal extraction, like $\langle R\rangle_S$.
 
 Both means come from the same candidates, so the first-order error keeps their covariance,
 
 $$\mathrm{Var}(\kappa)=\frac{9}{n}\,\frac{\sigma_U^2-2\,(U/W)\,C+(U/W)^2\sigma_W^2}{W^2},\qquad C=\langle uvw\rangle-UW,$$
 
-with $U=\langle uv\rangle$, $W=\langle w\rangle$ and the spreads $\sigma$ read from the profiles themselves. For the full ring $w\equiv1$, so $\sigma_W=C=0$ and this is the plain standard error of $3\langle u^2\rangle$. The histograms are written as `hKappaVsMass<Proxy>_<Family>`.
+with $U=\langle uv\rangle$, $W=\langle w\rangle$ and the spreads $\sigma$ read from the profiles themselves. For the full ring $w\equiv1$, so $\sigma_W=C=0$ and this is the plain standard error of $3\langle u^2\rangle$. The histograms are written as `hKappaVsMass<Proxy>`.
 
 ### Section 10 -- longitudinal-ring diagnostics
 
 Only for `useRingZ` and `useRingZT` files, into `RzDiagnostics_Canvases/`. The physics is in [The longitudinal ring](#the-longitudinal-ring-r_z-useringz); what the code does:
 
-- **Proxy-side fold** (per family and proxy). The existing $\langle R_z\rangle(\Delta\varphi)$ is folded into its even (signal) and odd (leak) parts vs $\lvert\Delta\varphi\rvert$. The two halves are merged with `TProfile::Rebin`, which is exact, and summarised as: all, $\Delta\varphi>0$, $\Delta\varphi<0$, symmetrized $\tfrac12(R_++R_-)$, half-difference $D=\tfrac12(R_+-R_-)$, and the leak $A_{\Delta\varphi}D$. The identity $\langle R_z\rangle-\text{symmetrized}=A_{\Delta\varphi}D$ is exact, and $A_{\Delta\varphi}=(N_+-N_-)/(N_++N_-)$ comes from the profile's own entries, so it describes exactly the candidates that make $\langle R_z\rangle$.
-- **$\chi$ sectors** (per proxy, task level). $f_{s_a s_b}(\chi)=\tfrac14\bigl[f(\chi)+s_af(-\chi)+s_bf(\pi-\chi)+s_as_bf(\chi-\pi)\bigr]$ on $\chi\in[0,\pi/2]$, fitted with $\sin^2\chi$, $\sin\chi$, $\sin2\chi$ and a constant. The shapes are those of the weights with $\theta_\Lambda$ averaged, so the amplitudes are summaries, not measurements. The axis must be uniform on $[-\pi,\pi]$ with a multiple of 4 bins, so every orbit partner is a whole bin.
-- **$\varphi_{\rm AEE}$ flatness** (LeadJet and LeadP). $\langle R_z\rangle$ and $\langle R_\perp\rangle$ overlaid, with a constant fitted to $\langle R_z\rangle$; its $\chi^2$ is the test. Both profiles fill on the same candidates, but the $R_z$ one lives under `HelicityEfficiencyQA/`, so the canvas is skipped quietly when that QA is off.
+- **Proxy-side fold** (per proxy). The existing $\langle R_z\rangle(\Delta\varphi)$ is folded into its even (signal) and odd (leak) parts vs $\lvert\Delta\varphi\rvert$. The two halves are merged with `TProfile::Rebin`, which is exact, and summarised as: all, $\Delta\varphi>0$, $\Delta\varphi<0$, symmetrized $\tfrac12(R_++R_-)$, half-difference $D=\tfrac12(R_+-R_-)$, and the leak $A_{\Delta\varphi}D$. The identity $\langle R_z\rangle-\text{symmetrized}=A_{\Delta\varphi}D$ is exact, and $A_{\Delta\varphi}=(N_+-N_-)/(N_++N_-)$ comes from the profile's own entries, so it describes exactly the candidates that make $\langle R_z\rangle$.
+- **$\chi$ sectors** (per proxy, from `RzDiagnostics/<Proxy>/pRingVsChi`). $f_{s_a s_b}(\chi)=\tfrac14\bigl[f(\chi)+s_af(-\chi)+s_bf(\pi-\chi)+s_as_bf(\chi-\pi)\bigr]$ on $\chi\in[0,\pi/2]$, fitted with $\sin^2\chi$, $\sin\chi$, $\sin2\chi$ and a constant. The shapes are those of the weights with $\theta_\Lambda$ averaged, so the amplitudes are summaries, not measurements. The axis must be uniform on $[-\pi,\pi]$ with a multiple of 4 bins, so every orbit partner is a whole bin.
+- **$\varphi_{\rm AEE}$ flatness** (LeadJet and LeadP). $\langle R_z\rangle$ and $\langle R_\perp\rangle$ overlaid, with a constant fitted to $\langle R_z\rangle$; its $\chi^2$ is the test. Both profiles fill on the same candidates, but the $R_z$ one lives under `FakePolDrivers/PhiAEE/<Proxy>/`, booked only with `doFakePolDiagnosticsQA`, so the canvas is skipped quietly when that QA is off.
 
 The symmetrized estimator removes the leak **without external input** under one assumption: at fixed $\lvert\Delta\varphi\rvert$, the fake does not know which side of the $\Lambda$ the proxy sits on. That holds exactly for mixed events. In data only a mirror-breaking effect -- the field, again -- can violate it, and the $(+,+)$ and $(+,-)$ sectors are where it would show.
 
@@ -1365,7 +1393,7 @@ Into `SidebandSine_Canvases/`. Under an axis-blind acceptance, the fake of a lon
 - $A(m)$ is the sideband-sine amplitude, and $B(m)$ must vanish;
 - $c_0(m)$ absorbs the even part, the $n_z^2$-weighted signal.
 
-**Per folder, every ring definition**, from `LeadJet/p2dRingObservableDeltaPhiVsMass`; for the full ring this is a cheap QA of the same shape. **Longitudinal rings only**, from the two `RzDiagnostics/` maps split by the sign of $\eta_\Lambda$: $A(m)$ per A/C hemisphere, their half-sum (A/C-even: the polar term) and half-difference (A/C-odd: the helicity term), and $B(m)$ per hemisphere. A sign change of $A(m)$ between the sidebands that lives in the half-difference is the helicity mechanism of the note; one that lives in the half-sum is not. The fit histograms (`hSineFit{Const,Sin,Cos}_<tag>`) are written next to the canvases.
+**Every ring definition**, from `Ring/LeadJet/MassDependence/p2dRingObservableDeltaPhiVsMass`; for the full ring this is a cheap QA of the same shape. **Longitudinal rings only**, from the two `RzDiagnostics/LeadJet/` maps split by the sign of $\eta_\Lambda$: $A(m)$ per A/C hemisphere, their half-sum (A/C-even: the polar term) and half-difference (A/C-odd: the helicity term), and $B(m)$ per hemisphere. A sign change of $A(m)$ between the sidebands that lives in the half-difference is the helicity mechanism of the note; one that lives in the half-sum is not. The fit histograms (`hSineFit{Const,Sin,Cos}_<tag>`, with `<tag>` = `AllEta`, `EtaPos` or `EtaNeg`) are written next to the canvases.
 
 ### On the duplicated `DrawVectorFieldPanel()`
 
@@ -1375,9 +1403,9 @@ The axis-aspect correction is **not** such a divergence -- it is a bug fix, and 
 
 ### Panel registry
 
-Canvases are described as data, not code: a `PanelSpec` table (kind, histogram names, axis titles, banner) consumed by a single `MakePanelCanvas()` that handles fetching, missing-object reporting, layout and labelling. A new coordinate system therefore costs one table, not one function. Axis-title fragments are named once and shared, so the Lab, Aee, PrimeV0 and PrimeJet versions of the same plane cannot drift apart; the ring panels are generated from a prefix plus plane suffixes rather than written out four times.
+Canvases are described as data, not code: a `PanelSpec` table (kind, histogram names, axis titles, banner) consumed by a single `MakePanelCanvas()` that handles fetching, missing-object reporting, layout and labelling. A new coordinate system therefore costs one table, not one function. Axis-title fragments are named once and shared, so the Lab, Aee, PrimeV0 and PrimeJet versions of the same plane cannot drift apart; the ring panels are generated from the plane suffixes rather than written out four times, and the two proxies differ only by their `RingMaps/` folder.
 
-Fetching is **all-or-nothing per canvas**. The folder is already known to exist (`ScanPresentFolders()` resolved it), so a missing histogram is a genuine anomaly -- most likely a consumer/macro name drift -- and half a canvas would hide it rather than show it. The warning names the first offender so the drift is one `grep` away.
+Fetching is **all-or-nothing per canvas**. The maps are booked unconditionally and `main()` has already checked `Ring/`, so a missing histogram is a genuine anomaly -- most likely a consumer/macro name drift -- and half a canvas would hide it rather than show it. The warning names the first offender so the drift is one `grep` away.
 
 ---
 
@@ -1398,14 +1426,14 @@ It combines:
 - a **Monte Carlo reference** and a **pp baseline**, when their directories are configured;
 - the **Helicity Toy Model** curve, when its path is configured.
 
-Observables are declared in one table (`kObservableGroups` in the main function). Each entry carries its own in-file directory, so profiles living in `EtaDependence/`, `ProxyPtDependence/`, the cut folder root, or task-level folders such as `EtaStudy/` all flow through the same machinery. Adding an observable means adding a row, not a code path.
+Observables are declared in one table (`observableGroups` in the main function). Each entry is the consumer's in-file path, spelled as the consumer books it (`Ring/LeadP/EtaDependence/pRingObservableProxyEta`, `FakePolDrivers/PhiAEE/SubJet/pRingObservableVsPhiAEE`, ...), so a name can be grepped in both codes at once, and profiles from any folder flow through the same machinery. The proxy is read from the path (`ProxyOfPath`), and the axis titles from the data profile (see [Naming](#naming)). Adding an observable means adding a row, not a code path.
 
 Beyond the overlays it produces subtracted curves against the data reference, folded versions where
 symmetry makes that meaningful, $\tanh$ fits of the $\eta$ dependence, mass signal-versus-background
 splits, the azimuthal- and helicity-efficiency cross-checks, the signal-extraction results read back
 from `signalExtractionRing`, and a per-family integrated summary with a cross-family canvas above it.
 
-`sigExtractDir` is the seventh argument and defaults to `<consumerDir>/../results_SigExtract`, which
+`sigExtractDir` is the sixth argument and defaults to `<consumerDir>/../results_SigExtract`, which
 matches the pipeline layout, so `run_all_wagons.sh` needs no extra argument. Pass `"none"` to skip
 every signal-extraction plot.
 
@@ -1415,16 +1443,16 @@ The summary reads the ring definition of every input from its **name**, so one c
 
 The flag changes four things, and nothing else:
 
-- **Absent variations.** Only a subset is run in $R_z$. Their absence is expected, so it is recorded once per $R_z$ family, quietly, with one log line, instead of warned about per observable.
+- **Absent variations.** Only a subset is run in $R_z$. Their absence is expected, so it is listed once per $R_z$ family, in one banner line, instead of being warned about per observable (and it is not counted again in the skip summary). A definition never run for a family, with no data file, gets one banner line too, and none of its files is read.
 - **Toy Model.** Off for longitudinal families: it predicts the full ring. The references list keeps its toy entry with an empty path, so every per-reference row stays aligned.
 - **Cross-family blocks** (`CrossFamily_Integrated/`) stay full-ring. The longitudinal rings are compared against the full ring in `RingVsLongitudinal/` instead.
-- **Titles.** They come from many literals (`"<R>"`, `"Integrated <R>_{S}"`, a bare `"R"` y title and `"#Delta"` plus that title). Rather than touching each, an $R_z$ family's folder is **relabelled in one pass** once it is complete: every canvas, histogram and graph under it is read back, its titles, axis titles, bin labels, legend entries and text lines are swapped to $R_z$, and it is rewritten in place. Only whole-token forms change, so a jet-radius "R = 0.4" is left alone, and no other folder is touched.
+- **Titles.** They come from many literals (`"<R>"`, `"Integrated <R>_{S}"`, `"#Delta"` plus a title) and from the consumer's own `<#it{R}>` titles. Rather than touching each, an $R_z$ family's folder is **relabelled in one pass** once it is complete: every canvas, histogram and graph under it is read back, its titles, axis titles, bin labels, legend entries and text lines are swapped to $R_z$, and it is rewritten in place. Only whole-token forms change, so a jet-radius "R = 0.4" is left alone, and no other folder is touched.
 
 The cross-definition folders are drawn at the top level from the full-ring families, pairing each file with all its longitudinal siblings at once, and each uses only the files it finds.
 
 #### What both folders are built from
 
-Everything is computed from candidate moments -- $n$, $\sum y$, $\sum y^2$ -- rebuilt from each cell's mean and spread of mass-binned profiles, every bin and flow included. All of a proxy's profiles are filled on exactly its candidates, so they share one candidate set: the ring comes from each proxy's own 1D mass profile (`<Proxy>/pRingObservable*Mass`), and the $\kappa$ moments from `<Proxy>/KappaEff/`. **Nothing here is signal-extracted:** these are all candidates, signal and background mixed. The signal-extracted versions come from `signalExtractionRing`.
+Everything is computed from candidate moments -- $n$, $\sum y$, $\sum y^2$ -- rebuilt from each cell's mean and spread of mass-binned profiles, every bin and flow included. All of a proxy's profiles are filled on exactly its candidates, so they share one candidate set: the ring comes from each proxy's own 1D mass profile (`Ring/<Proxy>/MassDependence/pRingObservableMass`), and the $\kappa$ moments from `Ring/<Proxy>/KappaEff/`. **Nothing here is signal-extracted:** these are all candidates, signal and background mixed. The signal-extracted versions come from `signalExtractionRing`.
 
 A ratio of two means over the same candidates keeps its covariance,
 
@@ -1448,11 +1476,11 @@ Each definition also gets its ratio alone, `Canvas_RzOverNz2_<Proxy>` and `Canva
 
 #### `RingVsLongitudinal_CheapSigExtract/`
 
-The CheapSigExtract counterpart of the headline check, with the same columns, the same five series and the same `<Family>/<Proxy>/` layout. The rings are read from the consumer's `IntegratedCuts/p2dRingCuts*V0MassPeak`, so there is no fit and no sideband model. Per proxy there are three canvases (`_InMassPeak_`, `_OutOfMassPeak_`, `_InMinusOut_`): in the mass peak, in the sideband, and in $-$ out, which is how far the background pulls each definition. In-peak and sideband candidates are disjoint, so in $-$ out is plain quadrature.
+The CheapSigExtract counterpart of the headline check, with the same columns, the same five series and the same `<Family>/<Proxy>/` layout. The rings are read from the consumer's `IntegratedCuts/<Proxy>/p2dRingCutsV0MassPeak`, so there is no fit and no sideband model. Per proxy there are three canvases (`_InMassPeak_`, `_OutOfMassPeak_`, `_InMinusOut_`): in the mass peak, in the sideband, and in $-$ out, which is how far the background pulls each definition. In-peak and sideband candidates are disjoint, so in $-$ out is plain quadrature.
 
-The peak and sideband canvases also show $\langle R_z\rangle/\langle n_z^2\rangle$ of that region, from the `<Proxy>/KappaEff/*VsMassRegion` profiles of the cut folder. The ring, $n_z^2$ and their product (`pRingTimesDen<Proxy>VsMassRegion`) come from the same candidates, so the ratio keeps its covariance with the ratio-of-means formula above. Consumer outputs that predate `pRingTimesDen<Proxy>VsMassRegion` leave the ratio as a gap, never replaced by a covariance-free approximation. The in $-$ out of a ratio is not drawn.
+The peak and sideband canvases also show $\langle R_z\rangle/\langle n_z^2\rangle$ of that region, from the `Ring/<Proxy>/KappaEff/*VsMassRegion` profiles. The ring, $n_z^2$ and their product (`pRingTimesDenVsMassRegion`) come from the same candidates, so the ratio keeps its covariance with the ratio-of-means formula above. Consumer outputs that predate `pRingTimesDenVsMassRegion` leave the ratio as a gap, never replaced by a covariance-free approximation. The in $-$ out of a ratio is not drawn.
 
-**Which "out of peak".** Both `p2dRingCuts*V0MassPeak` (Y bin 1) and the `*VsMassRegion` profiles are filled from the same two consumer flags. `v0InMassPeak` selects $|m-m_\Lambda|\le$ `PeakWindowNSigma`$\,\sigma$, and `v0InMassWindow` selects the two side bands between `SidebandInnerNSigma` and `SidebandOuterNSigma`, whose total width the consumer forces to equal the peak's (a mismatch is fatal at init). "Out of peak" is therefore always the equal-width sideband, never everything outside the peak, and both objects see the same populations. One caveat remains: `FetchIntegratedByMassPeak` always reads the "All $\Lambda$" bin of `p2dRingCuts*`, which the consumer fills next to the `Ring` fill list, while `*VsMassRegion` comes from `cutFolder`. With a non-default `cutFolder`, the in $-$ out canvases and the corrections no longer see the same candidates.
+**Which "out of peak".** Both `p2dRingCutsV0MassPeak` (Y bin 1) and the `*VsMassRegion` profiles are filled from the same two consumer flags. `v0InMassPeak` selects $|m-m_\Lambda|\le$ `PeakWindowNSigma`$\,\sigma$, and `v0InMassWindow` selects the two side bands between `SidebandInnerNSigma` and `SidebandOuterNSigma`, whose total width the consumer forces to equal the peak's (a mismatch is fatal at init). "Out of peak" is therefore always the equal-width sideband, never everything outside the peak, and both objects see the same populations. `FetchIntegratedByMassPeak` reads the "All $\Lambda$" bin of `p2dRingCutsV0MassPeak`, which the consumer fills next to the `Ring/` fill list, so the in $-$ out canvases and the corrections see the same candidates too.
 
 #### `Corrections/` -- $\kappa$ and the corrected ring
 
@@ -1532,7 +1560,7 @@ $$\frac{\sigma_{\rm sideband\text{-}subtracted}}{\sigma_{\rm in\ peak}}\simeq\sq
 
 about 1.15 at $b=0.1$. That is the honest cost of removing the background, whatever estimator is used.
 
-**The sideband-subtracted $\kappa$ keeps its covariance.** $\kappa_S=3A_{uv}/A_w$ with $A_y=\sum_Py-\sum_By$, since $N_P-N_B$ cancels in the ratio. Its first-order variance (`CheapSignalRatio`) needs only the cross sums $\sum uvw$ of each region, which `pKappaNumTimesDen<Proxy>VsMassRegion` holds:
+**The sideband-subtracted $\kappa$ keeps its covariance.** $\kappa_S=3A_{uv}/A_w$ with $A_y=\sum_Py-\sum_By$, since $N_P-N_B$ cancels in the ratio. Its first-order variance (`CheapSignalRatio`) needs only the cross sums $\sum uvw$ of each region, which `pKappaNumTimesDenVsMassRegion` holds:
 
 $$\mathrm{Var}(\rho)=\frac{\mathrm{Var}(A_a)-2\rho\,\mathrm{Cov}(A_a,A_b)+\rho^2\,\mathrm{Var}(A_b)}{A_b^2},\quad \rho=\frac{A_a}{A_b},\quad \mathrm{Var}(A_y)=\textstyle\sum_Py^2+\sum_By^2,\quad \mathrm{Cov}(A_a,A_b)=\sum_Pab+\sum_Bab .$$
 
@@ -1559,18 +1587,27 @@ Per family ($\Lambda$, $\bar\Lambda$, both), in this order:
 | Folder | What | Sweeps variations? |
 |---|---|---|
 | `EtaProxy/`, `EtaSplitStudies/`, `EtaV0/` | the main $\eta$ dependences | yes |
-| `AEE/` | $\langle R\rangle$ vs $\phi_\Lambda - \phi_p^*$, plus `Mass_Selection/` per observable | yes / **no** |
-| `AEE_SignalExtracted/` | the same axis after signal extraction, plus `CrossSystem/` and `QA/` | yes |
-| `HEE/` | $\langle R\rangle$ vs $\cos\theta_{\rm HEE}$, and the same split by the sign of the AEE angle | **no** |
+| `AEE/` | $\langle R\rangle$ vs $\phi_\Lambda - \phi_p^*$, one folder per proxy (`Ring<Proxy>AEE/`), plus `Mass_Selection/` | yes / **no** |
+| `AEE_SignalExtracted/<Proxy>/` | the same axis after signal extraction (see [below](#reading-the-aee-signal-extraction)) | yes |
+| `HEE/` | $\langle R\rangle_{\rm LeadJet}$ vs $\cos\theta_{\rm HEE}$, by mass region and split by the sign of the AEE angle, plus `CrossSystem/` | **no** / yes |
 | `CheapSigExtract/<proxy>/` | integrated $\langle R\rangle$ in and out of the mass peak, and their difference | yes |
 | `IntegratedSummary/<proxy>/` | the integrated value per proxy, all variations on one axis | yes |
 | `SignalExtraction/<proxy>/` | $\langle R\rangle_{\rm meas}$, $\langle R\rangle_S$, $\langle R\rangle_B$ side by side and across systematics | yes |
 | `ProxyPt/`, `PVz/`, `QA_Mult/`, `OtherAngDepndncs/`, `BruteForce/` | the rest | yes |
 
-> **TODO.** Two blocks still read only `ConsumerResults_<dataSuffix>.root` and draw Data alone:
-> `HEE/` and the `Mass_Selection/` canvases under `AEE/`. That wastes the one thing the variation
-> machinery is for. Both are differential rather than categorical, so they want the variations
-> overlaid through `DrawComparisonCanvas` rather than the integrated drawer. (Actually not a big "TODO": these are postponed because their plots would be really messy and wouldn't really contribute to the bigger picture right now)
+Outside any family, at the top level: `RingVsLongitudinal/`, `RingVsLongitudinal_CheapSigExtract/`,
+`Corrections/` and `CrossFamily_Integrated/` (with `SigExtracted/` inside).
+
+Every family reads its own files, which carry one species, so the species of every canvas is the
+family's: `Lambda/HEE/Canvas_HEE` is the $\Lambda$ one, `BothHyperons/HEE/Canvas_HEE` the all-V0s
+one. No output name carries a species.
+
+> **TODO.** The mass-region canvases (`HEE/` and the `Mass_Selection/` canvases under `AEE/`) still
+> read only `ConsumerResults_<dataSuffix>.root` and draw Data alone; only the in-peak HEE curve has a
+> `CrossSystem/`. Both are differential rather than categorical, so they want the variations overlaid
+> through `DrawComparisonCanvas` rather than the integrated drawer. (Actually not a big "TODO": these
+> are postponed because their plots would be really messy and wouldn't really contribute to the
+> bigger picture right now)
 
 Blocks that need a specific position in the file **must run from inside the observable loop**:
 directory order in a ROOT file is *creation* order, so a block written after the loop lands after
@@ -1580,19 +1617,33 @@ are hooked that way.
 ### Naming
 
 Consumer object names encode their ROOT type and a long "what is this" prefix, which produced folders
-like `Lambda/EtaProxy/pRingObservableEtaLeadP` -- most of it repeated from the group folder above.
+like `Lambda/EtaProxy/pRingObservableProxyEta` -- most of it repeated from the group folder above.
 `DeriveObservableName` strips mechanically:
 
 1. drop the type marker, `p2d` or `p`;
 2. drop a leading `RingObservable`, **only** if something remains and it does not start with `Vs`.
 
 That guard is what keeps `pRingVsCentrality` readable as `RingVsCentrality` instead of the meaningless
-`VsCentrality`. Where the derived name is still unwieldy -- the AEE observables especially -- a
-`displayName` field on `ProfileConfig` or `CategoricalObservable` overrides it.
+`VsCentrality`. Where the derived name is still unwieldy -- the AEE observables -- a `displayName`
+field on `ProfileConfig` or `CategoricalObservable` overrides it.
+
+Every proxy folder holds the same object names, so a name derived from the object alone would send the
+three proxies into one output folder, as new cycles of the same canvases: no error, and the browser
+shows only the last. `WithProxy` therefore puts the proxy into every name. A `Proxy` token becomes the
+proxy (`ProxyEta` --> `LeadPEta`, `RingVsProxyPt` --> `RingVsLeadPPt`); a name without one gets the
+proxy as a prefix (`PVz` --> `LeadJetPVz`, `EtaLambda` --> `SubJetEtaLambda`, `RingEtaCuts` -->
+`LeadPRingEtaCuts`), unless it already names it (`RingLeadJetAEE`). The BruteForce axis uses the same
+names, so its labels carry the proxy as well.
 
 > **Fix a bad name with an override, not by extending the rule.** The rule is meant to stay small
-> enough to hold in your head; a pile of special cases in it is worse than nine explicit strings in
+> enough to hold in your head; a pile of special cases in it is worse than three explicit strings in
 > the table, where the judgement is visible and reviewable.
+
+**Titles are read, not written.** The x and y titles come from the data profile, i.e. from the
+consumer's own booking, so they cannot drift from it. The proxy is added as a subscript of the y title
+(`<#it{R}>` --> `<#it{R}>_{LeadP}`), since several x titles (`EtaV0`, `PVz`) do not name it. The one
+addition is `xTitleSuffix`, for the eta-sign splits of the proxy $p_{\rm T}$, whose selection the
+consumer states only in the histogram title.
 
 Any new field on those structs goes at the **end**, since the tables use positional aggregate
 initialisation.
@@ -1622,8 +1673,8 @@ RandJet and PerpToJet exist in both forms; the data-like proxy gates on $\eta$ b
 
 ### Integrated values: read them, do not recompute them
 
-The consumer already publishes the integrated $\langle R\rangle$ in **bin 1** of the `TProfile1D`s
-`IntegratedCuts/pRingCuts`, `pRingCutsLeadingP` and `pRingCutsSubLeadingJet`. The Toy Model publishes
+The consumer already publishes the integrated $\langle R\rangle$ in **bin 1** of the `TProfile1D`
+`IntegratedCuts/<Proxy>/pRingCuts`, one per proxy. The Toy Model publishes
 its own in `WithEtaGate/BothCuts/All/pRingProxyJet`, a single-bin `TProfile`. Those are authoritative
 and are read directly.
 
@@ -1643,7 +1694,10 @@ estimators (RandJet without the $\eta$ gate among them). A small unexplained dif
 centrality axis was also observed. In all of these the consumer's value is the one to report.
 
 `GetIntegratedProfile` survives only for the brute-force and cross-family canvases, which put the
-*observable* on the axis rather than the variation.
+*observable* on the axis rather than the variation. Both place each value by its **own** variation,
+never by position: a variation absent for one observable or one family leaves a gap (or, on
+BruteForce, drops that variation's series), instead of shifting the values after it under the wrong
+labels.
 
 > **TODO (needs the consumer's code in hand):** confirm every reported observable's integral is
 > available from one of the `IntegratedCuts` X bins, so that no observable needs a per-observable
@@ -1651,7 +1705,7 @@ centrality axis was also observed. In all of these the consumer's value is the o
 
 ### Reading the signal-extraction results
 
-`sigExtractDir` is the seventh argument, defaulting to `<consumerDir>/../results_SigExtract`; pass
+`sigExtractDir` is the sixth argument, defaulting to `<consumerDir>/../results_SigExtract`; pass
 `"none"` to skip those plots entirely. Two things every fetch must respect:
 
 - **Check `hExtractionStatus` bin 1 first.** A failed extraction writes no value histogram, but a
@@ -1669,28 +1723,38 @@ independent measurements.
 
 ### Reading the AEE signal extraction
 
-`AEE_SignalExtracted/<proxy>_<species>/` carries the per-bin extraction against
-$\phi_\Lambda - \phi_p^*$: `Canvas_SigVsBkg` (and its pull), `Canvas_SigMinusBkg`, the two
-angle-combined digests, and `CrossSystem/` with each quantity across every consumer variation.
+`AEE_SignalExtracted/<Proxy>/` carries the extraction against $\phi_\Lambda - \phi_p^*$, one folder per
+proxy, read from the folders `signalExtractionRing` writes per proxy
+(`HelicityEfficiencyQA_PhiLambdaPhiProtonStar[_EtaBinned]/.../<Proxy>/`). Each of the three eta
+splits (`NoEtaSplit`, `EtaProxyPos`, `EtaProxyNeg`) rides in the canvas **name**, so the three
+variants list side by side:
 
-> **These objects live at the TOP LEVEL of the extraction file, not under a cut folder**, because the
-> consumer books the source profiles with a bare path rather than `(folder + "/...")`. A path built
-> the way the per-proxy `IntegratedSummary` ones are built finds nothing -- and fails *silently*,
-> since every fetch is null-guarded. That is why nothing here uses `cutFolder`.
+| Folder | What |
+|---|---|
+| `AEEangle/` | per bin: `Canvas_Decomposition_PeakWindow_<split>`, `Canvas_Decomposition_FullMass_<split>` (against the consumer's full-mass curve), `Canvas_SigMinusBkg_<split>` |
+| `AEEangle/CrossSystem_Angular/` | each quantity across a few wagons (data vs mixed events, analysis cuts) |
+| `Combined/` | the angle-combined digests, `Canvas_Combined_<split>`, with their QA in `QA/` |
+| `Combined/CrossSystem_Categorical/` | the combined $\langle R\rangle_S$, $\langle R\rangle_B$ and their difference across every variation |
+| `EtaComparison/`, `ANCuts/` | the combined results by proxy $\eta$ sign, unsplit against recombined |
+| `EtaBinned/` | the $\eta_{\rm Proxy}$-binned extraction: maps, every slice against the angle, the $\eta$ dependence, the recombination and its closure |
 
-`CrossSystem/` reads bins 2, 3 and 4 of `hCombinedSummary`, so it is **coupled to the row order** of
-that histogram in `signalExtractionRing.cxx`. Changing the order there without changing it here
-produces plausible-looking plots of the wrong quantity.
+These objects live at the **top level** of the extraction file, outside its `Ring/` folder, because
+their consumer source (`FakePolDrivers/PhiAEE/`) sits outside `Ring/` too. A path built the way the
+per-proxy `IntegratedSummary` ones are built finds nothing.
 
-`Canvas_SigMinusBkg` is read from `hRSigMinusRBkg`, never recomputed: $\langle R\rangle_S$ and
-$\langle R\rangle_B$ share the sideband primitives, and quadrature understates their difference by
-roughly a fifth.
+`CrossSystem_Categorical/` reads rows 3, 4 and 5 of `hCombinedSummary`, so it is **coupled to the row
+order** of that histogram in `signalExtractionRing.cxx`. Changing the order there without changing it
+here produces plausible-looking plots of the wrong quantity.
+
+`Canvas_SigMinusBkg_<split>` is read from `hRSigMinusRBkg`, never recomputed: $\langle R\rangle_S$
+and $\langle R\rangle_B$ share the sideband primitives, and quadrature understates their difference
+by roughly a fifth.
 
 ### The cheap cross-checks
 
 `CheapSigExtract/<proxy>/` and the `Mass_Selection/` canvases answer "how far does the background
 pull the number?" without fitting anything. The former reads
-`IntegratedCuts/p2dRingCuts*V0MassPeak` at X bin 1 ("All Lambda") crossed with the mass flag, where
+`IntegratedCuts/<Proxy>/p2dRingCutsV0MassPeak` at X bin 1 ("All Lambda") crossed with the mass flag, where
 **Y bin 1 is strictly out of the mass peak and Y bin 2 strictly in it** -- bin numbers, not fill
 values, since the consumer fills 0 and 1 on a `{2, 0, 2}` axis. It produces the two states as
 separate redux-style axes, plus `Canvas_InVsOutOfMassPeak` and `Canvas_InMinusOutOfMassPeak`.
@@ -1710,10 +1774,17 @@ Inside an AEE observable's `Mass_Selection/`, two canvases with different jobs:
   produce since it only knows in and out. **Read this one first**: a sideband subtraction is only
   meaningful if the two sides agree, so this is a precondition for trusting anything above it.
 
-The two also read *different inputs* -- separate mass-cut consumer files versus a slice of the
-three-bin mass axis in one nominal file. They should agree, and a disagreement is worth knowing about.
+The two also read *different inputs* -- separate mass-cut consumer files versus slices of the
+mass-region axis in one nominal file. They should agree, and a disagreement is worth knowing about.
 All mass-region canvases draw their colours from one set of constants so the legend need not be
 re-learned between them.
+
+**The mass-region axis.** The consumer's `axisMassRegions` has exactly five bins: left sideband, left
+gap, peak, right gap, right sideband, built from `PeakWindowNSigma`, `SidebandInnerNSigma` and
+`SidebandOuterNSigma`. Masses outside the sidebands go to the under/overflow. Only the sidebands
+(bins 1 and 5) and the peak (bin 3) are drawn, from one table, `kMassRegions`. An axis with any other
+number of bins is refused with a warning, never sliced by guesswork. (TODO: the gap bins, 2 and 4:
+draw them, or not?)
 
 ### Presentation
 
@@ -1726,11 +1797,35 @@ the upper and lower pads**, so a curve sits at the same $x$ in both and can be f
 Categorical points are placed by index within their axis, so a filtered subset must be **rebuilt**
 rather than have entries dropped -- dropping would leave gaps where the removed columns used to be.
 
-Species-specific observables appear only on the family they describe (`SpeciesMatchesFamily`). A
-per-species profile read from a single-species file is either empty or a duplicate of that species'
-own curve. `BothHyperons` keeps all three, since there the mixed "Lambda-like" set is the QA for
-species competition: with balanced yields its dependence should cancel, so a residual measures the
-imbalance rather than a physics asymmetry.
+Every object read is species-agnostic, so every family draws the same set of canvases, and the
+species is the family's. In `BothHyperons` that set is the mixed $\Lambda$-like one, which is the QA
+for species competition: with balanced yields its AEE dependence should cancel, so a residual measures
+the imbalance rather than a physics asymmetry.
+
+### The skip summary
+
+Nothing is skipped silently, and nothing floods the log. Every skip is counted per (reason, object),
+together with the distinct files or canvases it happened in, and the log **ends with a skip summary**,
+one line per (reason, object):
+
+```
+ Skip summary (one line per reason and object, over the whole run)
+  object absent (optional): FakePolDrivers/PhiAEE/LeadP/pRingObservableVsPhiAEE -- 27 times, in 27 files
+  curve with no usable bin: Data-like Jet -- 31 times, in 31 places
+```
+
+Two kinds of skip, two treatments:
+
+- **Absences** -- a configuration that was not run, an object behind a consumer switch that was off --
+  are only counted. One switch can take the same object out of every file, and a warning per read
+  would bury everything else.
+- **Anomalies** -- a refused mass axis, mismatched binnings, an empty sample, a failed fit, an
+  extraction flagged invalid -- and objects every file should hold are also **printed the first time
+  they are met**, so they show up in context. Their repeats are only counted.
+
+What is not a skip is not logged: a reference not requested and a disabled signal extraction (stated
+once in the run banner), an observable with no toy counterpart, the full-ring-only filters, a variant
+canvas that would only repeat another, and empty bins inside a curve, which show as gaps.
 
 ### Reference paths
 

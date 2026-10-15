@@ -8,11 +8,11 @@
 * (Lambda, AntiLambda, BothHyperons) and their respective systematic 
 * variations (Data-like Jet, Rand Jet, etc.), appropriately scaled.
 *
-* Observables are declared in a single table (see kObservableGroups in the main
+* Observables are declared in a single table (see observableGroups in the main
 * function): each entry carries its own in-file directory, so profiles living in
-* different folders of the consumer output (EtaDependence/, ProxyPtDependence/,
-* the cut-folder root, or task-level folders such as EtaStudy/) all flow through
-* the same machinery.
+* different folders of the consumer output (Ring/<Proxy>/EtaDependence/,
+* Ring/<Proxy>/PtDependence/, or task-level folders such as FakePolDrivers/) all
+* flow through the same machinery.
 *
 * Usage: root -l -b -q 'auxiliarySummaryPlots.cxx("path/to/wagon/dir", "[optional_MC_ref_path]")'
 * (or just use the bash coordinator script, which properly compiles this into production-level code)
@@ -50,8 +50,7 @@
 #include <sstream> // IsLongitudinalSuffix
 #include "TDirectory.h"
 #include "TExec.h"  // Carries a map's palette inside its canvas; gStyle is not serialised
-#include "TColor.h" // TColor::GetColor, for the eta_Proxy slice colours
-#include "TKey.h"   // Longitudinal relabel pass: walking the output file
+#include "TKey.h"       // Longitudinal relabel pass: walking the output file
 #include "TClass.h"
 #include "TGraph.h"
 #include "TText.h"
@@ -113,16 +112,14 @@ struct FamilyConfig {
 
 /// @brief One 1D TProfile to extract, together with where it lives and how to label it.
 struct ProfileConfig {
-    std::string subDir;       // In-file directory, WITHOUT the task dir (e.g. "EtaDependence/")
-    std::string profileName;  // e.g., "pRingObservableEtaLeadP"
-    std::string xAxisTitle;   // e.g., "#eta_{LeadP}"
-    std::string yAxisTitle;   // e.g., "R"
-    bool underCutFolder;      // true  -> <task>/<cutFolder>/<subDir><profileName> (per kinematic-cut family)
-                              // false -> <task>/<subDir><profileName>            (task-level, e.g. EtaStudy/)
+    // In-file path below the task dir, spelled exactly as the consumer books it (so it can be grepped in
+    // both codes), e.g. "Ring/LeadP/EtaDependence/pRingObservableProxyEta". Its proxy folder (LeadJet, LeadP
+    // or SubJet) names the proxy that defines the ring: see ProxyOfPath.
+    std::string path;
 
     // One-vs-one canvases against every single variation:
     // (By far the largest contributor to the ~20 extra canvases per observable)
-    // Defaults true only for the LeadP proxy.
+    // Set only on the LeadP entries.
     bool doIndividualComparisons = false;
 
     // Name of the matching Toy Model profile inside TOY_SCENARIO_DIR. Empty (the default) means the toy
@@ -134,33 +131,35 @@ struct ProfileConfig {
     // enough points across the turn-over for the two parameters to separate.
     bool doTanhFit = false;
 
-    // Which proxy defines the ring for this observable ("LeadP", "LeadJet", "SubJet"). Used to group the
-    // brute-force axis, so observables sharing an entry set sit together instead of being interleaved.
-    // Empty means "keep off the brute-force axis entirely": that is what the eta-sign split observables
-    // get, since they cover different subsets and would stretch the scale for everything else.
-    std::string proxyTag = "";
-
-    // Hyperon species this observable is defined for: "Lambda", "AntiLambda", "LambdaLike", or ""
-    // for any. Some consumer objects are booked per species, and the family already selects the
-    // species through its input file -- so drawing the AntiLambda-specific profile inside the
-    // Lambda family gives an empty or meaningless curve. Empty (the default) keeps an observable on
-    // every family, which is what almost all of them want.
-    // README: "LambdaLike" is the mixed-species set, so it is only meaningful for BothHyperons;
-    // in a single-species family it would just duplicate that species' own profile.
-    std::string speciesTag = "";
+    // Whether this observable joins the brute-force axis, where it is grouped by its proxy. False keeps it
+    // off: that is what the eta-sign split observables get, since they cover different subsets and would
+    // stretch the scale for everything else.
+    bool inBruteForce = true;
 
     // Folder and label name for this observable. Empty means "derive it" -- see
     // ObservableDisplayName. Set it only where the derived name is still unwieldy.
     std::string displayName = "";
+
+    // Appended to the x title read from the data profile. Only for observables whose selection the consumer
+    // states in the histogram title rather than on the axis (the eta-sign splits of the proxy pT).
+    std::string xTitleSuffix = "";
+
+    // Axis titles. Left empty in the observable tables: the observable loop fills them from the data
+    // profile, i.e. from the consumer's own booking, with the proxy as a subscript of the y title. Set
+    // explicitly only where a ProfileConfig just carries titles for a drawer.
+    std::string xAxisTitle = "";
+    std::string yAxisTitle = "";
 };
 
 /**
  * @brief Folder name for one observable: the explicit displayName if set, else a derived one.
  *
  * The consumer's object names encode their ROOT type and a long "what is this" prefix, which made
- * output folders like Lambda/EtaProxy/pRingObservableEtaLeadP -- almost all of it repeated from the
+ * output folders like Lambda/EtaProxy/pRingObservableProxyEta -- almost all of it repeated from the
  * group folder one level up. Stripping mechanically handles the bulk; the cases where the result is
  * still unreadable carry an explicit displayName in the table, where the judgment is visible.
+ * The object names are the same in every proxy folder, so ObservableDisplayName then puts the proxy
+ * in (WithProxy).
  *
  * The rule, in order:
  *   1. Strip the ROOT type marker, "p2d" or "p".
@@ -184,19 +183,6 @@ std::string DeriveObservableName(const std::string& objectName, const std::strin
         if (!rest.empty() && rest.rfind("Vs", 0) != 0) s = rest;
     }
     return s.empty() ? objectName : s;
-}
-
-/// @brief Folder name for a ProfileConfig.
-std::string ObservableDisplayName(const ProfileConfig& profConfig) {
-    return DeriveObservableName(profConfig.profileName, profConfig.displayName);
-}
-
-/// @brief Is this observable meaningful for the family currently being drawn?
-bool SpeciesMatchesFamily(const std::string& speciesTag, const std::string& familyName) {
-    if (speciesTag.empty()) return true;
-    if (familyName == "BothHyperons") return true; // All three sets say something distinct here
-    // (longitudinal families pass their base name, see FamilySpecies)
-    return speciesTag == familyName;               // "Lambda" / "AntiLambda"
 }
 
 /// @brief A set of profiles that share an output folder and the same set of valid transforms.
@@ -239,10 +225,16 @@ struct ExternalRef {
 // The consumer writes everything below this single top-level task directory
 const std::string TASK_DIR_IN_FILE = "lambdajetpolarizationionsderived/";
 
-// Default kinematic-cut folder. The consumer books up to four of these
-// (Ring, RingKinematicCuts, JetKinematicCuts, JetAndLambdaKinematicCuts), but only
-// "Ring" is guaranteed to be enabled, so the others are opt-in via the cutFolder argument.
-const std::string DEFAULT_CUT_FOLDER = "Ring";
+// The consumer books every ring observable under a single folder, Ring/<Proxy>/..., and the old
+// kinematic-cut families (RingKinematicCuts, JetKinematicCuts, ...) no longer exist. Kept as a
+// constant so that every path below spells it the same way.
+const std::string RING_DIR_IN_FILE = "Ring/";
+// signalExtractionRing mirrors that folder at the top of its own output (Ring/IntegratedSummary/,
+// Ring/KappaEff/), so every read of an extraction file goes through this one.
+const std::string SIG_EXTRACT_RING_DIR = "Ring/";
+
+// The consumer's three proxy folders, in the order every per-proxy loop and axis of this macro uses.
+const std::vector<std::string> PROXIES = {"LeadP", "LeadJet", "SubJet"};
 
 // Toy Model scenario to compare against. The toy books a 2 x 4 x 3 grid of
 // {WithEtaGate, WithoutEtaGate} x {NoCuts, pTCutOnly, DCACutOnly, BothCuts} x {EtaPos, EtaNeg, All}.
@@ -252,7 +244,7 @@ const std::string DEFAULT_CUT_FOLDER = "Ring";
 const std::string TOY_SCENARIO_DIR = "WithEtaGate/BothCuts/All/";
 
 // Toy Model integrated <R>, split by the sign of its (random) jet direction. These three single-bin
-// profiles are the toy counterparts of the first three bins of the EtaStudy cut profiles
+// profiles are the toy counterparts of the first three bins of the ProxyEta cut scans
 // ("All Lambda", "eta_proxy >= 0", "eta_proxy < 0"), and are the only part of those 9- and 15-bin
 // plots the toy can speak to: it has no hyperon-eta or jet-radius splits.
 const std::string TOY_RING_INTEGRATED = "pRingProxyJet";
@@ -269,9 +261,9 @@ const std::string TOY_RING_ETA_NEG    = "pRingProxyJet_JetEtaNeg";
 //   pRingProxyJetVsPt       <R> vs pT_Lambda        -> UNUSED: this macro has no Lambda-pT group.
 //                                                      Adding one costs nothing on the toy side, since
 //                                                      the profile already exists and the consumer books
-//                                                      pRingObservable[LeadP|2ndJet]LambdaPt.
+//                                                      Ring/<Proxy>/PtDependence/pRingObservableLambdaPt.
 //   pRingProxyJet_JetEtaPos <R> integrated, eta_jet >= 0 -> UNUSED here, but these two are the natural
-//   pRingProxyJet_JetEtaNeg <R> integrated, eta_jet <  0    toy counterparts of the EtaStudy eta-split
+//   pRingProxyJet_JetEtaNeg <R> integrated, eta_jet <  0    toy counterparts of the ProxyEta eta-split
 //                                                           closure test, so they become relevant later.
 //   pRingProxy, pRingProxyVsEta, pRingProxyVsPt           -> the z-hat-as-jet variant of the above.
 //                                                            A second reference rather than a counterpart.
@@ -317,21 +309,64 @@ std::string SanitizeName(const std::string& label) {
     return out;
 }
 
+// ---------------------------------------------------------
+// Skip log: nothing is dropped silently, and nothing floods the log
+// ---------------------------------------------------------
+// One consumer switch turned off can take the same object out of every configuration file, and a warning per
+// read would bury everything else. So every skip is counted here, per reason and per object, together with the
+// distinct files or canvases it happened in, and PrintSkipSummary lists each (reason, object) once, at the end.
+//   CountSkip  expected absences (a file not run, an object behind a consumer switch): counted only.
+//   WarnSkip   anomalies, and objects every file should hold: also printed the first time they are met, so they
+//              show up in context. Their repeats are only counted.
+
+/// @brief How often one (reason, object) was skipped, and in which distinct files or canvases.
+struct SkipEntry { int count = 0; std::set<std::string> places; };
+std::map<std::pair<std::string, std::string>, SkipEntry> gSkips; // (reason, object) --> its entry
+
+/// @brief Counts one skip for the end-of-run summary. @return True the first time this (reason, object) is seen.
+bool CountSkip(const std::string& what, const std::string& why, const std::string& place = "") {
+    SkipEntry& e = gSkips[{why, what}];
+    if (!place.empty()) e.places.insert(place);
+    return ++e.count == 1;
+}
+
+/// @brief Counts one skip, and prints it the first time this (reason, object) is met.
+void WarnSkip(const std::string& what, const std::string& why, const std::string& place = "") {
+    if (!CountSkip(what, why, place)) return;
+    std::cerr << "  [Warning] Skipped " << what << (place.empty() ? "" : " in " + place) << ": " << why
+              << " (repeats: see the skip summary at the end)" << std::endl;
+}
+
+/// @brief The end-of-run summary: one line per (reason, object), with how often it was skipped and where.
+void PrintSkipSummary() {
+    std::cout << "========================================================\n";
+    if (gSkips.empty()) {
+        std::cout << " Skip summary: nothing was skipped\n";
+        return;
+    }
+    std::cout << " Skip summary (one line per reason and object, over the whole run)\n";
+    for (const auto& kv : gSkips) {
+        const SkipEntry& e = kv.second;
+        std::cout << "  " << kv.first.first << ": " << kv.first.second << " -- " << e.count
+                  << (e.count == 1 ? " time" : " times");
+        if (e.places.size() == 1) {
+            std::cout << ", in " << *e.places.begin();
+        } else if (e.places.size() > 1) {
+            bool allFiles = true; // Files for the absences, canvases or folders for everything else
+            for (const auto& p : e.places)
+                allFiles = allFiles && p.size() > 5 && p.compare(p.size() - 5, 5, ".root") == 0;
+            std::cout << ", in " << e.places.size() << (allFiles ? " files" : " places");
+        }
+        std::cout << "\n";
+    }
+    std::cout << "========================================================\n";
+}
+
 /**
  * @brief Returns an existing subdirectory, creating it only if absent.
  *
  * Used to keep directory creation lazy: nothing is created until we actually have a canvas to
- * write into it, so consumer files that do not enable a given cut folder do not leave a trail
- * of empty folders behind.
- *
- * @return The subdirectory, owned by the parent, or nullptr if the parent itself is null.
- */
-/**
- * @brief Returns an existing subdirectory, creating it only if absent.
- *
- * Used to keep directory creation lazy: nothing is created until we actually have a canvas to
- * write into it, so consumer files that do not enable a given cut folder do not leave a trail
- * of empty folders behind.
+ * write into it, so inputs that lack a given object do not leave a trail of empty folders behind.
  *
  * @param name May be a slash-separated path ("ProxyPt/EtaSplits"), in which case every level is
  *             created or reused in turn. That is what lets an ObservableGroup declare its position
@@ -359,19 +394,6 @@ TDirectory* EnsureDir(TDirectory* parent, const std::string& name) {
     return current;
 }
 
-/**
- * @brief Builds the full in-file path of a profile, honouring the selected cut folder.
- * @param cutFolder Kinematic-cut folder to read from (Ring, JetKinematicCuts, ...). Ignored
- *                  for profiles whose ProfileConfig marks them as task-level.
- * @return Path relative to the file root, ready to hand to TFile::Get.
- */
-std::string BuildProfilePath(const ProfileConfig& profConfig, const std::string& cutFolder) {
-    if (profConfig.underCutFolder) {
-        return TASK_DIR_IN_FILE + cutFolder + "/" + profConfig.subDir + profConfig.profileName;
-    }
-    return TASK_DIR_IN_FILE + profConfig.subDir + profConfig.profileName;
-}
-
 // ---------------------------------------------------------
 // Helper 1: Cached file access
 // ---------------------------------------------------------
@@ -382,7 +404,7 @@ std::string BuildProfilePath(const ProfileConfig& profConfig, const std::string&
  * (families x observables x variations). With the observable list growing this became a real
  * cost for the macro, and it is pure overhead: the same handful of files is reopened
  * hundreds of times.  Each file is now opened once, kept open, and closed at the very end.
- * Failed opens are cached too, so a missing systematic warns once instead of once per observable.
+ * Failed opens are cached too, so a missing file is reported once and then only counted (see the skip log).
  *
  * @note Objects handed out by FetchClone are detached clones, so they stay valid after CloseAll().
  */
@@ -392,21 +414,29 @@ public:
 
     /**
      * @brief Opens a file, or returns the already-open handle.
-     * @return The open file, or nullptr if it could not be opened. A failed path is remembered
-     *         and will keep returning nullptr without retrying or re-warning.
+     * @param required False for files whose absence is common (a configuration that was not run): their
+     *                 absence is then only counted, never printed on the spot.
+     * @return The open file, or nullptr if it could not be opened. A failed path is remembered and keeps
+     *         returning nullptr without retrying; each such read is counted in the skip log, except for the
+     *         paths marked absent on purpose (MarkAbsent), which the run banner already lists.
      */
-    TFile* Open(const std::string& path) {
+    TFile* Open(const std::string& path, bool required = true) {
         auto it = fFiles.find(path);
-        if (it != fFiles.end()) return it->second; // Includes cached nullptr for known-bad paths
+        if (it != fFiles.end()) { // Includes cached nullptr for known-bad paths
+            if (!it->second && !fExpectedAbsent.count(path)) CountSkip(path, "file absent or unreadable");
+            return it->second;
+        }
 
-        TFile* f = TFile::Open(path.c_str(), "READ");
+        // Checked first, so an absent file costs no ROOT error message (it goes to the skip log instead)
+        TFile* f = gSystem->AccessPathName(path.c_str()) ? nullptr : TFile::Open(path.c_str(), "READ");
         if (f && f->IsZombie()) {
             f->Close();
             delete f;
             f = nullptr;
         }
         if (!f) {
-            std::cerr << "  [Warning] Could not open file: " << path << std::endl;
+            if (required) WarnSkip(path, "file absent or unreadable");
+            else CountSkip(path, "file absent or unreadable");
         }
         fFiles[path] = f;
         return f;
@@ -414,20 +444,24 @@ public:
 
     /**
      * @brief Fetches an object and returns a detached clone that survives CloseAll().
-     * @param objPath        Path of the object inside the file, as built by BuildProfilePath.
-     * @param warnIfMissing  Set false for genuinely optional objects, to keep the log readable.
+     * @param objPath        Path of the object inside the file, task folder included.
+     * @param warnIfMissing  Set false for genuinely optional objects (booked behind a consumer switch, or in
+     *                       files that may not exist): their absence is then only counted for the skip
+     *                       summary. True prints the first absence of each object as well.
      * @return A clone owned by the caller (delete it), or nullptr if the file or object is missing.
      */
     template <typename T>
     T* FetchClone(const std::string& filePath, const std::string& objPath, bool warnIfMissing = true) {
-        TFile* f = Open(filePath);
+        TFile* f = Open(filePath, warnIfMissing);
         if (!f) return nullptr;
 
         T* obj = dynamic_cast<T*>(f->Get(objPath.c_str()));
         if (!obj) {
-            if (warnIfMissing) {
-                std::cerr << "  [Warning] Object not found: " << objPath << " in " << filePath << std::endl;
-            }
+            // The task folder is the same in every path: left out of the log, which stays readable
+            const std::string shown = (objPath.rfind(TASK_DIR_IN_FILE, 0) == 0) ? objPath.substr(TASK_DIR_IN_FILE.size())
+                                                                                 : objPath;
+            if (warnIfMissing) WarnSkip(shown, "object absent", filePath);
+            else CountSkip(shown, "object absent (optional)", filePath);
             return nullptr;
         }
 
@@ -437,8 +471,11 @@ public:
         return clone;
     }
 
-    /// @brief Records a path as absent without warning: for files whose absence is expected.
-    void MarkAbsent(const std::string& path) { fFiles.emplace(path, nullptr); }
+    /// @brief Records a path as absent, with no warning and no count: for files the run banner already lists.
+    void MarkAbsent(const std::string& path) {
+        fFiles.emplace(path, nullptr);
+        fExpectedAbsent.insert(path);
+    }
 
     /// @brief Closes and releases every cached file. Safe to call more than once.
     void CloseAll() {
@@ -453,6 +490,7 @@ public:
 
 private:
     std::map<std::string, TFile*> fFiles;
+    std::set<std::string> fExpectedAbsent; // MarkAbsent paths: listed in the banner, so not counted again
 };
 
 // ---------------------------------------------------------
@@ -524,6 +562,11 @@ TH1D* FoldProfile(TProfile* pIn, const std::string& newName) {
  *       spurious differences, so empty regions do not masquerade as a signal.
  * @note If the binnings differ (the Toy Model case) the variation is evaluated by interpolation
  *       and its error taken from the nearest bin, which is approximate by construction.
+ * @note REQUIREMENT: "same binning" means the same bin count and the same axis range. The bin edges
+ *       themselves are not compared. That holds for every current call (identical consumer bookings,
+ *       slices of one 2D profile, and the Toy Model, which takes the interpolation branch), but a
+ *       reference produced with a different variable-width axis of the same count and range would be
+ *       subtracted bin by bin across different edges, without a warning.
  */
 // (Also handles binning mismatches appropriately)
 //
@@ -551,7 +594,7 @@ TH1D* SubtractProfiles(TH1* pData, TH1* pSys, const std::string& newName) {
     hSub->Reset(); // Clear original contents and errors
 
     // Carry any categorical bin labels across. Reset() leaves them in place on most ROOT versions, but
-    // ProjectionX does not always reproduce them, and the EtaStudy difference/pull panels are unreadable
+    // ProjectionX does not always reproduce them, and the EtaSplitStudies difference/pull panels are unreadable
     // without them. Copying explicitly costs nothing and makes the behaviour version-independent.
     for (int i = 1; i <= hSub->GetNbinsX(); ++i) {
         const char* label = pData->GetXaxis()->GetBinLabel(i);
@@ -613,11 +656,11 @@ TH1D* SubtractProfiles(TH1* pData, TH1* pSys, const std::string& newName) {
  * @return {value, error}. Both are zero for a null input.
  */
 // TODO: this should go away. The consumer already writes the integrated value, once, in bin 1 of
-//       the TProfile1Ds IntegratedCuts/pRingCuts, pRingCutsSubLeadingJet and pRingCutsLeadingP.
+//       the TProfile1Ds IntegratedCuts/<Proxy>/pRingCuts, one per proxy.
 //       Re-integrating a multi-bin profile here recomputes a number that already exists, by a
 //       different route, which is exactly how two values start disagreeing after an innocent
 //       rebin. Read the consumer's value instead and keep this only as a cross-check.
-//       (Companion note: the two-dimensional IntegratedCuts/p2dRingCuts*V0MassPeak carry the same
+//       (Companion note: the two-dimensional IntegratedCuts/<Proxy>/p2dRingCutsV0MassPeak carry the same
 //       X axis crossed with a mass flag, where Y bin 1 is strictly OUT of the mass peak and Y bin 2
 //       is strictly IN it.)
 //
@@ -801,7 +844,7 @@ TH1D* MakeLowerPadHist(TH1* pData, TH1* pVar, LowerPadMode mode, const std::stri
  * @brief Builds an empty framing histogram that reproduces a source's categorical bin labels.
  *
  * TPad::DrawFrame produces a plain numeric axis, which silently discards the bin labels the consumer
- * set on the EtaStudy cut profiles. Those labels ARE the axis there, so those canvases get this
+ * set on the ProxyEta cut scans. Those labels ARE the axis there, so those canvases get this
  * instead: same binning, same labels, no content.
  *
  * @param src Source whose binning and labels are copied. Unlabelled bins simply stay numeric.
@@ -831,43 +874,95 @@ TH1D* MakeLabelledFrame(TH1* src, const std::string& name, double yMin, double y
 /**
  * @brief A labelled-bin cut-scan profile, whose x-axis is a list of named selections.
  *
- * These live at task level (EtaStudy/) rather than inside a kinematic-cut folder, and are booked only
- * when the consumer's doFakePolDiagnosticsQA switch is on, so they are always fetched defensively.
+ * These live in FakePolDrivers/ProxyEta/<Proxy>/ and are booked only when the consumer's
+ * doFakePolDiagnosticsQA switch is on, so they are always fetched defensively.
  */
 struct CategoricalObservable {
-    std::string subDir;       // In-file directory below the task dir, e.g. "EtaStudy/"
-    std::string profileName;
-    std::string yAxisTitle;
+    std::string path;         // In-file path below the task dir, e.g. "FakePolDrivers/ProxyEta/LeadP/pRingEtaCuts"
 
     // Build the three-bin "All / eta_proxy >= 0 / eta_proxy < 0" digest of bins 1-3, which is the only
     // slice of these plots the Toy Model can be overlaid on. See kToyEtaSign* above.
     bool doEtaSignSummary = false;
 
-    // Companion TProfile2D of shape (same bins) x (out of peak, in peak), projected into two curves.
-    // Empty means there is none. Only the LeadingP scan has one.
+    // Companion TProfile2D of shape (same bins) x (out of peak, in peak), projected into two curves. Its
+    // object name only: it sits in the same folder. Empty means there is none. Only the LeadP scan has one.
     std::string massSplitProfile = "";
 
     // Same convention as ProfileConfig::displayName. Empty means derive it.
-    // Declared here with a default so the existing table entries need no change.
     std::string displayName = "";
 };
 
+/// @brief The object name at the end of an in-file path ("Ring/LeadP/EtaDependence/pRingObservableProxyEta" --> "pRingObservableProxyEta").
+std::string ObjectNameOf(const std::string& path) {
+    const size_t slash = path.rfind('/');
+    return (slash == std::string::npos) ? path : path.substr(slash + 1);
+}
+
+/// @brief The folder part of an in-file path, trailing slash included ("" for a bare object name).
+std::string FolderOf(const std::string& path) {
+    const size_t slash = path.rfind('/');
+    return (slash == std::string::npos) ? "" : path.substr(0, slash + 1);
+}
+
+/// @brief The proxy folder named in an in-file path ("Ring/LeadP/..." --> "LeadP"), or "" if there is none.
+std::string ProxyOfPath(const std::string& path) {
+    const std::string padded = "/" + path + "/"; // Whole folder names only
+    for (const auto& proxy : PROXIES)
+        if (padded.find("/" + proxy + "/") != std::string::npos) return proxy;
+    return "";
+}
+
+/**
+ * @brief Puts the proxy into a display name: "ProxyEta" --> "LeadPEta", "PVz" --> "LeadPPVz".
+ *
+ * Every proxy folder of the consumer holds the same object names, so a name derived from the object alone
+ * would send the three proxies into one output folder, as new cycles of the same canvases (no error, and
+ * the browser shows only the last). Every "Proxy" token is replaced by the proxy's name; a name without
+ * one gets the proxy as a prefix, unless it already names it (the explicit AEE display names do).
+ */
+std::string WithProxy(std::string name, const std::string& proxy) {
+    if (proxy.empty()) return name;
+    const std::string kToken = "Proxy";
+    if (name.find(kToken) == std::string::npos)
+        return (name.find(proxy) != std::string::npos) ? name : proxy + name;
+    for (size_t pos = name.find(kToken); pos != std::string::npos; pos = name.find(kToken, pos + proxy.size()))
+        name.replace(pos, kToken.size(), proxy);
+    return name;
+}
+
+/// @brief A y title that names its proxy: "<#it{R}>" --> "<#it{R}>_{LeadP}". Unchanged if it already does, or if either is empty.
+std::string WithProxySubscript(const std::string& title, const std::string& proxy) {
+    if (proxy.empty() || title.empty() || title.find("_{" + proxy + "}") != std::string::npos) return title;
+    return title + "_{" + proxy + "}";
+}
+
+/// @brief Folder and label name for a ProfileConfig: derived (or explicit), then carrying its proxy.
+std::string ObservableDisplayName(const ProfileConfig& profConfig) {
+    return WithProxy(DeriveObservableName(ObjectNameOf(profConfig.path), profConfig.displayName),
+                     ProxyOfPath(profConfig.path));
+}
+
 /// @brief Folder name for a CategoricalObservable, by the same rule as ProfileConfig.
 std::string ObservableDisplayName(const CategoricalObservable& catObs) {
-    return DeriveObservableName(catObs.profileName, catObs.displayName);
+    return WithProxy(DeriveObservableName(ObjectNameOf(catObs.path), catObs.displayName),
+                     ProxyOfPath(catObs.path));
 }
 
 /**
  * @brief Copies the first three bins of a cut-scan into a standalone three-bin histogram.
  *
- * Bins 1-3 of every EtaStudy scan are "All Lambda", "eta_proxy >= 0" and "eta_proxy < 0". Pulling them
+ * Bins 1-3 of every ProxyEta scan are "All Lambda", "eta_proxy >= 0" and "eta_proxy < 0". Pulling them
  * out lets the Toy Model, which only knows those three numbers, be compared against them on an axis
  * where every source is fully populated, rather than leaving 6 or 12 empty bins on the full scan.
  *
  * @return A detached TH1D owned by the caller, or nullptr if the source has fewer than three bins.
  */
 TH1D* ExtractEtaSignBins(TH1* src, const std::string& name) {
-    if (!src || src->GetNbinsX() < 3) return nullptr;
+    if (!src) return nullptr;
+    if (src->GetNbinsX() < 3) {
+        WarnSkip(src->GetName(), "eta-sign digest needs at least three bins, the scan has " + std::to_string(src->GetNbinsX()));
+        return nullptr;
+    }
 
     TH1D* out = new TH1D(name.c_str(), "", 3, 0, 3);
     out->SetDirectory(nullptr);
@@ -995,7 +1090,7 @@ void StylePointGraph(TGraphAsymmErrors* g, const VariationConfig& cfg) {
  *                     back to a single pad when the bundle list has no data entry or nothing to
  *                     compare it against, so callers need not special-case single-curve canvases.
  * @param categorical  Draws a labelled-bin axis copied from the first bundle instead of a numeric one.
- *                     Needed for the EtaStudy cut profiles, whose x-axis is a list of named selections.
+ *                     Needed for the ProxyEta cut scans, whose x-axis is a list of named selections.
  * @param isDifference Marks the canvas as a Data - Variation plot. The data bundle is then dropped from
  *                     both the drawing and the legend (it is identically zero by construction, so its
  *                     marker carries no information), zero is forced inside the y-range, and a dashed
@@ -1170,7 +1265,10 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& inputBundles,
     for (int i = 0; i < nCurves; ++i) {
         TGraphAsymmErrors* g = MakeOffsetPointGraph(bundles[i].profile, i, nCurves, spread,
                                                     canvasName + Form("_g%d", i));
-        if (!g) continue; // A variation with no usable bin is dropped rather than drawn empty
+        if (!g) { // A variation with no usable bin is dropped rather than drawn empty
+            WarnSkip(bundles[i].config.legendLabel, "curve with no usable bin", std::string(outDir->GetPath()) + "/" + canvasName);
+            continue;
+        }
         StylePointGraph(g, bundles[i].config);
         upperGraphs[i] = g;
 
@@ -1503,18 +1601,8 @@ struct FitSummaryPoint {
     double errHigh = 0.0;
 };
 
-/**
- * @brief Draws one point per variation on a labelled axis, using asymmetric error bars.
- *
- * The counterpart of DrawIntegratedCanvas for quantities whose errors are not symmetric. One
- * single-point TGraphAsymmErrors per variation, so each keeps its own colour and marker, and no
- * line is ever drawn between points (they are unordered categories, not a series).
- *
- * @param labels Bin labels in axis order. Must be the same length as points.
- * @param points One entry per label. Pass errors of zero for quantities that have none.
- */
 // ------------------------------------------------------------------------------------------------
-// Mass-region styling, shared by every canvas that slices on the three-bin mass axis.
+// Mass regions: styling and bins, shared by every canvas that slices on the mass-region axis.
 // ------------------------------------------------------------------------------------------------
 // Canvas_MassSelection, Canvas_InOutOfPeak and Canvas_SidebandAgreement all sit in the same folder
 // and all show some subset of the same four curves. If each picked its own colours, the reader would
@@ -1525,6 +1613,26 @@ constexpr MassRegionStyle kStyleInPeak    = {kTeal + 3,    34}; // Taken from th
 constexpr MassRegionStyle kStyleOutOfPeak = {kMagenta + 2, 23};
 constexpr MassRegionStyle kStyleLeftSideband  = {kAzure + 2, 21};
 constexpr MassRegionStyle kStyleRightSideband = {kGreen + 3, 22};
+
+// The consumer's mass-region axis (axisMassRegions) has exactly five bins: left sideband, left gap, peak,
+// right gap, right sideband. Masses outside the sidebands go to the under/overflow, which is never read.
+// Only the sidebands and the peak are drawn for now. TODO: the gap bins (2 and 4): draw them, or not?
+// An axis with any other number of bins is refused with a warning (HasMassRegionAxis), never sliced by guesswork.
+constexpr int kNMassRegionBins = 5;
+struct MassRegion { int bin; const char* label; MassRegionStyle style; };
+constexpr MassRegion kMassLeftSideband  = {1, "left sideband",  kStyleLeftSideband};
+constexpr MassRegion kMassPeak          = {3, "in mass window", kStyleInPeak};
+constexpr MassRegion kMassRightSideband = {5, "right sideband", kStyleRightSideband};
+constexpr MassRegion kMassRegions[3] = {kMassLeftSideband, kMassPeak, kMassRightSideband}; // Drawing order
+
+/// @brief True for the consumer's five-bin mass-region axis (on y); any other axis is refused with a warning.
+bool HasMassRegionAxis(TProfile2D* p2d, const std::string& what) {
+    const int n = p2d->GetYaxis()->GetNbins();
+    if (n == kNMassRegionBins) return true;
+    WarnSkip(what, std::to_string(n) + " mass bins, the mass-region axis has " + std::to_string(kNMassRegionBins) +
+                       " (left sideband, left gap, peak, right gap, right sideband)");
+    return false;
+}
 
 VariationConfig MassRegionConfig(const char* label, MassRegionStyle st, bool isReference) {
     VariationConfig c;
@@ -1568,7 +1676,8 @@ std::vector<ProfileBundle> ReduxSubset(const std::vector<ProfileBundle>& bundles
  * points as everything else: the in-window slice is flagged as the reference, and the pull panel
  * then answers "is each sideband consistent with the peak region?" directly.
  *
- * @param p2d      Source, with the observable axis on x and mass on y. Not modified.
+ * @param p2d      Source, with the observable axis on x and the five-bin mass-region axis on y (see
+ *                 kMassRegions). Not modified. Any other mass axis is refused with a warning.
  * @param outDir   Destination. Nothing is drawn if this or p2d is null.
  * @return Nothing; the canvas is written to outDir.
  */
@@ -1579,36 +1688,37 @@ void DrawMassSliceCanvas(TProfile2D* p2d,
                          const std::string& xTitle,
                          const std::string& yTitle) {
     if (!p2d || !outDir) return;
-
-    const int nMass = p2d->GetYaxis()->GetNbins();
-    if (nMass < 2) return; // A single mass slice is just the inclusive profile
-
-    const MassRegionStyle sliceStyles[3] = {kStyleLeftSideband, kStyleInPeak, kStyleRightSideband};
+    if (!HasMassRegionAxis(p2d, canvasTitle)) return;
 
     std::vector<ProfileBundle> bundles;
     std::vector<TH1*> toDelete;
 
-    for (int m = 1; m <= nMass && m <= 3; ++m) {
+    for (const MassRegion& region : kMassRegions) {
+        const int m = region.bin;
         TProfile* slice = p2d->ProfileX(Form("%s_slice%d", canvasName.c_str(), m), m, m);
         if (!slice) continue;
         slice->SetDirectory(nullptr);
-        if (slice->GetEntries() < 1) { delete slice; continue; }
+        if (slice->GetEntries() < 1) {
+            WarnSkip(canvasTitle + ", " + region.label, "no entries");
+            delete slice;
+            continue;
+        }
 
         const double mLo = p2d->GetYaxis()->GetBinLowEdge(m);
         const double mHi = p2d->GetYaxis()->GetBinUpEdge(m);
-        const char* region = (nMass == 3) ? (m == 1 ? "left sideband"
-                                          : m == 2 ? "in mass window"
-                                                   : "right sideband")
-                                          : "slice";
 
         // The in-window slice is the reference the sidebands are read against
-        VariationConfig cfg = MassRegionConfig(Form("%s [%.4f, %.4f]", region, mLo, mHi),
-                                               sliceStyles[(m - 1) % 3], (m == 2));
+        VariationConfig cfg = MassRegionConfig(Form("%s [%.4f, %.4f]", region.label, mLo, mHi),
+                                               region.style, (m == kMassPeak.bin));
 
         bundles.push_back({slice, cfg});
         toDelete.push_back(slice);
     }
-    if (bundles.size() < 2) { for (auto p : toDelete) delete p; return; }
+    if (bundles.size() < 2) {
+        WarnSkip(canvasTitle, "fewer than two mass regions with entries");
+        for (auto p : toDelete) delete p;
+        return;
+    }
 
     ProfileConfig pc;
     pc.xAxisTitle = xTitle;
@@ -1623,7 +1733,7 @@ void DrawMassSliceCanvas(TProfile2D* p2d,
 }
 
 /**
- * @brief The two questions a three-bin mass axis can answer, as two canvases.
+ * @brief The two questions a mass-region axis can answer, as two canvases.
  *
  * The single three-curve canvas this replaces mixed them together. They are different questions and
  * a reader should not have to disentangle them:
@@ -1641,7 +1751,8 @@ void DrawMassSliceCanvas(TProfile2D* p2d,
  * The combined sideband is built by cloning the left slice and Add()-ing the right, so it is the
  * exact entry-weighted merge and shares binning with everything else by construction.
  *
- * @param p2d Source with the observable on x and a three-bin mass axis on y. Bin 2 is the peak.
+ * @param p2d Source with the observable on x and the five-bin mass-region axis on y (see kMassRegions).
+ *            Any other mass axis is refused with a warning.
  */
 void DrawMassRegionCanvases(TProfile2D* p2d,
                             const std::string& titlePrefix,
@@ -1649,11 +1760,11 @@ void DrawMassRegionCanvases(TProfile2D* p2d,
                             const std::string& xTitle,
                             const std::string& yTitle) {
     if (!p2d || !outDir) return;
-    if (p2d->GetYaxis()->GetNbins() < 3) return; // Needs both sidebands and a peak
+    if (!HasMassRegionAxis(p2d, titlePrefix)) return;
 
-    TProfile* sLeft  = p2d->ProfileX("mrc_left",  1, 1);
-    TProfile* sPeak  = p2d->ProfileX("mrc_peak",  2, 2);
-    TProfile* sRight = p2d->ProfileX("mrc_right", 3, 3);
+    TProfile* sLeft  = p2d->ProfileX("mrc_left",  kMassLeftSideband.bin,  kMassLeftSideband.bin);
+    TProfile* sPeak  = p2d->ProfileX("mrc_peak",  kMassPeak.bin,          kMassPeak.bin);
+    TProfile* sRight = p2d->ProfileX("mrc_right", kMassRightSideband.bin, kMassRightSideband.bin);
     if (!sLeft || !sPeak || !sRight) { delete sLeft; delete sPeak; delete sRight; return; }
     sLeft->SetDirectory(nullptr); sPeak->SetDirectory(nullptr); sRight->SetDirectory(nullptr);
 
@@ -1675,7 +1786,7 @@ void DrawMassRegionCanvases(TProfile2D* p2d,
     // is a precondition for trusting either -- a sideband subtraction is only meaningful if the two
     // sides agree.
     // README: the two routes also read DIFFERENT inputs. Canvas_MassSelection comes from separate
-    // consumer files produced with a mass cut applied; this one slices the three-bin mass axis of a
+    // consumer files produced with a mass cut applied; this one slices the mass-region axis of a
     // single nominal file. They should agree, and a disagreement is itself worth knowing about.
     if (sLeft->GetEntries() > 0 && sRight->GetEntries() > 0) {
         // The in-window curve rides along as the anchor, in the SAME style Canvas_MassSelection
@@ -1688,11 +1799,23 @@ void DrawMassRegionCanvases(TProfile2D* p2d,
         const std::string t = titlePrefix + ", left vs right sideband";
         DrawComparisonCanvas(b, "Canvas_SidebandAgreement", t, outDir, pc, xTitle, yTitle);
         DrawComparisonCanvas(b, "Canvas_SidebandAgreement_PullOnly", t, outDir, pc, xTitle, yTitle, kPull);
+    } else {
+        WarnSkip(titlePrefix + ", left vs right sideband", "a sideband has no entries");
     }
 
     delete sLeft; delete sPeak; delete sRight;
 }
 
+/**
+ * @brief Draws one point per variation on a labelled axis, using asymmetric error bars.
+ *
+ * The counterpart of DrawIntegratedCanvas for quantities whose errors are not symmetric. One
+ * single-point TGraphAsymmErrors per variation, so each keeps its own colour and marker, and no
+ * line is ever drawn between points (they are unordered categories, not a series).
+ *
+ * @param labels Bin labels in axis order. Must be the same length as points.
+ * @param points One entry per label. Pass errors of zero for quantities that have none.
+ */
 void DrawFitSummaryCanvas(const std::vector<std::string>& labels,
                           const std::vector<FitSummaryPoint>& points,
                           const std::string& canvasName,
@@ -2155,26 +2278,6 @@ void DrawIntegratedCanvas(const std::vector<ProfileBundle>& bundles,
     delete c;
 }
 
-// ---------------------------------------------------------
-// Main Macro 
-// ---------------------------------------------------------
-/**
- * @brief Builds the cross-configuration summary file for one wagon.
- *
- * Reads every ConsumerResults_<suffix>.root found in consumerDir (one per systematic variation),
- * plus the optional external references, and writes auxiliarySummaryPlots.root beside them.
- *
- * @param consumerDir  Directory holding this wagon's ConsumerResults files. Also the output location.
- * @param mcRefDir     Directory holding the MC baseline's ConsumerResults files. Empty disables the overlay.
- * @param ppRefDir     Directory holding the pp baseline's ConsumerResults files. Empty disables the overlay.
- * @param toyModelPath Full path to the single Toy Model file. Empty disables the overlay.
- * @param cutFolder    Which kinematic-cut folder to read. Only "Ring" is always booked by the consumer;
- *                     the others are opt-in and produce no output at all when absent from the files.
- * @param doIndividualComparisons Master switch for the one-vs-one canvases. Off by default: that block
- *                     alone is close to half of the entire output, and the overlays plus the pull panels
- *                     already carry the same comparisons. Per-observable opt-in still applies on top of
- *                     this, so turning it on enables it only for the profiles flagged in the table.
- */
 // =================================================================================================
 // SIGNAL-EXTRACTED INTEGRATED OBSERVABLES
 // =================================================================================================
@@ -2182,7 +2285,7 @@ void DrawIntegratedCanvas(const std::vector<ProfileBundle>& bundles,
 // consumer configuration:
 //     <sigExtractDir>/signalExtractionRing_<dataSuffix><sysSuffix>.root
 // and, inside it,
-//     <cutFolder>/IntegratedSummary/<proxy>/<histogram>
+//     Ring/IntegratedSummary/<proxy>/<histogram>
 //
 // WHY THIS IS NOT JUST ANOTHER ObservableGroup. Every other group in this macro integrates a
 // TProfile over its x-axis with GetIntegratedProfile. These quantities arrive ALREADY integrated,
@@ -2224,30 +2327,7 @@ struct SigExtractProxy {
 /// The sign is the hue, so an antisymmetry reads at a glance; |eta| is the depth, so neighbouring
 /// slices stay apart. Used together with an open/filled marker split by sign, which survives a
 /// colour-blind reader and a black-and-white print.
-// int EtaSliceColor(double etaCentre, double etaMax) {
-//     const float t = static_cast<float>(std::min(1.0, std::fabs(etaCentre) / etaMax));
-//     const float light = 0.75f - 0.55f * t; // 0.75 next to zero --> 0.20 at the edge
-//     return (etaCentre < 0.0) ? TColor::GetColor(0.6f * light, 0.8f * light, 1.0f - 0.45f * t)
-//                              : TColor::GetColor(1.0f - 0.45f * t, 0.7f * light, 0.6f * light);
-// }
-// That implementation was kind of buggy and retrieving only grey and black colors -- here goes a more manual version:
-// int EtaSliceColor(double etaCentre, double etaMax)
-// {
-//     const double t = std::min(1.0, std::abs(etaCentre) / etaMax);
-//
-//     // Negative eta: light blue -> dark blue
-//     // Positive eta: light red -> dark red
-//     const double light = 0.78 - 0.48 * t;
-//
-//     const double r = etaCentre < 0.0 ? 0.15 * light : 1.00;
-//     const double g = etaCentre < 0.0 ? 0.45 * light : 0.35 * light;
-//     const double b = etaCentre < 0.0 ? 1.00 : 0.20 * light;
-//
-//     const int color = TColor::GetFreeColorIndex();
-//     new TColor(color, r, g, b);
-//     return color;
-// }
-// Actually, the TCanvas does not consistently store the custom color indices. I will try hardcoding some colors for now:
+// Fixed ROOT colours rather than new TColor indices: the canvases do not store custom colour indices consistently.
 int EtaSliceColor(double etaCentre, double etaMax)
 {
     const double t = std::min(1.0, std::abs(etaCentre) / etaMax);
@@ -2406,35 +2486,33 @@ struct SigExtractPoint {
  * differential histogram's under- or overflow. See the note on GetIntegratedProfile for the two
  * axes where that difference is confirmed to matter.
  *
- * Bin 1 is "All Lambda". Bins 2-4 are the pT, rapidity and LeadP-eta cut scans, unused for now.
- * README: the two-dimensional companions, IntegratedCuts/p2dRingCuts*V0MassPeak, share this X axis
+ * Bin 1 is "All Lambda". Bins 2-4 hold the old kinematic-cut selections (Lambda cuts, proxy |eta| < 0.5,
+ * both), unused for now.
+ * README: the two-dimensional companion, IntegratedCuts/<Proxy>/p2dRingCutsV0MassPeak, shares this X axis
  * crossed with a mass flag -- Y bin 1 strictly OUT of the mass peak, Y bin 2 strictly IN it.
  *
- * @param proxy "LeadJet", "LeadP" or "SubJet".
+ * @param proxy "LeadJet", "LeadP" or "SubJet": the folder under IntegratedCuts/.
  * @return {value, error}, and found = false when the object is absent.
  */
 SigExtractPoint FetchIntegratedFromCuts(FileCache& cache, const std::string& filePath,
                                         const std::string& proxy) {
     SigExtractPoint out;
-    std::string obj;
-    if (proxy == "LeadJet")      obj = "pRingCuts";
-    else if (proxy == "LeadP")   obj = "pRingCutsLeadingP";
-    else if (proxy == "SubJet")  obj = "pRingCutsSubLeadingJet";
-    else return out;
-
-    TProfile* p = cache.FetchClone<TProfile>(filePath, TASK_DIR_IN_FILE + "IntegratedCuts/" + obj, false);
+    // Every proxy folder holds the same object name, so the proxy only picks the folder
+    TProfile* p = cache.FetchClone<TProfile>(filePath, TASK_DIR_IN_FILE + "IntegratedCuts/" + proxy + "/pRingCuts", false);
     if (!p) return out;
     if (p->GetNbinsX() >= 1 && p->GetBinEntries(1) > 0) {
         out.value = p->GetBinContent(1);
         out.error = p->GetBinError(1);
         out.found = true;
+    } else {
+        WarnSkip("IntegratedCuts/" + proxy + "/pRingCuts, bin 1", "no entries", filePath);
     }
     delete p;
     return out;
 }
 
 /**
- * @brief The integrated <R> split by mass window, from IntegratedCuts/p2dRingCuts*V0MassPeak.
+ * @brief The integrated <R> split by mass window, from IntegratedCuts/<Proxy>/p2dRingCutsV0MassPeak.
  *
  * Same X axis as the one-dimensional pRingCuts profiles -- bin 1 is "All Lambda" -- crossed with a
  * two-state mass flag on Y, where BIN 1 is strictly OUT of the mass peak and BIN 2 strictly IN it.
@@ -2450,14 +2528,9 @@ SigExtractPoint FetchIntegratedFromCuts(FileCache& cache, const std::string& fil
 SigExtractPoint FetchIntegratedByMassPeak(FileCache& cache, const std::string& filePath,
                                           const std::string& proxy, bool inPeak) {
     SigExtractPoint out;
-    std::string obj;
-    if (proxy == "LeadJet")     obj = "p2dRingCutsV0MassPeak";
-    else if (proxy == "LeadP")  obj = "p2dRingCutsLeadingPV0MassPeak";
-    else if (proxy == "SubJet") obj = "p2dRingCutsSubLeadingJetV0MassPeak";
-    else return out;
-
+    // Every proxy folder holds the same object name, so the proxy only picks the folder
     TProfile2D* p = cache.FetchClone<TProfile2D>(filePath,
-                                                 TASK_DIR_IN_FILE + "IntegratedCuts/" + obj, false);
+                                                 TASK_DIR_IN_FILE + "IntegratedCuts/" + proxy + "/p2dRingCutsV0MassPeak", false);
     if (!p) return out;
     const int yBin = inPeak ? 2 : 1;
     const int gBin = p->GetBin(1, yBin); // X bin 1 is "All Lambda"
@@ -2465,6 +2538,8 @@ SigExtractPoint FetchIntegratedByMassPeak(FileCache& cache, const std::string& f
         out.value = p->GetBinContent(gBin);
         out.error = p->GetBinError(gBin);
         out.found = true;
+    } else {
+        WarnSkip("IntegratedCuts/" + proxy + "/p2dRingCutsV0MassPeak, " + (inPeak ? "in peak" : "out of peak"), "no entries", filePath);
     }
     delete p;
     return out;
@@ -2476,8 +2551,7 @@ SigExtractPoint FetchIntegratedByMassPeak(FileCache& cache, const std::string& f
  * @param cache         Shared file cache; the extraction files are opened at most once each.
  * @param sigExtractDir Directory holding the signalExtractionRing_*.root files.
  * @param fileSuffix    <dataSuffix><sysSuffix>, exactly as in the consumer file names.
- * @param cutFolder     Top-level variation folder inside the extraction file ("Ring", ...).
- * @param proxy         Folder under IntegratedSummary/.
+ * @param proxy         Folder under Ring/IntegratedSummary/ (or under Ring/KappaEff/, see summaryFolder).
  * @param histName      Histogram stem; "_<proxy>" is appended, matching the extraction macro.
  * @param requireValid  When true, hExtractionStatus must report a valid extraction. Guards against
  *                      the failure mode where a fit did not converge: a zero-filled single-bin
@@ -2488,7 +2562,6 @@ SigExtractPoint FetchIntegratedByMassPeak(FileCache& cache, const std::string& f
 SigExtractPoint FetchSigExtractPoint(FileCache& cache,
                                      const std::string& sigExtractDir,
                                      const std::string& fileSuffix,
-                                     const std::string& cutFolder,
                                      const std::string& proxy,
                                      const std::string& histName,
                                      bool requireValid = true,
@@ -2498,14 +2571,17 @@ SigExtractPoint FetchSigExtractPoint(FileCache& cache,
 
     // summaryFolder is "KappaEff" for the moment extractions, whose "proxy" is <Proxy>_<Num|Den>
     const std::string filePath = sigExtractDir + "/signalExtractionRing_" + fileSuffix + ".root";
-    const std::string dirPath = cutFolder + "/" + summaryFolder + "/" + proxy + "/";
+    const std::string dirPath = SIG_EXTRACT_RING_DIR + summaryFolder + "/" + proxy + "/";
 
     if (requireValid) {
         TH1D* hStatus = cache.FetchClone<TH1D>(filePath, dirPath + "hExtractionStatus_" + proxy, false);
         if (!hStatus) return out;           // No status object at all: treat as not extracted
         const bool valid = hStatus->GetBinContent(1) > 0.5; // Bin 1 is labelled "valid"
         delete hStatus;
-        if (!valid) return out;
+        if (!valid) {
+            WarnSkip(dirPath + histName + "_" + proxy, "extraction flagged invalid (hExtractionStatus)", filePath);
+            return out;
+        }
     }
 
     TH1D* h = cache.FetchClone<TH1D>(filePath, dirPath + histName + "_" + proxy, false);
@@ -2530,7 +2606,6 @@ SigExtractPoint FetchSigExtractPoint(FileCache& cache,
 void DrawSigExtractComponents(FileCache& cache,
                               const std::string& sigExtractDir,
                               const std::string& fileSuffix,
-                              const std::string& cutFolder,
                               const SigExtractProxy& proxy,
                               const std::string& familyName,
                               TDirectory* outDir) {
@@ -2548,7 +2623,7 @@ void DrawSigExtractComponents(FileCache& cache,
     std::vector<TH1*> toDelete;
 
     for (size_t i = 0; i < components.size(); ++i) {
-        SigExtractPoint p = FetchSigExtractPoint(cache, sigExtractDir, fileSuffix, cutFolder,
+        SigExtractPoint p = FetchSigExtractPoint(cache, sigExtractDir, fileSuffix,
                                                  proxy.folderName, components[i].histName);
         if (!p.found) return; // All three come from one extraction: if one is absent, so are the rest
         labels.push_back(components[i].legendLabel);
@@ -2556,7 +2631,7 @@ void DrawSigExtractComponents(FileCache& cache,
 
     const int nCats = static_cast<int>(components.size());
     for (int i = 0; i < nCats; ++i) {
-        SigExtractPoint p = FetchSigExtractPoint(cache, sigExtractDir, fileSuffix, cutFolder,
+        SigExtractPoint p = FetchSigExtractPoint(cache, sigExtractDir, fileSuffix,
                                                  proxy.folderName, components[i].histName);
         TH1D* h = MakeCategoricalPoint(Form("SigComp_%s_%d", proxy.folderName.c_str(), i),
                                        i, nCats, p.value, p.error);
@@ -2580,7 +2655,7 @@ void DrawSigExtractComponents(FileCache& cache,
 
     std::vector<ProfileBundle> subBundles;
     for (const auto& d : diffs) {
-        SigExtractPoint p = FetchSigExtractPoint(cache, sigExtractDir, fileSuffix, cutFolder,
+        SigExtractPoint p = FetchSigExtractPoint(cache, sigExtractDir, fileSuffix,
                                                  proxy.folderName, d.first);
         if (!p.found) continue;
         TH1D* h = MakeCategoricalPoint(Form("SigCompSub_%s_%d", proxy.folderName.c_str(), d.second),
@@ -2620,7 +2695,6 @@ SigExtractPoint DrawSigExtractSystematics(FileCache& cache,
                                           const std::string& dataSuffix,
                                           const std::vector<VariationConfig>& sysVariations,
                                           const VariationConfig& dataConfig,
-                                          const std::string& cutFolder,
                                           const SigExtractProxy& proxy,
                                           const SigExtractQuantity& quantity,
                                           const std::string& familyName,
@@ -2628,7 +2702,7 @@ SigExtractPoint DrawSigExtractSystematics(FileCache& cache,
     SigExtractPoint dataPoint;
     if (!outDir) return dataPoint;
 
-    dataPoint = FetchSigExtractPoint(cache, sigExtractDir, dataSuffix, cutFolder,
+    dataPoint = FetchSigExtractPoint(cache, sigExtractDir, dataSuffix,
                                      proxy.folderName, quantity.histName);
     if (!dataPoint.found) return dataPoint;
 
@@ -2638,14 +2712,18 @@ SigExtractPoint DrawSigExtractSystematics(FileCache& cache,
 
     for (const auto& sys : sysVariations) {
         SigExtractPoint p = FetchSigExtractPoint(cache, sigExtractDir, dataSuffix + sys.suffix,
-                                                 cutFolder, proxy.folderName, quantity.histName);
+                                                 proxy.folderName, quantity.histName);
         if (!p.found) continue; // A variation whose extraction failed drops off the axis entirely
         labels.push_back(sys.legendLabel);
         configs.push_back(sys);
         points.push_back(p);
     }
 
-    if (labels.size() < 2) return dataPoint; // Data alone is not a systematics plot
+    if (labels.size() < 2) { // Data alone is not a systematics plot
+        CountSkip("SignalExtraction, " + quantity.legendLabel, "Data alone, nothing to compare it with",
+                  familyName + "/" + proxy.folderName);
+        return dataPoint;
+    }
 
     const int nCats = static_cast<int>(labels.size());
     std::vector<ProfileBundle> bVal, bSub;
@@ -2722,11 +2800,6 @@ constexpr double AlphaSqAntiLambda = AntiLambdaWeakDecayConstant * AntiLambdaWea
 // BothHyperons mixes the two, and the exact term is per species. The plain mean is within 1.2% of either
 // alpha^2, and the term it multiplies is itself a ~10% correction, so the choice moves P by <~0.2%.
 constexpr double AlphaSqBoth = 0.5 * (AlphaSqLambda + AlphaSqAntiLambda);
-
-/// @brief The hyperon selection of a family, which a longitudinal family shares with its full-ring sibling.
-std::string FamilySpecies(const FamilyConfig& fam) {
-    return fam.ring ? fam.familyName.substr(0, fam.familyName.size() - fam.ring->name.size() - 1) : fam.familyName;
-}
 
 /**
  * @brief Swaps the full-ring symbol for a longitudinal one (suffix sfx, e.g. "_{z}") in one piece of display text.
@@ -2845,10 +2918,9 @@ CandidateMoments MomentsOf(TH1* h) {
  * @brief Candidate moments of one consumer file, for one proxy: the ring and the KappaEff profiles.
  *
  * Every profile is mass-binned and filled on exactly the proxy's candidates, and every bin and flow is
- * summed, so all five share one candidate set. The LeadJet ring comes from pRingObservableMass; the
- * LeadP and SubJet rings come from their (eta_proxy, mass) maps, because the 1D LeadP and SubJet mass
- * profiles are filled on the leading-jet sample instead. Nothing here is signal-extracted: these are
- * all candidates, signal and background mixed.
+ * summed, so all five share one candidate set. The ring comes from each proxy's 1D pRingObservableMass:
+ * the (eta_proxy, mass) maps would silently lose every candidate outside their eta axis. Nothing here is
+ * signal-extracted: these are all candidates, signal and background mixed.
  */
 struct RingSample {
     CandidateMoments ring;    // R (or R_z, R_z^T), with the prefactor
@@ -2858,30 +2930,30 @@ struct RingSample {
     CandidateMoments ringDen; // R w
 };
 
-bool LoadRingSample(FileCache& cache, const std::string& file, const std::string& cutFolder,
-                    const std::string& proxy, RingSample& s) {
-    static const std::map<std::string, std::string> kRingVsMass = {
-        {"LeadJet", "LeadJet/pRingObservableMass"},
-        {"LeadP",   "LeadP/pRingObservableLeadPMass"},
-        {"SubJet",  "SubJet/pRingObservable2ndJetMass"}};
-    if (gSystem->AccessPathName(file.c_str())) return false; // Absent config: quiet, it is the common case
-    const std::string base = TASK_DIR_IN_FILE + cutFolder + "/";
-    const std::string kap  = base + proxy + "/KappaEff/"; // Each proxy carries its own KappaEff/
+bool LoadRingSample(FileCache& cache, const std::string& file, const std::string& proxy, RingSample& s) {
+    if (!cache.Open(file, false)) return false; // Absent config: only counted, it is the common case
+    // Every proxy folder holds the same object names, so the proxy only picks the folder
+    const std::string base = TASK_DIR_IN_FILE + RING_DIR_IN_FILE + proxy + "/";
+    const std::string kap  = base + "KappaEff/"; // Each proxy carries its own KappaEff/
 
-    TH1* h[5] = {cache.FetchClone<TH1>(file, base + kRingVsMass.at(proxy), false),
-                 cache.FetchClone<TH1>(file, kap + "pKappaNum" + proxy + "VsMass", false),
-                 cache.FetchClone<TH1>(file, kap + "pKappaDen" + proxy + "VsMass", false),
-                 cache.FetchClone<TH1>(file, kap + "pKappaNumTimesDen" + proxy + "VsMass", false),
-                 cache.FetchClone<TH1>(file, kap + "pRingTimesDen" + proxy + "VsMass", false)};
+    TH1* h[5] = {cache.FetchClone<TH1>(file, base + "MassDependence/pRingObservableMass", false),
+                 cache.FetchClone<TH1>(file, kap + "pKappaNumVsMass", false),
+                 cache.FetchClone<TH1>(file, kap + "pKappaDenVsMass", false),
+                 cache.FetchClone<TH1>(file, kap + "pKappaNumTimesDenVsMass", false),
+                 cache.FetchClone<TH1>(file, kap + "pRingTimesDenVsMass", false)};
     const bool ok = h[0] && h[1] && h[2] && h[3] && h[4];
     if (ok) {
         s.ring = MomentsOf(h[0]); s.num = MomentsOf(h[1]); s.den = MomentsOf(h[2]);
         s.numDen = MomentsOf(h[3]); s.ringDen = MomentsOf(h[4]);
     }
     for (TH1* p : h) delete p;
-    if (!ok || s.ring.n < 2.) return false;
+    if (!ok) return false; // Each absent object is already counted by FetchClone
+    if (s.ring.n < 2.) {
+        WarnSkip(proxy + " ring sample", "fewer than two candidates", file);
+        return false;
+    }
     if (std::fabs(s.ring.n - s.num.n) > 0.5) {
-        std::cerr << "  [Warning] " << proxy << ": ring and KappaEff candidate counts differ in " << file << std::endl;
+        WarnSkip(proxy + " ring sample", "ring and KappaEff candidate counts differ", file);
         return false;
     }
     return true;
@@ -2943,7 +3015,7 @@ void DrawSeriesByColumn(const std::vector<std::string>& columnLabels, const std:
 /**
  * @brief CheapSigExtract inputs of one consumer file, for one proxy: the four *VsMassRegion profiles.
  *
- * The consumer fills them from the same two flags as IntegratedCuts/p2dRingCuts*V0MassPeak:
+ * The consumer fills them from the same two flags as IntegratedCuts/<Proxy>/p2dRingCutsV0MassPeak:
  * v0InMassWindow (bin 1, the sideband) and v0InMassPeak (bin 2). Index 0 is the sideband, 1 the peak.
  */
 struct RegionSample {
@@ -2966,14 +3038,14 @@ CandidateMoments BinMoments(TProfile* p, int bin) {
     return m;
 }
 
-bool LoadRegionSample(FileCache& cache, const std::string& file, const std::string& cutFolder,
-                      const std::string& proxy, RegionSample& r) {
-    if (gSystem->AccessPathName(file.c_str())) return false; // Absent config: quiet
-    const std::string kap = TASK_DIR_IN_FILE + cutFolder + "/" + proxy + "/KappaEff/";
-    TProfile* p[4] = {cache.FetchClone<TProfile>(file, kap + "pRing" + proxy + "VsMassRegion", false),
-                      cache.FetchClone<TProfile>(file, kap + "pKappaNum" + proxy + "VsMassRegion", false),
-                      cache.FetchClone<TProfile>(file, kap + "pKappaDen" + proxy + "VsMassRegion", false),
-                      cache.FetchClone<TProfile>(file, kap + "pKappaNumTimesDen" + proxy + "VsMassRegion", false)};
+bool LoadRegionSample(FileCache& cache, const std::string& file, const std::string& proxy, RegionSample& r) {
+    if (!cache.Open(file, false)) return false; // Absent config: only counted
+    // Every proxy folder holds the same object names, so the proxy only picks the folder
+    const std::string kap = TASK_DIR_IN_FILE + RING_DIR_IN_FILE + proxy + "/KappaEff/";
+    TProfile* p[4] = {cache.FetchClone<TProfile>(file, kap + "pRingVsMassRegion", false),
+                      cache.FetchClone<TProfile>(file, kap + "pKappaNumVsMassRegion", false),
+                      cache.FetchClone<TProfile>(file, kap + "pKappaDenVsMassRegion", false),
+                      cache.FetchClone<TProfile>(file, kap + "pKappaNumTimesDenVsMassRegion", false)};
     const bool ok = p[0] && p[1] && p[2] && p[3];
     if (ok)
         for (int i = 0; i < 2; ++i) {
@@ -2983,11 +3055,16 @@ bool LoadRegionSample(FileCache& cache, const std::string& file, const std::stri
     for (TProfile* q : p) delete q;
     // <R w> only serves the <R_long>/<n_z^2> ratio, so its absence costs that ratio alone (left as a gap), never the sample:
     if (ok)
-        if (TProfile* rw = cache.FetchClone<TProfile>(file, kap + "pRingTimesDen" + proxy + "VsMassRegion", false)) {
+        if (TProfile* rw = cache.FetchClone<TProfile>(file, kap + "pRingTimesDenVsMassRegion", false)) {
             for (int i = 0; i < 2; ++i) r.ringDen[i] = BinMoments(rw, i + 1);
             delete rw;
         }
-    return ok && r.ring[1].n > r.ring[0].n; // A peak no richer than its sideband has no signal to estimate
+    if (!ok) return false; // Each absent object is already counted by FetchClone
+    if (!(r.ring[1].n > r.ring[0].n)) { // A peak no richer than its sideband has no signal to estimate
+        WarnSkip(proxy + " mass-region sample", "the peak holds no more candidates than the sideband", file);
+        return false;
+    }
+    return true;
 }
 
 /**
@@ -3036,7 +3113,7 @@ CandidateMoments CellMoments(TProfile2D* p, int globalBin) {
 }
 
 /**
- * @brief Per-bin candidate moments of one proxy, vs proxy pT or centrality (<Proxy>/KappaEff/Differential/).
+ * @brief Per-bin candidate moments of one proxy, vs proxy pT or centrality (Ring/<Proxy>/KappaEff/Differential/).
  *
  * Per x bin: all candidates (every mass-region cell, underflow included, as in the integrated Raw) and the two
  * CheapSigExtract regions. Binning and title are read from the consumer's profiles, which share the event mixing
@@ -3050,21 +3127,22 @@ struct DifferentialSample {
 };
 
 /**
- * @brief Loads the differential moments of one file, proxy and variable ("Pt" or "Centrality").
+ * @brief Loads the differential moments of one file, proxy and variable ("ProxyPt" or "Centrality").
  *
  * Closure: summed over every cell, x flows included, they must hold exactly the integrated candidates (same fill
  * list, same gate). A mismatch is reported, not fatal: the five differential profiles stay consistent among
  * themselves, but they no longer describe the integrated sample.
  */
-bool LoadDifferentialSample(FileCache& cache, const std::string& file, const std::string& cutFolder,
-                            const std::string& proxy, const std::string& var, DifferentialSample& d) {
-    if (gSystem->AccessPathName(file.c_str())) return false; // Absent config: quiet
+bool LoadDifferentialSample(FileCache& cache, const std::string& file, const std::string& proxy,
+                            const std::string& var, DifferentialSample& d) {
+    if (!cache.Open(file, false)) return false; // Absent config: only counted
     static const char* kMoment[5] = {"Ring", "KappaNum", "KappaDen", "KappaNumTimesDen", "RingTimesDen"};
-    const std::string dir = TASK_DIR_IN_FILE + cutFolder + "/" + proxy + "/KappaEff/Differential/p2d";
+    // Every proxy folder holds the same object names, so the proxy only picks the folder
+    const std::string dir = TASK_DIR_IN_FILE + RING_DIR_IN_FILE + proxy + "/KappaEff/Differential/p2d";
     TProfile2D* p[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
     bool ok = true;
     for (int k = 0; k < 5; ++k) {
-        p[k] = cache.FetchClone<TProfile2D>(file, dir + kMoment[k] + proxy + "Vs" + var + "VsMassRegion", false);
+        p[k] = cache.FetchClone<TProfile2D>(file, dir + kMoment[k] + "Vs" + var + "VsMassRegion", false);
         ok = ok && p[k];
     }
     if (ok) {
@@ -3094,7 +3172,7 @@ bool LoadDifferentialSample(FileCache& cache, const std::string& file, const std
             }
         static std::set<std::string> checked; // Every folder reloads the same files: check each one once
         RingSample integrated;
-        if (checked.insert(file + "|" + proxy + "|" + var).second && LoadRingSample(cache, file, cutFolder, proxy, integrated) &&
+        if (checked.insert(file + "|" + proxy + "|" + var).second && LoadRingSample(cache, file, proxy, integrated) &&
             std::fabs(integrated.ring.n - nTotal) > 0.5)
             std::cerr << "  [Warning] " << proxy << " vs " << var << ": " << nTotal << " differential candidates against "
                       << integrated.ring.n << " integrated in " << file << std::endl;
@@ -3178,15 +3256,13 @@ std::vector<VariationConfig> MakeRingVsLongitudinalSeries() {
  */
 void DrawRingVsLongitudinal(FileCache& cache, TDirectory* fileRoot, const std::string& consumerDir,
                             const std::vector<FamilyConfig>& families, const VariationConfig& dataConfig,
-                            const std::vector<VariationConfig>& sysVariations, const std::vector<ExternalRef>& externals,
-                            const std::string& cutFolder) {
-    const std::vector<std::string> proxies = {"LeadP", "LeadJet", "SubJet"};
+                            const std::vector<VariationConfig>& sysVariations, const std::vector<ExternalRef>& externals) {
     const std::vector<VariationConfig> series = MakeRingVsLongitudinalSeries();
     const std::pair<double, double> kMissing = {0., -1.};
     const std::vector<RingPairColumn> columns = MakeRingPairColumns(consumerDir, dataConfig, sysVariations, externals);
 
     for (const auto& fam : families) {
-        for (const auto& proxy : proxies) {
+        for (const auto& proxy : PROXIES) {
             std::vector<std::string> labels;
             std::vector<VariationConfig> cfgs;
             std::vector<std::vector<std::pair<double, double>>> vals(series.size()); // [series][column]
@@ -3194,14 +3270,14 @@ void DrawRingVsLongitudinal(FileCache& cache, TDirectory* fileRoot, const std::s
             for (const auto& col : columns) {
                 RingSample full;
                 const std::string stem = col.base + "/ConsumerResults_" + fam.dataSuffix;
-                if (!LoadRingSample(cache, stem + col.suffix + ".root", cutFolder, proxy, full)) continue;
+                if (!LoadRingSample(cache, stem + col.suffix + ".root", proxy, full)) continue;
 
                 std::vector<std::pair<double, double>> row(series.size(), kMissing); // This column, every series
                 row[0] = MeanOf(full.ring);
                 bool anyLong = false;
                 for (size_t l = 0; l < LONGITUDINAL_RINGS.size(); ++l) {
                     RingSample lng;
-                    if (!LoadRingSample(cache, stem + LONGITUDINAL_RINGS[l].fileTag + col.suffix + ".root", cutFolder, proxy, lng))
+                    if (!LoadRingSample(cache, stem + LONGITUDINAL_RINGS[l].fileTag + col.suffix + ".root", proxy, lng))
                         continue;
                     row[1 + 2 * l] = MeanOf(lng.ring);
                     row[2 + 2 * l] = RatioOfMeans(lng.ring, lng.den, lng.ringDen.Mean());
@@ -3223,7 +3299,12 @@ void DrawRingVsLongitudinal(FileCache& cache, TDirectory* fileRoot, const std::s
                 }
                 printf("\n");
             }
-            if (!dataFirst) continue; // Differences need Data as the first column
+            if (!dataFirst) { // Differences need Data as the first column
+                CountSkip("RingVsLongitudinal", labels.empty() ? "no column holds both ring definitions"
+                                                               : "no Data column, which the differences need",
+                          fam.familyName + "/" + proxy);
+                continue;
+            }
             TDirectory* pxDir = EnsureDir(EnsureDir(EnsureDir(fileRoot, "RingVsLongitudinal"), fam.familyName), proxy);
 
             DrawSeriesByColumn(labels, series, vals, "Canvas_RingVsLongitudinal_" + proxy,
@@ -3244,7 +3325,11 @@ void DrawRingVsLongitudinal(FileCache& cache, TDirectory* fileRoot, const std::s
                     subCfgs.push_back(cfgs[c]);
                     subVals.push_back(ratio[c]);
                 }
-                if (subCfgs.empty() || !subCfgs.front().isData) continue;
+                if (subCfgs.empty() || !subCfgs.front().isData) {
+                    CountSkip("RingVsLongitudinal, <R_long>/<n_z^2> alone", "no Data column for this definition",
+                              fam.familyName + "/" + proxy + "/" + lr.name);
+                    continue;
+                }
                 const std::string sym = "R" + lr.symbolSuffix;
                 DrawCategoricalCrossSystem(subLabels, subCfgs, subVals, "Canvas_" + lr.shortName + "OverNz2_" + proxy,
                                            fam.familyName + ", " + proxy + ": <" + sym + ">/<n_{z}^{2}> (raw)", pxDir,
@@ -3258,18 +3343,16 @@ void DrawRingVsLongitudinal(FileCache& cache, TDirectory* fileRoot, const std::s
  * @brief CheapSigExtract of the same comparison: <R> and every <R_long>, in and out of the mass peak, and how far
  *        the background pulls each (in - out).
  *
- * Same columns and series as RingVsLongitudinal/, read from IntegratedCuts/p2dRingCuts*V0MassPeak
+ * Same columns and series as RingVsLongitudinal/, read from IntegratedCuts/<Proxy>/p2dRingCutsV0MassPeak
  * (FetchIntegratedByMassPeak): no fit and no sideband model. In-peak and out-of-peak candidates are disjoint, so
  * in - out is plain quadrature. The peak and sideband canvases add <R_long>/<n_z^2> of that region, from the
- * consumer's <Proxy>/KappaEff/xxxxVsMassRegion profiles of the cut folder: ring, n_z^2 and their product on the same
- * candidates, so the ratio keeps its covariance. Consumer outputs without pRingTimesDen*VsMassRegion leave it as a gap.
+ * consumer's Ring/<Proxy>/KappaEff/p*VsMassRegion profiles: ring, n_z^2 and their product on the same candidates,
+ * so the ratio keeps its covariance. Consumer outputs without pRingTimesDenVsMassRegion leave it as a gap.
  * Written to RingVsLongitudinal_CheapSigExtract/<Family>/<Proxy>/.
  */
 void DrawCheapRingVsLongitudinal(FileCache& cache, TDirectory* fileRoot, const std::string& consumerDir,
                                  const std::vector<FamilyConfig>& families, const VariationConfig& dataConfig,
-                                 const std::vector<VariationConfig>& sysVariations, const std::vector<ExternalRef>& externals,
-                                 const std::string& cutFolder) {
-    const std::vector<std::string> proxies = {"LeadP", "LeadJet", "SubJet"};
+                                 const std::vector<VariationConfig>& sysVariations, const std::vector<ExternalRef>& externals) {
     const std::vector<VariationConfig> series = MakeRingVsLongitudinalSeries();
     const std::pair<double, double> kMissing = {0., -1.};
     const std::vector<RingPairColumn> columns = MakeRingPairColumns(consumerDir, dataConfig, sysVariations, externals);
@@ -3287,25 +3370,25 @@ void DrawCheapRingVsLongitudinal(FileCache& cache, TDirectory* fileRoot, const s
     };
 
     for (const auto& fam : families) {
-        for (const auto& proxy : proxies) {
+        for (const auto& proxy : PROXIES) {
             std::vector<std::string> labels;
             std::vector<StateSeries> vals(3, StateSeries(series.size())); // [state][series][column]
             for (const auto& col : columns) {
                 const std::string stem = col.base + "/ConsumerResults_" + fam.dataSuffix;
                 const std::string fullFile = stem + col.suffix + ".root";
-                if (gSystem->AccessPathName(fullFile.c_str())) continue;
+                if (!cache.Open(fullFile, false)) continue; // Absent config: only counted
 
                 StateSeries row(3, std::vector<std::pair<double, double>>(series.size(), kMissing)); // This column
                 if (!fillInOut(row, 0, fullFile, proxy)) continue;
                 bool anyLong = false;
                 for (size_t l = 0; l < LONGITUDINAL_RINGS.size(); ++l) {
                     const std::string lngFile = stem + LONGITUDINAL_RINGS[l].fileTag + col.suffix + ".root";
-                    if (gSystem->AccessPathName(lngFile.c_str())) continue;
+                    if (!cache.Open(lngFile, false)) continue; // Absent config: only counted
                     if (!fillInOut(row, 1 + 2 * l, lngFile, proxy)) continue;
                     anyLong = true;
                     // <R_long>/<n_z^2> per region (index 1 peak, 0 sideband); in - out of a ratio is not drawn
                     RegionSample region;
-                    if (!LoadRegionSample(cache, lngFile, cutFolder, proxy, region)) continue;
+                    if (!LoadRegionSample(cache, lngFile, proxy, region)) continue;
                     for (int r = 0; r < 2; ++r) {
                         const int idx = (r == 0) ? 1 : 0; // State 0 is the peak (region index 1), state 1 the sideband
                         if (region.ringDen[idx].n > 0.)
@@ -3318,7 +3401,10 @@ void DrawCheapRingVsLongitudinal(FileCache& cache, TDirectory* fileRoot, const s
                 for (int st = 0; st < 3; ++st)
                     for (size_t s = 0; s < series.size(); ++s) vals[st][s].push_back(row[st][s]);
             }
-            if (labels.empty()) continue;
+            if (labels.empty()) {
+                CountSkip("RingVsLongitudinal_CheapSigExtract", "no column holds both ring definitions", fam.familyName + "/" + proxy);
+                continue;
+            }
             TDirectory* pxDir = EnsureDir(EnsureDir(EnsureDir(fileRoot, "RingVsLongitudinal_CheapSigExtract"), fam.familyName), proxy);
 
             const std::string head = fam.familyName + ", " + proxy + ": Full 3D Ring vs longitudinal rings, ";
@@ -3469,7 +3555,6 @@ std::vector<VariationConfig> MakeDefinitionSeries(const std::string& fullLabel, 
 void DrawCorrections(TDirectory* fileRoot, const std::vector<FamilyConfig>& families,
                      const std::vector<FakePairing>& pairings, const std::string& folder,
                      const std::string& tag, const CorrectionFetcher& fetch) {
-    const std::vector<std::string> proxies = {"LeadP", "LeadJet", "SubJet"};
     // One series per ring definition: the full ring first, then LONGITUDINAL_RINGS in order
     const std::vector<VariationConfig> kappaSeries = MakeDefinitionSeries("#kappa_{eff} (Full 3D Ring)", "#kappa");
     const std::vector<VariationConfig> corrSeries = MakeDefinitionSeries("Full 3D Ring", "R");
@@ -3483,7 +3568,7 @@ void DrawCorrections(TDirectory* fileRoot, const std::vector<FamilyConfig>& fami
 
     for (const auto& fam : families) {
         TDirectory* famDir = nullptr;
-        for (const auto& proxy : proxies) {
+        for (const auto& proxy : PROXIES) {
             std::vector<std::string> kLabels, cLabels;
             std::vector<std::vector<std::pair<double, double>>> kVals(nDef), cVals(nDef);
             std::set<std::string> kappaSamplesDrawn; // Pairings share data samples, and kappa is the data's: one column each
@@ -3499,6 +3584,9 @@ void DrawCorrections(TDirectory* fileRoot, const std::vector<FamilyConfig>& fami
                     if (!fetch(pr, fam.dataSuffix + fileTags[d] + pr.fakeSuffix, proxy, fake)) continue;
                     // Exact inversion for the full ring (k = alpha^2/3), linear for the longitudinal rings (k = 0)
                     corrected[d] = CorrectRing(data.ring, fake.ring, data.uvx3, d == 0 ? fam.alphaSq / 3. : 0.);
+                    if (corrected[d].second < 0.)
+                        WarnSkip(pr.pairLabel + ", " + proxy + (d == 0 ? std::string(", full ring") : ", " + LONGITUDINAL_RINGS[d - 1].name),
+                                 "correction denominator 3<u v> - k R_d R_f is not positive", "Corrections/" + folder + "/" + fam.familyName);
                     anyCorrected = anyCorrected || corrected[d].second >= 0.;
                 }
                 if (!anyData) continue;
@@ -3517,13 +3605,19 @@ void DrawCorrections(TDirectory* fileRoot, const std::vector<FamilyConfig>& fami
                            kappa[d].first, corrected[d].first, corrected[d].second);
                 printf("\n");
             }
-            if (kLabels.empty()) continue;
+            if (kLabels.empty()) {
+                CountSkip("Corrections/" + folder, "no data sample with inputs", fam.familyName + "/" + proxy);
+                continue;
+            }
             if (!famDir) famDir = EnsureDir(EnsureDir(EnsureDir(fileRoot, "Corrections"), folder), fam.familyName);
             DrawSeriesByColumn(kLabels, kappaSeries, kVals, "Canvas_Kappa_" + proxy,
                                fam.familyName + ", " + proxy + ": #kappa of the data sample (" + tag + ")", famDir, "#kappa");
             if (!cLabels.empty())
                 DrawSeriesByColumn(cLabels, corrSeries, cVals, "Canvas_Corrected_" + proxy,
                                    fam.familyName + ", " + proxy + ": fake-subtracted ring amplitude (" + tag + ")", famDir, "P_{R}");
+            else
+                CountSkip("Corrections/" + folder + ", corrected P", "no pairing with both data and fake inputs",
+                          fam.familyName + "/" + proxy);
         }
     }
 
@@ -3533,10 +3627,13 @@ void DrawCorrections(TDirectory* fileRoot, const std::vector<FamilyConfig>& fami
     // |alpha_Lambda| != |alpha_antiLambda|), and the half-difference holds them, with no vorticity signal. The two
     // species are disjoint samples, so their errors add in quadrature. Charge-driven fakes and a magnetic-field
     // polarization do NOT cancel; they land in the half-difference.
-    for (const auto& proxy : proxies) {
+    for (const auto& proxy : PROXIES) {
         const auto itL = rowsByFamilyProxy.find("Lambda|" + proxy);
         const auto itA = rowsByFamilyProxy.find("AntiLambda|" + proxy);
-        if (itL == rowsByFamilyProxy.end() || itA == rowsByFamilyProxy.end()) continue;
+        if (itL == rowsByFamilyProxy.end() || itA == rowsByFamilyProxy.end()) {
+            CountSkip("Corrections/" + folder + "/SpeciesCombination", "no corrected rows for both Lambda and AntiLambda", proxy);
+            continue;
+        }
         std::vector<std::string> labels;
         std::vector<std::vector<std::pair<double, double>>> avg(nDef), half(nDef);
         for (const auto& rowL : itL->second)
@@ -3552,7 +3649,10 @@ void DrawCorrections(TDirectory* fileRoot, const std::vector<FamilyConfig>& fami
                     half[d].push_back({0.5 * (pl.first - pa.first), err});
                 }
             }
-        if (labels.empty()) continue;
+        if (labels.empty()) {
+            CountSkip("Corrections/" + folder + "/SpeciesCombination", "no pairing corrected in both Lambda and AntiLambda", proxy);
+            continue;
+        }
         TDirectory* spDir = EnsureDir(EnsureDir(EnsureDir(fileRoot, "Corrections"), folder), "SpeciesCombination");
         DrawSeriesByColumn(labels, corrSeries, avg, "Canvas_SpeciesAverage_" + proxy,
                            proxy + ": #frac{1}{2}(#Lambda + #bar{#Lambda}), topological fakes cancel (" + tag + ")", spDir, "P_{R}");
@@ -3570,8 +3670,7 @@ void DrawCorrections(TDirectory* fileRoot, const std::vector<FamilyConfig>& fami
  * why SidebandSubtracted/ divides by the signal kappa, and InPeakQA/ and OffPeakQA/ each by their own region's.
  */
 void DrawKappaByRegion(FileCache& cache, TDirectory* fileRoot, const std::vector<FamilyConfig>& families,
-                       const std::vector<FakePairing>& pairings, const std::string& cutFolder) {
-    const std::vector<std::string> proxies = {"LeadP", "LeadJet", "SubJet"};
+                       const std::vector<FakePairing>& pairings) {
     // Two series (peak, sideband) per ring definition: the full ring first, then LONGITUDINAL_RINGS in order
     static const Color_t kColor[3] = {kGray + 2, kBlue + 1, kGreen + 2};
     std::vector<VariationConfig> series;
@@ -3588,7 +3687,7 @@ void DrawKappaByRegion(FileCache& cache, TDirectory* fileRoot, const std::vector
     };
 
     for (const auto& fam : families) {
-        for (const auto& proxy : proxies) {
+        for (const auto& proxy : PROXIES) {
             std::vector<std::string> labels;
             std::vector<std::vector<std::pair<double, double>>> vals(series.size());
             std::set<std::string> samplesDrawn; // Pairings share data samples: one column each
@@ -3599,7 +3698,7 @@ void DrawKappaByRegion(FileCache& cache, TDirectory* fileRoot, const std::vector
                 bool any = false;
                 for (size_t d = 0; d < fileTags.size(); ++d) {
                     RegionSample r;
-                    if (!LoadRegionSample(cache, stem + fileTags[d] + pr.dataSuffix + ".root", cutFolder, proxy, r)) continue;
+                    if (!LoadRegionSample(cache, stem + fileTags[d] + pr.dataSuffix + ".root", proxy, r)) continue;
                     any = true;
                     row[2 * d] = kappaOf(r, 1);     // Peak
                     row[2 * d + 1] = kappaOf(r, 0); // Sideband
@@ -3608,7 +3707,10 @@ void DrawKappaByRegion(FileCache& cache, TDirectory* fileRoot, const std::vector
                 labels.push_back(pr.dataLabel);
                 for (size_t k = 0; k < series.size(); ++k) vals[k].push_back(row[k]);
             }
-            if (labels.empty()) continue;
+            if (labels.empty()) {
+                CountSkip("Corrections/CheapSigExtract, kappa by region", "no data sample with mass-region inputs", fam.familyName + "/" + proxy);
+                continue;
+            }
             TDirectory* famDir = EnsureDir(EnsureDir(EnsureDir(fileRoot, "Corrections"), "CheapSigExtract"), fam.familyName);
             DrawSeriesByColumn(labels, series, vals, "Canvas_KappaByRegion_" + proxy,
                                fam.familyName + ", " + proxy + ": #kappa in the mass peak and in the sideband (raw)", famDir, "#kappa");
@@ -3620,8 +3722,8 @@ void DrawKappaByRegion(FileCache& cache, TDirectory* fileRoot, const std::vector
 // Differential corrections and ring comparisons (vs proxy pT, vs centrality)
 // ===============================
 
-/// @brief The consumer's differential variables ("Pt" is each proxy's own pT): binning and titles come from its files.
-const std::vector<std::string> DIFFERENTIAL_VARIABLES = {"Pt", "Centrality"};
+/// @brief The consumer's differential variables ("ProxyPt" is each proxy's own pT): binning and titles come from its files.
+const std::vector<std::string> DIFFERENTIAL_VARIABLES = {"ProxyPt", "Centrality"};
 
 /// @brief A canvas-safe name: letters and digits only ("Data (AN-Cuts)" --> "DataANCuts").
 std::string CanvasSafe(const std::string& s) {
@@ -3659,9 +3761,8 @@ using DifferentialBinInputs = std::function<bool(const DifferentialSample&, size
  * on the binning is skipped with a warning rather than subtracted across different bins.
  */
 void DrawDifferentialCorrections(FileCache& cache, TDirectory* fileRoot, const std::vector<FamilyConfig>& families,
-                                 const std::vector<FakePairing>& pairings, const std::string& cutFolder,
+                                 const std::vector<FakePairing>& pairings,
                                  const std::string& folder, const std::string& tag, const DifferentialBinInputs& binInputs) {
-    const std::vector<std::string> proxies = {"LeadP", "LeadJet", "SubJet"};
     const std::vector<VariationConfig> kappaSeries = MakeDefinitionSeries("#kappa_{eff} (Full 3D Ring)", "#kappa");
     const std::vector<VariationConfig> corrSeries = MakeDefinitionSeries("Full 3D Ring", "R");
     std::vector<std::string> fileTags = {""}, defNames = {"FullRing"};
@@ -3670,7 +3771,7 @@ void DrawDifferentialCorrections(FileCache& cache, TDirectory* fileRoot, const s
     const ProfileConfig pc{}; // Every title is passed explicitly
 
     for (const auto& fam : families)
-        for (const auto& proxy : proxies)
+        for (const auto& proxy : PROXIES)
             for (const auto& var : DIFFERENTIAL_VARIABLES) {
                 TDirectory* pxDir = nullptr;
                 auto dirOf = [&]() {
@@ -3687,14 +3788,14 @@ void DrawDifferentialCorrections(FileCache& cache, TDirectory* fileRoot, const s
                     for (size_t d = 0; d < nDef; ++d) {
                         const std::string stem = pr.consumerBase + "/ConsumerResults_" + fam.dataSuffix + fileTags[d];
                         DifferentialSample dataS, fakeS;
-                        if (!LoadDifferentialSample(cache, stem + pr.dataSuffix + ".root", cutFolder, proxy, var, dataS)) continue;
+                        if (!LoadDifferentialSample(cache, stem + pr.dataSuffix + ".root", proxy, var, dataS)) continue;
                         xTitle = dataS.xTitle;
                         kappa[d] = MakeVsXHist("hKappa", dataS.edges);
                         owned.push_back(kappa[d]);
-                        bool haveFake = LoadDifferentialSample(cache, stem + pr.fakeSuffix + ".root", cutFolder, proxy, var, fakeS);
+                        bool haveFake = LoadDifferentialSample(cache, stem + pr.fakeSuffix + ".root", proxy, var, fakeS);
                         if (haveFake && fakeS.edges != dataS.edges) {
-                            std::cerr << "  [Warning] " << pr.pairLabel << ", " << proxy << " vs " << var
-                                      << ": data and fake binnings differ, pairing skipped" << std::endl;
+                            WarnSkip(pr.pairLabel + ", " + proxy + " vs " + var, "data and fake binnings differ",
+                                     "Corrections/" + folder + "/Differential/" + fam.familyName);
                             haveFake = false;
                         }
                         if (haveFake) {
@@ -3725,7 +3826,11 @@ void DrawDifferentialCorrections(FileCache& cache, TDirectory* fileRoot, const s
                 }
 
                 for (size_t d = 0; d < nDef; ++d) {
-                    if (corrBundles[d].empty()) continue;
+                    if (corrBundles[d].empty()) {
+                        CountSkip("Corrections/" + folder + "/Differential, corrected P", "no pairing with both data and fake inputs",
+                                  fam.familyName + "/" + proxy + "/" + var + "/" + defNames[d]);
+                        continue;
+                    }
                     DrawComparisonCanvas(corrBundles[d], "Canvas_Corrected_Vs" + var + "_" + defNames[d],
                                          fam.familyName + ", " + proxy + ": " + corrSeries[d].legendLabel +
                                              ", fake-subtracted ring amplitude (" + tag + ")",
@@ -3748,8 +3853,7 @@ void DrawDifferentialCorrections(FileCache& cache, TDirectory* fileRoot, const s
 void DrawDifferentialRingVsLongitudinal(FileCache& cache, TDirectory* fileRoot, const std::string& consumerDir,
                                         const std::vector<FamilyConfig>& families, const VariationConfig& dataConfig,
                                         const std::vector<VariationConfig>& sysVariations, const std::vector<ExternalRef>& externals,
-                                        const std::vector<FakePairing>& pairings, const std::string& cutFolder) {
-    const std::vector<std::string> proxies = {"LeadP", "LeadJet", "SubJet"};
+                                        const std::vector<FakePairing>& pairings) {
     const std::vector<VariationConfig> series = MakeRingVsLongitudinalSeries();
     const ProfileConfig pc{}; // Every title is passed explicitly
 
@@ -3777,7 +3881,7 @@ void DrawDifferentialRingVsLongitudinal(FileCache& cache, TDirectory* fileRoot, 
     };
 
     for (const auto& fam : families)
-        for (const auto& proxy : proxies)
+        for (const auto& proxy : PROXIES)
             for (const auto& var : DIFFERENTIAL_VARIABLES) {
                 // Curves of the data samples, kept past their own canvases for the _DataOnly one: [sample] --> [state][series]
                 struct KeptCurves { std::string label; std::vector<std::vector<TH1D*>> h; };
@@ -3786,13 +3890,18 @@ void DrawDifferentialRingVsLongitudinal(FileCache& cache, TDirectory* fileRoot, 
                 for (const auto& col : columns) {
                     const std::string stem = col.base + "/ConsumerResults_" + fam.dataSuffix;
                     DifferentialSample full;
-                    if (!LoadDifferentialSample(cache, stem + col.suffix + ".root", cutFolder, proxy, var, full)) continue;
+                    if (!LoadDifferentialSample(cache, stem + col.suffix + ".root", proxy, var, full)) continue;
                     std::vector<DifferentialSample> lng(LONGITUDINAL_RINGS.size());
                     std::vector<bool> haveLong(LONGITUDINAL_RINGS.size(), false);
                     bool anyLong = false;
                     for (size_t l = 0; l < LONGITUDINAL_RINGS.size(); ++l) {
                         haveLong[l] = LoadDifferentialSample(cache, stem + LONGITUDINAL_RINGS[l].fileTag + col.suffix + ".root",
-                                                             cutFolder, proxy, var, lng[l]) && lng[l].edges == full.edges;
+                                                             proxy, var, lng[l]);
+                        if (haveLong[l] && lng[l].edges != full.edges) {
+                            WarnSkip(LONGITUDINAL_RINGS[l].name + " vs " + var + ", " + proxy + ", " + col.cfg.legendLabel,
+                                     "binning differs from the full ring's", fam.familyName);
+                            haveLong[l] = false;
+                        }
                         anyLong = anyLong || haveLong[l];
                     }
                     if (!anyLong) continue;
@@ -3872,11 +3981,30 @@ void DrawDifferentialRingVsLongitudinal(FileCache& cache, TDirectory* fileRoot, 
             }
 }
 
+// ---------------------------------------------------------
+// Main Macro
+// ---------------------------------------------------------
+/**
+ * @brief Builds the cross-configuration summary file for one wagon.
+ *
+ * Reads every ConsumerResults_<suffix>.root found in consumerDir (one per systematic variation),
+ * plus the optional external references, and writes auxiliarySummaryPlots.root beside them.
+ *
+ * @param consumerDir  Directory holding this wagon's ConsumerResults files. Also the output location.
+ * @param mcRefDir     Directory holding the MC baseline's ConsumerResults files. Empty disables the overlay.
+ * @param ppRefDir     Directory holding the pp baseline's ConsumerResults files. Empty disables the overlay.
+ * @param toyModelPath Full path to the single Toy Model file. Empty disables the overlay.
+ * @param doIndividualComparisons Master switch for the one-vs-one canvases. Off by default: that block
+ *                     alone is close to half of the entire output, and the overlays plus the pull panels
+ *                     already carry the same comparisons. Per-observable opt-in still applies on top of
+ *                     this, so turning it on enables it only for the profiles flagged in the table.
+ * @param sigExtractDir Directory holding the signalExtractionRing_*.root files. Empty disables every
+ *                     signal-extracted block.
+ */
 void auxiliarySummaryPlots(const std::string& consumerDir,
                            const std::string& mcRefDir = "",
                            const std::string& ppRefDir = "",
                            const std::string& toyModelPath = "",
-                           const std::string& cutFolder = DEFAULT_CUT_FOLDER,
                            bool doIndividualComparisons = false,
                            const std::string& sigExtractDir = "") {
     
@@ -3969,65 +4097,64 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
     // every variation, reference and signal-extraction file then resolves exactly as for its full-ring sibling.
     // Added only where the data file exists; fullFamilies keeps the originals for the blocks that pair definitions.
     const std::vector<FamilyConfig> fullFamilies = families;
+    std::vector<FamilyConfig> siblingsNotRun; // No data file: listed once in the banner, their files never read
     for (const auto& lr : LONGITUDINAL_RINGS)
         for (const auto& fam : fullFamilies) {
             FamilyConfig sibling{fam.familyName + "_" + lr.name, fam.dataSuffix + lr.fileTag, fam.alphaSq, &lr};
             if (!gSystem->AccessPathName((consumerDir + "/ConsumerResults_" + sibling.dataSuffix + ".root").c_str()))
                 families.push_back(sibling);
+            else
+                siblingsNotRun.push_back(sibling);
         }
 
     // 3. Define the Observable Groups
     // Split by what the x-axis actually is: the proxy's own eta, or the hyperon's eta.
     //
-    // TODO: the consumer's profile naming is not uniform across observables. The leading jet has no infix
-    // in some families (pRingObservableDeltaPhi) but does in others (pRingObservableLeadJetPVz), and the
-    // subleading jet is "2ndJet" everywhere except PVz, where it is "SubLead". That is why every name below
-    // is spelled out instead of being built from a proxy infix. Worth unifying in the consumer at some
-    // point, but it would break other downstream code, so leaving it alone for now.
+    // Every entry is the consumer's in-file path, spelled as the consumer books it. Every proxy folder holds
+    // the same object names, so the proxy folder in the path is what tells the entries apart, and
+    // ObservableDisplayName carries it into the output names. The axis titles are read from the data profile
+    // in the observable loop, so the table does not repeat them.
+    // Field order: path, doIndividualComparisons, toyProfile, doTanhFit, inBruteForce, displayName, xTitleSuffix.
     std::vector<ObservableGroup> observableGroups = {
         {
             "EtaProxy", // x-axis is the eta of the jet/leading-particle proxy
             {
-                {"LeadP/EtaDependence/", "pRingObservableEtaLeadP", "#eta_{LeadP}", "R", true, true, "pRingProxyJetVsEtaJet", false, "LeadP"},
-                {"LeadJet/EtaDependence/", "pRingObservableEtaJet", "#eta_{Jet}", "R", true, false, "pRingProxyJetVsEtaJet", false, "LeadJet"},
-                {"SubJet/EtaDependence/", "pRingObservableEta2ndJet", "#eta_{2ndJet}", "R", true, false, "pRingProxyJetVsEtaJet", false, "SubJet"},
-                // Fine-binned counterparts of the two above. Same axis, finer granularity: these are the
-                // ones that show the tanh-like shape cleanly in the Toy Model.
-                {"LeadJet/EtaDependence/", "pRingObservableEtaJetHighEtaRes", "#eta_{Jet}", "R", true, false, "pRingProxyJetVsEtaJet", true, "LeadJet"},
-                {"LeadP/EtaDependence/", "pRingObservableEtaLeadPHighEtaRes", "#eta_{LeadP}", "R", true, true, "pRingProxyJetVsEtaJet", true, "LeadP"}
+                {"Ring/LeadP/EtaDependence/pRingObservableProxyEta",   true,  "pRingProxyJetVsEtaJet"},
+                {"Ring/LeadJet/EtaDependence/pRingObservableProxyEta", false, "pRingProxyJetVsEtaJet"},
+                {"Ring/SubJet/EtaDependence/pRingObservableProxyEta",  false, "pRingProxyJetVsEtaJet"},
+                // Fine-binned counterparts of the LeadJet and LeadP ones above. Same axis, finer granularity:
+                // these are the ones that show the tanh-like shape cleanly in the Toy Model.
+                {"Ring/LeadJet/EtaDependence/pRingObservableProxyEtaHighEtaRes", false, "pRingProxyJetVsEtaJet", true},
+                {"Ring/LeadP/EtaDependence/pRingObservableProxyEtaHighEtaRes",   true,  "pRingProxyJetVsEtaJet", true}
             },
             true // Eta axis is symmetric about zero, so folding is meaningful
         },
         {
             "EtaV0", // x-axis is the eta of the hyperon itself, split by which proxy defined the ring
             {
-                {"LeadJet/EtaDependence/", "pRingObservableEtaLambda", "#eta_{#Lambda}", "R", true, false, "pRingProxyJetVsEta", false, "LeadJet"},
-                {"LeadP/EtaDependence/", "pRingObservableEtaLambdaLeadP", "#eta_{#Lambda(LeadP)}", "R", true, true, "pRingProxyJetVsEta", false, "LeadP"},
-                {"SubJet/EtaDependence/", "pRingObservableEtaLambda2ndJet", "#eta_{#Lambda(2ndJet)}", "R", true, false, "pRingProxyJetVsEta", false, "SubJet"}
+                {"Ring/LeadJet/EtaDependence/pRingObservableEtaLambda", false, "pRingProxyJetVsEta"},
+                {"Ring/LeadP/EtaDependence/pRingObservableEtaLambda",   true,  "pRingProxyJetVsEta"},
+                {"Ring/SubJet/EtaDependence/pRingObservableEtaLambda",  false, "pRingProxyJetVsEta"}
             },
             true
         },
         {
             // <R> against the angle between the hyperon and its decay proton in the helicity frame.
-            // Booked at TASK level rather than inside a cut folder, hence underCutFolder = false.
+            // Booked under FakePolDrivers/PhiAEE/<Proxy>/ (doFakePolDiagnosticsQA), one species-agnostic
+            // profile per proxy: the family's file sets the species.
             // <R> changes sign across this axis, so folding it would cancel the very structure the
             // observable exists to show: doFold stays false.
-            // README: the Lambda-like set is the QA for species competition -- with balanced Lambda
-            // and AntiLambda yields its dependence should cancel, so a residual there measures the
-            // imbalance rather than a physics asymmetry.
+            // README: in the BothHyperons family this is the Lambda-like set, the QA for species competition --
+            // with balanced Lambda and AntiLambda yields its dependence should cancel, so a residual there
+            // measures the imbalance rather than a physics asymmetry.
+            // The display names are spelled out to keep the folder names the AEE outputs have always had, minus the
+            // species tag the family folder now carries (the derived ones would read LeadJetRingObservableVsPhiAEE).
+            // The AEE mass block (runAeeHeeBlocks) takes them from here.
             "AEE",
             {
-                {"HelicityEfficiencyQA/PhiLambdaPhiProtonStar/", "pRingObservableLeadJetVsPhiLambdaLikePhiProtonStar", "#phi_{#Lambda-like}-#phi_{p-like}^{*}", "R", false, false, "", false, "LeadJet", "LambdaLike", "RingLeadJetAEE_LambdaLike"},
-                {"HelicityEfficiencyQA/PhiLambdaPhiProtonStar/", "pRingObservableLeadPVsPhiLambdaLikePhiProtonStar",   "#phi_{#Lambda-like}-#phi_{p-like}^{*}", "R", false, true,  "", false, "LeadP", "LambdaLike", "RingLeadPAEE_LambdaLike"},
-                {"HelicityEfficiencyQA/PhiLambdaPhiProtonStar/", "pRingObservable2ndJetVsPhiLambdaLikePhiProtonStar",  "#phi_{#Lambda-like}-#phi_{p-like}^{*}", "R", false, false, "", false, "SubJet", "LambdaLike", "RingSubJetAEE_LambdaLike"},
-
-                {"HelicityEfficiencyQA/PhiLambdaPhiProtonStar/", "pRingObservableLeadJetVsPhiLambdaPhiProtonStar", "#phi_{#Lambda}-#phi_{p}^{*}", "R", false, false, "", false, "LeadJet", "Lambda", "RingLeadJetAEE_Lambda"},
-                {"HelicityEfficiencyQA/PhiLambdaPhiProtonStar/", "pRingObservableLeadPVsPhiLambdaPhiProtonStar",   "#phi_{#Lambda}-#phi_{p}^{*}", "R", false, true,  "", false, "LeadP", "Lambda", "RingLeadPAEE_Lambda"},
-                {"HelicityEfficiencyQA/PhiLambdaPhiProtonStar/", "pRingObservable2ndJetVsPhiLambdaPhiProtonStar",  "#phi_{#Lambda}-#phi_{p}^{*}", "R", false, false, "", false, "SubJet", "Lambda", "RingSubJetAEE_Lambda"},
-
-                {"HelicityEfficiencyQA/PhiLambdaPhiProtonStar/", "pRingObservableLeadJetVsPhiAntiLambdaPhiProtonStar", "#phi_{#bar{#Lambda}}-#phi_{#bar{p}}^{*}", "R", false, false, "", false, "LeadJet", "AntiLambda", "RingLeadJetAEE_AntiLambda"},
-                {"HelicityEfficiencyQA/PhiLambdaPhiProtonStar/", "pRingObservableLeadPVsPhiAntiLambdaPhiProtonStar",   "#phi_{#bar{#Lambda}}-#phi_{#bar{p}}^{*}", "R", false, true,  "", false, "LeadP", "AntiLambda", "RingLeadPAEE_AntiLambda"},
-                {"HelicityEfficiencyQA/PhiLambdaPhiProtonStar/", "pRingObservable2ndJetVsPhiAntiLambdaPhiProtonStar",  "#phi_{#bar{#Lambda}}-#phi_{#bar{p}}^{*}", "R", false, false, "", false, "SubJet", "AntiLambda", "RingSubJetAEE_AntiLambda"}
+                {"FakePolDrivers/PhiAEE/LeadJet/pRingObservableVsPhiAEE", false, "", false, true, "RingLeadJetAEE"},
+                {"FakePolDrivers/PhiAEE/LeadP/pRingObservableVsPhiAEE",   true,  "", false, true, "RingLeadPAEE"},
+                {"FakePolDrivers/PhiAEE/SubJet/pRingObservableVsPhiAEE",  false, "", false, true, "RingSubJetAEE"}
             },
             false
         },
@@ -4039,9 +4166,9 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             // no "proxy pT" to bin against. Supplying one would mean inventing a jet momentum spectrum,
             // which is a modelling decision rather than a booking change. Deliberately left empty.
             {
-                {"LeadJet/ProxyPtDependence/", "pRingVsPtJet", "#it{p}_{T}^{Jet} (GeV/c)", "R", true, false, "", false, "LeadJet"},
-                {"LeadP/ProxyPtDependence/", "pRingVsPtLeadP", "#it{p}_{T}^{LeadP} (GeV/c)", "R", true, true, "", false, "LeadP"},
-                {"SubJet/ProxyPtDependence/", "pRingVsPt2ndJet", "#it{p}_{T}^{SubJet} (GeV/c)", "R", true, false, "", false, "SubJet"}
+                {"Ring/LeadJet/PtDependence/pRingVsProxyPt", false},
+                {"Ring/LeadP/PtDependence/pRingVsProxyPt",   true},
+                {"Ring/SubJet/PtDependence/pRingVsProxyPt",  false}
             },
             false // pT is strictly positive: folding about zero is meaningless
         },
@@ -4050,11 +4177,12 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                                 // Kept to the four single-sign splits: the four combined (proxy AND V0) splits exist
                                 // in the consumer too, but they multiply the plot count for little extra information.
                                 // No toy counterpart, for the same reason as ProxyPt above.
+                                // The consumer states the split in the histogram title only, hence the x title suffix.
             {
-                {"LeadP/ProxyPtDependence/", "pRingVsPtLeadP_PosEtaLeadP", "#it{p}_{T}^{LeadP} (GeV/c), #eta_{LeadP}>0", "R", true, true},
-                {"LeadP/ProxyPtDependence/", "pRingVsPtLeadP_NegEtaLeadP", "#it{p}_{T}^{LeadP} (GeV/c), #eta_{LeadP}<0", "R", true, true},
-                {"LeadP/ProxyPtDependence/", "pRingVsPtLeadP_PosEtaV0",    "#it{p}_{T}^{LeadP} (GeV/c), #eta_{V0}>0",    "R", true, true},
-                {"LeadP/ProxyPtDependence/", "pRingVsPtLeadP_NegEtaV0",    "#it{p}_{T}^{LeadP} (GeV/c), #eta_{V0}<0",    "R", true, true}
+                {"Ring/LeadP/PtDependence/pRingVsProxyPt_PosProxyEta", true, "", false, false, "", ", #eta_{LeadP}>0"},
+                {"Ring/LeadP/PtDependence/pRingVsProxyPt_NegProxyEta", true, "", false, false, "", ", #eta_{LeadP}<0"},
+                {"Ring/LeadP/PtDependence/pRingVsProxyPt_PosEtaV0",    true, "", false, false, "", ", #eta_{V0}>0"},
+                {"Ring/LeadP/PtDependence/pRingVsProxyPt_NegEtaV0",    true, "", false, false, "", ", #eta_{V0}<0"}
             },
             false
         },
@@ -4062,9 +4190,9 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             "PVz", // Primary-vertex z dependence, a pure detector-geometry handle on the fake signal
                    // No toy counterpart by design: the toy has no primary vertex to displace.
             {
-                {"LeadJet/", "pRingObservableLeadJetPVz", "PVz (cm), LeadJet", "R", true, false, "", false, "LeadJet"},
-                {"LeadP/", "pRingObservableLeadPPVz", "PVz (cm), LeadP", "R", true, true, "", false, "LeadP"},
-                {"SubJet/", "pRingObservableSubLeadPVz", "PVz (cm), SubJet", "R", true, false, "", false, "SubJet"}
+                {"Ring/LeadJet/EventLevelDependence/pRingObservablePVz", false},
+                {"Ring/LeadP/EventLevelDependence/pRingObservablePVz",   true},
+                {"Ring/SubJet/EventLevelDependence/pRingObservablePVz",  false}
             },
             true // PVz is symmetric about zero, so folding it is meaningful
         },
@@ -4074,9 +4202,10 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                        // a fluctuating per-event multiplicity.
                        // No toy counterpart: the toy has neither a centrality nor a multiplicity concept.
             {
-                {"LeadJet/", "pRingVsCentrality", "Centrality (%)", "R", true, false, "", false, "LeadJet"},
-                // Booked at task level rather than inside the kinematic-cut folders, hence underCutFolder = false
-                {"IntegratedCuts/", "pRingVsNV0s", "N_{#Lambda}+N_{#bar{#Lambda}}", "R", false, false, "", false, "LeadJet"}
+                {"Ring/LeadJet/EventLevelDependence/pRingVsCentrality"},
+                // Booked under IntegratedCuts/ rather than Ring/: the leading-jet ring against the number of
+                // Lambda-like V0s in the collision
+                {"IntegratedCuts/LeadJet/pRingVsNV0s"}
             },
             false
         },
@@ -4087,8 +4216,8 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             // phi_Lambda is already being used as an axis by pPstarX/Y/Z_vsPhiLam, so the binning and the
             // variable both exist; only a <R>-weighted TProfile against it is missing.
             {
-                {"LeadJet/", "pRingObservablePhiJet", "#varphi_{Jet}", "R", true, false, "", false, "LeadJet"},
-                {"LeadJet/", "pRingObservablePhiLambda", "#varphi_{#Lambda}", "R", true, false, "", false, "LeadJet"}
+                {"Ring/LeadJet/AngularDependence/pRingObservableProxyPhi"},
+                {"Ring/LeadJet/AngularDependence/pRingObservablePhiLambda"}
             },
             false // Lab-frame phi runs over [0, 2pi): there is no zero to fold about
         },
@@ -4100,9 +4229,9 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             // block, phi_Lambda from the hyperon kinematics), so it is a booking plus a single Fill, with
             // no new sampling and no extra runtime. Fill toyProfile below once it exists.
             {
-                {"LeadJet/", "pRingObservableDeltaPhi", "#Delta#varphi_{jet}", "R", true, false, "", false, "LeadJet"},
-                {"LeadP/", "pRingObservableLeadPDeltaPhi", "#Delta#varphi_{LeadP}", "R", true, true, "", false, "LeadP"},
-                {"SubJet/", "pRingObservable2ndJetDeltaPhi", "#Delta#varphi_{SubJet}", "R", true, false, "", false, "SubJet"}
+                {"Ring/LeadJet/AngularDependence/pRingObservableDeltaPhi", false},
+                {"Ring/LeadP/AngularDependence/pRingObservableDeltaPhi",   true},
+                {"Ring/SubJet/AngularDependence/pRingObservableDeltaPhi",  false}
             },
             false // DeltaPhi runs over a full period, not symmetric about zero
         },
@@ -4112,9 +4241,9 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             // TODO (Toy Model): same situation as DeltaPhi. cosThetaJet and the hyperon direction are both
             // already available at the ring computation, so <R> vs DeltaTheta is a booking plus one Fill.
             {
-                {"LeadJet/", "pRingObservableDeltaTheta", "#Delta#theta_{jet}", "R", true, false, "", false, "LeadJet"},
-                {"LeadP/", "pRingObservableLeadPDeltaTheta", "#Delta#theta_{LeadP}", "R", true, true, "", false, "LeadP"},
-                {"SubJet/", "pRingObservable2ndJetDeltaTheta", "#Delta#theta_{SubJet}", "R", true, false, "", false, "SubJet"}
+                {"Ring/LeadJet/AngularDependence/pRingObservableDeltaTheta", false},
+                {"Ring/LeadP/AngularDependence/pRingObservableDeltaTheta",   true},
+                {"Ring/SubJet/AngularDependence/pRingObservableDeltaTheta",  false}
             },
             false
         }
@@ -4132,12 +4261,13 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
 
     // 3b. Define the categorical (labelled-bin) cut scans
     // These are the eta-split closure tests: each bin is a named selection rather than a coordinate,
-    // so they need the labelled-axis drawing path. Booked at task level and only when the consumer's
-    // doFakePolDiagnosticsQA is on, hence fetched defensively like everything else.
+    // so they need the labelled-axis drawing path. Booked under FakePolDrivers/ProxyEta/<Proxy>/ and only
+    // when the consumer's doFakePolDiagnosticsQA is on, hence fetched defensively like everything else.
+    // Field order: path, doEtaSignSummary, massSplitProfile.
     std::vector<CategoricalObservable> categoricalObservables = {
-        {"EtaStudy/", "pRingEtaCuts",              "R", true, ""},
-        {"EtaStudy/", "pRingEtaCutsSubLeadingJet", "R", true, ""},
-        {"EtaStudy/", "pRingEtaCutsLeadingP",      "R", true, "pRingEtaCutsLeadingP_MassSignalVsBackground"}
+        {"FakePolDrivers/ProxyEta/LeadJet/pRingEtaCuts", true, ""},
+        {"FakePolDrivers/ProxyEta/SubJet/pRingEtaCuts",  true, ""},
+        {"FakePolDrivers/ProxyEta/LeadP/pRingEtaCuts",   true, "p2dRingEtaCuts_MassSignalVsBackground"}
     };
 
     // 4. Create the output file
@@ -4151,8 +4281,9 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
     // One cache for the whole run: every consumer/MC/pp/toy file is opened at most once
     FileCache cache;
 
-    // Only a subset of the variations is run in R_z. Their absence is expected, so it is recorded once
-    // here, quietly, instead of warned about per observable.
+    // Only a subset of the variations is run in R_z. Their absence is expected, so it is listed once here,
+    // per family, instead of being warned about per observable (and those files are then not counted again).
+    // A longitudinal definition never run for a family gets one line, and none of its files is read.
     for (const auto& fam : families) {
         if (!fam.ring) continue;
         std::string absent;
@@ -4165,20 +4296,33 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             }
         if (!absent.empty()) std::cout << " " << fam.familyName << ": variations not run: " << absent << "\n";
     }
+    for (const auto& sibling : siblingsNotRun) {
+        cache.MarkAbsent(consumerDir + "/ConsumerResults_" + sibling.dataSuffix + ".root");
+        for (const auto* vars : {&sysVariations, &massVariations})
+            for (const auto& v : *vars) {
+                const std::string f = consumerDir + "/ConsumerResults_" + sibling.dataSuffix + v.suffix + ".root";
+                if (gSystem->AccessPathName(f.c_str())) cache.MarkAbsent(f);
+            }
+        std::cout << " " << sibling.familyName << ": not run (no data file), skipped entirely\n";
+    }
 
     std::cout << "========================================================\n";
     std::cout << " Generating Auxiliary Plots\n";
-    std::cout << " Output:     " << outFilePath << "\n";
-    std::cout << " Cut folder: " << cutFolder << "\n";
+    std::cout << " Output:            " << outFilePath << "\n";
+    // The references and the signal extraction are choices of the run: an absent one is stated here, once
+    for (const auto& ext : externalsAll)
+        std::cout << " " << ext.config.legendLabel << ": " << std::string(std::max(0, 17 - static_cast<int>(ext.config.legendLabel.size())), ' ')
+                  << (ext.basePath.empty() ? "not requested" : ext.basePath) << "\n";
+    std::cout << " Signal extraction: " << (sigExtractDir.empty() ? "disabled" : sigExtractDir) << "\n";
     std::cout << "========================================================\n";
 
     // One representative observable per proxy. Integrated values are a property of the entry set, not of
     // the binning, so a single observable per proxy captures everything the others would repeat.
-    const std::vector<std::pair<std::string, std::string>> proxyRepresentatives = {
-        {"LeadP",   "pRingObservableEtaLeadP"},
-        {"LeadJet", "pRingObservableEtaJet"},
-        {"SubJet",  "pRingObservableEta2ndJet"}
-    };
+    // {proxy, path}, in PROXIES order. Matched by the full path: the object name is the same in every proxy
+    // folder, so on its own it would match all three.
+    std::vector<std::pair<std::string, std::string>> proxyRepresentatives;
+    for (const auto& proxy : PROXIES)
+        proxyRepresentatives.push_back({proxy, RING_DIR_IN_FILE + proxy + "/EtaDependence/pRingObservableProxyEta"});
 
     // Styling for the cross-family comparison, where the SERIES are the hyperon selections
     const std::vector<VariationConfig> familyStyles = {
@@ -4187,8 +4331,8 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         {"", "BothHyperons", kBlack, 1, 8,  true}
     };
 
-    // The three proxy folders written by signalExtractionRing, in the same order as
-    // proxyRepresentatives above so the two cross-family blocks line up.
+    // The three proxy folders written by signalExtractionRing, in PROXIES order like
+    // proxyRepresentatives above, so the two cross-family blocks line up.
     const std::vector<SigExtractProxy> sigExtractProxies = {
         {"LeadP",   "Leading particle"},
         {"LeadJet", "Leading jet"},
@@ -4209,11 +4353,14 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         std::vector<std::vector<SigExtractPoint>>(sigExtractProxies.size(),
                                                   std::vector<SigExtractPoint>(families.size())));
 
-    // crossFamilyVals[proxy][family] = one integrated value per variation, in allSystematics order
+    // crossFamilyVals[proxy][family] = one integrated value per column of crossFamilyLabels; a column the family
+    // lacks keeps a negative error (a gap)
     std::vector<std::vector<std::vector<std::pair<double, double>>>>
         crossFamilyVals(proxyRepresentatives.size(),
                         std::vector<std::vector<std::pair<double, double>>>(families.size()));
-    std::vector<std::vector<std::string>> crossFamilyLabels(proxyRepresentatives.size());
+    // The cross-family columns: Data, then every variation of the table, in table order
+    std::vector<std::string> crossFamilyLabels{dataConfig.legendLabel};
+    for (const auto& sys : sysVariations) crossFamilyLabels.push_back(sys.legendLabel);
 
     // 5. Main Processing Loops
     // The Toy Model predicts the full ring only, so longitudinal families see the references without it
@@ -4228,7 +4375,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         const std::vector<ExternalRef>& externals = fam.ring ? externalsNoToy : externalsAll;
 
         // Directories are created lazily (only once something is actually written into them),
-        // so a consumer file that does not enable the requested cut folder leaves no empty folders.
+        // so a consumer file that lacks an object leaves no empty folders.
         TDirectory* famDir = nullptr;
 
         // Variables to accumulate the integrated observable summary across all variations for this family
@@ -4257,127 +4404,87 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             // -----------------------------------------------------------------------------------
             // Mass-slice cross-checks: <R> in the peak region against <R> in the two sidebands
             // -----------------------------------------------------------------------------------
-            // Task-level objects, so they carry no cutFolder and are read once per family. Both groups
-            // use the same three-bin mass axis and the same drawer; only the x-axis differs.
+            // Read once per family, from the family's data file, which also sets the species: every object
+            // here is species-agnostic. Both groups use the same mass-region axis and the same drawers; only
+            // the x-axis differs. The titles are read from the source profiles, as in the observable loop.
             // README: these exist to be independent of signalExtractionRing, so that a disagreement
             // between the two is informative rather than circular.
             {
                 const std::string famFile = consumerDir + "/ConsumerResults_" + fam.dataSuffix + ".root";
-                const std::string aeeDir = TASK_DIR_IN_FILE + "HelicityEfficiencyQA/";
-            
-                struct MassSliceSpec { std::string path, outName, xTitle, title, species; };
-            
-                // (a) <R> against phi_Lambda - phi_p*, three mass regions, per proxy and per species.
-                std::vector<MassSliceSpec> phiSpecs;
-                const std::pair<const char*, const char*> proxies[3] = {
-                    {"LeadJet", "<#it{R}>_{LeadJet}"},
-                    {"LeadP",   "<#it{R}>_{LeadP}"},
-                    {"2ndJet",  "<#it{R}>_{SubJet}"}
-                };
-                const std::pair<const char*, const char*> species[3] = {
-                    {"PhiLambdaLike",  "#phi_{#Lambda-like}-#phi_{p-like}^{*}"},
-                    {"PhiLambda",      "#phi_{#Lambda}-#phi_{p}^{*}"},
-                    {"PhiAntiLambda",  "#phi_{#bar{#Lambda}}-#phi_{#bar{p}}^{*}"}
-                };
-                for (const auto& pr : proxies) {
-                    for (const auto& sp : species) {
-                        // Same species restriction as the 1D group above
-                        const std::string spTag = (std::string(sp.first) == "PhiLambda")     ? "Lambda"
-                                                : (std::string(sp.first) == "PhiAntiLambda") ? "AntiLambda"
-                                                                                             : "LambdaLike";
-                        if (!SpeciesMatchesFamily(spTag, fam.familyName)) continue;
-                        // Destination folder is the 1D observable's own folder, so the cheap
-                        // check sits next to the distribution it is checking rather than in a
-                        // separate tree the reader has to cross-reference.
-                        // README: displayName here must match the AEE table entry exactly.
-                        const std::string proxyDisp = (std::string(pr.first) == "2ndJet") ? "SubJet"
-                                                                                          : pr.first;
-                        phiSpecs.push_back({
-                            aeeDir + "PhiLambdaPhiProtonStar/ThreeBinMass/p2dRingObservable" +
-                                pr.first + "Vs" + sp.first + "PhiProtonStarVs3BinMass",
-                            "Ring" + proxyDisp + "AEE_" + spTag,
-                            sp.second,
-                            std::string(pr.second) + " vs " + sp.second,
-                            spTag});
+
+                // (a) <R> against phi_Lambda - phi_p*, by mass region, one map per entry of the AEE group.
+                //     Destination folder is the 1D observable's own folder, so the cheap check sits next to
+                //     the distribution it is checking rather than in a separate tree the reader has to
+                //     cross-reference. The folder name comes from the table entry itself, so the two cannot
+                //     drift apart.
+                for (const auto& g : observableGroups) {
+                    if (g.groupName != "AEE") continue;
+                    for (const auto& aee : g.profiles) {
+                        const std::string proxy = ProxyOfPath(aee.path);
+                        TProfile2D* p2d = cache.FetchClone<TProfile2D>(famFile,
+                            TASK_DIR_IN_FILE + "FakePolDrivers/PhiAEE/FiveBinMass/" + proxy + "/p2dRingObservableVsPhiAEEVs5BinMass");
+                        if (!p2d) continue; // Booked only with doFakePolDiagnosticsQA. FetchClone has already warned
+                        const std::string xTitle = p2d->GetXaxis()->GetTitle();
+                        const std::string yTitle = WithProxySubscript(p2d->GetZaxis()->GetTitle(), proxy);
+                        // Lands in <Family>/AEE/<observable>/Mass_Selection/
+                        TDirectory* obsMassDir = EnsureDir(
+                            EnsureDir(EnsureDir(EnsureDir(fOut, fam.familyName), "AEE"), ObservableDisplayName(aee)),
+                            "Mass_Selection");
+                        DrawMassRegionCanvases(p2d, fam.familyName + " " + yTitle + " vs " + xTitle,
+                                               obsMassDir, xTitle, yTitle);
+                        delete p2d;
                     }
                 }
-            
-                for (const auto& spec : phiSpecs) {
-                    TProfile2D* p2d = cache.FetchClone<TProfile2D>(famFile, spec.path, false);
-                    if (!p2d) continue; // Absent for consumer output produced before these were booked
-                    // spec.outName is the observable's displayName, so this lands in
-                    // <Family>/AEE/<observable>/Mass_Selection/
-                    TDirectory* obsMassDir = EnsureDir(
-                        EnsureDir(EnsureDir(EnsureDir(fOut, fam.familyName), "AEE"), spec.outName),
-                        "Mass_Selection");
-                    DrawMassRegionCanvases(p2d, fam.familyName + " " + spec.title,
-                                           obsMassDir, spec.xTitle, "R");
-                    delete p2d;
-                }
-            
-                // (b) <R> against cos(theta) in the helicity frame. Leading jet only, which is why the
-                //     titles say so explicitly: there is no LeadP or SubJet counterpart to compare with.
+
+                // (b) <R> against cos(theta) in the helicity frame. Leading jet only: the consumer fills these
+                //     with the leading-jet ring (their folder names no proxy), which is why the titles say so
+                //     explicitly: there is no LeadP or SubJet counterpart to compare with.
                 //     Motivated by the angular dependence reported in J. Adams' global-polarization
                 //     thesis; the question is whether the ring observable shows anything similar.
-                const std::vector<MassSliceSpec> heeSpecs = {
-                    {aeeDir + "CosThetaHEEByMass/p2dRingLambdaCosThetaHEEVsMass", "Canvas_HEE_Lambda",
-                     "cos(#theta)_{HEE} = #hat{p}^{*}_{D} . #vec{p}_{#Lambda}",
-                     "<#it{R}>_{LeadJet} vs cos(#theta)_{HEE}, #Lambda, by mass region", "Lambda"},
-                    {aeeDir + "CosThetaHEEByMass/p2dRingAntiLambdaCosThetaHEEVsMass", "Canvas_HEE_AntiLambda",
-                     "cos(#theta)_{HEE} = #hat{p}^{*}_{D} . #vec{p}_{#bar{#Lambda}}",
-                     "<#it{R}>_{LeadJet} vs cos(#theta)_{HEE}, #bar{#Lambda}, by mass region", "AntiLambda"},
-                    {aeeDir + "CosThetaHEEByMass/p2dRingAllV0sCosThetaHEEVsMass", "Canvas_HEE_AllV0s",
-                     "cos(#theta)_{HEE} = #hat{p}^{*}_{D} . #vec{p}_{#Lambda-like}",
-                     "<#it{R}>_{LeadJet} vs cos(#theta)_{HEE}, all V0s, by mass region", "LambdaLike"}
-                };
-            
+                //     The species is the family's (its folder), so the canvas names carry none.
+                const std::string heeBase = TASK_DIR_IN_FILE + "FakePolDrivers/CosHEE/ByMass/p2dRingCosThetaHEEVsMass";
+                const std::string heeName = "Canvas_HEE";
+                TProfile2D* heeNominal = cache.FetchClone<TProfile2D>(famFile, heeBase);
+                if (!heeNominal) return; // Booked only with doFakePolDiagnosticsQA. FetchClone has already warned, and HEE is the last block here
+                const std::string heeXTitle = heeNominal->GetXaxis()->GetTitle();
+                const std::string heeYTitle = WithProxySubscript(heeNominal->GetZaxis()->GetTitle(), "LeadJet");
                 TDirectory* heeDir = nullptr;
-            
+
                 // Is the HEE dependence a reflection of the AEE angle, or a separate effect?
                 // Splitting on the sign of phi_Lambda - phi_p* answers it directly: if the cos(theta)
                 // trend is driven by the AEE, the two halves separate and the inclusive curve sits
                 // between them. If it survives with the same shape in both halves, it is its own effect.
                 // README: this is the whole point of the AEE-split canvases below.
-                struct HeeSplitSpec { std::string base, outName, xTitle, species; };
-                const std::vector<HeeSplitSpec> heeSplits = {
-                    {aeeDir + "CosThetaHEEByMass/p2dRingLambdaCosThetaHEEVsMass", "Lambda",
-                     "cos(#theta)_{HEE} = #hat{p}^{*}_{D} . #vec{p}_{#Lambda}", "Lambda"},
-                    {aeeDir + "CosThetaHEEByMass/p2dRingAntiLambdaCosThetaHEEVsMass", "AntiLambda",
-                     "cos(#theta)_{HEE} = #hat{p}^{*}_{D} . #vec{p}_{#bar{#Lambda}}", "AntiLambda"},
-                    {aeeDir + "CosThetaHEEByMass/p2dRingAllV0sCosThetaHEEVsMass", "AllV0s",
-                     "cos(#theta)_{HEE} = #hat{p}^{*}_{D} . #vec{p}_{#Lambda-like}", "LambdaLike"}
-                };
-            
-                for (const auto& hs : heeSplits) {
-                    if (!SpeciesMatchesFamily(hs.species, fam.familyName)) continue;
-            
-                    TProfile2D* pPos = cache.FetchClone<TProfile2D>(famFile, hs.base + "PosDeltaPhiAEE", false);
-                    TProfile2D* pNeg = cache.FetchClone<TProfile2D>(famFile, hs.base + "NegDeltaPhiAEE", false);
-                    if (!pPos || !pNeg) { delete pPos; delete pNeg; continue; }
-            
+                auto drawAeeSplit = [&]() {
+                    TProfile2D* pPos = cache.FetchClone<TProfile2D>(famFile, heeBase + "PosPhiAEE");
+                    TProfile2D* pNeg = cache.FetchClone<TProfile2D>(famFile, heeBase + "NegPhiAEE");
+                    const std::string splitWhat = fam.familyName + " HEE, AEE split";
+                    if (!pPos || !pNeg || !HasMassRegionAxis(pPos, splitWhat) || !HasMassRegionAxis(pNeg, splitWhat)) {
+                        delete pPos; delete pNeg;
+                        return; // Each check above has already warned
+                    }
+
                     if (!heeDir) heeDir = EnsureDir(EnsureDir(fOut, fam.familyName), "HEE");
-            
+
                     // The inclusive curve is REBUILT from the two halves rather than read from the
                     // unsplit profile. TProfile::Add merges sums and entry counts, so the result is the
                     // exact entry-weighted inclusive -- and it is guaranteed to share binning with the
                     // two halves, which a separately booked profile is not.
-                    const int nMass = pPos->GetYaxis()->GetNbins();
-                    const int peakBin = (nMass == 3) ? 2 : 1; // Middle slice is the in-window region
-            
+
                     auto sliceOf = [&](TProfile2D* p, int m, const char* tag) {
-                        TProfile* s = p->ProfileX(Form("hee_%s_%s_%d", hs.outName.c_str(), tag, m), m, m);
+                        TProfile* s = p->ProfileX(Form("hee_%s_%d", tag, m), m, m);
                         if (s) s->SetDirectory(nullptr);
                         return s;
                     };
-            
+
                     // (a) In-window only: all, positive half, negative half
-                    TProfile* sPos = sliceOf(pPos, peakBin, "pos");
-                    TProfile* sNeg = sliceOf(pNeg, peakBin, "neg");
+                    TProfile* sPos = sliceOf(pPos, kMassPeak.bin, "pos");
+                    TProfile* sNeg = sliceOf(pNeg, kMassPeak.bin, "neg");
                     if (sPos && sNeg) {
-                        TProfile* sAll = (TProfile*)sPos->Clone(Form("hee_%s_all", hs.outName.c_str()));
+                        TProfile* sAll = (TProfile*)sPos->Clone("hee_all");
                         sAll->SetDirectory(nullptr);
                         sAll->Add(sNeg);
-            
+
                         std::vector<ProfileBundle> hb;
                         VariationConfig cAll; cAll.legendLabel = "all #phi_{#Lambda}-#phi_{p}^{*}";
                         cAll.color = kBlack; cAll.lineStyle = 1; cAll.markerStyle = 20; cAll.isData = true;
@@ -4386,58 +4493,57 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         VariationConfig cN; cN.legendLabel = "#phi_{#Lambda}-#phi_{p}^{*} < 0";
                         cN.color = kBlue + 1; cN.lineStyle = 1; cN.markerStyle = 22; cN.isData = false;
                         hb.push_back({sAll, cAll}); hb.push_back({sPos, cP}); hb.push_back({sNeg, cN});
-            
-                        ProfileConfig pc; pc.xAxisTitle = hs.xTitle; pc.yAxisTitle = "R";
-                        const std::string nm = "Canvas_HEE_" + hs.outName + "_AEESplit_InPeak";
-                        const std::string ttl = fam.familyName + " <#it{R}>_{LeadJet} vs cos(#theta)_{HEE}, "
-                                              + hs.outName + ", in mass window, split by AEE angle sign";
-                        DrawComparisonCanvas(hb, nm, ttl, heeDir, pc, hs.xTitle, "R");
-                        DrawComparisonCanvas(hb, nm + "_PullOnly", ttl, heeDir, pc, hs.xTitle, "R", kPull);
+
+                        ProfileConfig pc; pc.xAxisTitle = heeXTitle; pc.yAxisTitle = heeYTitle;
+                        const std::string nm = heeName + "_AEESplit_InPeak";
+                        const std::string ttl = fam.familyName + " " + heeYTitle + " vs cos(#theta)_{HEE}, "
+                                              + "in mass window, split by AEE angle sign";
+                        DrawComparisonCanvas(hb, nm, ttl, heeDir, pc, heeXTitle, heeYTitle);
+                        DrawComparisonCanvas(hb, nm + "_PullOnly", ttl, heeDir, pc, heeXTitle, heeYTitle, kPull);
                         delete sAll;
                     }
                     delete sPos; delete sNeg;
-            
-                    // (b) Everything: both halves across all three mass regions on one canvas
+
+                    // (b) Everything: both halves across the three drawn mass regions on one canvas,
+                    //     coloured like every other mass-region canvas
                     std::vector<ProfileBundle> hbAll;
                     std::vector<TH1*> hbDelete;
-                    const int massColors[3] = {kAzure + 2, kRed + 1, kGreen + 3};
-                    const char* massNames[3] = {"left sideband", "in mass window", "right sideband"};
-                    for (int m = 1; m <= nMass && m <= 3; ++m) {
+                    for (const MassRegion& region : kMassRegions) {
                         for (int side = 0; side < 2; ++side) {
                             TProfile2D* srcP = (side == 0) ? pPos : pNeg;
-                            TProfile* s = sliceOf(srcP, m, side == 0 ? "P" : "N");
-                            if (!s || s->GetEntries() < 1) { delete s; continue; }
+                            const std::string label = Form("%s, #Delta#phi_{AEE} %s", region.label, side == 0 ? "> 0" : "< 0");
+                            TProfile* s = sliceOf(srcP, region.bin, side == 0 ? "P" : "N");
+                            if (!s || s->GetEntries() < 1) {
+                                WarnSkip(splitWhat + ", " + label, "no entries");
+                                delete s;
+                                continue;
+                            }
                             VariationConfig c;
-                            c.legendLabel = Form("%s, #Delta#phi_{AEE} %s", massNames[(m - 1) % 3],
-                                                 side == 0 ? "> 0" : "< 0");
-                            c.color = massColors[(m - 1) % 3];
+                            c.legendLabel = label;
+                            c.color = region.style.color;
                             c.lineStyle = (side == 0) ? 1 : 2;   // Solid positive, dashed negative
                             c.markerStyle = (side == 0) ? 20 : 24; // Full / open, same shape
-                            c.isData = (m == peakBin && side == 0);
+                            c.isData = (region.bin == kMassPeak.bin && side == 0);
                             hbAll.push_back({s, c});
                             hbDelete.push_back(s);
                         }
                     }
                     if (hbAll.size() >= 2) {
-                        ProfileConfig pc; pc.xAxisTitle = hs.xTitle; pc.yAxisTitle = "R";
-                        DrawComparisonCanvas(hbAll, "Canvas_HEE_" + hs.outName + "_AEESplit_AllMass",
-                                             fam.familyName + " <#it{R}>_{LeadJet} vs cos(#theta)_{HEE}, "
-                                             + hs.outName + ", every mass region and AEE sign",
-                                             heeDir, pc, hs.xTitle, "R");
+                        ProfileConfig pc; pc.xAxisTitle = heeXTitle; pc.yAxisTitle = heeYTitle;
+                        DrawComparisonCanvas(hbAll, heeName + "_AEESplit_AllMass",
+                                             fam.familyName + " " + heeYTitle + " vs cos(#theta)_{HEE}, "
+                                             + "every mass region and AEE sign",
+                                             heeDir, pc, heeXTitle, heeYTitle);
                     }
                     for (auto p : hbDelete) delete p;
                     delete pPos; delete pNeg;
-                }
-            
-                for (const auto& spec : heeSpecs) {
-                    if (!SpeciesMatchesFamily(spec.species, fam.familyName)) continue;
-                    TProfile2D* p2d = cache.FetchClone<TProfile2D>(famFile, spec.path, false);
-                    if (!p2d) continue;
-                    if (!heeDir) heeDir = EnsureDir(EnsureDir(fOut, fam.familyName), "HEE");
-                    DrawMassSliceCanvas(p2d, spec.outName, fam.familyName + " " + spec.title,
-                                        heeDir, spec.xTitle, "R");
-                    delete p2d;
-                }
+                };
+                drawAeeSplit();
+
+                // Every mass region of the nominal file on one canvas
+                if (!heeDir) heeDir = EnsureDir(EnsureDir(fOut, fam.familyName), "HEE");
+                DrawMassSliceCanvas(heeNominal, heeName, fam.familyName + " " + heeYTitle + " vs cos(#theta)_{HEE}, by mass region",
+                                    heeDir, heeXTitle, heeYTitle);
 
                 // --- CrossSystem: the same HEE dependence across every consumer variation --------
                 // This block read only the nominal file until now, which wasted the one thing the
@@ -4449,27 +4555,23 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 // axis. Only the in-peak mass slice is used: the sidebands are already covered by
                 // Canvas_MassSelection, and overlaying nine variations times three mass regions
                 // would be unreadable.
-                for (const auto& spec : heeSpecs) {
-                    if (!SpeciesMatchesFamily(spec.species, fam.familyName)) continue;
-
+                {
                     std::vector<ProfileBundle> xb;
                     std::vector<TH1*> xbDel;
 
                     auto addVariation = [&](const std::string& suffix, const VariationConfig& vc) {
                         const std::string f = consumerDir + "/ConsumerResults_" + fam.dataSuffix +
                                               suffix + ".root";
-                        TProfile2D* p = cache.FetchClone<TProfile2D>(f, spec.path, false);
-                        if (!p) return;
-                        const int nMass = p->GetYaxis()->GetNbins();
-                        const int peakBin = (nMass == 3) ? 2 : 1; // Middle slice is the mass window
+                        TProfile2D* p = cache.FetchClone<TProfile2D>(f, heeBase);
+                        if (!p) return; // FetchClone has already warned (or the file is a known absent variation)
+                        const std::string what = fam.familyName + " HEE CrossSystem, " + vc.legendLabel;
+                        if (!HasMassRegionAxis(p, what)) { delete p; return; }
                         const std::string tag = suffix.empty() ? "data" : SanitizeName(suffix);
-                        TProfile* s = p->ProfileX(Form("heeX_%s_%s", spec.outName.c_str(),
-                                                       tag.c_str()),
-                                                  peakBin, peakBin);
+                        TProfile* s = p->ProfileX(Form("heeX_%s", tag.c_str()), kMassPeak.bin, kMassPeak.bin);
                         delete p;
                         if (!s) return;
                         s->SetDirectory(nullptr);
-                        if (s->GetEntries() < 1) { delete s; return; }
+                        if (s->GetEntries() < 1) { WarnSkip(what, "no entries in the mass window"); delete s; return; }
                         xb.push_back({s, vc});
                         xbDel.push_back(s);
                     };
@@ -4478,25 +4580,25 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     for (const auto& sys : sysVariations) addVariation(sys.suffix, sys);
 
                     if (xb.size() >= 2) {
-                        if (!heeDir) heeDir = EnsureDir(EnsureDir(fOut, fam.familyName), "HEE");
                         TDirectory* xDir = EnsureDir(heeDir, "CrossSystem");
 
                         ProfileConfig pcx;
-                        pcx.xAxisTitle = spec.xTitle;
-                        pcx.yAxisTitle = "R";
-                        const std::string xt = fam.familyName + " " + spec.title +
+                        pcx.xAxisTitle = heeXTitle;
+                        pcx.yAxisTitle = heeYTitle;
+                        const std::string xt = fam.familyName + " " + heeYTitle + " vs cos(#theta)_{HEE}" +
                                                ", in mass window, across variations";
 
                         // Full and redux from the same call site, as everywhere else
-                        DrawComparisonCanvas(xb, spec.outName, xt, xDir, pcx,
-                                             spec.xTitle, "R", kPull);
+                        DrawComparisonCanvas(xb, heeName, xt, xDir, pcx,
+                                             heeXTitle, heeYTitle, kPull);
                         std::vector<ProfileBundle> xr = ReduxSubset(xb);
                         if (xr.size() >= 2)
-                            DrawComparisonCanvas(xr, spec.outName + "_Redux", xt + " (reduced)",
-                                                 xDir, pcx, spec.xTitle, "R", kPull);
+                            DrawComparisonCanvas(xr, heeName + "_Redux", xt + " (reduced)",
+                                                 xDir, pcx, heeXTitle, heeYTitle, kPull);
                     }
                     for (auto p : xbDel) delete p;
                 }
+                delete heeNominal;
             }
         };
 
@@ -4511,11 +4613,11 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             // with zero across every eta category is what "the correction closes" actually looks like.
             for (const auto& catObs : categoricalObservables) {
 
-                const std::string catPath = TASK_DIR_IN_FILE + catObs.subDir + catObs.profileName;
+                const std::string catPath = TASK_DIR_IN_FILE + catObs.path;
                 const std::string dataFile = consumerDir + "/ConsumerResults_" + fam.dataSuffix + ".root";
 
                 TProfile* pCatData = cache.FetchClone<TProfile>(dataFile, catPath);
-                if (!pCatData) continue; // Not booked in this configuration: nothing is created on disk
+                if (!pCatData) continue; // Not booked in this configuration (FetchClone has reported it): nothing is created on disk
 
                 if (!famDir) famDir = EnsureDir(fOut, fam.familyName);
                 TDirectory* etaStudyDir = EnsureDir(famDir, "EtaSplitStudies");
@@ -4523,8 +4625,10 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 TDirectory* catOverlay  = EnsureDir(catDir, "Overlays");
                 TDirectory* catSubDir   = EnsureDir(catDir, "Subtracted");
 
-                // The labelled axis carries the selection names, so the ProfileConfig titles stay blank
-                ProfileConfig catConfig{catObs.subDir, catObs.profileName, "", catObs.yAxisTitle, false};
+                // The labelled axis carries the selection names, so the x title stays blank. The y title is the
+                // data profile's, with the proxy as a subscript, as for the observable groups.
+                ProfileConfig catConfig;
+                catConfig.yAxisTitle = WithProxySubscript(pCatData->GetYaxis()->GetTitle(), ProxyOfPath(catObs.path));
 
                 std::vector<ProfileBundle> catBundles;
                 std::vector<TH1*> catToDelete;
@@ -4566,11 +4670,11 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 }
                 DrawComparisonCanvas(catSubBundles, "Canvas_Subtracted_AllInOne",
                                      fam.familyName + " " + ObservableDisplayName(catObs) + " difference",
-                                     catSubDir, catConfig, "", "#Delta" + catObs.yAxisTitle + " (Data - Var)",
+                                     catSubDir, catConfig, "", "#Delta" + catConfig.yAxisTitle + " (Data - Var)",
                                      kNoLowerPad, true, true);
                 DrawComparisonCanvas(catSubBundles, "Canvas_Subtracted_AllInOne_Pull",
                                      fam.familyName + " " + ObservableDisplayName(catObs) + " difference",
-                                     catSubDir, catConfig, "", "#Delta" + catObs.yAxisTitle + " (Data - Var)",
+                                     catSubDir, catConfig, "", "#Delta" + catConfig.yAxisTitle + " (Data - Var)",
                                      kSelfPull, true, true);
 
                 // --- Three-bin eta-sign digest, the one slice the Toy Model can speak to ---
@@ -4581,7 +4685,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     std::vector<TH1*> signToDelete;
                     for (size_t i = 0; i < catBundles.size(); ++i) {
                         TH1D* h = ExtractEtaSignBins(catBundles[i].profile,
-                                                     catObs.profileName + "_sign_" + std::to_string(i));
+                                                     ObservableDisplayName(catObs) + "_sign_" + std::to_string(i));
                         if (!h) continue;
                         signBundles.push_back({h, catBundles[i].config});
                         signToDelete.push_back(h);
@@ -4591,7 +4695,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     for (const auto& ext : externals) {
                         if (ext.kind != ExternalRef::kToyModel || ext.basePath.empty()) continue;
                         TH1D* hToy = BuildToyEtaSignHist(cache, ext.basePath, pCatData,
-                                                         catObs.profileName + "_signToy");
+                                                         ObservableDisplayName(catObs) + "_signToy");
                         if (hToy) {
                             signBundles.push_back({hToy, ext.config});
                             signToDelete.push_back(hToy);
@@ -4623,7 +4727,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 // response rather than physics. Kept in its own subfolder: useful, but not the headline.
                 if (!catObs.massSplitProfile.empty()) {
                     TDirectory* massSplitDir = EnsureDir(catDir, "MassSignalVsBackground");
-                    const std::string massPath = TASK_DIR_IN_FILE + catObs.subDir + catObs.massSplitProfile;
+                    const std::string massPath = TASK_DIR_IN_FILE + FolderOf(catObs.path) + catObs.massSplitProfile;
 
                     // Y bin 1 is "out of mass peak", y bin 2 is "in mass peak" (see the consumer's bin labels)
                     const int massYBin[2] = {1, 2};
@@ -4642,7 +4746,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         for (const auto& src : sources) {
                             TProfile2D* p2d = cache.FetchClone<TProfile2D>(src.first, massPath, false);
                             if (!p2d) continue;
-                            TProfile* proj = p2d->ProfileX((catObs.profileName + "_" + massTag[m] + "_" +
+                            TProfile* proj = p2d->ProfileX((ObservableDisplayName(catObs) + "_" + massTag[m] + "_" +
                                                             SanitizeName(src.second.legendLabel)).c_str(),
                                                            massYBin[m], massYBin[m]);
                             if (proj) {
@@ -4681,19 +4785,23 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
 
             TDirectory* groupDir = nullptr; // Also created lazily
 
-            for (const auto& profConfig : group.profiles) {
-                // Species-specific observables only appear on the family they describe. See
-                // SpeciesMatchesFamily: a per-species profile read from a single-species file is
-                // either empty or a duplicate of that species' own curve.
-                if (!SpeciesMatchesFamily(profConfig.speciesTag, FamilySpecies(fam))) continue;
-
-
-                const std::string profilePath = BuildProfilePath(profConfig, cutFolder);
+            for (const auto& tableConfig : group.profiles) {
+                const std::string profilePath = TASK_DIR_IN_FILE + tableConfig.path;
 
                 // Fetch Data:
                 std::string dataFile = consumerDir + "/ConsumerResults_" + fam.dataSuffix + ".root";
                 TProfile* pData = cache.FetchClone<TProfile>(dataFile, profilePath);
-                if (!pData) continue; // Skip to next observable if data is missing (nothing is created on disk)
+                if (!pData) continue; // Data missing (FetchClone has reported it): next observable, nothing is created on disk
+
+                // The axis titles come from the data profile, i.e. from the consumer's own booking, so they
+                // cannot drift from it. Only the proxy is added, as a subscript of the y title: several x
+                // titles (EtaV0, PVz) do not name it. Everything below reads this resolved copy.
+                const std::string obsProxy = ProxyOfPath(tableConfig.path);
+                ProfileConfig profConfig = tableConfig;
+                if (profConfig.xAxisTitle.empty())
+                    profConfig.xAxisTitle = std::string(pData->GetXaxis()->GetTitle()) + profConfig.xTitleSuffix;
+                if (profConfig.yAxisTitle.empty())
+                    profConfig.yAxisTitle = WithProxySubscript(pData->GetYaxis()->GetTitle(), obsProxy);
 
                 // Only now that we know there is something to draw do we materialize the directories
                 if (!famDir)   famDir   = EnsureDir(fOut, fam.familyName);
@@ -5025,11 +5133,11 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 // presented once, at family level, by the brute-force summaries below.
                 auto dataInteg = GetIntegratedProfile(pData);
 
-                // Observables with no proxy tag stay off the brute-force axis. That is the eta-sign pT
+                // Observables with inBruteForce = false stay off the brute-force axis. That is the eta-sign pT
                 // splits: they cover different subsets of the sample, so their integrals sit at a
                 // different scale and would flatten everything else on a shared axis.
-                if (!profConfig.proxyTag.empty()) {
-                    grandProxyTags.push_back(profConfig.proxyTag);
+                if (profConfig.inBruteForce) {
+                    grandProxyTags.push_back(obsProxy);
                     grandDataVals.push_back(dataInteg);
                     grandLabels.push_back(ObservableDisplayName(profConfig));
 
@@ -5056,15 +5164,14 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 // Cross-family comparison: only the three representative observables are recorded, one per
                 // proxy, since anything else would just repeat one of them (same argument as above).
                 for (size_t iRep = 0; iRep < proxyRepresentatives.size(); ++iRep) {
-                    if (profConfig.profileName != proxyRepresentatives[iRep].second) continue;
+                    if (profConfig.path != proxyRepresentatives[iRep].second) continue;
+                    // Each value goes to its OWN variation's column (sysIndexOf), never by position: families need not
+                    // share the same absent variations, and a positional match would put values under the wrong label
                     auto& slot = crossFamilyVals[iRep][famIdx];
-                    slot.push_back(dataInteg);
-                    for (size_t i = 1; i < allSystematics.size(); ++i) {
-                        slot.push_back(GetIntegratedProfile(dynamic_cast<TProfile*>(allSystematics[i].profile)));
-                    }
-                    if (crossFamilyLabels[iRep].empty()) {
-                        for (const auto& b2 : allSystematics) crossFamilyLabels[iRep].push_back(b2.config.legendLabel);
-                    }
+                    slot.assign(crossFamilyLabels.size(), {0., -1.});
+                    slot[0] = dataInteg;
+                    for (size_t k = 1; k < allSystematics.size(); ++k)
+                        slot[1 + sysIndexOf[k - 1]] = GetIntegratedProfile(dynamic_cast<TProfile*>(allSystematics[k].profile));
                 }
 
                 // --- 6. tanh fit of the eta dependence ---
@@ -5125,7 +5232,11 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                             entriesPts.push_back({fitConfigs[i], fr.entries, 0.0, 0.0});
                         }
 
-                        if (!fr.valid) continue;
+                        if (!fr.valid) {
+                            WarnSkip(fitLabels[i], "tanh fit did not converge, left out of the p0 / p1 summaries",
+                                     std::string(fitDir->GetPath()));
+                            continue;
+                        }
                         okLabels.push_back(fitLabels[i]);
                         p0Pts.push_back({fitConfigs[i], fr.p0, fr.p0Low, fr.p0High});
                         p1Pts.push_back({fitConfigs[i], fr.p1, fr.p1Low, fr.p1High});
@@ -5187,7 +5298,10 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 std::vector<std::pair<double, double>> vals;
 
                 SigExtractPoint dataPt = FetchIntegratedFromCuts(cache, dataFileInt, proxy.folderName);
-                if (!dataPt.found) continue;
+                if (!dataPt.found) { // Already reported by FetchIntegratedFromCuts
+                    CountSkip("IntegratedSummary", "no Data value", fam.familyName + "/" + proxy.folderName);
+                    continue;
+                }
                 labels.push_back(dataConfig.legendLabel);
                 cfgs.push_back(dataConfig);
                 vals.push_back({dataPt.value, dataPt.error});
@@ -5225,6 +5339,8 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                                 p.value = pToy->GetBinContent(1);
                                 p.error = pToy->GetBinError(1);
                                 p.found = true;
+                            } else {
+                                WarnSkip("Toy Model pRingProxyJet, bin 1", "no entries", ext.basePath);
                             }
                             delete pToy;
                         }
@@ -5243,7 +5359,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 // propagation done in signalExtractionRing, so it is fetched, never recomputed.
                 if (!sigExtractDir.empty()) {
                     SigExtractPoint sp = FetchSigExtractPoint(cache, sigExtractDir, fam.dataSuffix,
-                                                              cutFolder, proxy.folderName,
+                                                              proxy.folderName,
                                                               "hIntegratedRSig");
                     if (sp.found) {
                         VariationConfig c;
@@ -5259,7 +5375,10 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     }
                 }
 
-                if (labels.size() < 2) continue;
+                if (labels.size() < 2) {
+                    CountSkip("IntegratedSummary", "Data alone, nothing to compare it with", fam.familyName + "/" + proxy.folderName);
+                    continue;
+                }
                 if (!famIntDir) famIntDir = EnsureDir(EnsureDir(fOut, fam.familyName), "IntegratedSummary");
                 TDirectory* pxDir = EnsureDir(famIntDir, proxy.folderName);
 
@@ -5336,7 +5455,10 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
 
                     SigExtractPoint d = FetchIntegratedByMassPeak(cache, dataFileCheap,
                                                                   proxy.folderName, inPeak);
-                    if (!d.found) continue;
+                    if (!d.found) { // Already reported by FetchIntegratedByMassPeak
+                        CountSkip("CheapSigExtract", "no Data value", fam.familyName + "/" + proxy.folderName);
+                        continue;
+                    }
                     labels.push_back(dataConfig.legendLabel);
                     cfgs.push_back(dataConfig);
                     vals.push_back({d.value, d.error});
@@ -5351,7 +5473,10 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         cfgs.push_back(sys);
                         vals.push_back({p.value, p.error});
                     }
-                    if (labels.size() < 2) continue;
+                    if (labels.size() < 2) {
+                        CountSkip("CheapSigExtract", "Data alone, nothing to compare it with", fam.familyName + "/" + proxy.folderName);
+                        continue;
+                    }
 
                     if (!cheapDir) cheapDir = EnsureDir(EnsureDir(fOut, fam.familyName), "CheapSigExtract");
                     TDirectory* pxDir = EnsureDir(cheapDir, proxy.folderName);
@@ -5480,15 +5605,15 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         // -----------------------------------------------------------------------------------
         // Signal extraction of the AEE angle: differential, angle-combined, and cross-system
         // -----------------------------------------------------------------------------------
-        // These live at the TOP LEVEL of the extraction file, NOT under a cut folder, because the
-        // consumer books the source profiles with a bare path rather than (folder + "/..."). That is
-        // the reason nothing here uses cutFolder, and the reason a path built like the per-proxy
-        // IntegratedSummary ones would find nothing.
+        // These live at the TOP LEVEL of the extraction file, outside its Ring/ folder, because their
+        // consumer source (FakePolDrivers/PhiAEE/) sits outside Ring/ too. That is the reason a path
+        // built like the per-proxy IntegratedSummary ones would find nothing.
         //
-        // The layout is proxy-major then split-major: everything about one (proxy, species) pair is
-        // under a single folder, so a question about the leading jet in Lambda never means opening
-        // three sibling folders in turn. The eta split rides in the canvas NAME instead, which puts
-        // its three variants side by side in one listing -- which is how they are actually read.
+        // The layout is proxy-major then split-major: everything about one proxy is under a single
+        // folder, so a question about the leading jet never means opening three sibling folders in
+        // turn. The eta split rides in the canvas NAME instead, which puts its three variants side by
+        // side in one listing -- which is how they are actually read. The species is the family's: every
+        // extraction file carries one set per proxy, named after the proxy alone, read in every family.
         //
         // hRSigMinusRBkg is read, never recomputed: <R>_S and <R>_B share the sideband primitives
         // and quadrature UNDERSTATES their difference by roughly a fifth. The same correlation is
@@ -5496,7 +5621,8 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         if (!sigExtractDir.empty()) {
             const std::string sigFile = sigExtractDir + "/signalExtractionRing_" + fam.dataSuffix + ".root";
             const std::string aeeRoot = "HelicityEfficiencyQA_PhiLambdaPhiProtonStar/";
-            const std::string aeeConsumerRoot = "HelicityEfficiencyQA/PhiLambdaPhiProtonStar/";
+            // A consumer path, so it carries the task folder (the extraction paths above do not)
+            const std::string aeeConsumerRoot = TASK_DIR_IN_FILE + "FakePolDrivers/PhiAEE/";
 
             // The extraction writes three eta-split variants, each filled identically. Mirrored here
             // one-for-one, so a name in the summary output maps to a folder in the extraction output
@@ -5509,30 +5635,17 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             };
             TDirectory* aeeSigDir = nullptr;
 
-            // measObj is the consumer's <R> vs AEE angle vs proxy-eta-sign profile. It has no mass
+            // The full-range curve comes from the consumer's <R> vs AEE angle vs proxy-eta-sign profile. It has no mass
             // axis at all, so it is the one measured curve that cannot lose candidates to a mass
             // underflow/overflow bin, and it shares axisDeltaPhiCoarse with everything the extraction produced.
             // Safer if we want to look at the full, uncut, observable!
-            struct AeeSpec { std::string name, label, species, measObj; };
+            // name is the proxy: the extraction's folder and object suffix, and this macro's output folder. The
+            // labels name only the proxy too: the family name in front of them names the species.
+            struct AeeSpec { std::string name, label; };
             const std::vector<AeeSpec> aeeSpecs = {
-                {"LeadJet_LambdaLike", "Leading jet, #Lambda-like", "LambdaLike",
-                 "p2dRingObservableLeadJetVsPhiLambdaLikePhiProtonStarVsProxyEtaSign"},
-                {"LeadP_LambdaLike", "Leading particle, #Lambda-like", "LambdaLike",
-                 "p2dRingObservableLeadPVsPhiLambdaLikePhiProtonStarVsProxyEtaSign"},
-                {"SubJet_LambdaLike", "Subleading jet, #Lambda-like", "LambdaLike",
-                 "p2dRingObservable2ndJetVsPhiLambdaLikePhiProtonStarVsProxyEtaSign"},
-                {"LeadJet_Lambda", "Leading jet, #Lambda", "Lambda",
-                 "p2dRingObservableLeadJetVsPhiLambdaPhiProtonStarVsProxyEtaSign"},
-                {"LeadP_Lambda", "Leading particle, #Lambda", "Lambda",
-                 "p2dRingObservableLeadPVsPhiLambdaPhiProtonStarVsProxyEtaSign"},
-                {"SubJet_Lambda", "Subleading jet, #Lambda", "Lambda",
-                 "p2dRingObservable2ndJetVsPhiLambdaPhiProtonStarVsProxyEtaSign"},
-                {"LeadJet_AntiLambda", "Leading jet, #bar{#Lambda}", "AntiLambda",
-                 "p2dRingObservableLeadJetVsPhiAntiLambdaPhiProtonStarVsProxyEtaSign"},
-                {"LeadP_AntiLambda", "Leading particle, #bar{#Lambda}", "AntiLambda",
-                 "p2dRingObservableLeadPVsPhiAntiLambdaPhiProtonStarVsProxyEtaSign"},
-                {"SubJet_AntiLambda", "Subleading jet, #bar{#Lambda}", "AntiLambda",
-                 "p2dRingObservable2ndJetVsPhiAntiLambdaPhiProtonStarVsProxyEtaSign"}
+                {"LeadJet", "Leading jet"},
+                {"LeadP",   "Leading particle"},
+                {"SubJet",  "Subleading jet"}
             };
 
             // Axis titles are not written here as part of a DRY philosophy.
@@ -5577,16 +5690,14 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             };
 
             for (const auto& spec : aeeSpecs) {
-                if (!SpeciesMatchesFamily(spec.species, fam.familyName)) continue;
-
-                // One folder per (proxy, species):
+                // One folder per proxy:
                 // (created lazily, on the first split that has anything in it, so a family that never produced this spec leaves no empty folder)
-                TDirectory* specDir = nullptr;   // <Proxy_Species>/
-                TDirectory* angleDir = nullptr;  // <Proxy_Species>/AEEangle/
-                TDirectory* combDir = nullptr;   // <Proxy_Species>/Combined/
-                TDirectory* combQaDir = nullptr; // <Proxy_Species>/Combined/QA/
-                TDirectory* xAngDir = nullptr;   // <Proxy_Species>/AEEangle/CrossSystem_Angular/
-                TDirectory* xCatDir = nullptr;   // <Proxy_Species>/Combined/CrossSystem_Categorical/
+                TDirectory* specDir = nullptr;   // <Proxy>/
+                TDirectory* angleDir = nullptr;  // <Proxy>/AEEangle/
+                TDirectory* combDir = nullptr;   // <Proxy>/Combined/
+                TDirectory* combQaDir = nullptr; // <Proxy>/Combined/QA/
+                TDirectory* xAngDir = nullptr;   // <Proxy>/AEEangle/CrossSystem_Angular/
+                TDirectory* xCatDir = nullptr;   // <Proxy>/Combined/CrossSystem_Categorical/
 
                 auto ensureSpecDirs = [&]() {
                     if (specDir) return;
@@ -5608,7 +5719,8 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 if (!hSig || !hBkg) { delete hSig; delete hBkg; delete hMeas; delete hDiff; continue; }
 
                 TH1D* hMeasFull = measuredFullRange(
-                    consumerDir + "/ConsumerResults_" + fam.dataSuffix + ".root", spec.measObj, split,
+                    consumerDir + "/ConsumerResults_" + fam.dataSuffix + ".root",
+                    spec.name + "/p2dRingObservableVsPhiAEEVsProxyEtaSign", split,
                     "measFull_" + fam.familyName + "_" + spec.name + "_" + split);
 
                 ensureSpecDirs();
@@ -5735,7 +5847,10 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                                 bool known = false;
                                 for (const auto& sys : sysVariations)
                                     if (sys.suffix == sfx) { vc = sys; known = true; break; }
-                                if (!known) continue;
+                                if (!known) {
+                                    WarnSkip("wagon " + sfx, "not in the variation table (sysVariations)", ws.dirTag);
+                                    continue;
+                                }
                             }
                             vc.isData = sfx.empty(); // The uncut data is the reference
 
@@ -5754,7 +5869,12 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                             if (!w.byQty.empty()) wagons.push_back(w);
                         }
 
-                        if (wagons.size() < 2) { for (auto p : ownX) delete p; continue; }
+                        if (wagons.size() < 2) {
+                            CountSkip("AEE_SignalExtracted, CrossSystem_Angular", "fewer than two wagons extracted",
+                                      fam.familyName + "/" + spec.name + "/" + ws.dirTag + "/" + split);
+                            for (auto p : ownX) delete p;
+                            continue;
+                        }
                         if (!xAngDir) xAngDir = EnsureDir(angleDir, "CrossSystem_Angular");
                         TDirectory* wsDir = EnsureDir(xAngDir, ws.dirTag);
 
@@ -5876,7 +5996,11 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         std::vector<std::pair<double, double>> xVals;
 
                         SigExtractPoint dp = fetchRow(fam.dataSuffix, xr.bin);
-                        if (!dp.found) continue;
+                        if (!dp.found) {
+                            CountSkip("AEE_SignalExtracted, CrossSystem_Categorical", "no Data value",
+                                      fam.familyName + "/" + spec.name + "/" + xr.name + "_" + split);
+                            continue;
+                        }
                         xLabels.push_back(dataConfig.legendLabel);
                         xCfgs.push_back(dataConfig);
                         xVals.push_back({dp.value, dp.error});
@@ -5888,7 +6012,11 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                             xCfgs.push_back(sys);
                             xVals.push_back({p.value, p.error});
                         }
-                        if (xLabels.size() < 2) continue;
+                        if (xLabels.size() < 2) {
+                            CountSkip("AEE_SignalExtracted, CrossSystem_Categorical", "Data alone, nothing to compare it with",
+                                      fam.familyName + "/" + spec.name + "/" + xr.name + "_" + split);
+                            continue;
+                        }
 
                         if (!xCatDir) xCatDir = EnsureDir(combDir, "CrossSystem_Categorical");
 
@@ -6140,7 +6268,10 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                                 bool known = false;
                                 for (const auto& sys : sysVariations)
                                     if (sys.suffix == suffix) { vc = sys; known = true; break; }
-                                if (!known) continue;
+                                if (!known) {
+                                    WarnSkip("wagon " + suffix, "not in the variation table (sysVariations)", "cutVariations");
+                                    continue;
+                                }
                             }
 
                             TH1D* h = cache.FetchClone<TH1D>(
@@ -6246,7 +6377,11 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                                 bool any = false;
                                 for (int ix = 1; ix <= row->GetNbinsX() && !any; ++ix)
                                     any = (row->GetBinError(ix) > 0.0);
-                                if (!any) continue; // A skipped slice: no legend entry for nothing
+                                if (!any) { // A slice with no extracted cell (see Canvas_Map_CellStatus): no legend entry for nothing
+                                    CountSkip("AEE_SignalExtracted, eta_Proxy slice", "no extracted cell, slice not drawn",
+                                              fam.familyName + "/" + spec.name + "/" + av.q);
+                                    continue;
+                                }
 
                                 const double lo = etaAxis->GetBinLowEdge(k), hi = etaAxis->GetBinUpEdge(k);
                                 VariationConfig c;
@@ -6537,7 +6672,11 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                                         cfgs.push_back(r.cfg);
                                         vals.push_back({r.h->GetBinContent(xr.bin), r.h->GetBinError(xr.bin)});
                                     }
-                                    if (labels.size() < 2) continue;
+                                    if (labels.size() < 2) {
+                                        CountSkip("AEE_SignalExtracted, recombined CrossSystem", "Data alone, nothing to compare it with",
+                                                  fam.familyName + "/" + spec.name + "/" + xr.name);
+                                        continue;
+                                    }
                                     if (!xDir) xDir = EnsureDir(etaDir, "CrossSystem_Categorical");
                                     DrawCategoricalCrossSystem(labels, cfgs, vals, xr.name,
                                                                tEta + " recombined, " + xr.title, xDir, xr.yTitle);
@@ -6566,16 +6705,19 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 // Is there anything at all for this proxy? Probing one histogram avoids creating a
                 // folder for a proxy whose extraction never ran or did not converge.
                 SigExtractPoint probe = FetchSigExtractPoint(cache, sigExtractDir, fam.dataSuffix,
-                                                             cutFolder, proxy.folderName,
+                                                             proxy.folderName,
                                                              "hIntegratedRSig");
-                if (!probe.found) continue;
+                if (!probe.found) { // Already reported by FetchSigExtractPoint
+                    CountSkip("SignalExtraction", "no extracted <R>_S", fam.familyName + "/" + proxy.folderName);
+                    continue;
+                }
 
                 if (!famDir) famDir = EnsureDir(fOut, fam.familyName);
                 if (!sigExtractGroupDir) sigExtractGroupDir = EnsureDir(famDir, "SignalExtraction");
                 TDirectory* proxyDir = EnsureDir(sigExtractGroupDir, proxy.folderName);
 
                 // (a) The three components side by side, plus their correlated differences
-                DrawSigExtractComponents(cache, sigExtractDir, fam.dataSuffix, cutFolder,
+                DrawSigExtractComponents(cache, sigExtractDir, fam.dataSuffix,
                                          proxy, fam.familyName,
                                          EnsureDir(proxyDir, "Components"));
 
@@ -6584,7 +6726,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     const auto& quantity = sigExtractQuantities[iQ];
                     SigExtractPoint dataVal = DrawSigExtractSystematics(
                         cache, sigExtractDir, fam.dataSuffix, sysVariations, dataConfig,
-                        cutFolder, proxy, quantity, fam.familyName,
+                        proxy, quantity, fam.familyName,
                         EnsureDir(proxyDir, SanitizeName(quantity.legendLabel)));
                     sigExtractCrossFamily[iQ][iProxy][famIdx] = dataVal;
                 }
@@ -6598,7 +6740,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 std::vector<std::vector<SigExtractPoint>> seriesPts(sigExtractQuantities.size());
                 for (size_t iQ = 0; iQ < sigExtractQuantities.size(); ++iQ) {
                     seriesPts[iQ].push_back(FetchSigExtractPoint(cache, sigExtractDir,
-                                                                 fam.dataSuffix, cutFolder,
+                                                                 fam.dataSuffix,
                                                                  proxy.folderName,
                                                                  sigExtractQuantities[iQ].histName));
                 }
@@ -6608,12 +6750,16 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     for (const auto& quantity : sigExtractQuantities) {
                         SigExtractPoint p = FetchSigExtractPoint(cache, sigExtractDir,
                                                                  fam.dataSuffix + sys.suffix,
-                                                                 cutFolder, proxy.folderName,
+                                                                 proxy.folderName,
                                                                  quantity.histName);
                         if (!p.found) { complete = false; break; }
                         row.push_back(p);
                     }
-                    if (!complete) continue; // Keep the two series on a common axis
+                    if (!complete) { // Keep the two series on a common axis
+                        CountSkip("SignalExtraction, <R>_S and <R>_B series", "variation without both quantities",
+                                  fam.familyName + "/" + proxy.folderName + "/" + sys.legendLabel);
+                        continue;
+                    }
                     sysLabels.push_back(sys.legendLabel);
                     for (size_t iQ = 0; iQ < row.size(); ++iQ) seriesPts[iQ].push_back(row[iQ]);
                 }
@@ -6654,18 +6800,17 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             // them adjacent turns each block into a flat plateau that is trivial to read.
             std::vector<size_t> order(grandLabels.size());
             for (size_t i = 0; i < order.size(); ++i) order[i] = i;
-            const std::vector<std::string> proxyOrder = {"LeadP", "LeadJet", "SubJet"};
             auto proxyRank = [&](const std::string& tag) {
-                for (size_t r = 0; r < proxyOrder.size(); ++r) if (proxyOrder[r] == tag) return r;
-                return proxyOrder.size(); // Anything unrecognised sorts last rather than being dropped
+                for (size_t r = 0; r < PROXIES.size(); ++r) if (PROXIES[r] == tag) return r;
+                return PROXIES.size(); // Anything unrecognised sorts last rather than being dropped
             };
             std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
                 return proxyRank(grandProxyTags[a]) < proxyRank(grandProxyTags[b]);
             });
 
-            // Rebuild the labels in the new order, prefixed with the proxy so the blocks are self-evident
+            // Rebuild the labels in the new order. The display names carry the proxy, so the blocks are self-evident
             std::vector<std::string> sortedLabels;
-            for (size_t k : order) sortedLabels.push_back(grandProxyTags[k] + ": " + grandLabels[k]);
+            for (size_t k : order) sortedLabels.push_back(grandLabels[k]);
 
             auto reorder = [&](const std::vector<std::pair<double, double>>& v) {
                 std::vector<std::pair<double, double>> out;
@@ -6689,18 +6834,26 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 return h;
             };
 
+            // One series per variation, or none: a variation absent for some observables would misalign the axis
+            auto seriesOf = [&](const std::vector<std::pair<double, double>>& raw, const std::string& name,
+                                const std::string& label) -> TH1D* {
+                if (!raw.empty() && raw.size() != order.size())
+                    CountSkip("BruteForce, " + label, "absent for some observables, so its series is left out", fam.familyName);
+                return makeSeries(reorder(raw), name);
+            };
+
             // (a) Values
             std::vector<ProfileBundle> grandBundles;
-            TH1D* hGrandData = makeSeries(reorder(grandDataVals), "GrandData");
+            TH1D* hGrandData = seriesOf(grandDataVals, "GrandData", dataConfig.legendLabel);
             if (hGrandData) { grandBundles.push_back({hGrandData, dataConfig}); grandToDelete.push_back(hGrandData); }
 
             for (size_t sysIdx = 0; sysIdx < sysVariations.size(); ++sysIdx) {
-                TH1D* h = makeSeries(reorder(grandSysVals[sysIdx]), Form("GrandSys_%zu", sysIdx));
+                TH1D* h = seriesOf(grandSysVals[sysIdx], Form("GrandSys_%zu", sysIdx), sysVariations[sysIdx].legendLabel);
                 if (h) { grandBundles.push_back({h, sysVariations[sysIdx]}); grandToDelete.push_back(h); }
             }
             for (size_t extIdx = 0; extIdx < externals.size(); ++extIdx) {
                 if (externals[extIdx].basePath.empty()) continue;
-                TH1D* h = makeSeries(reorder(grandExtVals[extIdx]), Form("GrandExt_%zu", extIdx));
+                TH1D* h = seriesOf(grandExtVals[extIdx], Form("GrandExt_%zu", extIdx), externals[extIdx].config.legendLabel);
                 if (h) { grandBundles.push_back({h, externals[extIdx].config}); grandToDelete.push_back(h); }
             }
             DrawIntegratedCanvas(grandBundles, sortedLabels, "Canvas_Summary",
@@ -6732,7 +6885,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
             std::vector<ProfileBundle> grandMassBundles;
             if (hGrandData) grandMassBundles.push_back({hGrandData, dataConfig});
             for (size_t mIdx = 0; mIdx < massVariations.size(); ++mIdx) {
-                TH1D* h = makeSeries(reorder(grandMassVals[mIdx]), Form("GrandMass_%zu", mIdx));
+                TH1D* h = seriesOf(grandMassVals[mIdx], Form("GrandMass_%zu", mIdx), massVariations[mIdx].legendLabel);
                 if (h) { grandMassBundles.push_back({h, massVariations[mIdx]}); grandToDelete.push_back(h); }
             }
             if (grandMassBundles.size() > 1) {
@@ -6758,49 +6911,68 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         TDirectory* xFamDir = nullptr;
 
         for (size_t iRep = 0; iRep < proxyRepresentatives.size(); ++iRep) {
-            const auto& labels = crossFamilyLabels[iRep];
-            if (labels.empty()) continue;
+            const std::string proxyName = proxyRepresentatives[iRep].first;
+
+            // The families holding this observable, with a Data value to subtract from
+            std::vector<size_t> heldBy;
+            for (size_t iFam = 0; iFam < families.size(); ++iFam) {
+                if (families[iFam].ring) continue; // Full ring only: the longitudinal rings are compared in RingVsLongitudinal*/
+                const auto& vals = crossFamilyVals[iRep][iFam];
+                if (vals.empty() || vals[0].second < 0.) {
+                    CountSkip("CrossFamily_Integrated", "family without the representative observable",
+                              families[iFam].familyName + "/" + proxyName);
+                    continue;
+                }
+                heldBy.push_back(iFam);
+            }
+            // The columns: Data, then every variation at least one of those families holds
+            std::vector<size_t> cols;
+            for (size_t c = 0; c < crossFamilyLabels.size(); ++c)
+                for (size_t iFam : heldBy)
+                    if (crossFamilyVals[iRep][iFam][c].second >= 0.) { cols.push_back(c); break; }
+            std::vector<std::string> labels;
+            for (size_t c : cols) labels.push_back(crossFamilyLabels[c]);
+            const int nCols = static_cast<int>(cols.size());
 
             std::vector<ProfileBundle> famBundles;
             std::vector<ProfileBundle> famSubBundles;
             std::vector<TH1*> famToDelete;
 
-            for (size_t iFam = 0; iFam < families.size(); ++iFam) {
-                if (families[iFam].ring) continue; // Full ring only: the longitudinal rings are compared in RingVsLongitudinal*/
+            for (size_t iFam : heldBy) {
                 const auto& vals = crossFamilyVals[iRep][iFam];
-                if (vals.size() != labels.size()) continue; // Family missing this observable entirely
 
                 // familyStyles is indexed in the same order as families, so the legend names the selection
                 const VariationConfig& style = familyStyles[std::min(iFam, familyStyles.size() - 1)];
-
-                TH1D* h = new TH1D(Form("XFam_%zu_%zu", iRep, iFam), "", (int)labels.size(), 0, (double)labels.size());
-                h->SetDirectory(nullptr);
-                for (size_t i = 0; i < vals.size(); ++i) {
-                    h->SetBinContent((int)i + 1, vals[i].first);
-                    h->SetBinError((int)i + 1, vals[i].second);
-                }
-                famBundles.push_back({h, style});
-                famToDelete.push_back(h);
 
                 // Difference against THIS family's own data, which is bin 1 of its own series. Subtracting
                 // each selection from its own baseline is what makes the three comparable: an offset that
                 // is common to a selection cancels, so what is left is how differently each systematic
                 // moves Lambda, AntiLambda and BothHyperons.
-                TH1D* hSub = new TH1D(Form("XFamSub_%zu_%zu", iRep, iFam), "", (int)labels.size(), 0, (double)labels.size());
+                TH1D* h = new TH1D(Form("XFam_%zu_%zu", iRep, iFam), "", nCols, 0, nCols);
+                TH1D* hSub = new TH1D(Form("XFamSub_%zu_%zu", iRep, iFam), "", nCols, 0, nCols);
+                h->SetDirectory(nullptr);
                 hSub->SetDirectory(nullptr);
                 const double d  = vals[0].first;
                 const double ed = vals[0].second;
-                for (size_t i = 1; i < vals.size(); ++i) { // Bin 1 (the data itself) is left empty
-                    hSub->SetBinContent((int)i + 1, d - vals[i].first);
-                    hSub->SetBinError((int)i + 1, std::sqrt(ed * ed + vals[i].second * vals[i].second));
+                for (int i = 0; i < nCols; ++i) {
+                    const auto& v = vals[cols[i]];
+                    if (v.second < 0.) continue; // Not in this family: a gap, never a zero
+                    h->SetBinContent(i + 1, v.first);
+                    h->SetBinError(i + 1, v.second);
+                    if (cols[i] == 0) continue; // Bin 1 (the data itself) is left empty on the difference
+                    hSub->SetBinContent(i + 1, d - v.first);
+                    hSub->SetBinError(i + 1, std::sqrt(ed * ed + v.second * v.second));
                 }
+                famBundles.push_back({h, style});
                 famSubBundles.push_back({hSub, style});
+                famToDelete.push_back(h);
                 famToDelete.push_back(hSub);
             }
 
+            if (famBundles.size() < 2)
+                CountSkip("CrossFamily_Integrated", "fewer than two families hold the representative observable", proxyName);
             if (famBundles.size() > 1) {
                 if (!xFamDir) xFamDir = EnsureDir(fOut, "CrossFamily_Integrated");
-                const std::string proxyName = proxyRepresentatives[iRep].first;
 
                 DrawOffsetSeriesCanvas(labels, famBundles,
                                        "Canvas_CrossFamily_" + proxyName,
@@ -6839,7 +7011,10 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                 famLabels.push_back(families[f].familyName);
                 famIndices.push_back(static_cast<int>(f));
             }
-            if (famLabels.size() < 2) continue; // A single family is not a cross-family plot
+            if (famLabels.size() < 2) { // A single family is not a cross-family plot
+                CountSkip("CrossFamily_Integrated/SigExtracted", "fewer than two families with an extraction", sigExtractProxies[iProxy].folderName);
+                continue;
+            }
 
             const int nFam = static_cast<int>(famLabels.size());
             std::vector<ProfileBundle> series;
@@ -6875,22 +7050,23 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
     // Cross-definition folders, from the full-ring families: each pairs a file with its longitudinal siblings and uses
     // only the files it finds, so a wagon without longitudinal outputs still gets its full-ring corrections.
     std::cout << " -> Full ring vs the longitudinal rings...\n";
-    DrawRingVsLongitudinal(cache, fOut, consumerDir, fullFamilies, dataConfig, sysVariations, externalsAll, cutFolder);
-    DrawCheapRingVsLongitudinal(cache, fOut, consumerDir, fullFamilies, dataConfig, sysVariations, externalsAll, cutFolder);
+    DrawRingVsLongitudinal(cache, fOut, consumerDir, fullFamilies, dataConfig, sysVariations, externalsAll);
+    DrawCheapRingVsLongitudinal(cache, fOut, consumerDir, fullFamilies, dataConfig, sysVariations, externalsAll);
     const std::vector<FakePairing> pairings = MakeFakePairings(consumerDir, sigExtractDir, externalsAll);
     std::cout << " -> Full ring vs the longitudinal rings, differential...\n";
-    DrawDifferentialRingVsLongitudinal(cache, fOut, consumerDir, fullFamilies, dataConfig, sysVariations, externalsAll, pairings, cutFolder);
+    DrawDifferentialRingVsLongitudinal(cache, fOut, consumerDir, fullFamilies, dataConfig, sysVariations, externalsAll, pairings);
 
     // Raw: every candidate, from the consumer's mass-binned moments
     std::cout << " -> Corrections, raw (no signal extraction)...\n";
     const CorrectionFetcher fetchRaw = [&](const FakePairing& pr, const std::string& sfx, const std::string& proxy,
                                            CorrectionInputs& in) {
         RingSample smp;
-        if (!LoadRingSample(cache, pr.consumerBase + "/ConsumerResults_" + sfx + ".root", cutFolder, proxy, smp)) return false;
+        // LoadRingSample already refuses a sample with fewer than two candidates, the one way InputsOfSample can fail
+        if (!LoadRingSample(cache, pr.consumerBase + "/ConsumerResults_" + sfx + ".root", proxy, smp)) return false;
         return InputsOfSample(smp, in);
     };
     DrawCorrections(fOut, fullFamilies, pairings, "Raw", "raw, all candidates", fetchRaw);
-    DrawDifferentialCorrections(cache, fOut, fullFamilies, pairings, cutFolder, "Raw", "raw, all candidates",
+    DrawDifferentialCorrections(cache, fOut, fullFamilies, pairings, "Raw", "raw, all candidates",
                                 [](const DifferentialSample& d, size_t i, CorrectionInputs& in) { return InputsOfSample(d.all[i], in); });
 
     // Signal-extracted: <R>_S from IntegratedSummary/, <u v>_S and <w>_S from KappaEff/ (signalExtractionRing).
@@ -6901,15 +7077,24 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         std::cout << " -> Corrections, signal-extracted...\n";
         const CorrectionFetcher fetchSig = [&](const FakePairing& pr, const std::string& sfx, const std::string& proxy,
                                                CorrectionInputs& in) {
-            if (pr.sigBase.empty() || gSystem->AccessPathName((pr.sigBase + "/signalExtractionRing_" + sfx + ".root").c_str()))
-                return false; // Not extracted: quiet, it is the common case for references
-            const SigExtractPoint r = FetchSigExtractPoint(cache, pr.sigBase, sfx, cutFolder, proxy, "hIntegratedRSig");
-            const SigExtractPoint u = FetchSigExtractPoint(cache, pr.sigBase, sfx, cutFolder, proxy + "_Num", "hIntegratedRSig", true, "KappaEff");
-            if (!r.found || !u.found || !(u.value > 0.)) return false;
+            const std::string sigFileOfSample = pr.sigBase + "/signalExtractionRing_" + sfx + ".root";
+            if (pr.sigBase.empty() || !cache.Open(sigFileOfSample, false))
+                return false; // Not extracted: only counted, it is the common case for references
+            const SigExtractPoint r = FetchSigExtractPoint(cache, pr.sigBase, sfx, proxy, "hIntegratedRSig");
+            const SigExtractPoint u = FetchSigExtractPoint(cache, pr.sigBase, sfx, proxy + "_Num", "hIntegratedRSig", true, "KappaEff");
+            if (!r.found || !u.found) return false; // Already counted or warned by FetchSigExtractPoint
+            if (!(u.value > 0.)) {
+                WarnSkip(proxy + " signal-extracted <u v>", "not positive", sigFileOfSample);
+                return false;
+            }
             SigExtractPoint w; w.value = 1.; w.error = 0.; w.found = true;
             if (IsLongitudinalSuffix(sfx))
-                w = FetchSigExtractPoint(cache, pr.sigBase, sfx, cutFolder, proxy + "_Den", "hIntegratedRSig", true, "KappaEff");
-            if (!w.found || !(w.value > 0.)) return false;
+                w = FetchSigExtractPoint(cache, pr.sigBase, sfx, proxy + "_Den", "hIntegratedRSig", true, "KappaEff");
+            if (!w.found) return false; // Already counted or warned by FetchSigExtractPoint
+            if (!(w.value > 0.)) {
+                WarnSkip(proxy + " signal-extracted <w>", "not positive", sigFileOfSample);
+                return false;
+            }
             in.ring = {r.value, r.error};
             in.uvx3 = {3. * u.value, 3. * u.error};
             const double kap = 3. * u.value / w.value;
@@ -6931,15 +7116,18 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
     auto makeRegionFetcher = [&](int region) -> CorrectionFetcher {
         return [&, region](const FakePairing& pr, const std::string& sfx, const std::string& proxy, CorrectionInputs& in) {
             RegionSample r;
-            if (!LoadRegionSample(cache, pr.consumerBase + "/ConsumerResults_" + sfx + ".root", cutFolder, proxy, r)) return false;
-            return InputsOfSample(RegionAsSample(r, region), in);
+            const std::string file = pr.consumerBase + "/ConsumerResults_" + sfx + ".root";
+            if (!LoadRegionSample(cache, file, proxy, r)) return false;
+            if (InputsOfSample(RegionAsSample(r, region), in)) return true;
+            WarnSkip(proxy + (region == 1 ? " peak" : " sideband") + " sample", "fewer than two candidates", file);
+            return false;
         };
     };
     DrawCorrections(fOut, fullFamilies, pairings, "CheapSigExtract/InPeakQA", "in peak only, QA: background not removed", makeRegionFetcher(1));
     DrawCorrections(fOut, fullFamilies, pairings, "CheapSigExtract/OffPeakQA", "sideband only, QA: background candidates", makeRegionFetcher(0));
-    DrawDifferentialCorrections(cache, fOut, fullFamilies, pairings, cutFolder, "CheapSigExtract/InPeakQA", "in peak only, QA: background not removed",
+    DrawDifferentialCorrections(cache, fOut, fullFamilies, pairings, "CheapSigExtract/InPeakQA", "in peak only, QA: background not removed",
                                 [](const DifferentialSample& d, size_t i, CorrectionInputs& in) { return InputsOfSample(RegionAsSample(d.region[i], 1), in); });
-    DrawDifferentialCorrections(cache, fOut, fullFamilies, pairings, cutFolder, "CheapSigExtract/OffPeakQA", "sideband only, QA: background candidates",
+    DrawDifferentialCorrections(cache, fOut, fullFamilies, pairings, "CheapSigExtract/OffPeakQA", "sideband only, QA: background candidates",
                                 [](const DifferentialSample& d, size_t i, CorrectionInputs& in) { return InputsOfSample(RegionAsSample(d.region[i], 0), in); });
 
     // Sideband-subtracted: <y>_S = (Sum_P y - Sum_B y) / (N_P - N_B) for each of R, u v and w, then the usual correction
@@ -6947,51 +7135,56 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
     const CorrectionFetcher fetchCheap = [&](const FakePairing& pr, const std::string& sfx, const std::string& proxy,
                                              CorrectionInputs& in) {
         RegionSample r;
-        if (!LoadRegionSample(cache, pr.consumerBase + "/ConsumerResults_" + sfx + ".root", cutFolder, proxy, r)) return false;
-        return InputsOfSidebandSubtracted(r, in);
+        const std::string file = pr.consumerBase + "/ConsumerResults_" + sfx + ".root";
+        if (!LoadRegionSample(cache, file, proxy, r)) return false;
+        if (InputsOfSidebandSubtracted(r, in)) return true;
+        WarnSkip(proxy + " sideband-subtracted inputs", "no usable signal estimate (a subtracted count is not positive)", file);
+        return false;
     };
     DrawCorrections(fOut, fullFamilies, pairings, "CheapSigExtract/SidebandSubtracted", "sideband-subtracted", fetchCheap);
-    DrawDifferentialCorrections(cache, fOut, fullFamilies, pairings, cutFolder, "CheapSigExtract/SidebandSubtracted", "sideband-subtracted",
+    DrawDifferentialCorrections(cache, fOut, fullFamilies, pairings, "CheapSigExtract/SidebandSubtracted", "sideband-subtracted",
                                 [](const DifferentialSample& d, size_t i, CorrectionInputs& in) { return InputsOfSidebandSubtracted(d.region[i], in); });
-    DrawKappaByRegion(cache, fOut, fullFamilies, pairings, cutFolder);
+    DrawKappaByRegion(cache, fOut, fullFamilies, pairings);
 
     cache.CloseAll(); // Release every input file before closing the output
 
     fOut->Close();
     delete fOut;
+    PrintSkipSummary(); // Last, so it closes the log
     std::cout << " Done!\n";
 }
 
 // To be able to run this both as a compiled C++ macro or a ROOT script:
 #ifndef __CINT__
 int main(int argc, char** argv) {
-    if (argc < 2) { // Check is argc < 2 because this is the bare minimum. mcRefDir, ppRefDir, toyModelPath and cutFolder are all optionals
+    if (argc < 2) { // Check is argc < 2 because this is the bare minimum. Everything after consumerDir is optional
         std::cerr << "Usage: " << argv[0]
-                  << " <consumerDir> [mcRefDir] [ppRefDir] [toyModelPath] [cutFolder]"
+                  << " <consumerDir> [mcRefDir] [ppRefDir] [toyModelPath]"
                      " [doIndividualComparisons] [sigExtractDir]\n"
                      "  sigExtractDir defaults to <consumerDir>/../results_SigExtract;"
                      " pass \"none\" to skip the signal-extraction plots.\n"
-                     "  useRingZ outputs in <consumerDir> are detected by name and summarised as <family>_RingZ.\n";
+                     "  Longitudinal-ring outputs (_useRingZ, _useRingZT) in <consumerDir> are detected by name and"
+                     " summarised as <family>_RingZ and <family>_RingZT.\n";
         return 1;
     }
     std::string consumerDir = argv[1];
     std::string mcRefDir = (argc > 2) ? argv[2] : "";
     std::string ppRefDir = (argc > 3) ? argv[3] : "";
     std::string toyModelPath = (argc > 4) ? argv[4] : "";
-    std::string cutFolder = (argc > 5) ? argv[5] : DEFAULT_CUT_FOLDER;
+    // The old argv[5] (the kinematic-cut folder) is gone: the consumer books a single Ring/ folder.
     // signalExtractionRing writes next to the consumer output, so the default follows the pipeline
     // layout (<workDir>/results_consumer and <workDir>/results_SigExtract) and can be overridden.
     // Passing "none" disables the signal-extraction plots entirely.
-    std::string sigExtractDir = (argc > 7) ? argv[7] : (consumerDir + "/../results_SigExtract");
+    std::string sigExtractDir = (argc > 6) ? argv[6] : (consumerDir + "/../results_SigExtract");
     if (sigExtractDir == "none") sigExtractDir = "";
     // Accepts 1/0, true/false, yes/no. Anything else (including an absent argument) leaves it off.
     bool doIndividual = false;
-    if (argc > 6) {
-        std::string flag = argv[6];
+    if (argc > 5) {
+        std::string flag = argv[5];
         doIndividual = (flag == "1" || flag == "true" || flag == "yes" || flag == "on");
     }
 
-    auxiliarySummaryPlots(consumerDir, mcRefDir, ppRefDir, toyModelPath, cutFolder, doIndividual,
+    auxiliarySummaryPlots(consumerDir, mcRefDir, ppRefDir, toyModelPath, doIndividual,
                           sigExtractDir);
     return 0;
 }

@@ -41,8 +41,8 @@
 *  11. The sideband sine: c0 + A sin(Delta phi) + B cos(Delta phi) per mass bin (all definitions), and per
 *      A/C hemisphere of the Lambda (longitudinal rings only).
 *
-* All sections are produced once per kinematic-cut folder (see kFolders below): Ring, RingKinematicCuts,
-* JetKinematicCuts, JetAndLambdaKinematicCuts.
+* Inputs: the consumer's Ring/ folder (one subfolder per proxy), RawPolarization/PolMaps/, and, when they are
+* booked, RzDiagnostics/ and FakePolDrivers/PhiAEE/.
 *
 * The geometry of the three coordinate systems, the reason each one exists, and the parity checks the
 * resulting maps must satisfy are all in the folder README ("Coordinate systems used by the
@@ -101,7 +101,7 @@
 // ==========================================================================
 
 // warnIfMissing is a functionality to avoid printing warnings in some cases. It is not always an anomaly to have some plots
-// missing: the consumer may book only some of the kinematic cut families at once, so this is expected behavior in most cases.
+// missing: some folders are booked only under a QA switch or a ring mode (FakePolDrivers/, RzDiagnostics/), so this is expected behavior in some cases.
 // Pass false when the caller is doing the probing and will report the outcome itself.
 // Leave it true when the object is genuinely expected to be there.
 static TObject* SafeGet(TDirectory* dir, const char* name, bool warnIfMissing = true)
@@ -126,8 +126,8 @@ static TDirectory* GetDir(TDirectory* parent, const char* name, bool warnIfMissi
     return dir;
 }
 
-// Like GetDir, but resolves a multi-level path ("PolMaps/PrimeJet") in one call. An empty path returns
-// the parent itself, which is what the ring-observable maps need: they live at the folder root.
+// Like GetDir, but resolves a multi-level path ("RawPolarization/PolMaps/PrimeJet") in one call. An empty path returns
+// the parent itself.
 static TDirectory* GetDirPath(TDirectory* parent, const std::string& path, bool warnIfMissing = true)
 {
     if (!parent) {
@@ -616,29 +616,14 @@ static void DrawSymmetricColzH2(TH2* hSrc, const char* title, bool scaleToPercen
     hd->Draw("COLZ");
 }
 
-// ==========================================================================
-// Folder registry: the four kinematic-cut scenarios booked by lambdaJetPolarizationIonsDerived.cxx's
-// addRingObservableFamily() lambda (Ring, RingKinematicCuts, JetKinematicCuts, JetAndLambdaKinematicCuts).
-// If the consumer ever receives another folder, you can just add it here!
-//
-// Only "Ring" is generally booked in all executions. 
-// The absence of the other three is a design feature, so it is resolved ONCE by ScanPresentFolders() below and reported as a single line,
-// rather than being rediscovered (and re-warned about) by every drawing section in turn (this was polluting the logs way too much!).
-// ==========================================================================
-struct FolderSpec {
-    const char* name;      ///< O2 histogram-registry folder name (matches addRingObservableFamily(...) argument in the consumer)
-    const char* label;     ///< Human-readable label used in canvas titles
-    bool        mandatory; ///< true -> its absence means the input file is broken, not merely trimmed
-};
-
-static const std::vector<FolderSpec> kFolders = {
-    {"Ring",                      "Ring (no kinematic cuts)",           true },
-    {"RingKinematicCuts",         "Ring, #Lambda kinematic cuts",       false},
-    {"JetKinematicCuts",          "Ring, jet kinematic cuts",           false},
-    {"JetAndLambdaKinematicCuts", "Ring, jet & #Lambda kinematic cuts", false},
-};
-
 static const char* kTaskDir = "lambdajetpolarizationionsderived"; // My O2Physics task name
+
+// Input folders, relative to kTaskDir. Ring/ is the only ring-observable folder (the kinematic-cut families were removed:
+// each cut variation is now a configuration of its own). Every proxy folder inside it has the same layout and the same
+// object names, so the per-proxy paths are built from the proxy name. The polarization maps live outside Ring/.
+static const std::string kRingDir    = "Ring";
+static const std::string kPolMapsDir = "RawPolarization/PolMaps";
+static const char* kProxyFolders[3]  = {"LeadJet", "LeadP", "SubJet"};
 
 // Ring definition of the input file. A useRingZ consumer output is identified by its file name alone: the
 // config names carry "_useRingZ" right after the family (BothHyperons_useRingZ_MixedEventProxies), so the tag
@@ -715,31 +700,27 @@ static std::string Axes(const std::string& x, const std::string& y, const std::s
 /**
  * @brief Builds one canvas from a panel table: fetches, checks, lays out, draws and writes.
  *
- * Fetching is all-or-nothing on purpose. f is already known to exist (main() only iterates the
- * folders ScanPresentFolders() resolved), so a missing histogram here is a genuine anomaly --
- * most likely a consumer/macro name drift -- and half a canvas would hide it rather than show it.
+ * Fetching is all-or-nothing on purpose. The maps are booked unconditionally (and main() has already
+ * checked Ring/), so a missing histogram here is a genuine anomaly -- most likely a consumer/macro
+ * name drift -- and half a canvas would hide it rather than show it.
  * The warning names the first offender so the drift is one grep away.
  *
  * @param taskDir    Top-level task TDirectory ("lambdajetpolarizationionsderived").
  * @param outDir     Output sub-directory to write the canvas into.
- * @param f          Folder to process (see kFolders).
- * @param subPath    Directory inside the folder holding the histograms; "" means the folder root.
- * @param canvasName Canvas name prefix; the folder name is appended.
+ * @param subPath    Directory holding the histograms, relative to taskDir.
+ * @param canvasName Canvas name.
  * @param mainTitle  Title drawn across the top of the canvas.
  * @param panels     The panel table.
  */
 // ==========================================================================
-static void MakePanelCanvas(TDirectory* taskDir, TDirectory* outDir, const FolderSpec& f,
+static void MakePanelCanvas(TDirectory* taskDir, TDirectory* outDir,
                             const std::string& subPath, const std::string& canvasName,
                             const std::string& mainTitle, const std::vector<PanelSpec>& panels)
 {
     if (panels.empty()) return;
 
-    TDirectory* folderDir = GetDir(taskDir, f.name);
-    if (!folderDir) { printf("WARNING: skipping '%s' for '%s' (folder missing)\n", canvasName.c_str(), f.name); return; }
-
-    TDirectory* dir = GetDirPath(folderDir, subPath);
-    if (!dir) { printf("WARNING: skipping '%s' for '%s' (subdirectory '%s' missing)\n", canvasName.c_str(), f.name, subPath.c_str()); return; }
+    TDirectory* dir = GetDirPath(taskDir, subPath);
+    if (!dir) { printf("WARNING: skipping '%s' (directory '%s' missing)\n", canvasName.c_str(), subPath.c_str()); return; }
 
     // ---- Resolve every object first, so a partial canvas is never written ----
     struct Resolved { TProfile2D* a; TProfile2D* b; TProfile2D* c; TH2* counts; };
@@ -764,15 +745,14 @@ static void MakePanelCanvas(TDirectory* taskDir, TDirectory* outDir, const Folde
         }
 
         if (missing) {
-            printf("WARNING: skipping '%s' for '%s' (missing '%s' in '%s')\n",
-                   canvasName.c_str(), f.name, missing, subPath.empty() ? f.name : subPath.c_str());
+            printf("WARNING: skipping '%s' (missing '%s' in '%s')\n", canvasName.c_str(), missing, subPath.c_str());
             return;
         }
     }
 
     // ---- Layout: one column per panel, 700 px each ----
     const int nPanels = static_cast<int>(panels.size());
-    TCanvas* c = new TCanvas(Form("%s_%s", canvasName.c_str(), f.name), "", 700 * nPanels, 650);
+    TCanvas* c = new TCanvas(canvasName.c_str(), "", 700 * nPanels, 650);
     c->Divide(nPanels, 1, 0.005, 0.005);
 
     for (int i = 0; i < nPanels; ++i) {
@@ -799,7 +779,7 @@ static void MakePanelCanvas(TDirectory* taskDir, TDirectory* outDir, const Folde
     }
 
     c->cd(0);
-    AddLabel(0.5, 0.98, Form("%s  --  %s", mainTitle.c_str(), f.label), 0.032, 22);
+    AddLabel(0.5, 0.98, mainTitle.c_str(), 0.032, 22);
 
     WriteCanvas(c, outDir);
     delete c;
@@ -891,19 +871,17 @@ static const std::vector<PanelSpec> kPanelsCountsPrimeJet = {
 /**
  * @brief Builds the three ring-observable panels for one coordinate system.
  *
- * The ring maps differ between jet proxies only by a histogram-name prefix and between coordinate
- * systems only by the plane suffixes and the axis labels, so they are generated rather than tabulated:
- * four near-identical hand-written tables would be four places for a typo to hide.
+ * The ring maps differ between jet proxies only by their folder (Ring/<Proxy>/RingMaps/) and between
+ * coordinate systems only by the plane suffixes and the axis labels, so they are generated rather than
+ * tabulated: four near-identical hand-written tables would be four places for a typo to hide.
  *
- * @param prefix   Histogram-name prefix, e.g. "p2dRingObservable" or "p2dRingObservableLeadP".
  * @param suffixes The three plane suffixes, e.g. {"PxPy", "PzPx", "PyPz"}.
  * @param xTitles  Horizontal axis title of each plane, in the same order.
  * @param yTitles  Vertical axis title of each plane, in the same order.
  * @param banners  Panel banner of each plane, in the same order.
  */
 // ==========================================================================
-static std::vector<PanelSpec> MakeRingPanels(const std::string& prefix,
-                                             const std::vector<std::string>& suffixes,
+static std::vector<PanelSpec> MakeRingPanels(const std::vector<std::string>& suffixes,
                                              const std::vector<std::string>& xTitles,
                                              const std::vector<std::string>& yTitles,
                                              const std::vector<std::string>& banners)
@@ -911,7 +889,7 @@ static std::vector<PanelSpec> MakeRingPanels(const std::string& prefix,
     std::vector<PanelSpec> panels;
     panels.reserve(suffixes.size());
     for (size_t i = 0; i < suffixes.size(); ++i) {
-        panels.push_back({PanelKind::kProfileColz, prefix + "Vs" + suffixes[i], "", "",
+        panels.push_back({PanelKind::kProfileColz, "p2dRingObservableVs" + suffixes[i], "", "",
                           Axes(xTitles[i], yTitles[i], RingLabel("<#it{R}> [%]")), banners[i], ""});
     }
     return panels;
@@ -920,11 +898,11 @@ static std::vector<PanelSpec> MakeRingPanels(const std::string& prefix,
 
 // ==========================================================================
 /**
- * @brief One canvas per folder: the AEE isolated, plus the three parity nulls that come with it.
+ * @brief One canvas: the AEE isolated, plus the three parity nulls that come with it.
  *
  * This one does not go through MakePanelCanvas(): it computes its panels instead of fetching them, and
- * it reads from two directories at once (the maps live under PolMaps/Aee, the ring map at the folder
- * root). The folded histograms are written alongside the canvas so the result can be used
+ * it reads from two directories at once (the maps live under RawPolarization/PolMaps/Aee, the ring map
+ * under Ring/LeadJet/RingMaps). The folded histograms are written alongside the canvas so the result can be used
  * quantitatively -- projected, integrated, fitted -- and not only looked at.
  *
  * | Panel | Content | Expectation |
@@ -939,47 +917,44 @@ static std::vector<PanelSpec> MakeRingPanels(const std::string& prefix,
  *
  * @param taskDir    Top-level task TDirectory.
  * @param outDir     Output sub-directory for the canvas and the folded histograms.
- * @param f          Folder to process (see kFolders).
  * @param minEntries Minimum per-bin entry count required of BOTH partners of a folded pair.
  */
 // ==========================================================================
-static void MakeAeeFoldCanvas(TDirectory* taskDir, TDirectory* outDir, const FolderSpec& f, double minEntries = 50.)
+static void MakeAeeFoldCanvas(TDirectory* taskDir, TDirectory* outDir, double minEntries = 50.)
 {
-    TDirectory* folderDir = GetDir(taskDir, f.name);
-    if (!folderDir) { printf("WARNING: skipping AEE fold for '%s' (folder missing)\n", f.name); return; }
-
-    TDirectory* aeeDir = GetDirPath(folderDir, "PolMaps/Aee");
-    if (!aeeDir) { printf("WARNING: skipping AEE fold for '%s' (PolMaps/Aee missing)\n", f.name); return; }
+    TDirectory* aeeDir = GetDirPath(taskDir, kPolMapsDir + "/Aee");
+    if (!aeeDir) { printf("WARNING: skipping AEE fold (%s/Aee missing)\n", kPolMapsDir.c_str()); return; }
+    TDirectory* ringMapsDir = GetDirPath(taskDir, kRingDir + "/LeadJet/RingMaps", false);
 
     TH2*        hCounts = static_cast<TH2*>(SafeGet(aeeDir, "h2dCountsVsPxAeePyAee", false));
     TProfile2D* hPt     = static_cast<TProfile2D*>(SafeGet(aeeDir, "p2dPtStar_vsPxAeePyAee", false));
     TProfile2D* hPz     = static_cast<TProfile2D*>(SafeGet(aeeDir, "p2dPzStar_vsPxAeePyAee", false));
-    TProfile2D* hRing   = static_cast<TProfile2D*>(SafeGet(folderDir, "RingMaps/p2dRingObservableVsPxAeePyAee", false));
+    TProfile2D* hRing   = static_cast<TProfile2D*>(SafeGet(ringMapsDir, "p2dRingObservableVsPxAeePyAee", false));
 
     if (!hCounts || !hPt || !hPz || !hRing) {
-        printf("WARNING: skipping AEE fold for '%s' (one or more (x_AEE, y_AEE) maps missing)\n", f.name);
+        printf("WARNING: skipping AEE fold (one or more (x_AEE, y_AEE) maps missing)\n");
         return;
     }
 
     if (!HasFoldableYAxis(hCounts)) {
-        printf("WARNING: skipping AEE fold for '%s': the y_AEE axis is not symmetric about zero with an "
-               "even bin count, so the fold cannot pair bins. Check axisLambdaPRot.\n", f.name);
+        printf("WARNING: skipping AEE fold: the y_AEE axis is not symmetric about zero with an "
+               "even bin count, so the fold cannot pair bins. Check axisLambdaPRot.\n");
         return;
     }
 
-    TH2D* foldCounts = MakeCountsAsymmetryY(hCounts, Form("hAeeFoldCounts_%s", f.name));
-    TH2D* foldPt     = MakeProfileFoldY(hPt,   true,  minEntries, Form("hAeeFoldPtOdd_%s", f.name));
-    TH2D* foldPz     = MakeProfileFoldY(hPz,   false, minEntries, Form("hAeeFoldPzEven_%s", f.name));
-    TH2D* foldRing   = MakeProfileFoldY(hRing, true,  minEntries, Form("hAeeFoldRingOdd_%s", f.name));
+    TH2D* foldCounts = MakeCountsAsymmetryY(hCounts, "hAeeFoldCounts");
+    TH2D* foldPt     = MakeProfileFoldY(hPt,   true,  minEntries, "hAeeFoldPtOdd");
+    TH2D* foldPz     = MakeProfileFoldY(hPz,   false, minEntries, "hAeeFoldPzEven");
+    TH2D* foldRing   = MakeProfileFoldY(hRing, true,  minEntries, "hAeeFoldRingOdd");
 
     if (!foldCounts || !foldPt || !foldPz || !foldRing) {
-        printf("WARNING: skipping AEE fold for '%s' (fold construction failed)\n", f.name);
+        printf("WARNING: skipping AEE fold (fold construction failed)\n");
         return;
     }
 
     const std::string axPair = ";" + kPxA + ";" + kPyA + ";";
 
-    TCanvas* c = new TCanvas(Form("cAeeFold_%s", f.name), "", 2800, 650);
+    TCanvas* c = new TCanvas("cAeeFold", "", 2800, 650);
     c->Divide(4, 1, 0.005, 0.005);
 
     c->cd(1);
@@ -1004,7 +979,7 @@ static void MakeAeeFoldCanvas(TDirectory* taskDir, TDirectory* outDir, const Fol
     AddLabel(0.5, 0.95, RingLabel("Null: <#it{R}> should be even").c_str(), 0.045, 22);
 
     c->cd(0);
-    AddLabel(0.5, 0.98, Form("AEE fold about #Phi_{AEE} = 0  --  %s", f.label), 0.032, 22);
+    AddLabel(0.5, 0.98, "AEE fold about #Phi_{AEE} = 0", 0.032, 22);
 
     WriteCanvas(c, outDir);
 
@@ -1302,7 +1277,7 @@ static void DrawWindowLines(double halfWidth, int color)
 
 // ==========================================================================
 /**
- * @brief One canvas per folder: the kernel surfaces, the M0 estimator, and the intercept combination.
+ * @brief One canvas: the kernel surfaces, the M0 estimator, and the intercept combination.
  *
  * | Panel | Content | Expectation |
  * |---|---|---|
@@ -1319,57 +1294,53 @@ static void DrawWindowLines(double halfWidth, int color)
  *
  * @param taskDir    Top-level task TDirectory.
  * @param outDir     Output sub-directory for the canvas and the graphs.
- * @param f          Folder to process (see kFolders).
  * @param cosRebin   cos(dTheta) bins merged per slice.
  * @param maxAbsCos  |cos(dTheta)| ceiling for a slice to be fitted.
  * @param minEntries Minimum entries per slice.
  * @param drawSlices Whether to write the individual slice-fit canvases into a Fits/ subdirectory.
  */
 // ==========================================================================
-static void MakeRingKernelCanvas(TDirectory* taskDir, TDirectory* outDir, const FolderSpec& f,
+static void MakeRingKernelCanvas(TDirectory* taskDir, TDirectory* outDir,
                                  int cosRebin = 5, double maxAbsCos = 0.95,
                                  double minEntries = 200., bool drawSlices = true)
 {
-    TDirectory* folderDir = GetDir(taskDir, f.name);
-    if (!folderDir) { printf("WARNING: skipping ring kernel for '%s' (folder missing)\n", f.name); return; }
+    // Each proxy carries its own RingKernel/, with the same object names; the LeadP one is optional
+    TDirectory* kDir = GetDirPath(taskDir, kRingDir + "/LeadJet/RingKernel");
+    if (!kDir) { printf("WARNING: skipping ring kernel (%s/LeadJet/RingKernel missing)\n", kRingDir.c_str()); return; }
+    TDirectory* kDirLeadP = GetDirPath(taskDir, kRingDir + "/LeadP/RingKernel", false);
 
-    // Each proxy carries its own RingKernel/; the LeadP one is optional
-    TDirectory* kDir = GetDirPath(folderDir, "LeadJet/RingKernel");
-    if (!kDir) { printf("WARNING: skipping ring kernel for '%s' (LeadJet/RingKernel missing)\n", f.name); return; }
-    TDirectory* kDirLeadP = GetDirPath(folderDir, "LeadP/RingKernel", false);
-
-    TProfile2D* hJet = static_cast<TProfile2D*>(SafeGet(kDir, "p2dRingObservableCosDeltaThetaVsJetZ", false));
-    TProfile2D* hLeadP = static_cast<TProfile2D*>(SafeGet(kDirLeadP, "p2dRingObservableLeadPCosDeltaThetaVsLeadPZ", false));
-    if (!hJet) { printf("WARNING: skipping ring kernel for '%s' (jet surface missing)\n", f.name); return; }
+    TProfile2D* hJet = static_cast<TProfile2D*>(SafeGet(kDir, "p2dRingObservableCosDeltaThetaVsProxyZ", false));
+    TProfile2D* hLeadP = static_cast<TProfile2D*>(SafeGet(kDirLeadP, "p2dRingObservableCosDeltaThetaVsProxyZ", false));
+    if (!hJet) { printf("WARNING: skipping ring kernel (jet surface missing)\n"); return; }
 
     TDirectory* fitDir = nullptr;
     if (drawSlices) {
-        fitDir = outDir->mkdir(Form("Fits_%s", f.name));
+        fitDir = outDir->mkdir("Fits");
     }
 
     // Fully allowed windows, from each proxy's own 3D occupancy (absent profiles just skip the lines)
     const double cwJet = FullyAllowedCosWindow(static_cast<TProfile3D*>(
-        SafeGet(kDir, "p3dRingObservableCosDeltaThetaVsJetZVsLambdaZ", false)));
+        SafeGet(kDir, "p3dRingObservableCosDeltaThetaVsProxyZVsLambdaZ", false)));
     const double cwLeadP = FullyAllowedCosWindow(static_cast<TProfile3D*>(
-        SafeGet(kDirLeadP, "p3dRingObservableLeadPCosDeltaThetaVsLeadPZVsLambdaZ", false)));
+        SafeGet(kDirLeadP, "p3dRingObservableCosDeltaThetaVsProxyZVsLambdaZ", false)));
 
     const std::vector<KernelSliceFit> fitJet =
-        FitRingKernelSlices(hJet, cosRebin, maxAbsCos, minEntries, fitDir, Form("kJet_%s", f.name));
+        FitRingKernelSlices(hJet, cosRebin, maxAbsCos, minEntries, fitDir, "kJet");
     const std::vector<KernelSliceFit> fitLeadP =
-        hLeadP ? FitRingKernelSlices(hLeadP, cosRebin, maxAbsCos, minEntries, fitDir, Form("kLeadP_%s", f.name))
+        hLeadP ? FitRingKernelSlices(hLeadP, cosRebin, maxAbsCos, minEntries, fitDir, "kLeadP")
                : std::vector<KernelSliceFit>{};
 
-    TGraphErrors* gSlopeJet   = MakeKernelGraph(fitJet,   true,  Form("gM0Jet_%s", f.name));
-    TGraphErrors* gSlopeLeadP = MakeKernelGraph(fitLeadP, true,  Form("gM0LeadP_%s", f.name));
-    TGraphErrors* gIntJet     = MakeKernelGraph(fitJet,   false, Form("gInterceptJet_%s", f.name));
-    TGraphErrors* gIntLeadP   = MakeKernelGraph(fitLeadP, false, Form("gInterceptLeadP_%s", f.name));
+    TGraphErrors* gSlopeJet   = MakeKernelGraph(fitJet,   true,  "gM0Jet");
+    TGraphErrors* gSlopeLeadP = MakeKernelGraph(fitLeadP, true,  "gM0LeadP");
+    TGraphErrors* gIntJet     = MakeKernelGraph(fitJet,   false, "gInterceptJet");
+    TGraphErrors* gIntLeadP   = MakeKernelGraph(fitLeadP, false, "gInterceptLeadP");
 
     if (!gSlopeJet) {
-        printf("WARNING: skipping ring kernel for '%s' (no slice reached %.0f entries)\n", f.name, minEntries);
+        printf("WARNING: skipping ring kernel (no slice reached %.0f entries)\n", minEntries);
         return;
     }
 
-    TCanvas* c = new TCanvas(Form("cRingKernel_%s", f.name), "", 2100, 650);
+    TCanvas* c = new TCanvas("cRingKernel", "", 2100, 650);
     c->Divide(3, 1, 0.005, 0.005);
 
     c->cd(1);
@@ -1417,7 +1388,7 @@ static void MakeRingKernelCanvas(TDirectory* taskDir, TDirectory* outDir, const 
     }
 
     c->cd(0);
-    AddLabel(0.5, 0.98, Form("%sRing projection kernel  --  %s", gNullTag.c_str(), f.label), 0.032, 22);
+    AddLabel(0.5, 0.98, Form("%sRing projection kernel", gNullTag.c_str()), 0.032, 22);
 
     WriteCanvas(c, outDir);
 
@@ -1482,7 +1453,7 @@ struct LinFit {
  * @brief Inverse-variance weighted least squares for y = intercept + slope * x.
  *
  * Done by hand on purpose. This is called once per (lambda_z, cos dTheta) cell -- hundreds of times
- * per folder -- and a two-parameter linear fit has a closed-form solution, so routing each one
+ * per file -- and a two-parameter linear fit has a closed-form solution, so routing each one
  * through TF1 and Minuit would buy nothing but overhead and a pile of transient ROOT objects.
  * Section 6's fits go through ROOT because their canvases are meant to be looked at; these are not.
  *
@@ -1712,7 +1683,7 @@ static TGraphErrors* MakeBphiGraph(const std::vector<KernelBphiPoint>& pts, bool
 
 // ==========================================================================
 /**
- * @brief One canvas per folder: B_phi(lambda_z), the A/C yield asymmetry, and the moments.
+ * @brief One canvas: B_phi(lambda_z), the A/C yield asymmetry, and the moments.
  *
  * | Panel | Content | Expectation |
  * |---|---|---|
@@ -1728,26 +1699,22 @@ static TGraphErrors* MakeBphiGraph(const std::vector<KernelBphiPoint>& pts, bool
  *
  * @param taskDir        Top-level task TDirectory.
  * @param outDir         Output sub-directory for the canvas and the graphs.
- * @param f              Folder to process (see kFolders).
  * @param maxAbsCos      |cos(dTheta)| ceiling for a column to be used.
  * @param minEntriesCell Minimum entries for one 3D cell to enter a column fit.
  */
 // ==========================================================================
-static void MakeKernelMomentsCanvas(TDirectory* taskDir, TDirectory* outDir, const FolderSpec& f,
+static void MakeKernelMomentsCanvas(TDirectory* taskDir, TDirectory* outDir,
                                     double maxAbsCos = 0.95, double minEntriesCell = 30.)
 {
-    TDirectory* folderDir = GetDir(taskDir, f.name);
-    if (!folderDir) { printf("WARNING: skipping kernel moments for '%s' (folder missing)\n", f.name); return; }
-
-    TDirectory* kDir = GetDirPath(folderDir, "LeadJet/RingKernel");
-    if (!kDir) { printf("WARNING: skipping kernel moments for '%s' (LeadJet/RingKernel missing)\n", f.name); return; }
-    TDirectory* kDirLeadP = GetDirPath(folderDir, "LeadP/RingKernel", false);
+    TDirectory* kDir = GetDirPath(taskDir, kRingDir + "/LeadJet/RingKernel");
+    if (!kDir) { printf("WARNING: skipping kernel moments (%s/LeadJet/RingKernel missing)\n", kRingDir.c_str()); return; }
+    TDirectory* kDirLeadP = GetDirPath(taskDir, kRingDir + "/LeadP/RingKernel", false);
 
     TProfile3D* h3Jet = static_cast<TProfile3D*>(
-        SafeGet(kDir, "p3dRingObservableCosDeltaThetaVsJetZVsLambdaZ", false));
+        SafeGet(kDir, "p3dRingObservableCosDeltaThetaVsProxyZVsLambdaZ", false));
     TProfile3D* h3LeadP = static_cast<TProfile3D*>(
-        SafeGet(kDirLeadP, "p3dRingObservableLeadPCosDeltaThetaVsLeadPZVsLambdaZ", false));
-    if (!h3Jet) { printf("WARNING: skipping kernel moments for '%s' (jet 3D profile missing)\n", f.name); return; }
+        SafeGet(kDirLeadP, "p3dRingObservableCosDeltaThetaVsProxyZVsLambdaZ", false));
+    if (!h3Jet) { printf("WARNING: skipping kernel moments (jet 3D profile missing)\n"); return; }
 
     const std::vector<KernelBphiPoint> ptsJet = ExtractBphiFromKernel3D(h3Jet, maxAbsCos, minEntriesCell);
     const std::vector<KernelBphiPoint> ptsLeadP =
@@ -1758,16 +1725,16 @@ static void MakeKernelMomentsCanvas(TDirectory* taskDir, TDirectory* outDir, con
     const KernelMoments mLeadP = ComputeKernelMoments(ptsLeadP);
 
     if (!mJet.valid) {
-        printf("WARNING: skipping kernel moments for '%s' (no usable cos#theta_{#Lambda} slab)\n", f.name);
+        printf("WARNING: skipping kernel moments (no usable cos#theta_{#Lambda} slab)\n");
         return;
     }
 
-    TGraphErrors* gJet    = MakeBphiGraph(ptsJet,   false, Form("gBphiJet_%s", f.name));
-    TGraphErrors* gJetMir = MakeBphiGraph(ptsJet,   true,  Form("gBphiJetMirror_%s", f.name));
-    TGraphErrors* gLeadP  = MakeBphiGraph(ptsLeadP, false, Form("gBphiLeadP_%s", f.name));
+    TGraphErrors* gJet    = MakeBphiGraph(ptsJet,   false, "gBphiJet");
+    TGraphErrors* gJetMir = MakeBphiGraph(ptsJet,   true,  "gBphiJetMirror");
+    TGraphErrors* gLeadP  = MakeBphiGraph(ptsLeadP, false, "gBphiLeadP");
     if (!gJet) return;
 
-    TCanvas* c = new TCanvas(Form("cKernelMoments_%s", f.name), "", 2100, 650);
+    TCanvas* c = new TCanvas("cKernelMoments", "", 2100, 650);
     c->Divide(3, 1, 0.005, 0.005);
 
     // --- Panel 1: the Mz-symmetry test ---
@@ -1835,7 +1802,7 @@ static void MakeKernelMomentsCanvas(TDirectory* taskDir, TDirectory* outDir, con
     AddLabel(0.5, 0.95, "Kernel moments", 0.045, 22);
 
     c->cd(0);
-    AddLabel(0.5, 0.98, Form("%sB_{#varphi} and the kernel moments  --  %s", gNullTag.c_str(), f.label), 0.032, 22);
+    AddLabel(0.5, 0.98, Form("%sB_{#varphi} and the kernel moments", gNullTag.c_str()), 0.032, 22);
 
     WriteCanvas(c, outDir);
 
@@ -1844,11 +1811,11 @@ static void MakeKernelMomentsCanvas(TDirectory* taskDir, TDirectory* outDir, con
     if (gLeadP) gLeadP->Write();
 
     // These numbers are what the cross-config stage consumes, so they belong in the run log too:
-    printf("    [%s] M0 = %.5f +- %.5f   M1 = %.5f +- %.5f   M1sym = %.5f +- %.5f   yieldAsym = %+.4f\n",
-           f.name, mJet.m0, mJet.m0Err, mJet.m1, mJet.m1Err, mJet.m1Sym, mJet.m1SymErr, mJet.yieldAsym);
+    printf("    M0 = %.5f +- %.5f   M1 = %.5f +- %.5f   M1sym = %.5f +- %.5f   yieldAsym = %+.4f\n",
+           mJet.m0, mJet.m0Err, mJet.m1, mJet.m1Err, mJet.m1Sym, mJet.m1SymErr, mJet.yieldAsym);
     if (mLeadP.valid)
-        printf("    [%s] M0(LeadP) = %.5f +- %.5f   (must agree with M0 above)\n",
-               f.name, mLeadP.m0, mLeadP.m0Err);
+        printf("    M0(LeadP) = %.5f +- %.5f   (must agree with M0 above)\n",
+               mLeadP.m0, mLeadP.m0Err);
 
     delete c;
 }
@@ -2007,7 +1974,7 @@ static KernelSectors DecomposeKernel3D(TProfile3D* h3, double minEntriesCell, co
 
 // ==========================================================================
 /**
- * @brief One canvas per folder and proxy: the four symmetry sectors of the 3D kernel profile.
+ * @brief One canvas per proxy: the four symmetry sectors of the 3D kernel profile.
  *
  * | Panel | Sector | Content |
  * |---|---|---|
@@ -2020,29 +1987,27 @@ static KernelSectors DecomposeKernel3D(TProfile3D* h3, double minEntriesCell, co
  *
  * @param taskDir        Top-level task TDirectory.
  * @param outDir         Output sub-directory.
- * @param f              Folder to process (see kFolders).
- * @param h3Name         Name of the 3D kernel profile inside <folder>/RingKernel/.
+ * @param kernelDir      The proxy's kernel folder, relative to Ring/ ("LeadJet/RingKernel").
+ * @param h3Name         Name of the 3D kernel profile inside it.
  * @param tag            Short proxy tag for names ("Jet", "LeadP").
  * @param proxyLabel     Human-readable proxy name for the canvas title.
  * @param minEntriesCell Minimum entries required of every member of an orbit.
  */
 // ==========================================================================
-static void MakeKernelSymmetryCanvas(TDirectory* taskDir, TDirectory* outDir, const FolderSpec& f,
+static void MakeKernelSymmetryCanvas(TDirectory* taskDir, TDirectory* outDir,
                                      const char* kernelDir, const char* h3Name, const char* tag, const char* proxyLabel,
                                      double minEntriesCell = 30.)
 {
-    TDirectory* folderDir = GetDir(taskDir, f.name);
-    if (!folderDir) { printf("WARNING: skipping kernel symmetry for '%s' (folder missing)\n", f.name); return; }
-    TDirectory* kDir = GetDirPath(folderDir, kernelDir);
-    if (!kDir) { printf("WARNING: skipping kernel symmetry for '%s' (%s missing)\n", f.name, kernelDir); return; }
+    TDirectory* kDir = GetDirPath(taskDir, kRingDir + "/" + kernelDir);
+    if (!kDir) { printf("WARNING: skipping kernel symmetry %s (%s/%s missing)\n", tag, kRingDir.c_str(), kernelDir); return; }
 
     TProfile3D* h3 = static_cast<TProfile3D*>(SafeGet(kDir, h3Name, false));
-    if (!h3) { printf("WARNING: skipping kernel symmetry %s for '%s' (%s missing)\n", tag, f.name, h3Name); return; }
+    if (!h3) { printf("WARNING: skipping kernel symmetry %s (%s missing)\n", tag, h3Name); return; }
 
-    const KernelSectors ks = DecomposeKernel3D(h3, minEntriesCell, Form("%s_%s", tag, f.name));
+    const KernelSectors ks = DecomposeKernel3D(h3, minEntriesCell, tag);
     if (!ks.valid) {
-        printf("WARNING: skipping kernel symmetry %s for '%s': an axis does not mirror-pair, or no orbit "
-               "has all four cells above %.0f entries\n", tag, f.name, minEntriesCell);
+        printf("WARNING: skipping kernel symmetry %s: an axis does not mirror-pair, or no orbit "
+               "has all four cells above %.0f entries\n", tag, minEntriesCell);
         return;
     }
 
@@ -2052,7 +2017,7 @@ static void MakeKernelSymmetryCanvas(TDirectory* taskDir, TDirectory* outDir, co
         "(-,-)  detector-induced",
         "(-,+)  null: must vanish"};
 
-    TCanvas* c = new TCanvas(Form("cKernelSymmetry%s_%s", tag, f.name), "", 2800, 650);
+    TCanvas* c = new TCanvas(Form("cKernelSymmetry%s", tag), "", 2800, 650);
     c->Divide(4, 1, 0.005, 0.005);
     for (int s = 0; s < 4; ++s) {
         c->cd(s + 1);
@@ -2061,7 +2026,7 @@ static void MakeKernelSymmetryCanvas(TDirectory* taskDir, TDirectory* outDir, co
         AddLabel(0.5, 0.95, kBanner[s], 0.045, 22);
     }
     c->cd(0);
-    AddLabel(0.5, 0.98, Form("%sKernel symmetry sectors (M_{z}, antipodal), %s  --  %s", gNullTag.c_str(), proxyLabel, f.label),
+    AddLabel(0.5, 0.98, Form("%sKernel symmetry sectors (M_{z}, antipodal), %s", gNullTag.c_str(), proxyLabel),
              0.032, 22);
 
     WriteCanvas(c, outDir);
@@ -2069,8 +2034,8 @@ static void MakeKernelSymmetryCanvas(TDirectory* taskDir, TDirectory* outDir, co
     for (int s = 0; s < 4; ++s) ks.map[s]->Write();
 
     // Consumed by the cross-config stage, so also in the run log:
-    printf("    [%s, %s] sector chi2/ndf vs 0:  (+,+) %.1f/%d   (+,-) %.1f/%d   (-,-) %.1f/%d   (-,+) null %.1f/%d\n",
-           f.name, tag, ks.chi2[0], ks.ndf[0], ks.chi2[1], ks.ndf[1], ks.chi2[2], ks.ndf[2], ks.chi2[3], ks.ndf[3]);
+    printf("    [%s] sector chi2/ndf vs 0:  (+,+) %.1f/%d   (+,-) %.1f/%d   (-,-) %.1f/%d   (-,+) null %.1f/%d\n",
+           tag, ks.chi2[0], ks.ndf[0], ks.chi2[1], ks.ndf[1], ks.chi2[2], ks.ndf[2], ks.chi2[3], ks.ndf[3]);
 
     delete c;
 }
@@ -2142,47 +2107,44 @@ static TH1D* MakeKappaVsMass(TProfile* pNum, TProfile* pDen, TProfile* pNumDen, 
 
 // ==========================================================================
 /**
- * @brief One canvas per folder: raw kappa vs mass, one panel per proxy. Written for both ring modes.
+ * @brief One canvas: raw kappa vs mass, one panel per proxy. Written for both ring modes.
  *
- * The kappa histograms are written next to the canvas, as hKappaVsMass<Proxy>_<folder>.
+ * The kappa histograms are written next to the canvas, as hKappaVsMass<Proxy>.
  */
 // ==========================================================================
-static void MakeKappaEffCanvas(TDirectory* taskDir, TDirectory* outDir, const FolderSpec& f)
+static void MakeKappaEffCanvas(TDirectory* taskDir, TDirectory* outDir)
 {
-    TDirectory* folderDir = GetDir(taskDir, f.name);
-    if (!folderDir) { printf("WARNING: skipping KappaEff for '%s' (folder missing)\n", f.name); return; }
-    static const char* kProxies[3] = {"LeadJet", "LeadP", "SubJet"};
-    if (!GetDirPath(folderDir, "LeadJet/KappaEff", false)) {
-        printf("WARNING: skipping KappaEff for '%s' (LeadJet/KappaEff/ missing: consumer older than the KappaEff moments?)\n", f.name);
+    if (!GetDirPath(taskDir, kRingDir + "/LeadJet/KappaEff", false)) {
+        printf("WARNING: skipping KappaEff (%s/LeadJet/KappaEff/ missing: consumer older than the KappaEff moments?)\n", kRingDir.c_str());
         return;
     }
     const std::string kappaSym = (gRingSym == "#it{R}") ? "#kappa_{eff}" : "#kappa" + gRingSym.substr(6); // "#it{R}_{z}" --> "#kappa_{z}"
 
-    TCanvas* c = new TCanvas(Form("cKappaEff_%s", f.name), "", 2100, 650);
+    TCanvas* c = new TCanvas("cKappaEff", "", 2100, 650);
     c->Divide(3, 1, 0.005, 0.005);
     std::vector<TH1D*> written;
 
     for (int i = 0; i < 3; ++i) {
-        TDirectory* kDir  = GetDirPath(folderDir, std::string(kProxies[i]) + "/KappaEff", false); // Each proxy's own
-        TProfile* pNum    = static_cast<TProfile*>(SafeGet(kDir, Form("pKappaNum%sVsMass", kProxies[i]), false));
-        TProfile* pDen    = static_cast<TProfile*>(SafeGet(kDir, Form("pKappaDen%sVsMass", kProxies[i]), false));
-        TProfile* pNumDen = static_cast<TProfile*>(SafeGet(kDir, Form("pKappaNumTimesDen%sVsMass", kProxies[i]), false));
-        TH1D* h = MakeKappaVsMass(pNum, pDen, pNumDen, Form("hKappaVsMass%s_%s", kProxies[i], f.name));
+        TDirectory* kDir  = GetDirPath(taskDir, kRingDir + "/" + kProxyFolders[i] + "/KappaEff", false); // Each proxy's own, same names inside
+        TProfile* pNum    = static_cast<TProfile*>(SafeGet(kDir, "pKappaNumVsMass", false));
+        TProfile* pDen    = static_cast<TProfile*>(SafeGet(kDir, "pKappaDenVsMass", false));
+        TProfile* pNumDen = static_cast<TProfile*>(SafeGet(kDir, "pKappaNumTimesDenVsMass", false));
+        TH1D* h = MakeKappaVsMass(pNum, pDen, pNumDen, Form("hKappaVsMass%s", kProxyFolders[i]));
         c->cd(i + 1);
         SetupPadMargins();
         if (!h) {
-            printf("WARNING: KappaEff %s for '%s': moment profiles missing or misaligned\n", kProxies[i], f.name);
+            printf("WARNING: KappaEff %s: moment profiles missing or misaligned\n", kProxyFolders[i]);
             continue;
         }
         h->SetTitle((" ;m_{p#pi} (GeV/c^{2});raw " + kappaSym + " per mass bin").c_str());
         h->SetMarkerStyle(20);
         h->SetMarkerSize(0.6);
         h->Draw("E1");
-        AddLabel(0.5, 0.95, kProxies[i], 0.045, 22);
+        AddLabel(0.5, 0.95, kProxyFolders[i], 0.045, 22);
         written.push_back(h);
     }
     c->cd(0);
-    AddLabel(0.5, 0.98, Form("Raw %s vs mass (signal + background)  --  %s", kappaSym.c_str(), f.label), 0.032, 22);
+    AddLabel(0.5, 0.98, Form("Raw %s vs mass (signal + background)", kappaSym.c_str()), 0.032, 22);
 
     WriteCanvas(c, outDir);
     outDir->cd();
@@ -2296,35 +2258,30 @@ static TH1D* MakeProxySideSummary(TProfile* src, const char* newName, double& aD
 
 // ==========================================================================
 /**
- * @brief One canvas per folder: the Delta phi fold of <R_z>, one column per proxy.
+ * @brief One canvas: the Delta phi fold of <R_z>, one column per proxy.
  *
  * Top pad: even (signal) and odd (leak) parts vs |Delta phi|. Bottom pad: the integrated proxy-side
  * summary, with A_dphi in the banner. Fold and summary histograms are written next to the canvas.
  */
 // ==========================================================================
-static void MakeDeltaPhiFoldCanvas(TDirectory* taskDir, TDirectory* outDir, const FolderSpec& f, double minEntries = 50.)
+static void MakeDeltaPhiFoldCanvas(TDirectory* taskDir, TDirectory* outDir, double minEntries = 50.)
 {
-    TDirectory* folderDir = GetDir(taskDir, f.name);
-    if (!folderDir) { printf("WARNING: skipping Delta phi fold for '%s' (folder missing)\n", f.name); return; }
-
-    static const char* kProfiles[3] = {"LeadJet/pRingObservableDeltaPhi", "LeadP/pRingObservableLeadPDeltaPhi", "SubJet/pRingObservable2ndJetDeltaPhi"};
-    static const char* kProxies[3]  = {"LeadJet", "LeadP", "SubJet"};
-
-    TCanvas* c = new TCanvas(Form("cDeltaPhiFold_%s", f.name), "", 2100, 1100);
+    TCanvas* c = new TCanvas("cDeltaPhiFold", "", 2100, 1100);
     c->Divide(3, 2, 0.005, 0.005);
     std::vector<TH1*> written;
 
     for (int i = 0; i < 3; ++i) {
-        TProfile* src = static_cast<TProfile*>(SafeGet(folderDir, kProfiles[i], false));
+        const std::string profilePath = kRingDir + "/" + kProxyFolders[i] + "/AngularDependence/pRingObservableDeltaPhi";
+        TProfile* src = static_cast<TProfile*>(SafeGet(taskDir, profilePath.c_str(), false));
         if (!src || !IsMirrorPairable(src->GetXaxis())) {
-            printf("WARNING: Delta phi fold %s for '%s': '%s' missing or its axis does not mirror-pair\n",
-                   kProxies[i], f.name, kProfiles[i]);
+            printf("WARNING: Delta phi fold %s: '%s' missing or its axis does not mirror-pair\n",
+                   kProxyFolders[i], profilePath.c_str());
             continue;
         }
-        TH1D* even = MakeProfileFoldX1D(src, false, minEntries, Form("hRzDeltaPhiEven%s_%s", kProxies[i], f.name));
-        TH1D* odd  = MakeProfileFoldX1D(src, true,  minEntries, Form("hRzDeltaPhiOdd%s_%s", kProxies[i], f.name));
+        TH1D* even = MakeProfileFoldX1D(src, false, minEntries, Form("hRzDeltaPhiEven%s", kProxyFolders[i]));
+        TH1D* odd  = MakeProfileFoldX1D(src, true,  minEntries, Form("hRzDeltaPhiOdd%s", kProxyFolders[i]));
         double aDphi = 0.;
-        TH1D* summary = MakeProxySideSummary(src, Form("hRzProxySides%s_%s", kProxies[i], f.name), aDphi);
+        TH1D* summary = MakeProxySideSummary(src, Form("hRzProxySides%s", kProxyFolders[i]), aDphi);
         if (!even || !odd || !summary) continue;
 
         c->cd(i + 1);
@@ -2347,7 +2304,7 @@ static void MakeDeltaPhiFoldCanvas(TDirectory* taskDir, TDirectory* outDir, cons
         leg->AddEntry(even, "even: signal", "lp");
         leg->AddEntry(odd, "odd: leak", "lp");
         leg->Draw();
-        AddLabel(0.5, 0.95, kProxies[i], 0.045, 22);
+        AddLabel(0.5, 0.95, kProxyFolders[i], 0.045, 22);
 
         c->cd(i + 4);
         SetupPadMargins();
@@ -2359,11 +2316,11 @@ static void MakeDeltaPhiFoldCanvas(TDirectory* taskDir, TDirectory* outDir, cons
         written.push_back(even);
         written.push_back(odd);
         written.push_back(summary);
-        printf("    [%s, %s] A_dphi = %+.4f   symmetrized = %+.3e +/- %.1e   leak = %+.3e +/- %.1e\n", f.name, kProxies[i],
+        printf("    [%s] A_dphi = %+.4f   symmetrized = %+.3e +/- %.1e   leak = %+.3e +/- %.1e\n", kProxyFolders[i],
                aDphi, summary->GetBinContent(4), summary->GetBinError(4), summary->GetBinContent(6), summary->GetBinError(6));
     }
     c->cd(0);
-    AddLabel(0.5, 0.99, RingLabel(Form("<#it{R}> folded about #Delta#varphi = 0 (proxy sides)  --  %s", f.label)).c_str(), 0.025, 22);
+    AddLabel(0.5, 0.99, RingLabel("<#it{R}> folded about #Delta#varphi = 0 (proxy sides)").c_str(), 0.025, 22);
 
     WriteCanvas(c, outDir);
     outDir->cd();
@@ -2433,14 +2390,14 @@ static bool DecomposeChi(TProfile* src, double minEntries, const std::string& ta
  * | 4 | (+,-) | 0             | null |
  *
  * The shapes are those of the chi weights with theta_Lambda averaged; the amplitudes are summaries,
- * not measurements. Reads RzDiagnostics/ at task level, so there is no folder loop.
+ * not measurements. Reads RzDiagnostics/<Proxy>/.
  */
 // ==========================================================================
 static void MakeChiSectorCanvas(TDirectory* taskDir, TDirectory* outDir, const char* proxy, double minEntries = 50.)
 {
     TDirectory* rzDir = GetDir(taskDir, "RzDiagnostics", false);
-    TProfile* src = rzDir ? static_cast<TProfile*>(SafeGet(rzDir, Form("pRingVsChi%s", proxy), false)) : nullptr;
-    if (!src) { printf("WARNING: skipping chi sectors %s (RzDiagnostics/pRingVsChi%s missing)\n", proxy, proxy); return; }
+    TProfile* src = rzDir ? static_cast<TProfile*>(SafeGet(rzDir, (std::string(proxy) + "/pRingVsChi").c_str(), false)) : nullptr;
+    if (!src) { printf("WARNING: skipping chi sectors %s (RzDiagnostics/%s/pRingVsChi missing)\n", proxy, proxy); return; }
 
     TH1D* sec[4] = {nullptr, nullptr, nullptr, nullptr};
     if (!DecomposeChi(src, minEntries, proxy, sec)) {
@@ -2487,28 +2444,28 @@ static void MakeChiSectorCanvas(TDirectory* taskDir, TDirectory* outDir, const c
  * <R_z>(Phi_AEE) is a genuine null: p*_z is independent of phi*_p for isotropic decays, so any
  * structure is instrumental and E-W imbalanced. A constant is fitted to it and its chi2 printed.
  * Both profiles fill on the same candidates (valid proxy, fake-pol diagnostics QA on). The R_z one
- * lives under HelicityEfficiencyQA/, so the comparison is skipped quietly when that QA was off.
+ * lives under FakePolDrivers/PhiAEE/<Proxy>/, booked only with doFakePolDiagnosticsQA, so the
+ * comparison is skipped quietly when that QA was off.
  */
 // ==========================================================================
 static void MakePhiAeeFlatnessCanvas(TDirectory* taskDir, TDirectory* outDir)
 {
     TDirectory* rzDir  = GetDir(taskDir, "RzDiagnostics", false);
-    TDirectory* aeeDir = GetDirPath(taskDir, "HelicityEfficiencyQA/PhiLambdaPhiProtonStar", false);
-    if (!rzDir || !aeeDir) { printf(" (Phi_AEE flatness skipped: HelicityEfficiencyQA or RzDiagnostics absent in this config)\n"); return; }
+    TDirectory* aeeDir = GetDirPath(taskDir, "FakePolDrivers/PhiAEE", false);
+    if (!rzDir || !aeeDir) { printf(" (Phi_AEE flatness skipped: FakePolDrivers/PhiAEE (doFakePolDiagnosticsQA) or RzDiagnostics absent in this config)\n"); return; }
 
-    static const char* kProxies[2] = {"LeadJet", "LeadP"};
     TCanvas* c = new TCanvas("cRzPhiAeeFlatness", "", 1400, 650);
     c->Divide(2, 1, 0.005, 0.005);
 
-    for (int i = 0; i < 2; ++i) {
-        TProfile* pZ    = static_cast<TProfile*>(SafeGet(aeeDir, Form("pRingObservable%sVsPhiLambdaLikePhiProtonStar", kProxies[i]), false));
-        TProfile* pPerp = static_cast<TProfile*>(SafeGet(rzDir, Form("pRingPerp%sVsPhiAEE", kProxies[i]), false));
-        if (!pZ || !pPerp) { printf("WARNING: Phi_AEE flatness %s: a profile is missing\n", kProxies[i]); continue; }
+    for (int i = 0; i < 2; ++i) { // LeadJet and LeadP (the first two proxy folders)
+        TProfile* pZ    = static_cast<TProfile*>(SafeGet(aeeDir, (std::string(kProxyFolders[i]) + "/pRingObservableVsPhiAEE").c_str(), false));
+        TProfile* pPerp = static_cast<TProfile*>(SafeGet(rzDir, (std::string(kProxyFolders[i]) + "/pRingPerpVsPhiAEE").c_str(), false));
+        if (!pZ || !pPerp) { printf("WARNING: Phi_AEE flatness %s: a profile is missing\n", kProxyFolders[i]); continue; }
 
         c->cd(i + 1);
         SetupPadMargins();
-        TProfile* hPerp = static_cast<TProfile*>(pPerp->Clone(Form("pPerpClone%s_%d", kProxies[i], gCloneIdx++)));
-        TProfile* hZ    = static_cast<TProfile*>(pZ->Clone(Form("pZClone%s_%d", kProxies[i], gCloneIdx++)));
+        TProfile* hPerp = static_cast<TProfile*>(pPerp->Clone(Form("pPerpClone%s_%d", kProxyFolders[i], gCloneIdx++)));
+        TProfile* hZ    = static_cast<TProfile*>(pZ->Clone(Form("pZClone%s_%d", kProxyFolders[i], gCloneIdx++)));
         hPerp->SetDirectory(nullptr);
         hZ->SetDirectory(nullptr);
         hPerp->SetTitle(RingLabel(" ;#phi_{#Lambda-like}-#phi_{p-like}^{*};< #it{R}_{#perp} >,  < #it{R} >").c_str());
@@ -2521,7 +2478,7 @@ static void MakePhiAeeFlatnessCanvas(TDirectory* taskDir, TDirectory* outDir)
         hPerp->Draw("E1");
         hZ->Draw("E1 SAME");
 
-        TF1* flat = new TF1(Form("fRzFlat%s", kProxies[i]), "[0]", hZ->GetXaxis()->GetXmin(), hZ->GetXaxis()->GetXmax());
+        TF1* flat = new TF1(Form("fRzFlat%s", kProxyFolders[i]), "[0]", hZ->GetXaxis()->GetXmin(), hZ->GetXaxis()->GetXmax());
         hZ->Fit(flat, "Q0");
         const double pVal = flat->GetNDF() > 0 ? TMath::Prob(flat->GetChisquare(), flat->GetNDF()) : 0.;
         TLegend* leg = new TLegend(0.14, 0.76, 0.60, 0.90);
@@ -2531,8 +2488,8 @@ static void MakePhiAeeFlatnessCanvas(TDirectory* taskDir, TDirectory* outDir)
         leg->AddEntry(hZ, Form("%s: constant fit, #chi^{2}/ndf = %.1f/%d (p = %.2f)", RingLabel("< #it{R} >").c_str(),
                                flat->GetChisquare(), flat->GetNDF(), pVal), "lp");
         leg->Draw();
-        AddLabel(0.5, 0.95, kProxies[i], 0.045, 22);
-        printf("    [%s] R_z vs Phi_AEE constant: %+.3e +/- %.1e   chi2/ndf = %.1f/%d  (p = %.3f)\n", kProxies[i],
+        AddLabel(0.5, 0.95, kProxyFolders[i], 0.045, 22);
+        printf("    [%s] R_z vs Phi_AEE constant: %+.3e +/- %.1e   chi2/ndf = %.1f/%d  (p = %.3f)\n", kProxyFolders[i],
                flat->GetParameter(0), flat->GetParError(0), flat->GetChisquare(), flat->GetNDF(), pVal);
     }
     c->cd(0);
@@ -2640,17 +2597,17 @@ static void DrawAmplitudes(const std::vector<std::pair<TH1D*, std::string>>& cur
 
 // ==========================================================================
 /**
- * @brief Per folder: A(m), B(m) and c0(m) of the leading-jet ring vs (Delta phi, mass). All ring definitions.
+ * @brief A(m), B(m) and c0(m) of the leading-jet ring vs (Delta phi, mass). All ring definitions.
  */
 // ==========================================================================
-static void MakeSidebandSineCanvas(TDirectory* taskDir, TDirectory* outDir, const FolderSpec& f)
+static void MakeSidebandSineCanvas(TDirectory* taskDir, TDirectory* outDir)
 {
-    TDirectory* folderDir = GetDir(taskDir, f.name);
-    TProfile2D* p2 = folderDir ? static_cast<TProfile2D*>(SafeGet(folderDir, "LeadJet/p2dRingObservableDeltaPhiVsMass", false)) : nullptr;
-    if (!p2) { printf("WARNING: skipping sideband sine for '%s' (LeadJet/p2dRingObservableDeltaPhiVsMass missing)\n", f.name); return; }
+    const std::string profilePath = kRingDir + "/LeadJet/MassDependence/p2dRingObservableDeltaPhiVsMass";
+    TProfile2D* p2 = static_cast<TProfile2D*>(SafeGet(taskDir, profilePath.c_str(), false));
+    if (!p2) { printf("WARNING: skipping sideband sine (%s missing)\n", profilePath.c_str()); return; }
 
-    SineVsMass fit = FitSineVsMass(p2, f.name);
-    TCanvas* c = new TCanvas(Form("cSidebandSine_%s", f.name), "", 1400, 650);
+    SineVsMass fit = FitSineVsMass(p2, "AllEta"); // Beside the EtaPos / EtaNeg fits of the longitudinal rings
+    TCanvas* c = new TCanvas("cSidebandSine", "", 1400, 650);
     c->Divide(2, 1, 0.005, 0.005);
     c->cd(1);
     SetupPadMargins();
@@ -2659,7 +2616,7 @@ static void MakeSidebandSineCanvas(TDirectory* taskDir, TDirectory* outDir, cons
     SetupPadMargins();
     DrawAmplitudes({{fit.c0, "c_{0}(m): even part"}}, RingLabel("<#it{R}>").c_str());
     c->cd(0);
-    AddLabel(0.5, 0.98, RingLabel(Form("<#it{R}>(m, #Delta#varphi) = c_{0} + A sin#Delta#varphi + B cos#Delta#varphi, LeadJet  --  %s", f.label)).c_str(), 0.030, 22);
+    AddLabel(0.5, 0.98, RingLabel("<#it{R}>(m, #Delta#varphi) = c_{0} + A sin#Delta#varphi + B cos#Delta#varphi, LeadJet").c_str(), 0.030, 22);
 
     WriteCanvas(c, outDir);
     outDir->cd();
@@ -2678,8 +2635,8 @@ static void MakeSidebandSineCanvas(TDirectory* taskDir, TDirectory* outDir, cons
 static void MakeSidebandSineEtaSplitCanvas(TDirectory* taskDir, TDirectory* outDir)
 {
     TDirectory* rzDir = GetDir(taskDir, "RzDiagnostics", false);
-    TProfile2D* pPos = rzDir ? static_cast<TProfile2D*>(SafeGet(rzDir, "p2dRingLeadJetVsDeltaPhiVsMassEtaPos", false)) : nullptr;
-    TProfile2D* pNeg = rzDir ? static_cast<TProfile2D*>(SafeGet(rzDir, "p2dRingLeadJetVsDeltaPhiVsMassEtaNeg", false)) : nullptr;
+    TProfile2D* pPos = rzDir ? static_cast<TProfile2D*>(SafeGet(rzDir, "LeadJet/p2dRingVsDeltaPhiVsMassEtaPos", false)) : nullptr;
+    TProfile2D* pNeg = rzDir ? static_cast<TProfile2D*>(SafeGet(rzDir, "LeadJet/p2dRingVsDeltaPhiVsMassEtaNeg", false)) : nullptr;
     if (!pPos || !pNeg) { printf("WARNING: skipping the eta-split sideband sine (RzDiagnostics maps missing: consumer predates them?)\n"); return; }
 
     SineVsMass fPos = FitSineVsMass(pPos, "EtaPos");
@@ -2715,53 +2672,6 @@ static void MakeSidebandSineEtaSplitCanvas(TDirectory* taskDir, TDirectory* outD
     outDir->cd();
     for (TH1D* h : {fPos.sine, fPos.cosine, fPos.c0, fNeg.sine, fNeg.cosine, fNeg.c0, hEven, hOdd}) h->Write();
     delete c;
-}
-
-// ==========================================================================
-/**
- * @brief Resolves which of the kFolders members actually exist in the input file.
- *
- * Probes quietly (warnIfMissing = false) and prints one "present / absent" summary line, so that a
- * config enabling only some families costs two lines of log instead of one warning cascade per
- * drawing section. Every section afterwards iterates the returned vector and can therefore treat any
- * further missing object as a genuine anomaly worth a loud WARNING if needed.
- *
- * @param taskDir Top-level task TDirectory.
- * @param ok      Set to false when a mandatory folder is absent -- left untouched otherwise.
- * @return The subset of kFolders present in the file, in registry order, inside a vector.
- */
-// ==========================================================================
-static std::vector<FolderSpec> ScanPresentFolders(TDirectory* taskDir, bool& ok)
-{
-    std::vector<FolderSpec> present;
-    std::string absentList;
-
-    for (const auto& f : kFolders) {
-        if (GetDir(taskDir, f.name, false)) {
-            present.push_back(f);
-            continue;
-        }
-        if (f.mandatory) {
-            printf("ERROR: mandatory folder '%s' not found in '%s'\n", f.name, kTaskDir);
-            ok = false;
-            continue;
-        }
-        if (!absentList.empty()) absentList += ", ";
-        absentList += f.name;
-    }
-
-    // Built from the vector rather than from kFolders so the two lines cannot disagree:
-    std::string presentList;
-    for (const auto& f : present) {
-        if (!presentList.empty()) presentList += ", ";
-        presentList += f.name;
-    }
-
-    printf(" Families present : %s\n", presentList.empty() ? "(none)" : presentList.c_str());
-    if (!absentList.empty())
-        printf(" Families absent  : %s  (optional, not enabled in this config)\n", absentList.c_str());
-
-    return present;
 }
 
 // ---------------------------------------------------------
@@ -2866,21 +2776,18 @@ int main(int argc, char** argv)
     std::cout << " Ring definition: " << (ringZTMode ? "R_z^T = R_z minus its helicity term (useRingZT)"
                                           : ringZMode ? "R_z = P_z n_z (useRingZ)" : "full ring") << "\n";
 
-    // --- Resolve which kinematic-cut families this config actually produced ---
-    // Done once, before any drawing, so an absent optional family costs one summary line instead of
-    // one warning per drawing section. A missing MANDATORY family is fatal: the input file is not the
-    // consumer output it claims to be, and drawing from it would be meaningless rather than merely partial.
-    bool foldersOk = true;
-    const std::vector<FolderSpec> folders = ScanPresentFolders(taskDir, foldersOk);
-    if (!foldersOk) {
-        std::cerr << " ERROR: mandatory kinematic-cut family missing in " << inPath << std::endl;
+    // --- Ring/ must be there ---
+    // Checked once, before any drawing. Without it the input file is not the consumer output it claims to be,
+    // and drawing from it would be meaningless rather than merely partial.
+    if (!GetDir(taskDir, kRingDir.c_str(), false)) {
+        std::cerr << " ERROR: '" << kRingDir << "' not found in " << inPath << std::endl;
         fOut->Close(); fIn->Close();
         return 1;
     }
 
     // --- Ring-observable panel tables, one per coordinate system ---
     // Built here rather than at namespace scope because they depend on the axis-title fragments and
-    // are cheap to construct; the plane descriptions are written once and shared by both jet proxies.
+    // are cheap to construct; the plane descriptions are written once and shared by both proxies.
     const std::vector<std::string> labSuffixes  = {"PxPy", "PzPx", "PyPz"};
     const std::vector<std::string> labX         = {kPx, kPz, kPy};
     const std::vector<std::string> labY         = {kPy, kPx, kPz};
@@ -2911,95 +2818,79 @@ int main(int argc, char** argv)
 
     // 1. Polarization vector-field canvases, one per coordinate system
     std::cout << " -> Drawing vector-field canvases...\n";
-    for (const auto& f : folders) {
-        MakePanelCanvas(taskDir, dirVectorField, f, "PolMaps/Lab", "cVectorFieldLab",
-                        "<P*> polarization vector field, lab frame", kPanelsVectorLab);
-        MakePanelCanvas(taskDir, dirVectorField, f, "PolMaps/PrimeJet", "cVectorFieldPrimeJet",
-                        "<P*> polarization vector field, jet frame", kPanelsVectorPrimeJet);
-        MakePanelCanvas(taskDir, dirVectorField, f, "PolMaps/PrimeV0", "cVectorFieldPrimeV0",
-                        "<P*> polarization in the #Lambda production plane", kPanelsVectorPrimeV0);
-    }
+    MakePanelCanvas(taskDir, dirVectorField, kPolMapsDir + "/Lab", "cVectorFieldLab",
+                    "<P*> polarization vector field, lab frame", kPanelsVectorLab);
+    MakePanelCanvas(taskDir, dirVectorField, kPolMapsDir + "/PrimeJet", "cVectorFieldPrimeJet",
+                    "<P*> polarization vector field, jet frame", kPanelsVectorPrimeJet);
+    MakePanelCanvas(taskDir, dirVectorField, kPolMapsDir + "/PrimeV0", "cVectorFieldPrimeV0",
+                    "<P*> polarization in the #Lambda production plane", kPanelsVectorPrimeV0);
 
-    // 2. Ring-observable 2D scalar canvases, per proxy and per coordinate system
+    // 2. Ring-observable 2D scalar canvases, per coordinate system (Leading Jet Proxy)
     std::cout << " -> Drawing ring-observable 2D canvases...\n";
-    for (const auto& f : folders) {
-        MakePanelCanvas(taskDir, dirRingObs2D, f, "RingMaps", "cRingObservable2D", RingLabel("Ring observable <#it{R}>"),
-                        MakeRingPanels("p2dRingObservable", labSuffixes, labX, labY, labBanners));
-        MakePanelCanvas(taskDir, dirRingObs2D, f, "RingMaps", "cRingObservableAee2D", RingLabel("Ring observable <#it{R}>, AEE planes"),
-                        MakeRingPanels("p2dRingObservable", aeeSuffixes, aeeX, aeeY, aeeBanners));
-        MakePanelCanvas(taskDir, dirRingObs2D, f, "RingMaps", "cRingObservablePrimeJet2D", RingLabel("Ring observable <#it{R}>, jet frame"),
-                        MakeRingPanels("p2dRingObservable", jetSuffixes, jetX, jetY, jetBanners));
-    }
+    const std::string ringMapsLeadJet = kRingDir + "/LeadJet/RingMaps";
+    MakePanelCanvas(taskDir, dirRingObs2D, ringMapsLeadJet, "cRingObservable2D", RingLabel("Ring observable <#it{R}>"),
+                    MakeRingPanels(labSuffixes, labX, labY, labBanners));
+    MakePanelCanvas(taskDir, dirRingObs2D, ringMapsLeadJet, "cRingObservableAee2D", RingLabel("Ring observable <#it{R}>, AEE planes"),
+                    MakeRingPanels(aeeSuffixes, aeeX, aeeY, aeeBanners));
+    MakePanelCanvas(taskDir, dirRingObs2D, ringMapsLeadJet, "cRingObservablePrimeJet2D", RingLabel("Ring observable <#it{R}>, jet frame"),
+                    MakeRingPanels(jetSuffixes, jetX, jetY, jetBanners));
 
     // 3. Ring-observable 2D scalar canvases (Leading Particle Proxy)
     std::cout << " -> Drawing ring-observable (Leading Particle) 2D canvases...\n";
-    for (const auto& f : folders)
-        MakePanelCanvas(taskDir, dirRingObs2D, f, "RingMaps", "cRingObservableLeadP2D", RingLabel("Ring observable <#it{R}>_{LeadP}"),
-                        MakeRingPanels("p2dRingObservableLeadP", labSuffixes, labX, labY, labBanners));
+    MakePanelCanvas(taskDir, dirRingObs2D, kRingDir + "/LeadP/RingMaps", "cRingObservableLeadP2D", RingLabel("Ring observable <#it{R}>_{LeadP}"),
+                    MakeRingPanels(labSuffixes, labX, labY, labBanners));
 
     // 4. AEE acceptance maps, one canvas per plane
     std::cout << " -> Drawing AEE acceptance canvases...\n";
-    for (const auto& f : folders) {
-        MakePanelCanvas(taskDir, dirAeeMaps, f, "PolMaps/Aee", "cAeeMapsXY",
-                        "AEE acceptance, (x_{AEE}, y_{AEE}) plane", kPanelsAeeXY);
-        MakePanelCanvas(taskDir, dirAeeMaps, f, "PolMaps/Aee", "cAeeMapsZX",
-                        "AEE acceptance, (z, x_{AEE}) plane", kPanelsAeeZX);
-        MakePanelCanvas(taskDir, dirAeeMaps, f, "PolMaps/Aee", "cAeeMapsYZ",
-                        "AEE acceptance, (y_{AEE}, z) plane", kPanelsAeeYZ);
-    }
+    MakePanelCanvas(taskDir, dirAeeMaps, kPolMapsDir + "/Aee", "cAeeMapsXY",
+                    "AEE acceptance, (x_{AEE}, y_{AEE}) plane", kPanelsAeeXY);
+    MakePanelCanvas(taskDir, dirAeeMaps, kPolMapsDir + "/Aee", "cAeeMapsZX",
+                    "AEE acceptance, (z, x_{AEE}) plane", kPanelsAeeZX);
+    MakePanelCanvas(taskDir, dirAeeMaps, kPolMapsDir + "/Aee", "cAeeMapsYZ",
+                    "AEE acceptance, (y_{AEE}, z) plane", kPanelsAeeYZ);
 
     // 5. Candidate counts over the lab and jet-frame momentum planes
     std::cout << " -> Drawing candidate-count canvases...\n";
-    for (const auto& f : folders) {
-        MakePanelCanvas(taskDir, dirCounts, f, "PolMaps/Lab", "cCountsLab",
-                        "Candidate counts, lab frame", kPanelsCountsLab);
-        MakePanelCanvas(taskDir, dirCounts, f, "PolMaps/PrimeJet", "cCountsPrimeJet",
-                        "Candidate counts, jet frame", kPanelsCountsPrimeJet);
-    }
+    MakePanelCanvas(taskDir, dirCounts, kPolMapsDir + "/Lab", "cCountsLab",
+                    "Candidate counts, lab frame", kPanelsCountsLab);
+    MakePanelCanvas(taskDir, dirCounts, kPolMapsDir + "/PrimeJet", "cCountsPrimeJet",
+                    "Candidate counts, jet frame", kPanelsCountsPrimeJet);
 
     // 6. AEE fold: the odd-in-Phi_AEE part of the acceptance, plus its parity nulls
     std::cout << " -> Drawing AEE fold canvases...\n";
-    for (const auto& f : folders)
-        MakeAeeFoldCanvas(taskDir, dirAeeFold, f);
+    MakeAeeFoldCanvas(taskDir, dirAeeFold);
 
     // 7. Ring projection kernel: per-slice linear fits that isolate M0
     std::cout << " -> Fitting ring-kernel slices...\n";
-    for (const auto& f : folders)
-        MakeRingKernelCanvas(taskDir, dirRingKernel, f);
+    MakeRingKernelCanvas(taskDir, dirRingKernel);
 
     // 8. Kernel moments: B_phi per cos(theta_Lambda) slab, and the M0 / M1 it implies
     std::cout << " -> Extracting kernel moments...\n";
-    for (const auto& f : folders)
-        MakeKernelMomentsCanvas(taskDir, dirKernelMoments, f);
+    MakeKernelMomentsCanvas(taskDir, dirKernelMoments);
 
     // 9. Kernel symmetry sectors, per proxy: detector-induced vs genuine, and one null
     std::cout << " -> Decomposing kernel symmetry sectors...\n";
-    for (const auto& f : folders) {
-        MakeKernelSymmetryCanvas(taskDir, dirKernelSymmetry, f, "LeadJet/RingKernel",
-                                 "p3dRingObservableCosDeltaThetaVsJetZVsLambdaZ", "Jet", "leading jet");
-        MakeKernelSymmetryCanvas(taskDir, dirKernelSymmetry, f, "LeadP/RingKernel",
-                                 "p3dRingObservableLeadPCosDeltaThetaVsLeadPZVsLambdaZ", "LeadP", "leading particle");
-    }
+    MakeKernelSymmetryCanvas(taskDir, dirKernelSymmetry, "LeadJet/RingKernel",
+                             "p3dRingObservableCosDeltaThetaVsProxyZVsLambdaZ", "Jet", "leading jet");
+    MakeKernelSymmetryCanvas(taskDir, dirKernelSymmetry, "LeadP/RingKernel",
+                             "p3dRingObservableCosDeltaThetaVsProxyZVsLambdaZ", "LeadP", "leading particle");
 
     // 10. KappaEff: raw kappa per mass bin, both ring definitions
     std::cout << " -> Drawing KappaEff canvases...\n";
-    for (const auto& f : folders)
-        MakeKappaEffCanvas(taskDir, dirKappaEff, f);
+    MakeKappaEffCanvas(taskDir, dirKappaEff);
 
-    // 11. Longitudinal rings only: proxy-side fold per folder, then the task-level chi sectors and Phi_AEE flatness
+    // 11. Longitudinal rings only: proxy-side fold, the chi sectors per proxy, and the Phi_AEE flatness
     if (ringZMode) {
         std::cout << " -> Drawing R_z diagnostics...\n";
-        for (const auto& f : folders)
-            MakeDeltaPhiFoldCanvas(taskDir, dirRzDiag, f);
-        for (const char* proxy : {"LeadJet", "LeadP", "SubJet"})
+        MakeDeltaPhiFoldCanvas(taskDir, dirRzDiag);
+        for (const char* proxy : kProxyFolders)
             MakeChiSectorCanvas(taskDir, dirRzDiag, proxy);
         MakePhiAeeFlatnessCanvas(taskDir, dirRzDiag);
     }
 
-    // 12. The sideband sine: every definition per folder, then the A/C split for the longitudinal rings
+    // 12. The sideband sine: every ring definition, then the A/C split for the longitudinal rings
     std::cout << " -> Drawing the sideband sine...\n";
-    for (const auto& f : folders)
-        MakeSidebandSineCanvas(taskDir, dirSideSine, f);
+    MakeSidebandSineCanvas(taskDir, dirSideSine);
     if (ringZMode) MakeSidebandSineEtaSplitCanvas(taskDir, dirSideSine);
 
     // ===========================================================
@@ -3011,9 +2902,8 @@ int main(int argc, char** argv)
     // additional canvases/histograms from it, but does not need the
     // cross-config/wagon-level aggregation that auxiliarySummaryPlots.cxx
     // handles. Follow the same pattern as the sections above:
-    //   - a FolderSpec-style loop if the new plot is booked per
-    //     kinematic-cut folder -- iterate the resolved `folders` vector,
-    //     NOT kFolders, so absent optional families stay silent,
+    //   - paths relative to taskDir, built from kRingDir, kPolMapsDir
+    //     and kProxyFolders,
     //   - a dedicated TDirectory in fOut via fOut->mkdir(...),
     //   - a PanelSpec table plus a MakePanelCanvas(...) call, if the new
     //     plot is a strip of momentum-plane maps. Anything that needs a

@@ -107,10 +107,6 @@ PP_REF_DIR="/home/users/cicerodm/RingPol/LHC23_pass4_Thin_medium/ITSandTPC-pp/re
 # Leave empty ("") if you do not want to overlay the Toy Model.
 TOY_MODEL_PATH="/home/users/cicerodm/RingPol/HelicityToyModel/9_RealisticAlice/alice_an_std/helicity_alice_an_std.root"
 
-# Kinematic-cut folder that auxiliarySummaryPlots reads from inside each ConsumerResults file.
-# Only "Ring" is always booked by the consumer; the other three are opt-in per configuration.
-AUX_ALWAYS_ON_FOLDER="Ring"
-
 # One-vs-one comparison canvases in auxiliarySummaryPlots (Data vs each single variation, one canvas
 # per pair). That block alone is close to half of the whole output, and the overlays plus the pull
 # panels already cover the same ground, so it is OFF by default. Set to 1 when a specific pairwise
@@ -499,7 +495,6 @@ for TAG in "${LANE_TAGS[@]}"; do
 done
 echo "  Configs Dir  : ${CONSUMER_CONFIGS_DIR}"
 echo "  Toy Model    : ${TOY_MODEL_PATH:-None}"
-echo "  Aux always-on folder : ${AUX_ALWAYS_ON_FOLDER}"
 echo "  Aux 1-vs-1   : $( [ "${AUX_DO_INDIVIDUAL_COMPARISONS}" = "1" ] && echo "ON" || echo "OFF (default)" )"
 echo "  Mode         : $( [ $POST_PROCESS_ONLY -eq 1 ] && echo 'POST-PROCESS ONLY' || echo 'FULL CHAIN' )$( [ $SKIP_SIG_EXTRACT -eq 1 ] && echo ' [SKIP SIG EXTRACT]' )$( [ $SKIP_FORENSICS -eq 1 ] && echo ' [SKIP FORENSICS]' )"
 echo "  Forensics    : $( [ $SKIP_FORENSICS -eq 1 ] && echo 'skipped' || echo "${FORENSICS_JOBS} workers$( [ $USE_PARALLEL -eq 1 ] && echo ' (GNU parallel, with ETA)' || echo ' (bash fallback)' )" )"
@@ -756,8 +751,9 @@ for LINE in "${WAGON_LINES[@]}"; do
     echo "  -> SKIPPED (no ConsumerResults files to aggregate)"
     record_skip "${DATASET_NAME}/${WAGON_SHORTNAME} | ALL_CONFIGS | auxiliarySummaryPlots"
   else
-    # Forwarding the consumer results directory, the MC reference, and now the Toy Model path:
-    "$AUXILIARY_PLOTS_EXE" "${WORK_DIR}/results_consumer" "${MC_REF_DIR}" "${PP_REF_DIR}" "${TOY_MODEL_PATH}" "${AUX_ALWAYS_ON_FOLDER}" "${AUX_DO_INDIVIDUAL_COMPARISONS}" > "$AUX_LOG" 2>&1 < /dev/null
+    # Forwarding the consumer results directory, the MC and pp references, the Toy Model path and the
+    # one-vs-one switch. sigExtractDir is left to its default, <workDir>/results_SigExtract.
+    "$AUXILIARY_PLOTS_EXE" "${WORK_DIR}/results_consumer" "${MC_REF_DIR}" "${PP_REF_DIR}" "${TOY_MODEL_PATH}" "${AUX_DO_INDIVIDUAL_COMPARISONS}" > "$AUX_LOG" 2>&1 < /dev/null
     AUX_EXIT=$?
 
     if [ $AUX_EXIT -ne 0 ]; then

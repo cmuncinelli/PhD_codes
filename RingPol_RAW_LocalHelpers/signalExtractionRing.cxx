@@ -1591,7 +1591,8 @@ TH2D* BuildNumFromProfile(TProfile2D* p2d, TH2D* h2dCounts, TString histoName)
 // ARGUMENTS:
 //   p3d       -- TProfile3D filled as Fill(x, y, z, R_i).
 //                Axes must match h3dCounts exactly.
-//   h3dCounts -- TH3D with unweighted Lambda candidate counts (the denominator histogram).
+//   h3dCounts -- TH3D with unweighted Lambda candidate counts (the denominator histogram), built by
+//                CountsFromProfile3D from the bin entries of the same TProfile3D.
 //                Essentially just a reference for the new format!
 //   histoName -- unique name for the output TH3D.
 //
@@ -1813,41 +1814,6 @@ TProfile2D* ConvertToProfile2D(TH2D* h2dNumCorr, TH2D* h2dCounts, TString profil
     return prof;
 }
 
-// LEGACY CODE! TF1 actually performs the exact \int f(m) * dm integration we need,
-// which transforms the f(m) = dN/dm (a density of counts as function of mass, properly
-// normalized to the bin size of each bin to be an actual density) into an actual number
-// of counts after integrating! We DO NOT need this code!
-// // NOTE: the polynomial is HARD CODED to be of order 2! Careful when changing this!
-// std::pair<double,double> IntegratePolynomialOverBins(
-//     TF1* func, TFitResultPtr& fitResult,
-//     TH1D* histo, int firstBin, int lastBin)
-// {
-//     // Build the Jacobian vector d_k = sum_j (m_j^k * delta_m_j)
-//     double d[3] = {0.0, 0.0, 0.0};
-//     double central = 0.0;
-
-//     for (int jBin = firstBin; jBin <= lastBin; ++jBin) {
-//         double m   = histo->GetBinCenter(jBin);
-//         double dm  = histo->GetBinWidth(jBin);
-//         double fval = func->Eval(m);      // f(m) = c0 + c1*m + c2*m^2 [density]
-
-//         central += fval * dm;             // Riemann sum for count
-
-//         // Jacobian components: d(N_B)/d(c_k) = sum_j m_j^k * delta_m_j
-//         d[0] += dm;
-//         d[1] += m * dm;
-//         d[2] += m * m * dm;
-//     }
-
-//     // Propagate through covariance matrix: sigma^2 = d^T V d
-//     TMatrixDSym cov = fitResult->GetCovarianceMatrix();
-//     double var = 0.0;
-//     for (int i = 0; i < 3; ++i)
-//         for (int j = 0; j < 3; ++j)
-//             var += d[i] * cov(i, j) * d[j];
-
-//     return {central, std::sqrt(var)};
-// }
 // ================================================================================================
 // ================================================================================================
 
@@ -2205,8 +2171,8 @@ SimFitResult PerformSimultaneousFitQA(TH1D* hMassDensity, TH1D* hNumDensity, dou
 // normalize particle counters in a smart way that does not break signal extraction)
 
 // Writes the per-angular-bin QA objects (mass fits, sideband graphs, <R> vs mass) to the output.
-// They are the drill-down layer under the mosaics, and by far the bulk of the file: step 3 runs over
-// every variation, so the driver can switch them off for all but the nominal one (--perBinQA=0).
+// They are the drill-down layer under the mosaics, and by far the bulk of the file: they are written for
+// every configuration, so the driver can switch them off for all but the nominal one (--perBinQA=0).
 // The mosaics, the diagnostics and every result histogram are written regardless.
 bool gWritePerBinQA = true;
 
@@ -3370,7 +3336,7 @@ void ExtractObservable2D(TH2D* h2dCounts, TProfile2D* p2dRingObs, TDirectory* pa
     // angular extraction integrates over the same candidates, so DeltaPhi and DeltaTheta give
     // identical values by construction and publishing both would be duplication dressed up as two
     // measurements. The integrated result now comes from ExtractIntegratedFromProfile, once per
-    // proxy, in <variation>/IntegratedSummary/.
+    // proxy, in Ring/IntegratedSummary/.
     dirResults->cd();
     hIntegratedRSig->Write();
     hIntegratedRBkg->Write();
@@ -3634,7 +3600,7 @@ void drawSigAndDashedLines(TGraphErrors* gr, TDirectory* outDir, const std::stri
 }
 
 // PURPOSE:
-//   For each analysis variation (Ring, RingKinematicCuts, etc.), perform signal extraction
+//   For the Ring/ folder of the consumer output, perform signal extraction
 //   on the denominator only (the invariant mass spectrum), integrated over ALL angular bins.
 //   This is a broad QA that does NOT analyze any differential observable over angles.
 //
@@ -3660,7 +3626,7 @@ void drawSigAndDashedLines(TGraphErrors* gr, TDirectory* outDir, const std::stri
 //                      hMassSigExtract from the input file.
 //   outDir          -- TDirectory where all QA output will be written.
 //   qaName          -- Label string used in all histogram/canvas names to avoid ROOT name
-//                      clashes. Typically the variation name ("Ring", "RingKinematicCuts"...).
+//                      clashes. The output folder name ("Ring").
 //   massMin         -- Lower fit/display limit on the mass axis (GeV/c^2).
 //   massMax         -- Upper fit/display limit on the mass axis (GeV/c^2).
 // =================================================================================================
@@ -3676,9 +3642,7 @@ void drawSigAndDashedLines(TGraphErrors* gr, TDirectory* outDir, const std::stri
 // because a Lambda with no subleading jet never enters the SubJet profile at all. So the integrated
 // result is produced once per proxy,
 // straight from the 1D profiles the consumer already writes:
-//     <variation>/pRingObservableMass          -> LeadJet
-//     <variation>/pRingObservableLeadPMass     -> LeadP
-//     <variation>/pRingObservable2ndJetMass    -> SubJet
+//     Ring/<Proxy>/MassDependence/pRingObservableMass, for <Proxy> = LeadJet, LeadP and SubJet
 //
 // WHY A TProfile IS THE RIGHT INPUT. A TProfile carries its own denominator: GetBinEntries(i) is
 // the candidate count and GetBinContent(i)*GetBinEntries(i) is Sum_R_i over the very same
@@ -3687,14 +3651,14 @@ void drawSigAndDashedLines(TGraphErrors* gr, TDirectory* outDir, const std::stri
 // then divide a numerator and a denominator built from different candidates.
 //
 // OPTIONAL FINE-AXIS PEAK REFERENCE. (mu, sigma) may be taken from a much finer mass spectrum
-// (QA/hMass, 450 bins) rather than from the profile's own 24-bin axis. Only the peak POSITION and
+// (V0ProxyPairQA/hPairedV0Mass, 450 bins) rather than from the profile's own 24-bin axis. Only the peak POSITION and
 // WIDTH are borrowed; every count, every sideband point and both background fits stay on the
 // profile's own axis, so the candidate sets never mix. The two axes are not aligned and do not
 // even cover the same range, which is exactly why nothing may be counted across them.
 // ================================================================================================
 
 struct IntegratedProxySpec {
-    const char* profilePath; // Path inside the variation directory
+    const char* profilePath; // Path inside the Ring/ directory
     const char* name;        // Output folder name
     const char* label;       // For titles and logs
 };
@@ -3761,6 +3725,52 @@ TH2D* CountsFromProfile2D(TProfile2D* prof, const char* name)
         }
     }
     // h->SetEntries(prof->GetEntries());
+    h->ResetStats();
+    return h;
+}
+
+// Candidate counts from a TProfile3D's own entry array, as a TH3D: the 3D counterpart of CountsFromProfile2D.
+// The consumer no longer books the h3d shadow counters, as the TProfile3D bin entries hold the same counts, and
+// GetBinEntries counts exactly the candidates that went into the profile. Errors are Poisson on the count, as the
+// counters had them. Every cell is copied, flows included, so it is a drop-in replacement for the counters.
+// The axes are rebuilt from their bin edges, not through TProfile3D::ProjectionXYZ, which refuses the mixed variable and
+// fixed-size axes the consumer books (see SliceProfile3D). The result is detached and belongs to the caller.
+TH3D* CountsFromProfile3D(TProfile3D* prof, const char* name)
+{
+    if (!prof) return nullptr;
+    // Bin edges of an axis, fixed or variable alike (O2 books the counters with edge arrays on every axis anyway)
+    auto edgesOf = [](const TAxis* a) {
+        std::vector<double> e(a->GetNbins() + 1);
+        for (int i = 0; i <= a->GetNbins(); ++i) e[i] = a->GetBinLowEdge(i + 1);
+        return e;
+    };
+    const std::vector<double> ex = edgesOf(prof->GetXaxis());
+    const std::vector<double> ey = edgesOf(prof->GetYaxis());
+    const std::vector<double> ez = edgesOf(prof->GetZaxis());
+
+    // Detached from birth: no "Replacing existing" warning, and no directory claiming it
+    const Bool_t addDir = TH1::AddDirectoryStatus();
+    TH1::AddDirectory(kFALSE);
+    TH3D* h = new TH3D(name, prof->GetTitle(), int(ex.size()) - 1, ex.data(), int(ey.size()) - 1, ey.data(),
+                       int(ez.size()) - 1, ez.data());
+    TH1::AddDirectory(addDir);
+    h->Sumw2();
+    h->GetXaxis()->SetTitle(prof->GetXaxis()->GetTitle());
+    h->GetYaxis()->SetTitle(prof->GetYaxis()->GetTitle());
+    h->GetZaxis()->SetTitle(prof->GetZaxis()->GetTitle());
+
+    // Same bin counts on every axis, so the global bin numbers of the two objects coincide
+    const int nx = int(ex.size()) - 1, ny = int(ey.size()) - 1, nz = int(ez.size()) - 1;
+    for (int ix = 0; ix <= nx + 1; ++ix) {
+        for (int iy = 0; iy <= ny + 1; ++iy) {
+            for (int iz = 0; iz <= nz + 1; ++iz) {
+                const int bin = prof->GetBin(ix, iy, iz);
+                const double n = prof->GetBinEntries(bin);
+                h->SetBinContent(bin, n);
+                h->SetBinError(bin, std::sqrt(std::max(n, 0.0)));
+            }
+        }
+    }
     h->ResetStats();
     return h;
 }
@@ -4325,7 +4335,7 @@ void PerformDenominatorQA(TH1D* hMassSigExtract, TDirectory* outDir,
         std::cerr << "[PerformDenominatorQA] ERROR: null input pointer for " << qaName << ".\n";
         return;
     }
-    std::cout << "  [DenomQA] Running denominator QA for variation: " << qaName << std::endl;
+    std::cout << "  [DenomQA] Running denominator QA for: " << qaName << std::endl;
  
     // Basic statistics guard: do not attempt a fit on an empty or near-empty histogram.
     if (hMassSigExtract->GetEntries() < cfg.minEntries || hMassSigExtract->Integral() <= cfg.minIntegral) {
@@ -5291,8 +5301,8 @@ int main(int argc, char** argv) {
     // ABOVE the folder holding the ConsumerResults files. For example:
     //   input:  .../ITSandTPC_min3ITS/results_consumer/ConsumerResults_BothHyperons.root
     //   QA:     .../ITSandTPC_min3ITS/AnalysisResults_merged.root
-    // This file is the same for all consumer variations, so the extraction is done exactly once,
-    // before the variation loop. It is cheap compared to the ring signal extraction itself.
+    // This file is the same for all consumer configurations, so the extraction does not depend on Ring/,
+    // and runs before it. It is cheap compared to the ring signal extraction itself.
     std::cout << "\n[Step 2.5] Running V0 selection cut-flow signal extraction..." << std::endl;
 
     fs::path consumerPath(inputFilePath);
@@ -5395,7 +5405,7 @@ int main(int argc, char** argv) {
     // DERIVED-DATA consumer (isV0Accepted) rather than those applied in the TableProducer.
     //
     // Three things make it simpler than the producer-side flow:
-    //   1. It lives at the ROOT of the consumer output, in the file this macro already has open.
+    //   1. It lives in the consumer output's SelectionFlow/ folder, in the file this macro already has open.
     //      No separate AnalysisResults file, no GeneralQA folder.
     //   2. There is no hypothesis branch. Every cut is a single comparison in one function, so the
     //      chain is one unbroken segment, bin 1 to the last bin, rather than a shared block plus a
@@ -5407,7 +5417,8 @@ int main(int argc, char** argv) {
     // The object exists only when doAnalysisLevelCuts is on, so its absence is the normal case for a
     // nominal wagon and is reported as information rather than as a warning.
     {
-        const std::string analysisFlowPath = baseFolderTableConsumer + "/h2dAnalysisLevelSelectionV0sVsMass";
+        const std::string selectionFlowFolder = baseFolderTableConsumer + "/SelectionFlow";
+        const std::string analysisFlowPath = selectionFlowFolder + "/h2dAnalysisLevelSelectionV0sVsMass";
         TH2D* h2dAnalysisFlow = (TH2D*)inFile->Get(analysisFlowPath.c_str());
 
         if (!h2dAnalysisFlow) {
@@ -5428,7 +5439,7 @@ int main(int argc, char** argv) {
             const std::vector<std::pair<int, int>> analysisChain = {{1, nFlowBins}};
 
             // The companion 1D flow, kept beside the extracted yields for traceability
-            TH1* hAnalysisFlow1D = (TH1*)inFile->Get((baseFolderTableConsumer + "/hAnalysisLevelSelectionV0s").c_str());
+            TH1* hAnalysisFlow1D = (TH1*)inFile->Get((selectionFlowFolder + "/hAnalysisLevelSelectionV0s").c_str());
             dirAnalysisFlow->cd();
             if (hAnalysisFlow1D) hAnalysisFlow1D->Write();
             h2dAnalysisFlow->Write(); // Input histogram, saved for traceability
@@ -5443,7 +5454,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    outFile->cd(); // Restore a well-defined current directory before the variation loop starts
+    outFile->cd(); // Restore a well-defined current directory before the AEE probe and Ring/ extractions start
 
 
     // =========================================================================================
@@ -5455,44 +5466,38 @@ int main(int argc, char** argv) {
     // the sideband polynomial has to absorb. That is precisely the regime a low-order sideband fit
     // is trustworthy in, which makes this the cleanest place to read <R>_S and <R>_B off.
     //
-    // WHERE THEY LIVE. Unlike every other observable in this macro, these profiles are booked with
-    // a bare path rather than (folder + "/..."), so they sit at the task root ALONGSIDE the
-    // variation directories rather than once inside each of them. They are therefore extracted
-    // once per file. If that placement was not deliberate, this is the line of code that shows it.
+    // WHERE THEY LIVE. In the consumer's FakePolDrivers/PhiAEE/<Proxy>/ folders, booked only with
+    // doFakePolDiagnosticsQA, outside Ring/. They are extracted once per file, before Ring/ is.
     //
     // NO COUNTS HISTOGRAM IS NEEDED. The consumer books no TH2D counterpart for these, and none is
     // required: CountsFromProfile2D reads the denominator out of the profile's own entry array,
     // which also guarantees the numerator and denominator describe the same candidates.
     //
-    // The nine (proxy, species) pairs, shared with Step 2.8 so the two cannot drift apart. Object
-    // names are built from the consumer's own tokens -- "2ndJet" in its names, "SubJet" in ours.
-    // The inclusive "LambdaLike" set is QA for the competition between the two species: with equal
+    // The three proxies, shared with Step 2.8 so the two cannot drift apart. Every proxy folder holds the
+    // same object names, so a proxy is just a folder here. The species is chosen by the configuration
+    // (BothHyperons, JustLambda, JustAntiLambda files), not by the object: one set per proxy and file.
+    // In a BothHyperons file the set is QA for the competition between the two species: with equal
     // Lambda and antiLambda yields the dependence should cancel, so a residual there is itself the
     // measurement of imbalance.
-    struct AEEPair { const char* proxy; const char* species; const char* outName; };
-    const std::vector<AEEPair> aeePairs = {
-        {"LeadJet", "LambdaLike", "LeadJet_LambdaLike"},
-        {"LeadP",   "LambdaLike", "LeadP_LambdaLike"},
-        {"2ndJet",  "LambdaLike", "SubJet_LambdaLike"},
-        {"LeadJet", "Lambda",     "LeadJet_Lambda"},
-        {"LeadP",   "Lambda",     "LeadP_Lambda"},
-        {"2ndJet",  "Lambda",     "SubJet_Lambda"},
-        {"LeadJet", "AntiLambda", "LeadJet_AntiLambda"},
-        {"LeadP",   "AntiLambda", "LeadP_AntiLambda"},
-        {"2ndJet",  "AntiLambda", "SubJet_AntiLambda"}
+    // The output folders and object suffixes are the proxy alone: the species is the file's (auxiliarySummaryPlots
+    // reads them under the same names).
+    struct AEEProxy { const char* proxy; };
+    const std::vector<AEEProxy> aeeProxies = {
+        {"LeadJet"},
+        {"LeadP"},
+        {"SubJet"}
     };
-    // <R> vs AEE angle vs mass, as the consumer names it; the eta-sign variants append a suffix
-    auto aeeProfile2DName = [](const AEEPair& pr) {
-        return std::string(Form("p2dRingObservable%sVsPhi%sPhiProtonStarVsMass", pr.proxy, pr.species));
+    // <R> vs AEE angle vs mass, as the consumer names it (relative to the PhiAEE/ folder); the eta-sign variants append a suffix
+    auto aeeProfile2DName = [](const AEEProxy& pr) {
+        return std::string(pr.proxy) + "/p2dRingObservableVsPhiAEEVsMass";
     };
-    const std::string aeeFolder = baseFolderTableConsumer + "/HelicityEfficiencyQA/PhiLambdaPhiProtonStar";
+    const std::string aeeFolder = baseFolderTableConsumer + "/FakePolDrivers/PhiAEE";
     {
         TDirectory* aeeIn = (TDirectory*)inFile->Get(aeeFolder.c_str());
 
         if (!aeeIn) {
-            std::cout << "\n[Step 2.75] No HelicityEfficiencyQA/PhiLambdaPhiProtonStar folder in this "
-                         "file; skipping the AEE probe extraction. This is expected for consumer "
-                         "output produced before those profiles were added." << std::endl;
+            std::cout << "\n[Step 2.75] No FakePolDrivers/PhiAEE folder in this file; skipping the AEE "
+                         "probe extraction. Expected whenever doFakePolDiagnosticsQA is off." << std::endl;
         } else {
             std::cout << "\n[Step 2.75] Extracting <R> vs phi_Lambda - phi_p* per mass bin..." << std::endl;
             TDirectory* aeeOut = outFile->mkdir("HelicityEfficiencyQA_PhiLambdaPhiProtonStar");
@@ -5503,7 +5508,7 @@ int main(int argc, char** argv) {
 
             // Three eta-split variants of every profile, distinguished only by a suffix on the
             // object name. The consumer books them with the same base name plus PosProxyEta or
-            // NegProxyEta, so one loop covers all 27 extractions.
+            // NegProxyEta, so one loop covers all 9 extractions.
             //
             // Each variant gets its own subdirectory filled IDENTICALLY -- MassFits,
             // RingObservable_vs_Mass, Diagnostics, Results, IntegratedCombined. That uniformity is
@@ -5520,29 +5525,29 @@ int main(int argc, char** argv) {
             for (const auto& split : etaSplits) {
                 TDirectory* splitDir = EnsureDir(aeeOut, split.dirName);
 
-                for (const auto& spec : aeePairs) {
+                for (const auto& spec : aeeProxies) {
                     const std::string objName = aeeProfile2DName(spec) + split.suffix;
                     TProfile2D* prof = (TProfile2D*)aeeIn->Get(objName.c_str());
                     if (!prof) {
-                        std::cout << "    -> Skipping " << split.dirName << "/" << spec.outName
+                        std::cout << "    -> Skipping " << split.dirName << "/" << spec.proxy
                                   << ": " << objName << " not found." << std::endl;
                         nSkipped++;
                         continue;
                     }
 
                     TH2D* counts = CountsFromProfile2D(prof, Form("h2dCountsAEE_%s_%s",
-                                                                  split.dirName, spec.outName));
+                                                                  split.dirName, spec.proxy));
                     double aeeMassMin = prof->GetYaxis()->GetXmin();
                     double aeeMassMax = prof->GetYaxis()->GetXmax();
 
-                    std::cout << "    -> Processing " << split.dirName << "/" << spec.outName << " ("
+                    std::cout << "    -> Processing " << split.dirName << "/" << spec.proxy << " ("
                               << prof->GetXaxis()->GetNbins() << " angular bins, "
                               << prof->GetEntries() << " entries)..." << std::endl;
 
                     // CombinePerBin: no projection over phi_Lambda - phi_p*. See the note at the top
                     // of the combination helpers -- projecting first would undo the entire reason
                     // this folder splits on an angular variable across which <R> changes sign.
-                    ExtractObservable2D(counts, prof, splitDir, spec.outName, "",
+                    ExtractObservable2D(counts, prof, splitDir, spec.proxy, "",
                                         aeeMassMin, aeeMassMax,
                                         configs.perBin, configs.integrated,
                                         IntegralMode::CombinePerBin);
@@ -5551,7 +5556,7 @@ int main(int argc, char** argv) {
                 }
             }
             std::cout << Form("  [AEE probe] %d of %d extractions produced; %d profiles missing.",
-                              nDone, int(aeePairs.size() * etaSplits.size()), nSkipped) << std::endl;
+                              nDone, int(aeeProxies.size() * etaSplits.size()), nSkipped) << std::endl;
             outFile->cd();
         }
     }
@@ -5595,14 +5600,14 @@ int main(int argc, char** argv) {
             return e;
         };
 
-        for (const auto& pr : aeePairs) {
+        for (const auto& pr : aeeProxies) {
             if (!aeeIn) break;
-            const TString name3D = Form("p3dRingObservable%sVsPhi%sPhiProtonStarVsProxyEtaVsMass",
-                                        pr.proxy, pr.species);
-            TProfile3D* p3In = dynamic_cast<TProfile3D*>(aeeIn->Get(name3D));
+            const std::string name3D = std::string(pr.proxy) + "/p3dRingObservableVsPhiAEEVsProxyEtaVsMass"; // Relative to PhiAEE/
+            TProfile3D* p3In = dynamic_cast<TProfile3D*>(aeeIn->Get(name3D.c_str()));
             if (!p3In) { nPairsMissing++; continue; }
             // Sliced by moving an axis range, so work on a private copy rather than the file's object
-            TProfile3D* p3 = (TProfile3D*)p3In->Clone(Form("%s_work", name3D.Data()));
+            // (named after the output folder: the input path holds a "/", which an object name must not)
+            TProfile3D* p3 = (TProfile3D*)p3In->Clone(Form("p3dAEE_%s_work", pr.proxy));
             p3->SetDirectory(nullptr);
 
             if (!etaOut) {
@@ -5611,7 +5616,7 @@ int main(int argc, char** argv) {
             }
             TAxis* etaAxis = p3->GetYaxis();
             const int nEta = etaAxis->GetNbins();
-            TDirectory* pairDir = EnsureDir(etaOut, pr.outName);
+            TDirectory* pairDir = EnsureDir(etaOut, pr.proxy);
             TDirectory* sumDir = EnsureDir(pairDir, "Summary");
 
             // --- Closure: the slices must add up to what Step 2.75 extracted -------------------
@@ -5626,16 +5631,16 @@ int main(int argc, char** argv) {
             const int firstPos = etaAxis->FindFixBin(0.0); // Low edges are inclusive, so eta = 0 is positive
             const bool zeroIsEdge = std::fabs(etaAxis->GetBinLowEdge(firstPos)) < 1e-9;
 
-            TProfile2D* sAll = SliceProfile3D(p3, 0, nEta + 1, Form("sliceAll_%s", pr.outName));
-            TProfile2D* sIn = SliceProfile3D(p3, 1, nEta, Form("sliceIn_%s", pr.outName));
+            TProfile2D* sAll = SliceProfile3D(p3, 0, nEta + 1, Form("sliceAll_%s", pr.proxy));
+            TProfile2D* sIn = SliceProfile3D(p3, 1, nEta, Form("sliceIn_%s", pr.proxy));
             const ProfileClosure cAll = CompareProfiles2D(sAll, fetch2D(""));
             const double entriesInEta = sumEntries(sIn);
             delete sAll;
             delete sIn;
             ProfileClosure cNeg, cPos;
             if (zeroIsEdge) {
-                TProfile2D* sNeg = SliceProfile3D(p3, 0, firstPos - 1, Form("sliceNeg_%s", pr.outName));
-                TProfile2D* sPos = SliceProfile3D(p3, firstPos, nEta + 1, Form("slicePos_%s", pr.outName));
+                TProfile2D* sNeg = SliceProfile3D(p3, 0, firstPos - 1, Form("sliceNeg_%s", pr.proxy));
+                TProfile2D* sPos = SliceProfile3D(p3, firstPos, nEta + 1, Form("slicePos_%s", pr.proxy));
                 cNeg = CompareProfiles2D(sNeg, fetch2D("NegProxyEta"));
                 cPos = CompareProfiles2D(sPos, fetch2D("PosProxyEta"));
                 delete sNeg;
@@ -5671,7 +5676,7 @@ int main(int argc, char** argv) {
 
             std::cout << Form("    -> %s: closure against the unsplit profile max|dN| = %g, max|d<R>| = %.1e; "
                               "%.0f of %.0f entries (%.2f%%) lie outside the eta_Proxy axis and in no slice.",
-                              pr.outName, cAll.maxEntryDiff, cAll.maxMeanDiff, outsideEta, cAll.entriesA,
+                              pr.proxy, cAll.maxEntryDiff, cAll.maxMeanDiff, outsideEta, cAll.entriesA,
                               cAll.entriesA > 0.0 ? 100.0 * outsideEta / cAll.entriesA : 0.0) << std::endl;
             if (!cAll.passed()) {
                 std::cerr << "       ERROR: " << (cAll.comparable ? "the eta_Proxy slices do not add up to "
@@ -5695,14 +5700,14 @@ int main(int argc, char** argv) {
             std::vector<int> ran; // Slices that actually went through ExtractObservable2D
             for (int k = 1; k <= nEta; ++k) {
                 const TString sliceName = Form("EtaBin%02d", k - 1);
-                TProfile2D* slice = SliceProfile3D(p3, k, k, Form("p2dAEE_%s_%s", pr.outName, sliceName.Data()));
+                TProfile2D* slice = SliceProfile3D(p3, k, k, Form("p2dAEE_%s_%s", pr.proxy, sliceName.Data()));
                 if (!slice) continue;
                 const double nSlice = sumEntries(slice);
                 if (nSlice <= 0.0) { nSlicesEmpty++; delete slice; continue; }
 
                 std::cout << Form("       %s  eta_Proxy in [%+.3f, %+.3f): %.0f entries", sliceName.Data(),
                                   etaAxis->GetBinLowEdge(k), etaAxis->GetBinUpEdge(k), nSlice) << std::endl;
-                TH2D* counts = CountsFromProfile2D(slice, Form("h2dCountsAEE_%s_%s", pr.outName, sliceName.Data()));
+                TH2D* counts = CountsFromProfile2D(slice, Form("h2dCountsAEE_%s_%s", pr.proxy, sliceName.Data()));
                 // CombinePerBin for the same reason as Step 2.75: <R> changes sign across the angle
                 ExtractObservable2D(counts, slice, pairDir, sliceName, "",
                                     slice->GetYaxis()->GetXmin(), slice->GetYaxis()->GetXmax(),
@@ -5813,517 +5818,435 @@ int main(int argc, char** argv) {
                               nPairsDone, nSlicesDone, nSlicesEmpty, nPairsFailedClosure, nPairsMissing)
                       << std::endl;
         else
-            std::cout << "\n[Step 2.8] No eta_Proxy-binned AEE profiles in this file; skipped. This is "
-                         "expected for consumer output produced before they were added." << std::endl;
+            std::cout << "\n[Step 2.8] No eta_Proxy-binned AEE profiles in this file; skipped. Expected "
+                         "whenever doFakePolDiagnosticsQA is off." << std::endl;
         outFile->cd();
     }
 
     // =========================================================================================
-    // Step 3: Loop Over Variations & Fetch Histograms
+    // Step 3: Fetch Histograms
     // =========================================================================================
-    std::cout << "\n[Step 3] Looping over variations and fetching histograms..." << std::endl;
-    
-    std::string baseFolder = baseFolderTableConsumer;
-    // Only "Ring" is generally booked by the consumer.
-    // The other three families have their switches turned off in most cases.
-    struct VariationSpec { std::string name; bool mandatory; };
-    const std::vector<VariationSpec> variations = {
-        {"Ring",                      true },
-        {"RingKinematicCuts",         false},
-        {"JetKinematicCuts",          false},
-        {"JetAndLambdaKinematicCuts", false}
-    };
+    std::cout << "\n[Step 3] Fetching histograms..." << std::endl;
 
-    // --- Resolve which variations are actually present, once, before any work starts ---
-    // Doing this up front buys two things: the absent ones are reported on a single line instead of
-    // one warning per variation deep inside the loop, and no empty <Variation>/ directory is written
-    // to the output file for a variation that was never produced. Previously mkdir() ran before the
-    // existence check, so a trimmed run and a complete one looked identical in a TBrowser.
-    std::vector<std::string> presentVariations;
-    std::string presentList, absentList;
-    for (const auto& v : variations) {
-        if (inFile->Get((baseFolder + "/" + v.name).c_str())) {
-            presentVariations.push_back(v.name);
-            if (!presentList.empty()) presentList += ", ";
-            presentList += v.name;
-        } else if (v.mandatory) {
-            std::cerr << "  Error: mandatory variation '" << v.name << "' not found in the input file.\n";
-            outFile->Close();
-            inFile->Close();
-            return 1;
-        } else {
-            if (!absentList.empty()) absentList += ", ";
-            absentList += v.name;
-        }
+    // "Ring" is the only ring-observable folder the consumer books: the kinematic-cut families were removed, and each cut
+    // variation is now a configuration of its own, with its own Ring/ folder. The output keeps a Ring/ folder as well
+    // (auxiliarySummaryPlots reads it there), and the same name labels the objects that used to carry the variation name.
+    const std::string ringFolder = "Ring";
+    const std::string fullFolderPath = baseFolderTableConsumer + "/" + ringFolder;
+    TDirectory* inDir = (TDirectory*)inFile->Get(fullFolderPath.c_str());
+    if (!inDir) { // Without Ring/ the input is not the consumer output it claims to be
+        std::cerr << "  Error: '" << fullFolderPath << "' not found in the input file.\n";
+        outFile->Close();
+        inFile->Close();
+        return 1;
     }
 
-    bool sidebandPrecheckDone = false; // The mass axis is the same for every variation
+    // Step 3.1: Output file gets the same Ring/ subfolder
+    TDirectory* outDirRing = outFile->mkdir(ringFolder.c_str());
+    if (!outDirRing) {
+        std::cerr << "  Error: could not create the output directory '" << ringFolder << "'.\n";
+        outFile->Close();
+        inFile->Close();
+        return 1;
+    }
 
-    std::cout << "  Variations present : " << (presentList.empty() ? "(none)" : presentList) << std::endl;
-    if (!absentList.empty())
-        std::cout << "  Variations absent  : " << absentList << "  (optional, not enabled in this config)" << std::endl;
+    // Step 3.2: Fetching Histograms
+    // Every proxy folder has the same layout, Ring/<Proxy>/<Subfolder>/, and the proxy lives only in the folder name.
+    // 1D QA & Mass
+    TH1D* hMassSigExtract = (TH1D*)inDir->Get("LeadJet/MassDependence/hMassSigExtract");
 
-    for (const auto& var : presentVariations){
-        std::cout << "\n#########################################" << std::endl;
-        std::cout << "-> Processing variation: " << var << std::endl;
-        std::cout << "#########################################\n" << std::endl;
+    // 2D: Observable vs Invariant Mass (Now using TProfiles to get the proper errors!)
+    TProfile2D* p2dRingObservableDeltaPhiVsMass = (TProfile2D*)inDir->Get("LeadJet/MassDependence/p2dRingObservableDeltaPhiVsMass");
+    TProfile2D* p2dRingObservableDeltaThetaVsMass = (TProfile2D*)inDir->Get("LeadJet/MassDependence/p2dRingObservableDeltaThetaVsMass");
 
-        std::string fullFolderPath = baseFolder + "/" + var;
-        TDirectory* inDir = (TDirectory*)inFile->Get(fullFolderPath.c_str());
+        // Counters (booked next to their profiles)
+    TH2D* h2dDeltaPhiVsMass = (TH2D*)inDir->Get("LeadJet/MassDependence/h2dDeltaPhiVsMass");
+    TH2D* h2dDeltaThetaVsMass = (TH2D*)inDir->Get("LeadJet/MassDependence/h2dDeltaThetaVsMass");
 
-        if (!inDir){ // Defensive only: the presence scan above should already have resolved this!
-            std::cerr << "  Warning: Directory " << fullFolderPath << " not found in input file! Skipping." << std::endl;
-            continue;
-        }
+    // 3D: Observable vs Mass vs Lambda pT (Now using TProfiles to get the proper errors!)
+    TProfile3D* p3dRingObservableDeltaPhiVsMassVsLambdaPt = (TProfile3D*)inDir->Get("LeadJet/SigExtract3DInput/p3dRingObservableDeltaPhiVsMassVsLambdaPt");
+    TProfile3D* p3dRingObservableDeltaThetaVsMassVsLambdaPt = (TProfile3D*)inDir->Get("LeadJet/SigExtract3DInput/p3dRingObservableDeltaThetaVsMassVsLambdaPt");
 
-        // Step 3.1: Output file gets one subfolder per PRESENT variation
-        TDirectory* outDirVar = outFile->mkdir(var.c_str());
-        if (!outDirVar){
-            std::cerr << "  Warning: Could not create output directory '" << var << "'. Skipping." << std::endl;
-            continue;
-        }
+    // 3D: Observable vs Mass vs Lead Jet pT (Now using TProfiles to get the proper errors!)
+    TProfile3D* p3dRingObservableDeltaPhiVsMassVsLeadJetPt = (TProfile3D*)inDir->Get("LeadJet/SigExtract3DInput/p3dRingObservableDeltaPhiVsMassVsProxyPt");
+    TProfile3D* p3dRingObservableDeltaThetaVsMassVsLeadJetPt = (TProfile3D*)inDir->Get("LeadJet/SigExtract3DInput/p3dRingObservableDeltaThetaVsMassVsProxyPt");
 
-        // Step 3.2: Fetching Histograms
-        // 1D QA & Mass
-        TH1D* hMassSigExtract = (TH1D*)inDir->Get("LeadJet/hMassSigExtract");
-        
-        // 2D: Observable vs Invariant Mass (Now using TProfiles to get the proper errors!)
-        TProfile2D* p2dRingObservableDeltaPhiVsMass = (TProfile2D*)inDir->Get("LeadJet/p2dRingObservableDeltaPhiVsMass");
-        TProfile2D* p2dRingObservableDeltaThetaVsMass = (TProfile2D*)inDir->Get("LeadJet/p2dRingObservableDeltaThetaVsMass");
-        
-            // Counters
-        TH2D* h2dDeltaPhiVsMass = (TH2D*)inDir->Get("LeadJet/QA/h2dDeltaPhiVsMass");
-        TH2D* h2dDeltaThetaVsMass = (TH2D*)inDir->Get("LeadJet/QA/h2dDeltaThetaVsMass");
-        
-        // 3D: Observable vs Mass vs Lambda pT (Now using TProfiles to get the proper errors!)
-        TProfile3D* p3dRingObservableDeltaPhiVsMassVsLambdaPt = (TProfile3D*)inDir->Get("LeadJet/p3dRingObservableDeltaPhiVsMassVsLambdaPt");
-        TProfile3D* p3dRingObservableDeltaThetaVsMassVsLambdaPt = (TProfile3D*)inDir->Get("LeadJet/p3dRingObservableDeltaThetaVsMassVsLambdaPt");
-            // Counters
-        TH3D* h3dDeltaPhiVsMassVsLambdaPt = (TH3D*)inDir->Get("LeadJet/QA/h3dDeltaPhiVsMassVsLambdaPt");
-        TH3D* h3dDeltaThetaVsMassVsLambdaPt = (TH3D*)inDir->Get("LeadJet/QA/h3dDeltaThetaVsMassVsLambdaPt");
+    // Basic check to ensure critical histograms were loaded correctly
+    if (!hMassSigExtract || !h2dDeltaPhiVsMass || !h2dDeltaThetaVsMass || !p2dRingObservableDeltaPhiVsMass || !p2dRingObservableDeltaThetaVsMass ||
+        !p3dRingObservableDeltaPhiVsMassVsLambdaPt || !p3dRingObservableDeltaThetaVsMassVsLambdaPt ||
+        !p3dRingObservableDeltaPhiVsMassVsLeadJetPt || !p3dRingObservableDeltaThetaVsMassVsLeadJetPt) {
+        std::cerr << "  Error: Missing essential histograms in " << fullFolderPath << ".\n";
+        outFile->Close();
+        inFile->Close();
+        return 1;
+    }
 
-        // 3D: Observable vs Mass vs Lead Jet pT (Now using TProfiles to get the proper errors!)
-        TProfile3D* p3dRingObservableDeltaPhiVsMassVsLeadJetPt = (TProfile3D*)inDir->Get("LeadJet/p3dRingObservableDeltaPhiVsMassVsLeadJetPt");
-        TProfile3D* p3dRingObservableDeltaThetaVsMassVsLeadJetPt = (TProfile3D*)inDir->Get("LeadJet/p3dRingObservableDeltaThetaVsMassVsLeadJetPt"); 
-            // Counters
-        TH3D* h3dDeltaPhiVsMassVsLeadJetPt = (TH3D*)inDir->Get("LeadJet/QA/h3dDeltaPhiVsMassVsLeadJetPt");
-        TH3D* h3dDeltaThetaVsMassVsLeadJetPt = (TH3D*)inDir->Get("LeadJet/QA/h3dDeltaThetaVsMassVsLeadJetPt");
+    // 3D counters: the consumer no longer books the h3d shadow counters, since the TProfile3D bin entries hold the same
+    // counts. Built here from those entries (owned by this scope, deleted after Step 7).
+    TH3D* h3dDeltaPhiVsMassVsLambdaPt = CountsFromProfile3D(p3dRingObservableDeltaPhiVsMassVsLambdaPt, "h3dCounts_DeltaPhi_LambdaPt");
+    TH3D* h3dDeltaThetaVsMassVsLambdaPt = CountsFromProfile3D(p3dRingObservableDeltaThetaVsMassVsLambdaPt, "h3dCounts_DeltaTheta_LambdaPt");
+    TH3D* h3dDeltaPhiVsMassVsLeadJetPt = CountsFromProfile3D(p3dRingObservableDeltaPhiVsMassVsLeadJetPt, "h3dCounts_DeltaPhi_LeadJetPt");
+    TH3D* h3dDeltaThetaVsMassVsLeadJetPt = CountsFromProfile3D(p3dRingObservableDeltaThetaVsMassVsLeadJetPt, "h3dCounts_DeltaTheta_LeadJetPt");
 
-        // 2D: Observable vs eta of the jet-side proxy vs Invariant Mass.
-        // OPTIONAL: these were added to the consumer well after the angular ones, so any
-        // ConsumerResults file produced before that simply does not contain them. Missing objects
-        // are reported once and skipped -- they must not abort a run over older files, which is why
-        // they are deliberately kept out of the essential-histogram check below.
-        // Note the counters live at folder level rather than under QA/: they are inputs to the
-        // extraction, not QA plots.
-        TProfile2D* p2dRingObsEtaLeadJetVsMass = (TProfile2D*)inDir->Get("LeadJet/p2dRingObservableEtaLeadJetVsMass");
-        TProfile2D* p2dRingObsEtaLeadPVsMass = (TProfile2D*)inDir->Get("LeadP/p2dRingObservableLeadPEtaLeadPVsMass");
-        TProfile2D* p2dRingObsEtaSubJetVsMass = (TProfile2D*)inDir->Get("SubJet/p2dRingObservable2ndJetEta2ndJetVsMass");
-            // Counters
-        TH2D* h2dCounterEtaLeadJetVsMass = (TH2D*)inDir->Get("LeadJet/h2dCounterEtaLeadJetVsMass");
-        TH2D* h2dCounterEtaLeadPVsMass = (TH2D*)inDir->Get("LeadP/h2dCounterLeadPEtaLeadPVsMass");
-        TH2D* h2dCounterEtaSubJetVsMass = (TH2D*)inDir->Get("SubJet/h2dCounter2ndJetEta2ndJetVsMass");
+    // =========================================================================================
+    // Steps 4, 5, and 6: Mass Projections, Fits, QA, and Signal Extraction (using Helper)
+    // =========================================================================================
+    std::cout << "[Steps 4-6] Projecting mass bins, fitting backgrounds, and extracting <R>..." << std::endl;
 
-        // Basic check to ensure critical histograms were loaded correctly
-        if (!h2dDeltaPhiVsMass || !hMassSigExtract || !p2dRingObservableDeltaPhiVsMass || !p2dRingObservableDeltaThetaVsMass || !p3dRingObservableDeltaPhiVsMassVsLambdaPt ||
-            !p3dRingObservableDeltaThetaVsMassVsLambdaPt || !p3dRingObservableDeltaPhiVsMassVsLeadJetPt || !p3dRingObservableDeltaThetaVsMassVsLeadJetPt) {
-            std::cerr << "  Error: Missing essential histograms for " << var << ". Skipping.\n";
-            continue;
-        }
+    // Get the mass limits from your standard reference histogram
+    double massMin = hMassSigExtract->GetXaxis()->GetXmin();
+    double massMax = hMassSigExtract->GetXaxis()->GetXmax();
 
-        // =========================================================================================
-        // Steps 4, 5, and 6: Mass Projections, Fits, QA, and Signal Extraction (using Helper)
-        // =========================================================================================
-        std::cout << "[Steps 4-6] Projecting mass bins, fitting backgrounds, and extracting <R>..." << std::endl;
+    // Refuse to start if the requested sideband band cannot be fitted on this mass axis.
+    // Done once, against the reference spectrum, before any of the 39 extraction
+    // calls below. Cheap, and it turns a silent 39-call no-op into one line.
+    if (!CheckSidebandBandIsFittable(hMassSigExtract, configs.perBin)) {
+        outFile->Close();
+        inFile->Close();
+        return 1;
+    }
 
-        // Get the mass limits from your standard reference histogram
-        double massMin = hMassSigExtract->GetXaxis()->GetXmin();
-        double massMax = hMassSigExtract->GetXaxis()->GetXmax();
+    // -----------------------------------------------------------------------------------------
+    // Extraction for Delta Phi Bins
+    // -----------------------------------------------------------------------------------------
+    std::cout << "    -> Processing Delta Phi observables..." << std::endl;
+    ExtractObservable2D(h2dDeltaPhiVsMass, 
+                        p2dRingObservableDeltaPhiVsMass, 
+                        outDirRing,      // The parent TDirectory to save everything inside
+                        "DeltaPhi",      // This creates a "DeltaPhi" subfolder for organized output
+                        "",              // Axis title: taken from the profile booked in the consumer
+                        massMin, 
+                        massMax,
+                        configs.perBin, configs.integrated);
+    // std::cout<< "DEBUG! Integral of p2dRingObservableDeltaPhiVsMass: " << p2dRingObservableDeltaPhiVsMass->Integral() << std::endl;
+    // std::cout<< "DEBUG! Integral of h2dDeltaPhiVsMass: " << h2dDeltaPhiVsMass->Integral() << std::endl;
+    // -----------------------------------------------------------------------------------------
+    // Extraction for Delta Theta Bins
+    // -----------------------------------------------------------------------------------------
+    std::cout << "    -> Processing Delta Theta observables..." << std::endl;
+    ExtractObservable2D(h2dDeltaThetaVsMass, 
+                        p2dRingObservableDeltaThetaVsMass, 
+                        outDirRing,      // The parent TDirectory to save everything inside
+                        "DeltaTheta",    // This creates a "DeltaTheta" subfolder for organized output
+                        "",              // Axis title: taken from the profile booked in the consumer
+                        massMin, 
+                        massMax,
+                        configs.perBin, configs.integrated);
+    // std::cout<< "DEBUG! Integral of p2dRingObservableDeltaThetaVsMass: " << p2dRingObservableDeltaThetaVsMass->Integral() << std::endl;
+    // std::cout<< "DEBUG! Integral of h2dDeltaThetaVsMass: " << h2dDeltaThetaVsMass->Integral() << std::endl;
 
-        // Refuse to start if the requested sideband band cannot be fitted on this mass axis.
-        // Done once per variation, against the reference spectrum, before any of the 39 extraction
-        // calls below. Cheap, and it turns a silent 39-call no-op into one line.
-        if (!sidebandPrecheckDone) {
-            if (!CheckSidebandBandIsFittable(hMassSigExtract, configs.perBin)) {
-                outFile->Close();
-                inFile->Close();
-                return 1;
-            }
-            sidebandPrecheckDone = true;
-        }
+    // -----------------------------------------------------------------------------------------
+    // Integrated extraction, once per jet-side proxy
+    // -----------------------------------------------------------------------------------------
+    // The 1D <R> vs mass profiles are written by every consumer that has ever run, so this
+    // needs no re-run to produce. V0ProxyPairQA/hPairedV0Mass is a 450-bin spectrum over the same mass region and
+    // is used, when present, to pin down (mu, sigma) far better than the 24-bin extraction axis
+    // can. Nothing is COUNTED across the two axes -- their edges do not align and they do not
+    // even cover the same range -- only the peak position and width are borrowed.
+    TH1D* hMassFine = (TH1D*)inDir->Get("LeadJet/V0ProxyPairQA/hPairedV0Mass");
+    std::cout << "\n[Integrated] Extracting <R>_measured, <R>_S and <R>_B per proxy"
+              << (hMassFine ? ", with (mu, sigma) from the fine QA mass axis"
+                            : " (no fine QA mass spectrum found; fitting the extraction axis)")
+              << "..." << std::endl;
 
-        // -----------------------------------------------------------------------------------------
-        // Extraction for Delta Phi Bins
-        // -----------------------------------------------------------------------------------------
-        std::cout << "    -> Processing Delta Phi observables..." << std::endl;
-        ExtractObservable2D(h2dDeltaPhiVsMass, 
-                            p2dRingObservableDeltaPhiVsMass, 
-                            outDirVar,       // The parent TDirectory to save everything inside
-                            "DeltaPhi",      // This creates a "DeltaPhi" subfolder for organized output
-                            "",              // Axis title: taken from the profile booked in the consumer
-                            massMin, 
-                            massMax,
-                            configs.perBin, configs.integrated);
-        // std::cout<< "DEBUG! Integral of p2dRingObservableDeltaPhiVsMass: " << p2dRingObservableDeltaPhiVsMass->Integral() << std::endl;
-        // std::cout<< "DEBUG! Integral of h2dDeltaPhiVsMass: " << h2dDeltaPhiVsMass->Integral() << std::endl;
-        // -----------------------------------------------------------------------------------------
-        // Extraction for Delta Theta Bins
-        // -----------------------------------------------------------------------------------------
-        std::cout << "    -> Processing Delta Theta observables..." << std::endl;
-        ExtractObservable2D(h2dDeltaThetaVsMass, 
-                            p2dRingObservableDeltaThetaVsMass, 
-                            outDirVar,       // The parent TDirectory to save everything inside
-                            "DeltaTheta",    // This creates a "DeltaTheta" subfolder for organized output
-                            "",              // Axis title: taken from the profile booked in the consumer
-                            massMin, 
-                            massMax,
-                            configs.perBin, configs.integrated);
-        // std::cout<< "DEBUG! Integral of p2dRingObservableDeltaThetaVsMass: " << p2dRingObservableDeltaThetaVsMass->Integral() << std::endl;
-        // std::cout<< "DEBUG! Integral of h2dDeltaThetaVsMass: " << h2dDeltaThetaVsMass->Integral() << std::endl;
+    // Also the proxy list of the KappaEff and eta extractions below: name is the proxy folder in Ring/
+    const std::vector<IntegratedProxySpec> proxySpecs = {
+        {"LeadJet/MassDependence/pRingObservableMass", "LeadJet", "Leading jet"},
+        {"LeadP/MassDependence/pRingObservableMass",   "LeadP",   "Leading particle"},
+        {"SubJet/MassDependence/pRingObservableMass",  "SubJet",  "Subleading jet"}
+    };
+    for (const auto& ps : proxySpecs) {
+        TProfile* profMass = (TProfile*)inDir->Get(ps.profilePath);
+        ExtractIntegratedFromProfile(profMass, hMassFine, outDirRing, ps, configs.integrated);
+    }
 
-        // -----------------------------------------------------------------------------------------
-        // Integrated extraction, once per jet-side proxy
-        // -----------------------------------------------------------------------------------------
-        // The 1D <R> vs mass profiles are written by every consumer that has ever run, so this
-        // needs no re-run to produce. QA/hMass is a 450-bin spectrum over the same mass region and
-        // is used, when present, to pin down (mu, sigma) far better than the 24-bin extraction axis
-        // can. Nothing is COUNTED across the two axes -- their edges do not align and they do not
-        // even cover the same range -- only the peak position and width are borrowed.
-        TH1D* hMassFine = (TH1D*)inDir->Get("LeadJet/QA/hMass");
-        std::cout << "\n[Integrated] Extracting <R>_measured, <R>_S and <R>_B per proxy"
-                  << (hMassFine ? ", with (mu, sigma) from the fine QA mass axis"
-                                : " (no fine QA mass spectrum found; fitting the extraction axis)")
-                  << "..." << std::endl;
-
-        const std::vector<IntegratedProxySpec> proxySpecs = {
-            {"LeadJet/pRingObservableMass",       "LeadJet", "Leading jet"},
-            {"LeadP/pRingObservableLeadPMass",    "LeadP",   "Leading particle"},
-            {"SubJet/pRingObservable2ndJetMass",  "SubJet",  "Subleading jet"}
-        };
+    // -----------------------------------------------------------------------------------------
+    // KappaEff moments, through the same integrated extraction
+    // -----------------------------------------------------------------------------------------
+    // kappa = 3 <u v>/<w> (README: "KappaEff"), so the signal-region kappa only needs <u v>_S and
+    // <w>_S, and each is a per-candidate quantity profiled against mass exactly like R. They are
+    // written to KappaEff/<Proxy>_<Num|Den>/ with the usual object names; the ratio is taken by
+    // the summary. For the full ring w == 1 identically, so <w>_S = 1 and there is nothing to
+    // extract (a zero-spread profile would also leave the sideband fit with no errors to weigh).
+    // The ring definition is read from the file name, as everywhere downstream of the consumer.
+    if (inDir->GetDirectory("LeadJet/KappaEff")) {
+        // Longitudinal rings (R_z, R_z^T): exact "_"-separated tokens of the file's basename, as everywhere downstream
+        const std::string baseName = inputFilePath.substr(inputFilePath.find_last_of('/') + 1);
+        bool isRingZFile = false;
+        std::stringstream nameTokens(baseName.substr(0, baseName.rfind('.')));
+        for (std::string token; std::getline(nameTokens, token, '_');)
+            isRingZFile = isRingZFile || token == "useRingZ" || token == "useRingZT";
+        std::cout << "\n[Integrated] Extracting the KappaEff moments <u v>_S"
+                  << (isRingZFile ? " and <w>_S" : "") << " per proxy..." << std::endl;
+        struct MomentSpec { const char* tag; const char* symbol; };
+        std::vector<MomentSpec> moments = {{"Num", "u v"}};
+        if (isRingZFile) moments.push_back({"Den", "w"});
         for (const auto& ps : proxySpecs) {
-            TProfile* profMass = (TProfile*)inDir->Get(ps.profilePath);
-            ExtractIntegratedFromProfile(profMass, hMassFine, outDirVar, ps, configs.integrated);
-        }
-
-        // -----------------------------------------------------------------------------------------
-        // KappaEff moments, through the same integrated extraction
-        // -----------------------------------------------------------------------------------------
-        // kappa = 3 <u v>/<w> (README: "KappaEff"), so the signal-region kappa only needs <u v>_S and
-        // <w>_S, and each is a per-candidate quantity profiled against mass exactly like R. They are
-        // written to KappaEff/<Proxy>_<Num|Den>/ with the usual object names; the ratio is taken by
-        // the summary. For the full ring w == 1 identically, so <w>_S = 1 and there is nothing to
-        // extract (a zero-spread profile would also leave the sideband fit with no errors to weigh).
-        // The ring definition is read from the file name, as everywhere downstream of the consumer.
-        if (inDir->GetDirectory("LeadJet/KappaEff")) {
-            // Longitudinal rings (R_z, R_z^T): exact "_"-separated tokens of the file's basename, as everywhere downstream
-            const std::string baseName = inputFilePath.substr(inputFilePath.find_last_of('/') + 1);
-            bool isRingZFile = false;
-            std::stringstream nameTokens(baseName.substr(0, baseName.rfind('.')));
-            for (std::string token; std::getline(nameTokens, token, '_');)
-                isRingZFile = isRingZFile || token == "useRingZ" || token == "useRingZT";
-            std::cout << "\n[Integrated] Extracting the KappaEff moments <u v>_S"
-                      << (isRingZFile ? " and <w>_S" : "") << " per proxy..." << std::endl;
-            struct MomentSpec { const char* tag; const char* symbol; };
-            std::vector<MomentSpec> moments = {{"Num", "u v"}};
-            if (isRingZFile) moments.push_back({"Den", "w"});
-            for (const auto& ps : proxySpecs) {
-                for (const auto& mo : moments) {
-                    const std::string path  = std::string(ps.name) + "/KappaEff/pKappa" + mo.tag + ps.name + "VsMass";
-                    const std::string name  = std::string(ps.name) + "_" + mo.tag;
-                    const std::string label = std::string(ps.label) + ", <" + mo.symbol + ">";
-                    const IntegratedProxySpec ms = {path.c_str(), name.c_str(), label.c_str()};
-                    TProfile* profMoment = (TProfile*)inDir->Get(path.c_str());
-                    ExtractIntegratedFromProfile(profMoment, hMassFine, outDirVar, ms, configs.integrated,
-                                                 "KappaEff", mo.symbol);
-                }
+            for (const auto& mo : moments) {
+                const std::string path  = std::string(ps.name) + "/KappaEff/pKappa" + mo.tag + "VsMass";
+                const std::string name  = std::string(ps.name) + "_" + mo.tag;
+                const std::string label = std::string(ps.label) + ", <" + mo.symbol + ">";
+                const IntegratedProxySpec ms = {path.c_str(), name.c_str(), label.c_str()};
+                TProfile* profMoment = (TProfile*)inDir->Get(path.c_str());
+                ExtractIntegratedFromProfile(profMoment, hMassFine, outDirRing, ms, configs.integrated,
+                                             "KappaEff", mo.symbol);
             }
-        } else {
-            std::cout << "\n[Integrated] No KappaEff/ in this file (consumer predates it): kappa not extracted." << std::endl;
         }
+    } else {
+        std::cout << "\n[Integrated] No KappaEff/ in this file (consumer predates it): kappa not extracted." << std::endl;
+    }
 
-        // -----------------------------------------------------------------------------------------
-        // Extraction vs the eta of the jet-side proxy
-        // -----------------------------------------------------------------------------------------
-        // Same engine, different pair of input objects: ExtractObservable2D only ever needed a
-        // (counts TH2D, TProfile2D) pair with mass on the Y axis, so nothing about the eta
-        // dependence needs new machinery. The eta binning is read from the histogram itself
-        // (nBins = h2dCounts->GetNbinsX(), and every output is cloned from ProjectionX), so
-        // changing axisEtaSigExtract in the consumer requires no edit here.
-        //
-        // Unlike DeltaPhi and DeltaTheta -- which are two angular views of the SAME candidates and
-        // therefore give identical angle-integrated numbers -- these three genuinely differ, because
-        // a Lambda with no subleading jet never enters the SubJet profile at all. Their integrated
-        // values are three separate measurements, not three views of one.
-        struct EtaExtractionSpec {
-            TH2D*        counts;
-            TProfile2D*  profile;
-            const char*  extractionName;
-            const char*  countsPath;  // Only for the "missing input" message
-            const char*  profilePath;
-        };
-        const std::vector<EtaExtractionSpec> etaExtractions = {
-            {h2dCounterEtaLeadJetVsMass, p2dRingObsEtaLeadJetVsMass, "EtaLeadJet",
-             "LeadJet/h2dCounterEtaLeadJetVsMass", "LeadJet/p2dRingObservableEtaLeadJetVsMass"},
-            {h2dCounterEtaLeadPVsMass, p2dRingObsEtaLeadPVsMass, "EtaLeadP",
-             "LeadP/h2dCounterLeadPEtaLeadPVsMass", "LeadP/p2dRingObservableLeadPEtaLeadPVsMass"},
-            {h2dCounterEtaSubJetVsMass, p2dRingObsEtaSubJetVsMass, "EtaSubJet",
-             "SubJet/h2dCounter2ndJetEta2ndJetVsMass", "SubJet/p2dRingObservable2ndJetEta2ndJetVsMass"}
-        };
-
-        for (const auto& spec : etaExtractions) {
-            if (!spec.counts || !spec.profile) {
-                std::cout << "    -> Skipping " << spec.extractionName << ": "
-                          << (spec.counts ? spec.profilePath : spec.countsPath)
-                          << " not found in this file. This is expected for ConsumerResults files "
-                             "produced before the eta-vs-mass histograms were added." << std::endl;
-                continue;
-            }
-            std::cout << "    -> Processing " << spec.extractionName << " observables..." << std::endl;
-            ExtractObservable2D(spec.counts,
-                                spec.profile,
-                                outDirVar,
-                                spec.extractionName,
-                                "",
-                                massMin,
-                                massMax,
-                                configs.perBin, configs.integrated);
-        }
-        // =========================================================================================
-        // Step 7: 3D Projections and Slicing (Moving Kinematic Windows)
-        // =========================================================================================
-        std::cout << "\n[Step 7] Slicing 3D histograms and extracting kinematic windows..." << std::endl;
-
-        // Define the kinematic windows for Lambda pT and Leading Jet pT
-        std::vector<std::pair<double, double>> lambdaPtWindows = {{0, 0.5}, {0.5, 1.5}, {1.5, 3.0}, {3.0, 6.0}, {6.0, 8.0}, {8.0, 15.0}, {15.0, 30.0}, {30.0, 50.0}};
-        std::vector<std::pair<double, double>> leadingJetPtWindows = {{0, 5}, {5, 10}, {10, 20}, {20, 30}, {30, 40}, {40, 60}, {60, 80}, {80, 100}, {100, 200}};
-
-        // Helper lambda to format the Pt strings (e.g., "0.5" -> "05", "3.0" -> "3")
-        auto fmtWindow = [](double val) {
-            TString s = Form("%.1f", val);
-            s.ReplaceAll(".0", ""); // 3.0 -> 3
-            s.ReplaceAll(".", "");  // 0.5 -> 05, 1.5 -> 15
-            return s;
-        };
-
-        // Before entering the loops, we actually build TH3Ds based on the TProfile3Ds that have been imported from the derived data consumer output.
-        // This ensures proper error propagation of <R> (just use error of the mean formula!), and keeps the same TH3D structure from before!
-            // When you call p3dRingObs->Project3D("yx") on a TProfile3D, ROOT produces a TProfile2D where each (ix, iy) cell contains the grand mean
-            // of all R values that fell into any iz bin within the Z range. That is NOT what we want here, so we need to do the dirty work of converting
-            // the TProfile3Ds into TH3Ds before doing any projections. Error propagation would be wrong otherwise!
-        TH3D* h3dNumCorrErrDeltaPhiVsMassVsLambdaPt = BuildNumFromProfile3D(p3dRingObservableDeltaPhiVsMassVsLambdaPt, h3dDeltaPhiVsMassVsLambdaPt, Form("h3dNumCorrErr_DeltaPhi_LambdaPt_%s", var.c_str()));
-        TH3D* h3dNumCorrErrDeltaThetaVsMassVsLambdaPt = BuildNumFromProfile3D(p3dRingObservableDeltaThetaVsMassVsLambdaPt, h3dDeltaThetaVsMassVsLambdaPt, Form("h3dNumCorrErr_DeltaTheta_LambdaPt_%s", var.c_str()));
-        TH3D* h3dNumCorrErrDeltaPhiVsMassVsLeadJetPt = BuildNumFromProfile3D(p3dRingObservableDeltaPhiVsMassVsLeadJetPt, h3dDeltaPhiVsMassVsLeadJetPt, Form("h3dNumCorrErr_DeltaPhi_LeadJetPt_%s", var.c_str()));
-        TH3D* h3dNumCorrErrDeltaThetaVsMassVsLeadJetPt = BuildNumFromProfile3D( p3dRingObservableDeltaThetaVsMassVsLeadJetPt, h3dDeltaThetaVsMassVsLeadJetPt, Form("h3dNumCorrErr_DeltaTheta_LeadJetPt_%s", var.c_str()));
-        // Null check for corrected histograms (BuildNumFromProfile3D returns nullptr on failure)
-        if (!h3dNumCorrErrDeltaPhiVsMassVsLambdaPt || !h3dNumCorrErrDeltaThetaVsMassVsLambdaPt || !h3dNumCorrErrDeltaPhiVsMassVsLeadJetPt || !h3dNumCorrErrDeltaThetaVsMassVsLeadJetPt) {
-            std::cerr << "  Error: BuildNumFromProfile3D failed for " << var << ". Skipping.\n";
+    // -----------------------------------------------------------------------------------------
+    // Extraction vs the eta of the jet-side proxy
+    // -----------------------------------------------------------------------------------------
+    // Same engine, different pair of input objects: ExtractObservable2D only ever needed a
+    // (counts TH2D, TProfile2D) pair with mass on the Y axis, so nothing about the eta
+    // dependence needs new machinery. The eta binning is read from the histogram itself
+    // (nBins = h2dCounts->GetNbinsX(), and every output is cloned from ProjectionX), so
+    // changing axisEtaSigExtract in the consumer requires no edit here.
+    //
+    // Unlike DeltaPhi and DeltaTheta -- which are two angular views of the SAME candidates and
+    // therefore give identical angle-integrated numbers -- these three genuinely differ, because
+    // a Lambda with no subleading jet never enters the SubJet profile at all. Their integrated
+    // values are three separate measurements, not three views of one.
+    //
+    // OPTIONAL: a missing pair is reported and skipped, deliberately kept out of the essential-histogram
+    // check above. The counters are booked next to their profiles, in MassDependence/: they are inputs
+    // to the extraction, not QA plots.
+    for (const auto& ps : proxySpecs) {
+        const std::string countsPath  = std::string(ps.name) + "/MassDependence/h2dCounterProxyEtaVsMass";
+        const std::string profilePath = std::string(ps.name) + "/MassDependence/p2dRingObservableProxyEtaVsMass";
+        const std::string extractionName = std::string("Eta") + ps.name; // EtaLeadJet, EtaLeadP, EtaSubJet
+        TH2D* counts = (TH2D*)inDir->Get(countsPath.c_str());
+        TProfile2D* profile = (TProfile2D*)inDir->Get(profilePath.c_str());
+        if (!counts || !profile) {
+            std::cout << "    -> Skipping " << extractionName << ": "
+                      << (counts ? profilePath : countsPath) << " not found in this file." << std::endl;
             continue;
         }
+        std::cout << "    -> Processing " << extractionName << " observables..." << std::endl;
+        ExtractObservable2D(counts,
+                            profile,
+                            outDirRing,
+                            extractionName.c_str(),
+                            "",
+                            massMin,
+                            massMax,
+                            configs.perBin, configs.integrated);
+    }
+    // =========================================================================================
+    // Step 7: 3D Projections and Slicing (Moving Kinematic Windows)
+    // =========================================================================================
+    std::cout << "\n[Step 7] Slicing 3D histograms and extracting kinematic windows..." << std::endl;
 
-        // -----------------------------------------------------------------------------------------
-        // 7.A: Lambda pT Projections
-        // -----------------------------------------------------------------------------------------
-        std::cout << "    -> Processing Lambda pT 3D windows..." << std::endl;
-        TDirectory* dir3D_LambdaPt = outDirVar->mkdir("3D_Projections_LambdaPt");
+    // Define the kinematic windows for Lambda pT and Leading Jet pT
+    std::vector<std::pair<double, double>> lambdaPtWindows = {{0, 0.5}, {0.5, 1.5}, {1.5, 3.0}, {3.0, 6.0}, {6.0, 8.0}, {8.0, 15.0}, {15.0, 30.0}, {30.0, 50.0}};
+    std::vector<std::pair<double, double>> leadingJetPtWindows = {{0, 5}, {5, 10}, {10, 20}, {20, 30}, {30, 40}, {40, 60}, {60, 80}, {80, 100}, {100, 200}};
 
-        for (const auto& window : lambdaPtWindows) {
-            double ptMin = window.first;
-            double ptMax = window.second;
-            TString ptStr = Form("Pt_%s_%s", fmtWindow(ptMin).Data(), fmtWindow(ptMax).Data()); // Formats pt values such as 0.5 to 05 or 3.0 to 3 in the folder name!
-            
-            // Find bins on the Z-axis (using a tiny epsilon to ensure we are safely inside the bin)
-            int zBinMin = h3dDeltaPhiVsMassVsLambdaPt->GetZaxis()->FindBin(ptMin + 1e-4);
-            int zBinMax = h3dDeltaPhiVsMassVsLambdaPt->GetZaxis()->FindBin(ptMax - 1e-4);
+    // Helper lambda to format the Pt strings (e.g., "0.5" -> "05", "3.0" -> "3")
+    auto fmtWindow = [](double val) {
+        TString s = Form("%.1f", val);
+        s.ReplaceAll(".0", ""); // 3.0 -> 3
+        s.ReplaceAll(".", "");  // 0.5 -> 05, 1.5 -> 15
+        return s;
+    };
 
-            // --- Delta Phi ---
-            // Set the Z-axis ranges for the 3D histograms (Lambda Pt ranges)
-            h3dDeltaPhiVsMassVsLambdaPt->GetZaxis()->SetRange(zBinMin, zBinMax);
-            h3dNumCorrErrDeltaPhiVsMassVsLambdaPt->GetZaxis()->SetRange(zBinMin, zBinMax);
+    // Before entering the loops, we actually build TH3Ds based on the TProfile3Ds that have been imported from the derived data consumer output.
+    // This ensures proper error propagation of <R> (just use error of the mean formula!), and keeps the same TH3D structure from before!
+        // When you call p3dRingObs->Project3D("yx") on a TProfile3D, ROOT produces a TProfile2D where each (ix, iy) cell contains the grand mean
+        // of all R values that fell into any iz bin within the Z range. That is NOT what we want here, so we need to do the dirty work of converting
+        // the TProfile3Ds into TH3Ds before doing any projections. Error propagation would be wrong otherwise!
+    TH3D* h3dNumCorrErrDeltaPhiVsMassVsLambdaPt = BuildNumFromProfile3D(p3dRingObservableDeltaPhiVsMassVsLambdaPt, h3dDeltaPhiVsMassVsLambdaPt, Form("h3dNumCorrErr_DeltaPhi_LambdaPt_%s", ringFolder.c_str()));
+    TH3D* h3dNumCorrErrDeltaThetaVsMassVsLambdaPt = BuildNumFromProfile3D(p3dRingObservableDeltaThetaVsMassVsLambdaPt, h3dDeltaThetaVsMassVsLambdaPt, Form("h3dNumCorrErr_DeltaTheta_LambdaPt_%s", ringFolder.c_str()));
+    TH3D* h3dNumCorrErrDeltaPhiVsMassVsLeadJetPt = BuildNumFromProfile3D(p3dRingObservableDeltaPhiVsMassVsLeadJetPt, h3dDeltaPhiVsMassVsLeadJetPt, Form("h3dNumCorrErr_DeltaPhi_LeadJetPt_%s", ringFolder.c_str()));
+    TH3D* h3dNumCorrErrDeltaThetaVsMassVsLeadJetPt = BuildNumFromProfile3D( p3dRingObservableDeltaThetaVsMassVsLeadJetPt, h3dDeltaThetaVsMassVsLeadJetPt, Form("h3dNumCorrErr_DeltaTheta_LeadJetPt_%s", ringFolder.c_str()));
+    // Null check for corrected histograms (BuildNumFromProfile3D returns nullptr on failure)
+    if (!h3dNumCorrErrDeltaPhiVsMassVsLambdaPt || !h3dNumCorrErrDeltaThetaVsMassVsLambdaPt || !h3dNumCorrErrDeltaPhiVsMassVsLeadJetPt || !h3dNumCorrErrDeltaThetaVsMassVsLeadJetPt) {
+        std::cerr << "  Error: BuildNumFromProfile3D failed for " << ringFolder << ".\n";
+        outFile->Close();
+        inFile->Close();
+        return 1;
+    }
 
-            // Project to 2D using "yx e" (Y vs X, which places Mass on the Y-axis and Angle on the X-axis)
-            // ROOT's Project3D allows naming the output histogram by putting the name followed by a space before the option
-                // This projection now carries correct errors because h3dNumCorr* also does!
-            TH2D* h2dCountsPhi_Lpt = (TH2D*)h3dDeltaPhiVsMassVsLambdaPt->Project3D(Form("h2dCountsPhi_Lpt_%s yx e", ptStr.Data()));
-            TH2D* h2dCorrErrNumPhi_Lpt = (TH2D*)h3dNumCorrErrDeltaPhiVsMassVsLambdaPt->Project3D(Form("h2dNumPhi_Lpt_%s yx e", ptStr.Data()));
-            // These projections are pure intermediates: nothing downstream ever fetches them back
-            // from a directory, they are only passed along by pointer. Detaching them makes this
-            // scope their sole owner, so they can be deleted deterministically below.
-            if (h2dCountsPhi_Lpt) h2dCountsPhi_Lpt->SetDirectory(nullptr);
-            if (h2dCorrErrNumPhi_Lpt) h2dCorrErrNumPhi_Lpt->SetDirectory(nullptr);
+    // -----------------------------------------------------------------------------------------
+    // 7.A: Lambda pT Projections
+    // -----------------------------------------------------------------------------------------
+    std::cout << "    -> Processing Lambda pT 3D windows..." << std::endl;
+    TDirectory* dir3D_LambdaPt = outDirRing->mkdir("3D_Projections_LambdaPt");
 
-            // Convert the TH2D with corrected error bars into a TProfile2D so ExtractObservable2D can keep its TProfile2D signature:
-            TProfile2D* p2dPhi_Lpt = ConvertToProfile2D(h2dCorrErrNumPhi_Lpt, h2dCountsPhi_Lpt, Form("p2dPhi_Lpt_%s", ptStr.Data()));
-
-            // Send to helper!
-            ExtractObservable2D(h2dCountsPhi_Lpt, p2dPhi_Lpt, dir3D_LambdaPt, Form("DeltaPhi_%s", ptStr.Data()), "", massMin, massMax, configs.perBin, configs.integrated,
-                            IntegralMode::ProjectThenExtract, false);
-            delete p2dPhi_Lpt;          // We own all three now
-            delete h2dCountsPhi_Lpt;
-            delete h2dCorrErrNumPhi_Lpt;
-
-            // --- Cos Theta ---
-            // Set the Z-axis ranges (Lambda Pt ranges)
-            h3dDeltaThetaVsMassVsLambdaPt->GetZaxis()->SetRange(zBinMin, zBinMax);
-            h3dNumCorrErrDeltaThetaVsMassVsLambdaPt->GetZaxis()->SetRange(zBinMin, zBinMax);
-
-            TH2D* h2dCountsTheta_Lpt = (TH2D*)h3dDeltaThetaVsMassVsLambdaPt->Project3D(Form("h2dCountsTheta_Lpt_%s yx e", ptStr.Data()));
-            TH2D* h2dNumCorrErrTheta_Lpt    = (TH2D*)h3dNumCorrErrDeltaThetaVsMassVsLambdaPt->Project3D(Form("h2dNumTheta_Lpt_%s yx e", ptStr.Data()));
-            if (h2dCountsTheta_Lpt) h2dCountsTheta_Lpt->SetDirectory(nullptr);
-            if (h2dNumCorrErrTheta_Lpt) h2dNumCorrErrTheta_Lpt->SetDirectory(nullptr);
-
-            // Convert the TH2D with corrected error bars into a TProfile2D so ExtractObservable2D can keep its TProfile2D signature:
-            TProfile2D* p2dTheta_Lpt = ConvertToProfile2D(h2dNumCorrErrTheta_Lpt, h2dCountsTheta_Lpt, Form("p2dTheta_Lpt_%s", ptStr.Data()));
-
-            // Send to helper!
-            ExtractObservable2D(h2dCountsTheta_Lpt, p2dTheta_Lpt, dir3D_LambdaPt, Form("DeltaTheta_%s", ptStr.Data()), "", massMin, massMax, configs.perBin, configs.integrated,
-                            IntegralMode::ProjectThenExtract, false);
-            delete p2dTheta_Lpt;
-            delete h2dCountsTheta_Lpt;
-            delete h2dNumCorrErrTheta_Lpt;
-        }
-
-        // -----------------------------------------------------------------------------------------
-        // 7.B: Leading Jet pT Projections
-        // -----------------------------------------------------------------------------------------
-        std::cout << "    -> Processing Leading Jet pT 3D windows..." << std::endl;
-        TDirectory* dir3D_LeadJetPt = outDirVar->mkdir("3D_Projections_LeadJetPt");
-
-        for (const auto& window : leadingJetPtWindows) {
-            double ptMin = window.first;
-            double ptMax = window.second;
-            TString ptStr = Form("Pt_%s_%s", fmtWindow(ptMin).Data(), fmtWindow(ptMax).Data());
-            
-            int zBinMin = h3dDeltaPhiVsMassVsLeadJetPt->GetZaxis()->FindBin(ptMin + 1e-4);
-            int zBinMax = h3dDeltaPhiVsMassVsLeadJetPt->GetZaxis()->FindBin(ptMax - 1e-4);
-
-            // --- Delta Phi ---
-            h3dDeltaPhiVsMassVsLeadJetPt->GetZaxis()->SetRange(zBinMin, zBinMax); // Leading jet Pt projection
-            h3dNumCorrErrDeltaPhiVsMassVsLeadJetPt->GetZaxis()->SetRange(zBinMin, zBinMax);
-
-            TH2D* h2dCountsPhi_Jpt = (TH2D*)h3dDeltaPhiVsMassVsLeadJetPt->Project3D(Form("h2dCountsPhi_Jpt_%s yx e", ptStr.Data()));
-            TH2D* h2dNumCorrErrPhi_Jpt = (TH2D*)h3dNumCorrErrDeltaPhiVsMassVsLeadJetPt->Project3D(Form("h2dNumPhi_Jpt_%s yx e", ptStr.Data()));
-            if (h2dCountsPhi_Jpt) h2dCountsPhi_Jpt->SetDirectory(nullptr);
-            if (h2dNumCorrErrPhi_Jpt) h2dNumCorrErrPhi_Jpt->SetDirectory(nullptr);
-
-            // Convert the TH2D with corrected error bars into a TProfile2D so ExtractObservable2D can keep its TProfile2D signature:
-            TProfile2D* p2dPhi_Jpt = ConvertToProfile2D(h2dNumCorrErrPhi_Jpt, h2dCountsPhi_Jpt, Form("p2dPhi_Jpt_%s", ptStr.Data()));
-            ExtractObservable2D(h2dCountsPhi_Jpt, p2dPhi_Jpt, dir3D_LeadJetPt, Form("DeltaPhi_%s", ptStr.Data()), "", massMin, massMax, configs.perBin, configs.integrated,
-                            IntegralMode::ProjectThenExtract, false);
-            delete p2dPhi_Jpt;
-            delete h2dCountsPhi_Jpt;
-            delete h2dNumCorrErrPhi_Jpt;
-
-            // --- Cos Theta ---
-            h3dDeltaThetaVsMassVsLeadJetPt->GetZaxis()->SetRange(zBinMin, zBinMax);
-            h3dNumCorrErrDeltaThetaVsMassVsLeadJetPt->GetZaxis()->SetRange(zBinMin, zBinMax);
-
-            TH2D* h2dCountsTheta_Jpt = (TH2D*)h3dDeltaThetaVsMassVsLeadJetPt->Project3D(Form("h2dCountsTheta_Jpt_%s yx e", ptStr.Data()));
-            TH2D* h2dNumCorrErrTheta_Jpt = (TH2D*)h3dNumCorrErrDeltaThetaVsMassVsLeadJetPt->Project3D(Form("h2dNumTheta_Jpt_%s yx e", ptStr.Data()));
-            if (h2dCountsTheta_Jpt) h2dCountsTheta_Jpt->SetDirectory(nullptr);
-            if (h2dNumCorrErrTheta_Jpt) h2dNumCorrErrTheta_Jpt->SetDirectory(nullptr);
-
-            // Convert the TH2D with corrected error bars into a TProfile2D so ExtractObservable2D can keep its TProfile2D signature:
-            TProfile2D* p2dTheta_Jpt = ConvertToProfile2D(h2dNumCorrErrTheta_Jpt, h2dCountsTheta_Jpt, Form("p2dTheta_Jpt_%s", ptStr.Data()));
-            ExtractObservable2D(h2dCountsTheta_Jpt, p2dTheta_Jpt, dir3D_LeadJetPt, Form("DeltaTheta_%s", ptStr.Data()), "", massMin, massMax, configs.perBin, configs.integrated,
-                            IntegralMode::ProjectThenExtract, false);
-            delete p2dTheta_Jpt;
-            delete h2dCountsTheta_Jpt;
-            delete h2dNumCorrErrTheta_Jpt;
-        }
-
-        // Cleanup -- Delete the corrected error bar TH3D objects we just created!
-            // The projected TH2D pointers (h2dCountsPhi_Lpt etc.) are now detached from any
-            // directory and deleted inside the loops above, right after each extraction.
-        delete h3dNumCorrErrDeltaPhiVsMassVsLambdaPt;
-        delete h3dNumCorrErrDeltaThetaVsMassVsLambdaPt;
-        delete h3dNumCorrErrDeltaPhiVsMassVsLeadJetPt;
-        delete h3dNumCorrErrDeltaThetaVsMassVsLeadJetPt;
-
-        // =========================================================================================
-        // Step 8: Save Input Histograms for Traceability
-        // =========================================================================================
-        std::cout << "  [Step 8] Saving all input histograms for " << var << "..." << std::endl;
-
-        TDirectory* dirInput = outDirVar->mkdir("Input_Histograms");
+    for (const auto& window : lambdaPtWindows) {
+        double ptMin = window.first;
+        double ptMax = window.second;
+        TString ptStr = Form("Pt_%s_%s", fmtWindow(ptMin).Data(), fmtWindow(ptMax).Data()); // Formats pt values such as 0.5 to 05 or 3.0 to 3 in the folder name!
         
-        // Iterate over all keys in the current variation's input directory
-        TIter nextKey(inDir->GetListOfKeys());
-        TKey *key;
-        while ((key = (TKey*)nextKey())) {
-            TObject *obj = key->ReadObj();
-            if (!obj) continue;
-            if (obj->InheritsFrom(TH1::Class())) {
-                dirInput->cd();
-                obj->Write();
-                delete obj;
-            }
-            else if (obj->InheritsFrom(TDirectory::Class())) {
-                // Do NOT recurse or delete TDirectory objects here:
-                // their lifetime is managed by the file. Simply skip.
-                // (If you want to copy the QA subfolder too, handle it separately.)
-                continue;
-            }
-            else {
-                delete obj; // Safe for TTree, TNamed, etc.
-            }
+        // Find bins on the Z-axis (using a tiny epsilon to ensure we are safely inside the bin)
+        int zBinMin = h3dDeltaPhiVsMassVsLambdaPt->GetZaxis()->FindBin(ptMin + 1e-4);
+        int zBinMax = h3dDeltaPhiVsMassVsLambdaPt->GetZaxis()->FindBin(ptMax - 1e-4);
+
+        // --- Delta Phi ---
+        // Set the Z-axis ranges for the 3D histograms (Lambda Pt ranges)
+        h3dDeltaPhiVsMassVsLambdaPt->GetZaxis()->SetRange(zBinMin, zBinMax);
+        h3dNumCorrErrDeltaPhiVsMassVsLambdaPt->GetZaxis()->SetRange(zBinMin, zBinMax);
+
+        // Project to 2D using "yx e" (Y vs X, which places Mass on the Y-axis and Angle on the X-axis)
+        // ROOT's Project3D allows naming the output histogram by putting the name followed by a space before the option
+            // This projection now carries correct errors because h3dNumCorr* also does!
+        TH2D* h2dCountsPhi_Lpt = (TH2D*)h3dDeltaPhiVsMassVsLambdaPt->Project3D(Form("h2dCountsPhi_Lpt_%s yx e", ptStr.Data()));
+        TH2D* h2dCorrErrNumPhi_Lpt = (TH2D*)h3dNumCorrErrDeltaPhiVsMassVsLambdaPt->Project3D(Form("h2dNumPhi_Lpt_%s yx e", ptStr.Data()));
+        // These projections are pure intermediates: nothing downstream ever fetches them back
+        // from a directory, they are only passed along by pointer. Detaching them makes this
+        // scope their sole owner, so they can be deleted deterministically below.
+        if (h2dCountsPhi_Lpt) h2dCountsPhi_Lpt->SetDirectory(nullptr);
+        if (h2dCorrErrNumPhi_Lpt) h2dCorrErrNumPhi_Lpt->SetDirectory(nullptr);
+
+        // Convert the TH2D with corrected error bars into a TProfile2D so ExtractObservable2D can keep its TProfile2D signature:
+        TProfile2D* p2dPhi_Lpt = ConvertToProfile2D(h2dCorrErrNumPhi_Lpt, h2dCountsPhi_Lpt, Form("p2dPhi_Lpt_%s", ptStr.Data()));
+
+        // Send to helper!
+        ExtractObservable2D(h2dCountsPhi_Lpt, p2dPhi_Lpt, dir3D_LambdaPt, Form("DeltaPhi_%s", ptStr.Data()), "", massMin, massMax, configs.perBin, configs.integrated,
+                        IntegralMode::ProjectThenExtract, false);
+        delete p2dPhi_Lpt;          // We own all three now
+        delete h2dCountsPhi_Lpt;
+        delete h2dCorrErrNumPhi_Lpt;
+
+        // --- Cos Theta ---
+        // Set the Z-axis ranges (Lambda Pt ranges)
+        h3dDeltaThetaVsMassVsLambdaPt->GetZaxis()->SetRange(zBinMin, zBinMax);
+        h3dNumCorrErrDeltaThetaVsMassVsLambdaPt->GetZaxis()->SetRange(zBinMin, zBinMax);
+
+        TH2D* h2dCountsTheta_Lpt = (TH2D*)h3dDeltaThetaVsMassVsLambdaPt->Project3D(Form("h2dCountsTheta_Lpt_%s yx e", ptStr.Data()));
+        TH2D* h2dNumCorrErrTheta_Lpt    = (TH2D*)h3dNumCorrErrDeltaThetaVsMassVsLambdaPt->Project3D(Form("h2dNumTheta_Lpt_%s yx e", ptStr.Data()));
+        if (h2dCountsTheta_Lpt) h2dCountsTheta_Lpt->SetDirectory(nullptr);
+        if (h2dNumCorrErrTheta_Lpt) h2dNumCorrErrTheta_Lpt->SetDirectory(nullptr);
+
+        // Convert the TH2D with corrected error bars into a TProfile2D so ExtractObservable2D can keep its TProfile2D signature:
+        TProfile2D* p2dTheta_Lpt = ConvertToProfile2D(h2dNumCorrErrTheta_Lpt, h2dCountsTheta_Lpt, Form("p2dTheta_Lpt_%s", ptStr.Data()));
+
+        // Send to helper!
+        ExtractObservable2D(h2dCountsTheta_Lpt, p2dTheta_Lpt, dir3D_LambdaPt, Form("DeltaTheta_%s", ptStr.Data()), "", massMin, massMax, configs.perBin, configs.integrated,
+                        IntegralMode::ProjectThenExtract, false);
+        delete p2dTheta_Lpt;
+        delete h2dCountsTheta_Lpt;
+        delete h2dNumCorrErrTheta_Lpt;
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // 7.B: Leading Jet pT Projections
+    // -----------------------------------------------------------------------------------------
+    std::cout << "    -> Processing Leading Jet pT 3D windows..." << std::endl;
+    TDirectory* dir3D_LeadJetPt = outDirRing->mkdir("3D_Projections_LeadJetPt");
+
+    for (const auto& window : leadingJetPtWindows) {
+        double ptMin = window.first;
+        double ptMax = window.second;
+        TString ptStr = Form("Pt_%s_%s", fmtWindow(ptMin).Data(), fmtWindow(ptMax).Data());
+        
+        int zBinMin = h3dDeltaPhiVsMassVsLeadJetPt->GetZaxis()->FindBin(ptMin + 1e-4);
+        int zBinMax = h3dDeltaPhiVsMassVsLeadJetPt->GetZaxis()->FindBin(ptMax - 1e-4);
+
+        // --- Delta Phi ---
+        h3dDeltaPhiVsMassVsLeadJetPt->GetZaxis()->SetRange(zBinMin, zBinMax); // Leading jet Pt projection
+        h3dNumCorrErrDeltaPhiVsMassVsLeadJetPt->GetZaxis()->SetRange(zBinMin, zBinMax);
+
+        TH2D* h2dCountsPhi_Jpt = (TH2D*)h3dDeltaPhiVsMassVsLeadJetPt->Project3D(Form("h2dCountsPhi_Jpt_%s yx e", ptStr.Data()));
+        TH2D* h2dNumCorrErrPhi_Jpt = (TH2D*)h3dNumCorrErrDeltaPhiVsMassVsLeadJetPt->Project3D(Form("h2dNumPhi_Jpt_%s yx e", ptStr.Data()));
+        if (h2dCountsPhi_Jpt) h2dCountsPhi_Jpt->SetDirectory(nullptr);
+        if (h2dNumCorrErrPhi_Jpt) h2dNumCorrErrPhi_Jpt->SetDirectory(nullptr);
+
+        // Convert the TH2D with corrected error bars into a TProfile2D so ExtractObservable2D can keep its TProfile2D signature:
+        TProfile2D* p2dPhi_Jpt = ConvertToProfile2D(h2dNumCorrErrPhi_Jpt, h2dCountsPhi_Jpt, Form("p2dPhi_Jpt_%s", ptStr.Data()));
+        ExtractObservable2D(h2dCountsPhi_Jpt, p2dPhi_Jpt, dir3D_LeadJetPt, Form("DeltaPhi_%s", ptStr.Data()), "", massMin, massMax, configs.perBin, configs.integrated,
+                        IntegralMode::ProjectThenExtract, false);
+        delete p2dPhi_Jpt;
+        delete h2dCountsPhi_Jpt;
+        delete h2dNumCorrErrPhi_Jpt;
+
+        // --- Cos Theta ---
+        h3dDeltaThetaVsMassVsLeadJetPt->GetZaxis()->SetRange(zBinMin, zBinMax);
+        h3dNumCorrErrDeltaThetaVsMassVsLeadJetPt->GetZaxis()->SetRange(zBinMin, zBinMax);
+
+        TH2D* h2dCountsTheta_Jpt = (TH2D*)h3dDeltaThetaVsMassVsLeadJetPt->Project3D(Form("h2dCountsTheta_Jpt_%s yx e", ptStr.Data()));
+        TH2D* h2dNumCorrErrTheta_Jpt = (TH2D*)h3dNumCorrErrDeltaThetaVsMassVsLeadJetPt->Project3D(Form("h2dNumTheta_Jpt_%s yx e", ptStr.Data()));
+        if (h2dCountsTheta_Jpt) h2dCountsTheta_Jpt->SetDirectory(nullptr);
+        if (h2dNumCorrErrTheta_Jpt) h2dNumCorrErrTheta_Jpt->SetDirectory(nullptr);
+
+        // Convert the TH2D with corrected error bars into a TProfile2D so ExtractObservable2D can keep its TProfile2D signature:
+        TProfile2D* p2dTheta_Jpt = ConvertToProfile2D(h2dNumCorrErrTheta_Jpt, h2dCountsTheta_Jpt, Form("p2dTheta_Jpt_%s", ptStr.Data()));
+        ExtractObservable2D(h2dCountsTheta_Jpt, p2dTheta_Jpt, dir3D_LeadJetPt, Form("DeltaTheta_%s", ptStr.Data()), "", massMin, massMax, configs.perBin, configs.integrated,
+                        IntegralMode::ProjectThenExtract, false);
+        delete p2dTheta_Jpt;
+        delete h2dCountsTheta_Jpt;
+        delete h2dNumCorrErrTheta_Jpt;
+    }
+
+    // Cleanup -- Delete the corrected error bar TH3D objects we just created, and the counters built in Step 3!
+        // The projected TH2D pointers (h2dCountsPhi_Lpt etc.) are now detached from any
+        // directory and deleted inside the loops above, right after each extraction.
+    delete h3dNumCorrErrDeltaPhiVsMassVsLambdaPt;
+    delete h3dNumCorrErrDeltaThetaVsMassVsLambdaPt;
+    delete h3dNumCorrErrDeltaPhiVsMassVsLeadJetPt;
+    delete h3dNumCorrErrDeltaThetaVsMassVsLeadJetPt;
+    delete h3dDeltaPhiVsMassVsLambdaPt;
+    delete h3dDeltaThetaVsMassVsLambdaPt;
+    delete h3dDeltaPhiVsMassVsLeadJetPt;
+    delete h3dDeltaThetaVsMassVsLeadJetPt;
+
+    inFile->cd(fullFolderPath.c_str()); // Restore gDirectory to the input Ring/ folder (Step 7 leaves it in the output
+                                        // file), so Step 8's inDir->Get() calls associate objects
+                                        // with the input file, not the output file.
+
+    // =========================================================================================
+    // Step 8: Calculating significance plots for quick 1D QA
+    // =========================================================================================
+    std::cout << "  [Step 8] Calculating significance plots for quick 1D QA, in " << ringFolder << "..." << std::endl;
+    // Significance plots based on all 1D TProfiles (NSigma with which each bin deviates from zero):
+    // (This has to be done AFTER processing the derived data, because these cannot be merged when code is pipelined!)
+    TDirectory* outDirSig = outDirRing->mkdir("1D_Significance");
+
+    // The 1D leading-jet TProfiles, each with the tag that names its graph and canvas.
+    // A missing profile is reported and skipped, rather than taking the whole step (and the run) down with it.
+    struct SignificanceSpec { const char* profilePath; const char* tag; };
+    const std::vector<SignificanceSpec> significanceSpecs = {
+        {"LeadJet/AngularDependence/pRingObservableDeltaPhi",   "DeltaPhi"},
+        {"LeadJet/AngularDependence/pRingObservableDeltaTheta", "DeltaTheta"},
+        {"LeadJet/pRingObservableIntegrated",                   "Integrated"},
+        {"LeadJet/PtDependence/pRingObservableLambdaPt",        "LambdaPt"},
+        {"LeadJet/MassDependence/pRingObservableMass",          "Mass"}
+    };
+
+    // Fetching the 1D TProfiles and writing their graphs (all graphs first, then all canvases, as before):
+    std::vector<std::pair<TGraphErrors*, std::string>> significanceGraphs; // Graph and the name of its canvas
+    for (const auto& ss : significanceSpecs) {
+        TProfile* prof = (TProfile*)inDir->Get(ss.profilePath);
+        if (!prof) {
+            std::cerr << "    [Warning] " << ss.profilePath << " not found: no significance plot for it." << std::endl;
+            continue;
         }
-
-        inFile->cd(fullFolderPath.c_str()); // Restore gDirectory to the input variation folder
-                                            // so Step 9's inDir->Get() calls associate objects
-                                            // with the input file, not the output file.
-
-        // =========================================================================================
-        // Step 9: Calculating significance plots for quick 1D QA
-        // =========================================================================================
-        std::cout << "  [Step 9] Calculating significance plots for quick 1D QA, in variation: " << var << "..." << std::endl;
-        // Significance plots based on all 1D TProfiles (NSigma with which each bin deviates from zero):
-        // (This has to be done AFTER processing the derived data, because these cannot be merged when code is pipelined!)
-        TDirectory* outDirSig = outDirVar->mkdir("1D_Significance");
-
-        // Fetching 1D TProfiles:
-        TProfile* pDeltaPhi = (TProfile*)inDir->Get("LeadJet/pRingObservableDeltaPhi");
-        TProfile* pDeltaTheta = (TProfile*)inDir->Get("LeadJet/pRingObservableDeltaTheta");
-        TProfile* pIntegrated = (TProfile*)inDir->Get("LeadJet/pRingObservableIntegrated");
-        TProfile* pLambdaPt = (TProfile*)inDir->Get("LeadJet/pRingObservableLambdaPt");
-        TProfile* pMass = (TProfile*)inDir->Get("LeadJet/pRingObservableMass"); 
-
         outDirSig->cd();
+        TGraphErrors* gSig = makeSignificanceGraph(prof, Form("gRingSignificance%s", ss.tag));
+        gSig->Write();
+        significanceGraphs.push_back({gSig, std::string("cSig") + ss.tag + "_" + ringFolder});
+    }
 
-        TGraphErrors* gSigDeltaPhi   = makeSignificanceGraph(pDeltaPhi,   "gRingSignificanceDeltaPhi");
-        TGraphErrors* gSigDeltaTheta = makeSignificanceGraph(pDeltaTheta, "gRingSignificanceDeltaTheta");
-        TGraphErrors* gSigIntegrated = makeSignificanceGraph(pIntegrated, "gRingSignificanceIntegrated");
-        TGraphErrors* gSigLambdaPt   = makeSignificanceGraph(pLambdaPt,   "gRingSignificanceLambdaPt");
-        TGraphErrors* gSigMass       = makeSignificanceGraph(pMass,       "gRingSignificanceMass");
+    // Draw and save canvases
+    for (const auto& [gSig, canvasName] : significanceGraphs)
+        drawSigAndDashedLines(gSig, outDirSig, canvasName);
 
-        gSigDeltaPhi->Write();
-        gSigDeltaTheta->Write();
-        gSigIntegrated->Write();
-        gSigLambdaPt->Write();
-        gSigMass->Write();
+    // =========================================================================================
+    // Step 9 (QA): Denominator-only signal extraction, integrated over all angles
+    // =========================================================================================
+    // Fit the invariant mass spectrum of ALL selected Lambda candidates with a gaus+pol2,
+    // define the signal and sideband regions, and save a summary canvas.
+    // hMassSigExtract is the dedicated denominator histogram from the input file -- it
+    // already contains the full angle-integrated counts, so no projection is needed.
+    std::cout << "\n[Step 9 DenomQA] Running denominator QA for " << ringFolder << "..." << std::endl;
+    // Create a dedicated subdirectory to keep the QA output self-contained
+    TDirectory* dirDenomQA = outDirRing->mkdir("DenominatorQA");
 
-        // Draw and save canvases
-        drawSigAndDashedLines(gSigDeltaPhi,   outDirSig, "cSigDeltaPhi_" + var);
-        drawSigAndDashedLines(gSigDeltaTheta, outDirSig, "cSigDeltaTheta_" + var);
-        drawSigAndDashedLines(gSigIntegrated, outDirSig, "cSigIntegrated_" + var);
-        drawSigAndDashedLines(gSigLambdaPt,   outDirSig, "cSigLambdaPt_" + var);
-        drawSigAndDashedLines(gSigMass,       outDirSig, "cSigMass_" + var);
-
-        // =========================================================================================
-        // Step 10 (QA): Denominator-only signal extraction, integrated over all angles
-        // =========================================================================================
-        // Fit the invariant mass spectrum of ALL selected Lambda candidates with a gaus+pol2,
-        // define the signal and sideband regions, and save a summary canvas.
-        // hMassSigExtract is the dedicated denominator histogram from the input file -- it
-        // already contains the full angle-integrated counts, so no projection is needed.
-        std::cout << "\n[Step 10 DenomQA] Running denominator QA for " << var << "..." << std::endl;
-        // Create a dedicated subdirectory to keep the QA output self-contained
-        TDirectory* dirDenomQA = outDirVar->mkdir("DenominatorQA");
-
-        // Call function:
-        PerformDenominatorQA(hMassSigExtract, dirDenomQA,
-                                TString(var),  // unique label for ROOT name generation
-                                massMin, massMax, configs.denomQA);
-    } // <--- This closes the variation loop ("Ring", "RingKinematicCuts", etc.)
+    // Call function:
+    PerformDenominatorQA(hMassSigExtract, dirDenomQA,
+                            TString(ringFolder),  // unique label for ROOT name generation
+                            massMin, massMax, configs.denomQA);
 
     // Clean up files
     std::cout << "\n#############################################" << std::endl;
