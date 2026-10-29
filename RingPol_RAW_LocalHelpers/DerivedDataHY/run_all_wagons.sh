@@ -177,7 +177,7 @@ CONFIGS_DIR_ARG=""
 STAT_FRACTION=1.0
 
 print_help() {
-    awk '/^# Usage:/,/^#+$/' "$0" | head -n -1 | sed 's/^#//'
+    awk '/^# Usage:/{show=1} show && /^##########/{exit} show' "$0" | sed 's/^# \{0,1\}//'
     exit 0
 }
 

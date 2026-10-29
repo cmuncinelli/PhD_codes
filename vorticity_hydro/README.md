@@ -16,9 +16,12 @@ allowing the ring observable machinery to be tested end-to-end.
 |---|---|
 | `lambda_pol_toy_model.cxx` | Main hydrodynamic toy model. Simulates Λ polarization from a vorticity field, reconstructs the ring observable, and validates the analysis chain. Supports parallelization via OpenMP. |
 | `lambda_pol_toy_model_0_5cent.cxx` | Variant of the toy model restricted to the 0–5% centrality class. |
+| [`hydroTruthLab/`](hydroTruthLab) | Truth-level ring observable and $R_z$ from the iSS polarization output, with no sampling and no decays. Design and "how to run me" in its own README. |
 | `lambda_pol_PYTHIA.cxx` | Applies the ring polarization analysis to PYTHIA generator-level events. Since PYTHIA contains no polarization, this provides a zero-signal cross-check at the generator level. |
 | `DebugGlobalToCompactIdx.cxx` | Debug utility for validating the global-to-compact index mapping used in the parallelization scheme. |
 | `angular_distribution_sampler_test.py` | Python script to test and visualize the proton decay angular distribution sampler used in the toy model. |
+
+> **Factor of 2 in `lambda_pol_toy_model.cxx`:** the toy multiplies the iSS polarization columns by 2 (`Pol = 2S`), but those columns already hold $P^\mu$, not $S^\mu$ (see [`hydroTruthLab/README.md`](hydroTruthLab/README.md)). Its truth-level polarization is therefore twice the true value. Not corrected yet.
 
 ## Reference and Notes
 
