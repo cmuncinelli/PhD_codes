@@ -7,6 +7,7 @@ Truth-level laboratory for the ring observable in hydrodynamics. The producer re
 | `hydroTruthLab.cxx` | Producer. Hydro `.dat` files of one sample --> `hydroTruthLab_<sample>.root`. |
 | `hydroTruthLabSummary.cxx` | Downstream. Both producer files --> `hydroTruthLabSummary.root`. |
 | `runHydroTruthLab.sh` | Bash coordinator: compiles both macros, runs them and holds every configurable (including the output folder). |
+| `surveyHydroDatasets.sh` | Read-only survey of the hydro folders: samples, events, grid, MUSIC inputs and the bullet - no_bullet pairing, in a few lines per dataset. |
 | `README.md` | This file: design and "how to run me". Implementation details live in the code comments. |
 
 Both macros are single-threaded (no OpenMP, no NUMA binding) and use no fits.

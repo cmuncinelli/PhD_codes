@@ -1,1 +1,4 @@
 *.exe
+
+# Ignore all files that have this suffix:
+IGNORE_ME*
