@@ -1,17 +1,17 @@
-// hydroTruthLabSummary.cxx
+// hydroTruthLabPerConfig.cxx
 //
-// Combines the producer files of hydroTruthLab.cxx (bullet and no_bullet) into the results of the study: every pooled quantity with its
+// Combines the producer files of one run of hydroTruthLab.cxx (bullet and no_bullet) into its results: every pooled quantity with its
 // jackknife error from the event trees, the bullet - no_bullet differences over paired initial conditions, the checks of the trigger variants
 // (the leakage ansatz of the ring overlap included), the polarization maps as vector fields, and the analogues of the figures of
 // PhysRevC.109.014905 for this dataset.
 //
 // Usage:
-//   ./hydroTruthLabSummary.exe <bulletFile> <noBulletFile|none> <outputFile> [--option=value ...]      (--help lists every option)
+//   ./hydroTruthLabPerConfig.exe <bulletFile> <noBulletFile|none> <outputFile> [--option=value ...]    (--help lists every option)
 //   Normally compiled and launched by runHydroTruthLab.sh, which holds every configurable.
 //
 // Needs: ROOT (Hist, Tree, RIO, Gpad, Graf) and producer files written with the same configuration.
 //
-// Estimators, errors and the output reference: README.md in this folder ("Errors" and "Summary").
+// Estimators, errors and the output reference: README.md in this folder ("Errors" and "PerConfig").
 
 #include <TArrow.h>
 #include <TAxis.h>
@@ -22,6 +22,7 @@
 #include <TH1.h>
 #include <TH1D.h>
 #include <TH2D.h>
+#include <TKey.h>
 #include <TLatex.h>
 #include <TLegend.h>
 #include <TLine.h>
@@ -63,7 +64,7 @@ constexpr double kMinAbsRingForRatio = 1e-12;
 constexpr double kPercent = 100.;            // Paper/ and PolarizationMaps/ only: the paper and the consumer's maps use percent
 constexpr double kSumCheckTolerance = 1e-12; // relative. Sum of sumWDeltaPhi over bins vs sumWInCuts: the same numbers, summed in the same order
 constexpr double kAxisTolerance = 1e-9;      // in units of the bin width, for the bins centred at Delta phi = 0 and delta = 0
-constexpr double kRebuildTolerance = 1e-9;   // relative. Mixed weights rebuilt from the tree vs those the producer filled: same numbers, other order
+constexpr double kMixWeightTolerance = 1e-9;   // relative. Mixed weights from the tree vs those of the producer's profile: same numbers, other order
 constexpr int kPullBins = 50;
 constexpr double kPullRange = 5.;
 constexpr int kArrowBlockSize = 4;             // PolarizationMaps/: each arrow averages 4 x 4 bins (0.4 GeV/c), as the consumer's maps
@@ -89,7 +90,7 @@ enum TriggerSet { kSetTrue = 0,
 const std::array<std::string, kNTriggerSets> kSetProducerFolder = {"Ring", "DeltaScan", "Mixing", "Smudge"};
 const std::array<std::string, kNTriggerSets> kSetRingProfile = {"pRingVsDeltaPhi", "pRingD3NVsDelta", "pRingVsDeltaPhi", "pRingVsDeltaPhi"};
 const std::array<std::string, kNTriggerSets> kSetRingZProfile = {"pRingZVsDeltaPhi", "pRingZD3NVsDelta", "pRingZVsDeltaPhi", "pRingZVsDeltaPhi"};
-// Names used in the summary file
+// Names used in the PerConfig file
 const std::array<std::string, kNTriggerSets> kSetKeys = {"true", "deltaScan", "mixing", "smudge"};
 const std::array<std::string, kNTriggerSets> kSetLabels = {"true trigger", "delta-scan", "mixed triggers", "smudged triggers"};
 const std::array<std::string, kNTriggerSets> kSetAxisKeys = {"DeltaPhi", "Delta", "DeltaPhi", "DeltaPhi"};
@@ -240,7 +241,7 @@ enum DrawStyle { kStyleBand = 0, // error band and central line: every curve wit
 // Configuration
 // ======================================================================================================================================
 
-struct SummaryConfig {
+struct PerConfigOptions {
   std::string bulletFile;
   std::string noBulletFile; // "none" skips everything that needs the no_bullet sample
   std::string outputFile;
@@ -248,15 +249,17 @@ struct SummaryConfig {
   double alphaLambda = 0.749;
   double nLambdaPrecision = 0.; // 0: Precision/ holds sigma x sqrt(N) only
   std::string centralityLabel = "40-50%";
+  std::string runLabel = "none"; // <dataset>_<variation> of the coordinator, provenance only
 };
 
 void printUsage()
 {
-  std::cout << "Usage: ./hydroTruthLabSummary.exe <bulletFile> <noBulletFile|none> <outputFile> [--option=value ...]\n"
+  std::cout << "Usage: ./hydroTruthLabPerConfig.exe <bulletFile> <noBulletFile|none> <outputFile> [--option=value ...]\n"
             << "  --paired=1|0             paired differences (key hypothesis), or differences of means         (default: 1)\n"
             << "  --alphaLambda=<value>    Lambda decay parameter, used only in Precision/                      (default: 0.749)\n"
             << "  --nLambdaPrecision=<N>   number of Lambdas for sigma and the significance in Precision/, 0 = off (default: 0)\n"
             << "  --centralityLabel=<text> label of the Fig. 11 point                                           (default: 40-50%)\n"
+            << "  --runLabel=<text>        run of the coordinator (<dataset>_<variation>), stored in Config/      (default: none)\n"
             << "With none as the no_bullet file, everything that needs it (Difference/, Fig. 3 left, significances) is skipped.\n"
             << "See README.md for the definitions." << std::endl;
 }
@@ -307,7 +310,7 @@ T* getObject(TFile* file, const std::string& path)
 /// \brief Value of one option of a producer (stored in Config/ as name = option, title = value).
 std::string readConfigValue(TFile* file, const std::string& name) { return getObject<TNamed>(file, "Config/" + name)->GetTitle(); }
 
-/// \brief SetBranchAddress with a hard stop on a missing branch (a producer file older than the summary, for instance).
+/// \brief SetBranchAddress with a hard stop on a missing branch (a producer file older than this macro, for instance).
 void attachBranch(TTree* tree, const std::string& name, void* address)
 {
   if (tree->GetBranch(name.c_str()) == nullptr)
@@ -328,11 +331,12 @@ struct SetSums {
   std::array<std::vector<double>, kNEventValues> eventValue;       // per event
 };
 
-/// \brief Everything the summary needs from one event tree.
+/// \brief Everything PerConfig needs from one event tree.
 struct SampleData {
   std::vector<int> eventId;
   std::vector<double> phiTrigger;
   std::vector<double> sumWInCuts;
+  std::vector<int> mixDeltaEffBin; // event-major, mixDepth per event: delta_eff bin of each mixing partner, -1 outside the axis
   std::array<SetSums, kNTriggerSets> sets;
   // Delta-scan at delta = 0 against the true trigger, event by event: max |difference| and max |value|, indexed like BinArray (kBinW unused)
   std::array<double, kNBinArrays> scanZeroMaxResidual{};
@@ -340,8 +344,9 @@ struct SampleData {
 };
 
 /// \brief Reads the event tree of one producer file into the per-event sums of every trigger set, with entry-by-entry consistency checks.
-SampleData readSample(TFile* file, const std::string& label, int nDeltaPhiBins, int nDelta, int scanZeroBin, bool hasMixing, bool hasSmudge)
+SampleData readSample(TFile* file, const std::string& label, int nDeltaPhiBins, int nDelta, int scanZeroBin, int mixDepth, bool hasSmudge)
 {
+  const bool hasMixing = mixDepth > 0;
   TTree* tree = getObject<TTree>(file, "events");
   const Long64_t nEntries = tree->GetEntries();
   if (nEntries < 2)
@@ -358,10 +363,11 @@ SampleData readSample(TFile* file, const std::string& label, int nDeltaPhiBins, 
   Double_t phiTrigger = 0.;
   Double_t sumWInCuts = 0.;
   Double_t nzSqD3N = 0.;
-  Int_t nTrueBins = 0, nScanBins = 0, nMixBins = 0, nSmudgeBins = 0;
+  Int_t nTrueBins = 0, nScanBins = 0, nMixBins = 0, nSmudgeBins = 0, nMixPartners = 0;
   std::array<Double_t, kNWeightedExtras> extraD3N{};
   std::array<Double_t, kNEventValues> trueValues{}, mixValues{}, smudgeValues{};
   std::array<std::vector<Double_t>, kNBinArrays> trueBins, scanValues, mixBins, smudgeBins;
+  std::vector<Int_t> mixDeltaEffBin;
 
   // Event and true trigger
   attachBranch(tree, "eventId", &eventId);
@@ -389,7 +395,10 @@ SampleData readSample(TFile* file, const std::string& label, int nDeltaPhiBins, 
   }
   // Mixing
   attachBranch(tree, "nMixDeltaPhiBins", &nMixBins);
+  attachBranch(tree, "nMixPartners", &nMixPartners);
   if (hasMixing) {
+    mixDeltaEffBin.assign(std::max<int>(mixDepth, tree->GetMaximum("nMixPartners")), -1);
+    attachBranch(tree, "mixDeltaEffBin", mixDeltaEffBin.data());
     for (int value = 0; value < kNEventValues; ++value)
       attachBranch(tree, kMixValueBranches[value], &mixValues[value]);
     for (int array = 0; array < kNBinArrays; ++array) {
@@ -428,7 +437,7 @@ SampleData readSample(TFile* file, const std::string& label, int nDeltaPhiBins, 
 
   for (Long64_t entry = 0; entry < nEntries; ++entry) {
     tree->GetEntry(entry);
-    if (nTrueBins != nDeltaPhiBins || nScanBins != nDelta || (hasMixing && nMixBins != nDeltaPhiBins) || (hasSmudge && nSmudgeBins != nDeltaPhiBins))
+    if (nTrueBins != nDeltaPhiBins || nScanBins != nDelta || (hasMixing && (nMixBins != nDeltaPhiBins || nMixPartners != mixDepth)) || (hasSmudge && nSmudgeBins != nDeltaPhiBins))
       throw std::runtime_error(label + ", event " + std::to_string(eventId) + ": the array sizes in the tree disagree with the producer's configuration");
     sample.eventId.push_back(eventId);
     sample.phiTrigger.push_back(phiTrigger);
@@ -466,6 +475,7 @@ SampleData readSample(TFile* file, const std::string& label, int nDeltaPhiBins, 
 
     // Mixing and smudging: per-bin sums pooled over the partners (draws) of the event, and its per-event values
     if (hasMixing) {
+      sample.mixDeltaEffBin.insert(sample.mixDeltaEffBin.end(), mixDeltaEffBin.begin(), mixDeltaEffBin.begin() + mixDepth);
       for (int array = 0; array < kNBinArrays; ++array)
         mixSet.perBin[array].insert(mixSet.perBin[array].end(), mixBins[array].begin(), mixBins[array].begin() + nDeltaPhiBins);
       for (int value = 0; value < kNEventValues; ++value)
@@ -1692,7 +1702,7 @@ int main(int argc, char** argv)
     // ==================================================================================================================================
     // 1. Options
     // ==================================================================================================================================
-    SummaryConfig config;
+    PerConfigOptions config;
     std::vector<std::string> positionalArgs;
     std::map<std::string, std::string> options;
     for (int iArg = 1; iArg < argc; ++iArg) {
@@ -1729,6 +1739,8 @@ int main(int argc, char** argv)
         config.nLambdaPrecision = toDouble(key, value);
       } else if (key == "centralityLabel") {
         config.centralityLabel = value;
+      } else if (key == "runLabel") {
+        config.runLabel = value;
       } else {
         throw std::runtime_error("unknown option --" + key + " (see --help)");
       }
@@ -1747,8 +1759,9 @@ int main(int argc, char** argv)
     configEntries.emplace_back("alphaLambda", std::to_string(config.alphaLambda));
     configEntries.emplace_back("nLambdaPrecision", std::to_string(config.nLambdaPrecision));
     configEntries.emplace_back("centralityLabel", config.centralityLabel);
+    configEntries.emplace_back("runLabel", config.runLabel);
     std::cout << "========================================================" << std::endl;
-    std::cout << "  hydroTruthLabSummary" << std::endl;
+    std::cout << "  hydroTruthLabPerConfig" << std::endl;
     for (const auto& [name, value] : configEntries)
       std::cout << "  " << name << " = " << value << std::endl;
     std::cout << "========================================================" << std::endl;
@@ -1798,7 +1811,7 @@ int main(int argc, char** argv)
           throw std::runtime_error("Config/" + key + " differs between the samples ('" + bulletValue + "' vs '" + noBulletValue + "'), which breaks the pairing of the trigger variants: rerun both producers with the coordinator, or use --paired=0");
       }
     }
-    // The producers' warnings, repeated so that the summary log shows them
+    // The producers' warnings, repeated so that this log shows them
     for (int sample = 0; sample < kNSamples; ++sample) {
       if (sampleFiles[sample] == nullptr)
         continue;
@@ -1836,7 +1849,7 @@ int main(int argc, char** argv)
     for (int sample = 0; sample < kNSamples; ++sample) {
       if (sampleFiles[sample] == nullptr)
         continue;
-      samples[sample] = readSample(sampleFiles[sample], sampleLabels[sample], nDeltaPhiBins, nDelta, scanZeroBin, mixDepth > 0, smudgeSigma > 0.);
+      samples[sample] = readSample(sampleFiles[sample], sampleLabels[sample], nDeltaPhiBins, nDelta, scanZeroBin, mixDepth, smudgeSigma > 0.);
       std::cout << sampleLabels[sample] << ": " << samples[sample].eventId.size() << " events" << std::endl;
     }
     const int nBulletEvents = samples[kSampleBullet].eventId.size();
@@ -2253,7 +2266,8 @@ int main(int argc, char** argv)
         // value, s^2 its d3N-weighted spread around the pooled scan value, W_e the scan weights (total T) and c_e the summed weights of the
         // mixed entries of event e in the bin (total C), Var(mix - scan) = s^2 sum_e (c_e/C - W_e/T)^2. The sum accounts for the events the
         // two share, and s comes from all events, not from the few in the mixing bin. Events, not entries, are the units: two partners of one
-        // event in the same bin carry nearly the same value (README, "Delta-scan, mixing and smudging")
+        // event in the same bin carry nearly the same value (README, "Delta-scan, mixing and smudging"). The producer stores the delta_eff bin
+        // of every partner in the tree, so nothing here depends on how it picks them
         pullSummary.clear();
         std::vector<std::string> pullLabels;
         std::vector<double> pullMeans, pullRmsValues;
@@ -2265,33 +2279,21 @@ int main(int argc, char** argv)
           const SampleData& data = samples[sample];
           const SetSums& scanSums = data.sets[kSetScan];
           const EstimateSet& scanEstimates = results[kSetScan].estimates[sample];
-          // c_e per delta_eff bin, event-major, with the partners rebuilt by the producer's rule: event i takes the phi_J of the events
-          // i + 1, ..., i + mixDepth (mod nEvents), and phi_J is the phiTrigger of the jet trigger. Each mixed entry weighs the in-cut yield
-          const int firstEvent = std::stoi(readConfigValue(sampleFiles[sample], "firstEvent"));
-          const int nConfiguredEvents = std::stoi(readConfigValue(sampleFiles[sample], "nEvents"));
-          std::map<int, int> rowOfEvent;
-          for (int row = 0; row < scanSums.nEvents; ++row)
-            rowOfEvent.emplace(data.eventId[row], row);
-          const TAxis* deltaEffAxis = getObject<TProfile>(sampleFiles[sample], "Mixing/pRingD3NVsDeltaEff")->GetXaxis();
+          // c_e per delta_eff bin, event-major, from the bins of the partners stored by the producer. Each mixed entry weighs the in-cut yield
           std::vector<double> mixedWeight(scanSums.nEvents * nDelta, 0.);
-          std::string rebuildProblem;
-          for (int row = 0; row < scanSums.nEvents && rebuildProblem.empty(); ++row) {
-            for (int partner = 1; partner <= mixDepth; ++partner) {
-              const int partnerId = firstEvent + (data.eventId[row] - firstEvent + partner) % nConfiguredEvents;
-              const auto partnerRow = rowOfEvent.find(partnerId);
-              if (partnerRow == rowOfEvent.end()) {
-                rebuildProblem = "partner event " + std::to_string(partnerId) + " is not in the event tree";
-                break;
+          int nPartnersOutside = 0;
+          for (int row = 0; row < scanSums.nEvents; ++row) {
+            for (int partner = 0; partner < mixDepth; ++partner) {
+              const int bin = data.mixDeltaEffBin[row * mixDepth + partner];
+              if (bin < 0) { // the producer's rounding put delta_eff beyond the axis: that entry is in the profile's overflow too
+                ++nPartnersOutside;
+                continue;
               }
-              // The producer's wrap and the profile's own binning, on the same numbers: the bins agree exactly. An entry the rounding puts
-              // beyond the axis went to the overflow of the producer's profile as well
-              const double angle = data.phiTrigger[partnerRow->second] - data.phiTrigger[row];
-              const double deltaEff = angle - TMath::TwoPi() * std::floor((angle - deltaRange.low) / TMath::TwoPi());
-              const int bin = deltaEffAxis->FindFixBin(deltaEff) - 1;
-              if (bin >= 0 && bin < nDelta)
-                mixedWeight[row * nDelta + bin] += data.sumWInCuts[row];
+              mixedWeight[row * nDelta + bin] += data.sumWInCuts[row];
             }
           }
+          if (nPartnersOutside > 0)
+            warnings.push_back("Mixing/, " + sampleLabels[sample] + ": " + std::to_string(nPartnersOutside) + " mixing partners outside the delta_eff axis, left out of the pulls as they are out of the profile");
           for (int curve = 0; curve < kNFeatureCurves; ++curve) {
             const std::string suffix = kFeatureCurveKeys[curve] + "_" + kSampleKeys[sample];
             const Part mixPart = profilePart(mixing.parts, sampleFiles[sample], "Mixing/p" + kFeatureCurveKeys[curve] + "D3NVsDeltaEff", "p" + kFeatureCurveKeys[curve] + "D3NVsDeltaEff_" + kSampleKeys[sample]);
@@ -2300,17 +2302,17 @@ int main(int argc, char** argv)
               throw std::runtime_error("Mixing/p" + kFeatureCurveKeys[curve] + "D3NVsDeltaEff does not use the delta-scan binning");
             // The two curves the pulls compare
             drawOverlay(mixing.canvases, "c" + kFeatureCurveKeys[curve] + "D3NMixedVsScan_" + kSampleKeys[sample], "Integrated <" + kFeatureCurveSymbols[curve] + ">: mixing vs #delta_{eff} against the delta-scan vs #delta, " + sampleLegends[sample], {{curveParts[kSetScan][curve][sample], "delta-scan vs #delta (jackknife)", kPaletteLooks[0], kStyleBand}, {mixPart, "mixed vs #delta_{eff} (pooled-master errors)", kPaletteLooks[1], kStyleMarker}}, 0.);
-            // The rebuilt entries must carry the weights the producer filled, bin by bin
-            for (int step = 0; step < nDelta && rebuildProblem.empty(); ++step) {
-              double rebuiltWeight = 0.;
+            // Closure: the partners of the tree carry the weights of the profile, bin by bin (same entries, summed in another order)
+            int nMismatchedBins = 0;
+            for (int step = 0; step < nDelta; ++step) {
+              double treeWeight = 0.;
               for (int iEvent = 0; iEvent < scanSums.nEvents; ++iEvent)
-                rebuiltWeight += mixedWeight[iEvent * nDelta + step];
-              const double filledWeight = mixProfile->GetBinEntries(step + 1);
-              if (std::abs(rebuiltWeight - filledWeight) > kRebuildTolerance * std::abs(filledWeight))
-                rebuildProblem = "the rebuilt mixed entries do not match the weights of " + std::string(mixProfile->GetName()) + " in delta bin " + std::to_string(step);
+                treeWeight += mixedWeight[iEvent * nDelta + step];
+              if (std::abs(treeWeight - mixProfile->GetBinEntries(step + 1)) > kMixWeightTolerance * std::abs(mixProfile->GetBinEntries(step + 1)))
+                ++nMismatchedBins;
             }
-            if (!rebuildProblem.empty()) {
-              warnings.push_back("Mixing/, " + sampleLabels[sample] + ", " + kFeatureCurveKeys[curve] + ": " + rebuildProblem + ", so no pulls (has the partner rule of the producer changed?)");
+            if (nMismatchedBins > 0) {
+              warnings.push_back("Mixing/, " + sampleLabels[sample] + ", " + kFeatureCurveKeys[curve] + ": the mixing partners of the tree do not match the weights of " + std::string(mixProfile->GetName()) + " in " + std::to_string(nMismatchedBins) + " delta bins, so no pulls");
               continue;
             }
             const int array = curve == kCurveRing ? kBinARing : kBinARingZ;
@@ -2806,6 +2808,20 @@ int main(int argc, char** argv)
     TNamed("mixingPulls", pullSummary.c_str()).Write();
     TNamed("leakageTest", leakageSummary.c_str()).Write();
     TNamed("warnings", warningSummary.empty() ? "none" : warningSummary.c_str()).Write();
+    // The producers' options next to these, so that SummaryPlots reads everything about a run from this one file
+    const std::array<std::string, kNSamples> producerConfigFolders = {"ProducerBullet", "ProducerNoBullet"};
+    for (int sample = 0; sample < kNSamples; ++sample) {
+      if (sampleFiles[sample] == nullptr)
+        continue;
+      TDirectory* copyDir = configDir->mkdir(producerConfigFolders[sample].c_str());
+      for (TObject* keyObject : *getObject<TDirectory>(sampleFiles[sample], "Config")->GetListOfKeys()) {
+        std::unique_ptr<TNamed> entry(static_cast<TKey*>(keyObject)->ReadObject<TNamed>());
+        if (!entry)
+          continue;
+        copyDir->cd();
+        entry->Write();
+      }
+    }
 
     outputFile->Write();
     outputFile->Close();

@@ -35,6 +35,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -249,6 +250,23 @@ double squared(double value) { return value * value; }
 
 /// \brief Wraps an angle into [low, low + 2 pi).
 double wrapAngle(double angle, double low) { return angle - kTwoPi * std::floor((angle - low) / kTwoPi); }
+
+/// \brief Input file of one event: <sampleDir>/<eventId>/results/<inputName> (README, "Data layout").
+std::string eventInputPath(const AnalysisConfig& config, int eventId) { return config.sampleDir + "/" + std::to_string(eventId) + "/results/" + config.inputName; }
+
+/// \brief Sorted event IDs as ranges, "28-29, 33-34, 49-199", for the log and Config/.
+std::string formatEventRanges(const std::vector<int>& eventIds)
+{
+  std::string text;
+  for (std::size_t first = 0; first < eventIds.size();) {
+    std::size_t last = first;
+    while (last + 1 < eventIds.size() && eventIds[last + 1] == eventIds[last] + 1)
+      ++last;
+    text += (text.empty() ? "" : ", ") + std::to_string(eventIds[first]) + (last > first ? "-" + std::to_string(eventIds[last]) : "");
+    first = last + 1;
+  }
+  return text;
+}
 
 /// \brief Residual over its natural scale, for the closure histograms. A vanishing scale with a vanishing residual counts as exact.
 double relativeResidual(double residual, double scale)
@@ -809,6 +827,8 @@ struct EventRecord {
   Double_t mixRingFlat = kNoValue;
   Double_t mixRingZD3N = kNoValue;
   Double_t mixRingZFlat = kNoValue;
+  Int_t nMixPartners = 0;     // mixDepth
+  std::vector<Int_t> mixDeltaEffBin; // per partner: its delta_eff bin of Mixing/p*VsDeltaEff (from 0), -1 outside the axis
   Int_t nMixDeltaPhiBins = 0; // nDeltaPhiBins when mixing is on, 0 otherwise
   std::vector<Double_t> mixSumWDeltaPhi, mixSumARingDeltaPhi, mixSumARingZDeltaPhi, mixSumANzSqDeltaPhi, mixSumACosZetaDeltaPhi, mixSumASinZetaDeltaPhi;
   Double_t smudgeRingD3N = kNoValue;
@@ -1094,7 +1114,9 @@ int main(int argc, char** argv)
     std::cout << "========================================================" << std::endl;
 
     // ==================================================================================================================================
-    // 2. Jet file (#event n_random phi(rad) momentum_x momentum_y), with atan2(momentum_y, momentum_x) checked against phi
+    // 2. Jet file, with atan2(momentum_y, momentum_x) checked against phi. Rows have five fields (event n_random phi(rad) momentum_x
+    //    momentum_y), or four without n_random: the files of lumpy_events_0_5_fine and break_symmetry keep the five-column header over rows of
+    //    four, so the layout is taken from each row, not from the header
     // ==================================================================================================================================
     std::vector<JetEntry> jets;
     if (!config.jetFile.empty()) {
@@ -1109,9 +1131,17 @@ int main(int argc, char** argv)
         if (firstChar == std::string::npos || line[firstChar] == '#')
           continue;
         std::istringstream lineStream(line);
-        double eventColumn = 0., randomColumn = 0., phiColumn = 0., momentumX = 0., momentumY = 0.;
-        if (!(lineStream >> eventColumn >> randomColumn >> phiColumn >> momentumX >> momentumY))
-          throw std::runtime_error(config.jetFile + ", line " + std::to_string(lineNumber) + ": expected 5 numeric columns");
+        std::vector<double> fields;
+        double field = 0.;
+        while (lineStream >> field)
+          fields.push_back(field);
+        if (!lineStream.eof() || (fields.size() != 5 && fields.size() != 4))
+          throw std::runtime_error(config.jetFile + ", line " + std::to_string(lineNumber) + ": expected 5 numeric fields (event n_random phi momentum_x momentum_y) or 4 (without n_random)");
+        const std::size_t phiField = fields.size() - 3;
+        const double eventColumn = fields[0];
+        const double phiColumn = fields[phiField];
+        const double momentumX = fields[phiField + 1];
+        const double momentumY = fields[phiField + 2];
         const long jetEventId = std::lround(eventColumn); // read as a number, since the event column may be printed in floating-point format
         if (std::abs(eventColumn - jetEventId) > 1e-9 || jetEventId < 0)
           throw std::runtime_error(config.jetFile + ", line " + std::to_string(lineNumber) + ": the event column is not a non-negative integer");
@@ -1145,8 +1175,21 @@ int main(int argc, char** argv)
     // ==================================================================================================================================
     // 4. First event: the grid it defines, which every later event must reproduce (README, "File format and grid"), and the axes built on it
     // ==================================================================================================================================
+    // Events of the range that have their input file. A missing one (an iSS run that never finished, in some datasets) is skipped with a
+    // warning instead of stopping the run: its mixing partners still take their phi_J from the jet file, and PerConfig pairs the samples by
+    // eventId, so the pair is simply absent
+    std::vector<int> eventIds, skippedEventIds;
+    for (int eventId = config.firstEvent; eventId < config.firstEvent + config.nEvents; ++eventId) {
+      if (std::filesystem::is_regular_file(eventInputPath(config, eventId)))
+        eventIds.push_back(eventId);
+      else
+        skippedEventIds.push_back(eventId);
+    }
+    if (eventIds.empty())
+      throw std::runtime_error("no event of " + std::to_string(config.firstEvent) + "-" + std::to_string(config.firstEvent + config.nEvents - 1) + " has " + config.inputName);
+    const std::string skippedEventsText = skippedEventIds.empty() ? "none" : formatEventRanges(skippedEventIds);
     CellTable table;
-    readCellTable(config.sampleDir + "/" + std::to_string(config.firstEvent) + "/results/" + config.inputName, table);
+    readCellTable(eventInputPath(config, eventIds.front()), table);
 
     CellGrid grid;
     grid.nCells = table.size();
@@ -1254,6 +1297,11 @@ int main(int argc, char** argv)
 
     // Options that depend on the grid
     WarningCounters warnings;
+    if (!skippedEventIds.empty()) {
+      const std::string message = std::to_string(skippedEventIds.size()) + " events of the range have no " + config.inputName + " and were skipped: " + skippedEventsText;
+      std::cout << "[WARNING] " << message << std::endl;
+      warnings.startupMessages.push_back(message);
+    }
     // The delta grid must sit on the phi grid (rotated cells then land on bin centres), and be even (half-turn closure)
     if (config.deltaScanSteps > 0 && (config.deltaScanSteps % 2 != 0 || grid.nPhi % config.deltaScanSteps != 0))
       throw std::runtime_error("--deltaScanSteps must be even and divide the number of phi nodes (" + std::to_string(grid.nPhi) + ")");
@@ -1555,6 +1603,8 @@ int main(int argc, char** argv)
     eventRecord.scanNzSqD3N.assign(nScanSlots, kNoValue);
     eventRecord.scanCosZetaD3N.assign(nScanSlots, kNoValue);
     eventRecord.scanSinZetaD3N.assign(nScanSlots, kNoValue);
+    eventRecord.nMixPartners = config.mixDepth;
+    eventRecord.mixDeltaEffBin.assign(std::max(1, config.mixDepth), -1); // one slot at least, so that the branch has an address
     eventRecord.nMixDeltaPhiBins = config.mixDepth > 0 ? grid.nPhi : 0;
     eventRecord.mixSumWDeltaPhi.assign(grid.nPhi, 0.);
     eventRecord.mixSumARingDeltaPhi.assign(grid.nPhi, 0.);
@@ -1612,6 +1662,8 @@ int main(int argc, char** argv)
     eventTree->Branch("mixRingFlat", &eventRecord.mixRingFlat, "mixRingFlat/D");
     eventTree->Branch("mixRingZD3N", &eventRecord.mixRingZD3N, "mixRingZD3N/D");
     eventTree->Branch("mixRingZFlat", &eventRecord.mixRingZFlat, "mixRingZFlat/D");
+    eventTree->Branch("nMixPartners", &eventRecord.nMixPartners, "nMixPartners/I");
+    eventTree->Branch("mixDeltaEffBin", eventRecord.mixDeltaEffBin.data(), "mixDeltaEffBin[nMixPartners]/I");
     eventTree->Branch("nMixDeltaPhiBins", &eventRecord.nMixDeltaPhiBins, "nMixDeltaPhiBins/I");
     eventTree->Branch("mixSumWDeltaPhi", eventRecord.mixSumWDeltaPhi.data(), "mixSumWDeltaPhi[nMixDeltaPhiBins]/D");
     eventTree->Branch("mixSumARingDeltaPhi", eventRecord.mixSumARingDeltaPhi.data(), "mixSumARingDeltaPhi[nMixDeltaPhiBins]/D");
@@ -1643,15 +1695,14 @@ int main(int argc, char** argv)
     std::array<double, kNPolComponents> polComponent{};
     std::array<double, kNPolComponents> polJetComponent{};
     int eventsProcessed = 0;
-    const int lastEvent = config.firstEvent + config.nEvents - 1;
 
-    for (int eventId = config.firstEvent; eventId <= lastEvent; ++eventId) {
+    for (const int eventId : eventIds) {
       // ------------------------------------------------------------------------------------------------------------------------------
       // 7a. Read the event and check its grid (the first event is already in memory). The files are written from the same iSS grid arrays
       //     with the same format, so identical nodes give identical text, hence identical doubles: the exact comparison is intended
       // ------------------------------------------------------------------------------------------------------------------------------
-      if (eventId != config.firstEvent) {
-        readCellTable(config.sampleDir + "/" + std::to_string(eventId) + "/results/" + config.inputName, table);
+      if (eventId != eventIds.front()) {
+        readCellTable(eventInputPath(config, eventId), table);
         if (table.size() != grid.nCells)
           throw std::runtime_error("event " + std::to_string(eventId) + " has " + std::to_string(table.size()) + " cells instead of " + std::to_string(grid.nCells));
         for (int iCell = 0; iCell < grid.nCells; ++iCell)
@@ -1989,6 +2040,10 @@ int main(int argc, char** argv)
           const double partnerPhi = jets[partnerId].phi;
           const IntegratedSums sums = accumulateReducedSet(XYZVector(std::cos(partnerPhi), std::sin(partnerPhi), 0.), inCutCells, grid, mixingAccumulators, warnings);
           const double deltaEff = wrapAngle(partnerPhi - phiTrigger, deltaAxis.low);
+          // The bin of the profile itself, so that the pulls downstream group the partners exactly as the profile does (-1: the rounding put
+          // delta_eff beyond the axis, into the profile's overflow)
+          const int deltaEffBin = mixingExtras.ringD3NVsDeltaEff->GetXaxis()->FindFixBin(deltaEff) - 1;
+          eventRecord.mixDeltaEffBin[iPartner - 1] = deltaEffBin < deltaAxis.nBins ? deltaEffBin : -1;
           fillEventPoint(mixingExtras.ringD3NVsDeltaEff, mixingExtras.ringD3NVsDeltaEffEvtMean, deltaEff, sums.sumWRing / sums.sumW, sums.sumW);
           fillEventPoint(mixingExtras.ringZD3NVsDeltaEff, mixingExtras.ringZD3NVsDeltaEffEvtMean, deltaEff, sums.sumWRingZ / sums.sumW, sums.sumW);
         }
@@ -2060,8 +2115,8 @@ int main(int argc, char** argv)
       // ------------------------------------------------------------------------------------------------------------------------------
       eventTree->Fill();
       ++eventsProcessed;
-      if (eventsProcessed % kProgressEvery == 0 || eventId == lastEvent)
-        std::cout << "Processed " << eventsProcessed << "/" << config.nEvents << " events (last: " << eventId << ")" << std::endl;
+      if (eventsProcessed % kProgressEvery == 0 || eventId == eventIds.back())
+        std::cout << "Processed " << eventsProcessed << "/" << eventIds.size() << " events (last: " << eventId << ")" << std::endl;
     }
 
     // ==================================================================================================================================
@@ -2151,6 +2206,7 @@ int main(int argc, char** argv)
     const std::string gridSummary = std::to_string(grid.nY) + " y nodes from " + std::to_string(grid.yFirst) + " (step " + std::to_string(grid.yWidth) + "), " + std::to_string(grid.nPt) + " pT nodes from " + std::to_string(grid.ptFirst) + " (step " + std::to_string(grid.ptWidth) + "), " + std::to_string(grid.nPhi) + " phi nodes from " + std::to_string(grid.phiFirst) + " (step 2pi/" + std::to_string(grid.nPhi) + "), " + std::to_string(nInCutCells) + " cells in the cuts";
     TNamed("grid", gridSummary.c_str()).Write();
     TNamed("eventsProcessed", std::to_string(eventsProcessed).c_str()).Write();
+    TNamed("skippedEvents", skippedEventsText.c_str()).Write();
     TNamed("warnings", warningSummary.empty() ? "none" : warningSummary.c_str()).Write();
 
     outputFile->Write();

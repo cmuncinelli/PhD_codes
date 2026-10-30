@@ -1,14 +1,18 @@
 # hydroTruthLab
 
-Truth-level laboratory for the ring observable in hydrodynamics. The producer reads the per-cell Lambda polarization that iSS computes on the MUSIC freeze-out surface, one file per event, and evaluates the full 3D ring observable together with its longitudinal projection $R_z$ and its companions -- with no sampling and no decays. Hydro gives perfect PID, momentum, jet direction and polarization, so everything here is the truth that the data analysis (`useRingZ` in `lambdaJetPolarizationIonsDerived.cxx`) tries to reconstruct. The companion macro combines the bullet and no_bullet samples, computes the nonlinear quantities with their jackknife errors and builds the 40-50% analogues of the figures of PhysRevC.109.014905.
+Truth-level laboratory for the ring observable in hydrodynamics. The producer reads the per-cell Lambda polarization that iSS computes on the MUSIC freeze-out surface, one file per event, and evaluates the full 3D ring observable together with its longitudinal projection $R_z$ and its companions -- with no sampling and no decays. Hydro gives perfect PID, momentum, jet direction and polarization, so everything here is the truth that the data analysis (`useRingZ` in `lambdaJetPolarizationIonsDerived.cxx`) tries to reconstruct. The companion macro, PerConfig, combines the bullet and no_bullet samples of one configuration, computes the nonlinear quantities with their jackknife errors and builds the analogues of the figures of PhysRevC.109.014905 at the centrality of the dataset.
 
 | File | Description |
 |---|---|
-| `hydroTruthLab.cxx` | Producer. Hydro `.dat` files of one sample --> `hydroTruthLab_<sample>.root`. |
-| `hydroTruthLabSummary.cxx` | Downstream. Both producer files --> `hydroTruthLabSummary.root`. |
-| `runHydroTruthLab.sh` | Bash coordinator: compiles both macros, runs them and holds every configurable (including the output folder). |
+| `hydroTruthLab.cxx` | Producer. Hydro `.dat` files of one sample --> `hydroTruthLab_<run>_<sample>.root`. |
+| `hydroTruthLabPerConfig.cxx` | Downstream (PerConfig, formerly the summary). Both producer files of one run --> `hydroTruthLabPerConfig_<run>.root`. |
+| `runHydroTruthLab.sh` | Bash coordinator: compiles both macros, runs them for every run of the registries, in parallel, and holds the defaults of every configurable (including the output folder). |
+| `hydroTruthLab_datasets.conf` | Registry of the hydro datasets: samples, jet file and centrality of each. |
+| `hydroTruthLab_runs.conf` | Registry of the runs (a dataset and the options it changes) and of the comparisons across runs. |
 | `surveyHydroDatasets.sh` | Read-only survey of the hydro folders: samples, events, grid, MUSIC inputs and the bullet - no_bullet pairing, in a few lines per dataset. |
 | `README.md` | This file: design and "how to run me". Implementation details live in the code comments. |
+
+A run is one dataset with one configuration, labelled `<dataset>_<variation>` (`lumpy4050_default`, `lumpy4050_smudge0.1`). Comparisons across runs (centrality, smudge width, ...) will be drawn by `hydroTruthLabSummaryPlots.cxx`, not written yet (see Known issues and TODO).
 
 Both macros are single-threaded (no OpenMP, no NUMA binding) and use no fits.
 
@@ -43,10 +47,19 @@ grep -n "prefactor = \|omega_yz\*pmu\[1\]" <iSS>/src/spin_polarization.cpp
 ### Data layout
 
 ```
-/storage1/vribeiro/lumpy_events_40_50/{bullet,no_bullet}/<i>/results/Smu_dpTdphidy_Thermal_rapidity_3122.dat
+/storage1/vribeiro/<dataset>/<sample>/<i>/results/Smu_dpTdphidy_Thermal_rapidity_3122.dat
 ```
 
-Fluctuating (lumpy) initial conditions for 40-50% Pb-Pb collisions at 2.76 TeV, Lambda (PDG code 3122), thermal vorticity only, rapidity grid. Events are numbered from 0. The bullet sample has 250 events (0-249) and the no_bullet sample 300 (0-299). Only the first 250 have a jet entry, so the jet trigger uses events 0-249 of both samples, while the rp trigger uses every event (see Trigger modes).
+Vitor's events in jarvis4: fluctuating (lumpy) initial conditions for Pb-Pb collisions at 2.76 TeV, Lambda (PDG code 3122), thermal vorticity only, rapidity grid, events numbered from 0. The reference dataset is `lumpy_events_40_50` (40-50%, 250 events with iSS output in each sample, of the 300 folders of no_bullet). `hydroTruthLab_datasets.conf` lists every runnable dataset, with its samples, jet file and centrality, and `surveyHydroDatasets.sh` is how they were found:
+
+```
+./surveyHydroDatasets.sh                                       # every dataset under /storage1/vribeiro, a few lines each
+./surveyHydroDatasets.sh -p break_symmetry lumpy_events_40_50/no_bullet   # pairing of a bullet sample with a no_bullet sample elsewhere
+```
+
+It reports, per sample, the events and those without iSS output, the grid, the MUSIC parameters that vary or stay constant, the format of the jet files, and whether bullet and no_bullet event i start from the same initial condition (comparing the tails of the initial-condition paths, since some datasets moved from `/hadrex1/storage2/vribeiro/vorticity_data` to `/storage1/vribeiro`).
+
+Some events have no iSS output (an iSS run that never finished: 113 of `lumpy_events_0_5_fine`, half of `bullet_E30`, most of `bullet_P20_E*`). The producer skips them with a warning, records them in `Config/skippedEvents`, and PerConfig pairs the samples on the events both have.
 
 ### File format and grid
 
@@ -78,7 +91,7 @@ We take $P^*$ directly from this block. Vitor never used it. Our own boost of th
 
 ### Jet file
 
-`/storage1/vribeiro/lumpy_events_40_50/random_parameters.dat`, columns `#event n_random phi(rad) momentum_x momentum_y`, one line per event (0 to 249). The copy in `no_bullet/` is identical, so one file serves both samples. The producer checks that `atan2(momentum_y, momentum_x)` agrees with `phi(rad)` modulo $2\pi$.
+One per dataset (the registry names it), one line per event, for example `lumpy_events_40_50/random_parameters.dat`, columns `#event n_random phi(rad) momentum_x momentum_y`. The jet of a no_bullet event is that of the paired bullet event, so one file serves both samples. Rows have five fields, or four without `n_random`: the files of `lumpy_events_0_5_fine` (`phi_parameters.dat`, 180 directions on a regular grid in $[0, 2\pi)$) and `break_symmetry` keep the five-column header over rows of four, so the producer takes the layout from each row. It checks that `atan2(momentum_y, momentum_x)` agrees with `phi(rad)` modulo $2\pi$.
 
 ### MUSIC bullet settings
 
@@ -99,7 +112,7 @@ bullet_initial_time 1.001
 bullet_final_time 1.002
 ```
 
-The energy-momentum current is purely transverse (`total_current_momentum_eta_s 0`), so the trigger axis always has $t_z = 0$. It is deposited at the centre of the fireball, at $\tau \simeq 1$ fm/c.
+The energy-momentum current is purely transverse (`total_current_momentum_eta_s 0`), so the trigger axis always has $t_z = 0$. It is deposited at the centre of the fireball, at $\tau \simeq 1$ fm/c. Other datasets change this block only: the deposited energy and momentum (`lumpy_events_60_70/bullet_E30`, `bullet_P20_E30`, `bullet_P20_E60`), or the position, $R$ fm along the jet direction for `position_lumpy_events_*/R+<R>` and against it for `R-<R>`, or fixed at $(2, 0)$ fm for `break_symmetry`. The comments of `hydroTruthLab_datasets.conf` give the values.
 
 ### KEY HYPOTHESIS: paired initial conditions
 
@@ -111,14 +124,16 @@ Initial_Distribution_input_filename /storage1/vribeiro/lumpy_bg_40_50/118/PbPb27
 
 and differ only by the bullet block above. Neither MUSIC nor the iSS polarization integral samples anything, so for a fixed initial condition the difference between the two samples is entirely due to the bullet.
 
-The whole `Difference/` folder of the summary rests on this hypothesis:
+`surveyHydroDatasets.sh` checks the same, event by event, and found it true for every pairing of `hydroTruthLab_datasets.conf`, including the no_bullet sample shared by several bullet samples (`lumpy_events_40_50/no_bullet` also serves `position_lumpy_events_40_50/*` and `break_symmetry`).
 
-- Both samples must run with the same trigger mode. Pairs are formed over the event IDs both samples have, so in rp mode the 50 extra no_bullet events enter the no_bullet curves but no difference. On the canvases this is a labelling matter only: the no_bullet curve uses its 300 events and the difference its 250 pairs, so the drawn difference is not exactly the drawn bullet curve minus the drawn no_bullet curve. Every legend gives its event or pair count. In jet mode both samples have the same 250 events, and the two coincide.
+The whole `Difference/` folder of PerConfig rests on this hypothesis:
+
+- Both samples must run with the same trigger mode and the same event range: the coordinator gives both the range of the bullet sample. Pairs are formed over the event IDs both samples have, so an event without iSS output in either sample enters neither curve of the difference. When only one sample misses it, the curves of the other sample keep it, and the drawn difference is not exactly the drawn bullet curve minus the drawn no_bullet curve. Every legend gives its event or pair count.
 - Differences are taken pair by pair, and their errors are computed over pairs (see Errors).
-- The trigger variants stay paired: random streams are seeded from (seed, eventId) instead of being drawn from one running sequence, both samples get the same seed (the coordinator draws one per run), and mixing partners are chosen by event index.
-- For every shared `eventId`, the summary checks that `phiTrigger` agrees in the two event trees and stops otherwise.
+- The trigger variants stay paired: random streams are seeded from (seed, eventId) instead of being drawn from one running sequence, both samples get the same seed (the coordinator sets one per run), and mixing partners are chosen by event index.
+- For every shared `eventId`, PerConfig checks that `phiTrigger` agrees in the two event trees and stops otherwise.
 
-If the hypothesis ever fails (another dataset, a different list of initial conditions), run the summary with `--paired=0`. It then takes differences of means and adds their errors in quadrature.
+If the hypothesis ever fails (another dataset, a different list of initial conditions), run PerConfig with `--paired=0`. It then takes differences of means and adds their errors in quadrature.
 
 ### Provenance
 
@@ -157,7 +172,7 @@ $A_z(\Delta\phi) = \langle R_z\rangle/\langle n_z^2\rangle$ per bin is the ampli
 
 $$A_z - \langle R\rangle = \frac{\mathrm{Cov}(n_z^2,\,P_R)}{\langle n_z^2\rangle}$$
 
-(note 20, "The longitudinal and the full amplitude"). Here $n_z^2 = p_T^2\sin^2\Delta\phi/(p_z^2 + p_T^2\sin^2\Delta\phi)$ vanishes at $\Delta\phi = 0$ and $\pi$ and is largest near $\pm\pi/2$, while $P_R$ has its lobes wherever the jet put them. The covariance is a property of the polarization pattern, not a fluctuation that averages out with more events. A caricature: if only the Lambdas near $\Delta\phi = \pm\pi/2$ were polarized, with $P_R = P_0$, then $\langle R\rangle$ would be $P_0$ times their yield fraction, while $A_z \simeq P_0$, since $n_z^2$ already selects them. Beyond the ansatz, the non-ring components of hydro ($P_e$ and $P_\parallel$, nonzero here) enter $R_z$ but never $R$. So $R_z/R$ is not expected to approach $\langle n_z^2\rangle$, nor $A_z$ to approach $R$, and the summary reports both as diagnostics. $R_z/R$ is integrated only (per bin it divides by an $R$ that crosses zero), and is left undefined where $|R| < 10^{-12}$, i.e. rounding noise (the delta-scan averaged over $\delta$, for instance). $A_z(\Delta\phi)$ is drawn against $R(\Delta\phi)$: within one bin $n_z^2$ still varies with $p_T$ and $y$, so the two differ there too, by less.
+(note 20, "The longitudinal and the full amplitude"). Here $n_z^2 = p_T^2\sin^2\Delta\phi/(p_z^2 + p_T^2\sin^2\Delta\phi)$ vanishes at $\Delta\phi = 0$ and $\pi$ and is largest near $\pm\pi/2$, while $P_R$ has its lobes wherever the jet put them. The covariance is a property of the polarization pattern, not a fluctuation that averages out with more events. A caricature: if only the Lambdas near $\Delta\phi = \pm\pi/2$ were polarized, with $P_R = P_0$, then $\langle R\rangle$ would be $P_0$ times their yield fraction, while $A_z \simeq P_0$, since $n_z^2$ already selects them. Beyond the ansatz, the non-ring components of hydro ($P_e$ and $P_\parallel$, nonzero here) enter $R_z$ but never $R$. So $R_z/R$ is not expected to approach $\langle n_z^2\rangle$, nor $A_z$ to approach $R$, and PerConfig reports both as diagnostics. $R_z/R$ is integrated only (per bin it divides by an $R$ that crosses zero), and is left undefined where $|R| < 10^{-12}$, i.e. rounding noise (the delta-scan averaged over $\delta$, for instance). $A_z(\Delta\phi)$ is drawn against $R(\Delta\phi)$: within one bin $n_z^2$ still varies with $p_T$ and $y$, so the two differ there too, by less.
 
 ### Averages
 
@@ -184,7 +199,7 @@ Vitor wrapped into $[-\pi, \pi]$ but binned over $(-\pi + \delta_{cell}/2,\ \pi 
 - **`jet`** (default for both samples): $\phi_t = \phi_J$ from the jet file. In no_bullet events, this is the direction the jet has in the paired bullet event. That makes the no_bullet sample a closure (no jet-induced ring can be present, so the integrated ring observable must be consistent with zero) and the subtraction partner of the paired differences.
 - **`rp`**: $\phi_t = 0$, i.e. $\hat t = \hat x$, along the impact parameter. The reaction plane is fixed at $\Psi_{RP} = 0$ and the events are never rotated, so $\phi - \Psi_{RP} = \phi$. At 40-50%, this lines the trigger up with the elliptic-flow pattern, and the quadrupole of $P_z$ (Fig. 3 left) adds up coherently into $R(\Delta\phi)$. This is the reaction-plane picture of the smooth no-jet curve of Fig. 4, i.e. the behaviour one expects from events without a bullet. It is not a valid subtraction baseline for the bullet sample, whose $\phi_J$ is uniform relative to $\Psi_{RP}$.
 
-The `jet` mode stops if an event has no jet entry, so the coordinator caps both samples at the last event of the jet file (249). In `rp` mode each sample uses all of its events (250 and 300). Mixing requires the `jet` mode, since all `rp` triggers coincide, and the coordinator turns it off for `rp` with a note in the log. `Paper/p2dPzLabVsPhiVsPt` (Fig. 3 left) does not depend on the trigger.
+The `jet` mode stops if an event has no jet entry, so the coordinator caps the range at the last event of the jet file. Mixing requires the `jet` mode, since all `rp` triggers coincide, and the coordinator turns it off for `rp` with a note in the log. `Paper/p2dPzLabVsPhiVsPt` (Fig. 3 left) does not depend on the trigger.
 
 ## Errors
 
@@ -195,17 +210,17 @@ Every output is therefore filled at event level. A scratch profile collects the 
 - **Pooled master**, weight $B_{e,b}$: its mean is exactly $\sum_e A_{e,b}/\sum_e B_{e,b}$, and its error is the weighted spread over events divided by $\sqrt{N_{eff}}$, the standard approximation for a ratio of sums.
 - **`_EvtMean` master**, weight 1: its mean and error are exactly the event mean and its standard error (SEM).
 
-The jackknife is used for nonlinear quantities only, from the event tree, in the summary:
+The jackknife is used for nonlinear quantities only, from the event tree, in PerConfig:
 
 $$\sigma^2_{JK} = \frac{N-1}{N}\sum_i\left(\theta_{(i)} - \bar\theta_{(\cdot)}\right)^2,$$
 
-with $\theta_{(i)}$ the estimate without event $i$ and $\bar\theta_{(\cdot)}$ the mean of the $\theta_{(i)}$. The value reported is the full-sample estimate, and the jackknife bias $(N-1)(\bar\theta_{(\cdot)} - \theta)$ is stored next to it as a check. For a plain mean of per-event values, the jackknife is identical to the SEM. A pooled ratio of sums is nonlinear, though, so in practice the summary jackknifes every pooled quantity: the curves per bin, their integrals, `Flat` of the pooled curve, $A_z$ (per bin and integrated), $R_z/R$, the lobe features, and the fold and asymmetry of `QA/`. The event means go through the same code, where the jackknife reduces to the SEM exactly. Each replica subtracts one event from the totals, so the whole jackknife costs one pass per event.
+with $\theta_{(i)}$ the estimate without event $i$ and $\bar\theta_{(\cdot)}$ the mean of the $\theta_{(i)}$. The value reported is the full-sample estimate, and the jackknife bias $(N-1)(\bar\theta_{(\cdot)} - \theta)$ is stored next to it as a check. For a plain mean of per-event values, the jackknife is identical to the SEM. A pooled ratio of sums is nonlinear, though, so in practice PerConfig jackknifes every pooled quantity: the curves per bin, their integrals, `Flat` of the pooled curve, $A_z$ (per bin and integrated), $R_z/R$, the lobe features, and the fold and asymmetry of `QA/`. The event means go through the same code, where the jackknife reduces to the SEM exactly. Each replica subtracts one event from the totals, so the whole jackknife costs one pass per event.
 
 **Lobe features** (`Integrated/`), for Ring and RingZ, for each sample and for the difference. The lobes are the bins with $\Delta\phi < 0$ and with $\Delta\phi > 0$ (the bins at 0 and $\pi$ excluded) where the full-sample curve is positive. That set, and the bin of the maximum of each lobe, are chosen once from the full sample, and every replica reuses them, so the features are smooth functions of the data and the jackknife applies. The features are the centroid $\sum\Delta\phi\,R/\sum R$ of each lobe, the separation of the two centroids, the height at the fixed maximum bin, and the dip at $\Delta\phi = 0$. The tables list them from $\Delta\phi < 0$ to $\Delta\phi > 0$: [centroid, separation, centroid] and [height, dip, height]. The lobes of $R_z$ are also compared with those of $R$, replica by replica: the shifts $R_z - R$ of the two centroids and of the separation, and the height ratios $R_z/R$ of the two lobes. The features of the difference are those of the difference curve, not differences of the features of the two samples. The no_bullet features are stored for completeness: with smooth initial conditions no_bullet has lobes of its own (Fig. 4 of the paper), which fluctuating initial conditions largely wash out.
 
 **No folding outside `QA/`.** $R(\Delta\phi) = R(-\Delta\phi)$ holds on average only ($\vec P$ and $\hat n$ are both axial), not event by event, and even less with a 3D smudged trigger. `QA/` holds the folded curves and the asymmetry $R(\Delta\phi) - R(-\Delta\phi)$, which should be consistent with zero. Every other curve keeps both signs of $\Delta\phi$.
 
-**Differences** (`Difference/`, see the key hypothesis) are taken estimate by estimate, $\theta_{bullet} - \theta_{no\_bullet}$, with one exception: $R_z/R$ becomes the ratio of the differences, the fraction of the jet-induced ring that the z projection sees (the difference of the two ratios would divide by the no_bullet $R$, ~0 for the jet trigger). Their error is the leave-one-pair-out jackknife, where replica $k$ drops pair $k$ from both samples together. For event means it reduces to the SEM of $d_i = X_{bullet,i} - X_{no\_bullet,i}$. On the same pairs, the summary also computes the independent-samples jackknife (drop one bullet event with no_bullet whole, then one no_bullet event with bullet whole, and add the two variances) and stores the ratio of the two errors as the gain of the pairing. With `--paired=0` the differences use all events of each sample and carry only the independent-samples error.
+**Differences** (`Difference/`, see the key hypothesis) are taken estimate by estimate, $\theta_{bullet} - \theta_{no\_bullet}$, with one exception: $R_z/R$ becomes the ratio of the differences, the fraction of the jet-induced ring that the z projection sees (the difference of the two ratios would divide by the no_bullet $R$, ~0 for the jet trigger). Their error is the leave-one-pair-out jackknife, where replica $k$ drops pair $k$ from both samples together. For event means it reduces to the SEM of $d_i = X_{bullet,i} - X_{no\_bullet,i}$. On the same pairs, PerConfig also computes the independent-samples jackknife (drop one bullet event with no_bullet whole, then one no_bullet event with bullet whole, and add the two variances) and stores the ratio of the two errors as the gain of the pairing. With `--paired=0` the differences use all events of each sample and carry only the independent-samples error.
 
 No fits anywhere. The Fig. 11 point shows three estimators side by side: the event mean of `Flat` with its SEM (Vitor's estimator, with the plain mean instead of his Gaussian fit), and `D3N` as an event mean and pooled.
 
@@ -228,14 +243,14 @@ The bands of the published Fig. 4 are far wider than SEM/(N-1) could give, so th
 All three are trigger variants computed in the same pass as the true trigger. They fill a reduced set, with $\Delta\phi$ measured from the variant trigger: `Ring`, `RingZ` and `NzSq` vs $\Delta\phi$, the `D3N` and `Flat` integrals of `Ring` and `RingZ`, their per-event distributions, and the ring overlap with the true trigger (below).
 
 - **Delta-scan** (`--deltaScanSteps=n`): the trigger rotated by $\delta_k = 2\pi k/n$, with $n$ even and a divisor of the number of phi nodes (default 100, one step per cell). This is the deterministic version of event mixing. It fills the integrals of `Ring` and `RingZ` (`D3N` and `Flat`) and of `NzSq` (`D3N`) vs $\delta$, and maps vs $(\Delta\phi', \delta)$. For $t_z = 0$, $\hat n(-\hat t) = -\hat n(\hat t)$ (the half-turn identity of note 13), so the integrals obey $R(\delta + \pi) = -R(\delta)$ exactly in every event, and their uniform average over $\delta$ vanishes for any polarization field.
-- **Uniform mixing** (`--mixDepth=K`): event $i$ takes the $\phi_J$ of events $i+1, \dots, i+K$ (mod $N$). It is a random sample of the delta-scan with $\delta_{eff} = \phi_J(\mathrm{partner}) - \phi_J(i)$ and is kept as a null test. Its integrals are also filled vs $\delta_{eff}$, with the delta-scan binning, and the summary compares them with the delta-scan vs $\delta$ through pulls (below).
+- **Uniform mixing** (`--mixDepth=K`): event $i$ takes the $\phi_J$ of events $i+1, \dots, i+K$ (mod $N$, over the range of the run). It is a random sample of the delta-scan with $\delta_{eff} = \phi_J(\mathrm{partner}) - \phi_J(i)$ and is kept as a null test. A partner only lends its $\phi_J$, read from the jet file, so an event skipped for lack of iSS output still serves as one. The integrals are also filled vs $\delta_{eff}$, with the delta-scan binning, and PerConfig compares them with the delta-scan vs $\delta$ through pulls (below).
 - **Smudging** (`--smudgeSigma`, `--smudgeMode`, `--smudgeDraws`): `cone` rotates the trigger by a half-normal angle around a uniformly random perpendicular axis (Rodrigues rotation, as in the consumer's `forceJetDirectionSmudge`). This gives a 3D trigger with $t_z \neq 0$, although the source is purely transverse. `phi` smears the azimuth only and keeps $t_z = 0$. Smudging also fills the smudge angle, the trigger pseudorapidity and the integrals vs smudge angle (the cone analogue of the delta-scan).
 
 **Pulls of mixing against the delta-scan.** In $\delta_{eff}$ bin $k$, the mixed integral is a weighted mean over a subsample of the events the scan uses at $\delta_k$. With $v_e$ the integral of event $e$ at $\delta_k$, $W_e$ its scan weight (the in-cut yield, total $T$), $\bar v$ the pooled scan value, $s^2 = \sum_e W_e(v_e - \bar v)^2/T$ the spread over all events, and $c_e$ the summed weight of the mixed entries of event $e$ in the bin (total $C$),
 
 $$\mathrm{pull}_k = \frac{\mathrm{mix}_k - \bar v}{s\sqrt{\sum_e\left(c_e/C - W_e/T\right)^2}}.$$
 
-The sum is the exact variance factor of $\mathrm{mix} - \bar v$ for independent events with a common spread. For a random subsample it reduces to $1/n_{eff} - 1/N_{eff}$: the $-1/N_{eff}$ removes the events the two share, which a quadrature sum of the two errors counts twice (for $N = 250$ and $n \approx 25$, that sum makes the pulls 10% too small). The spread comes from all events, not from the ~25 in the bin, whose own spread would inflate the RMS through the tails of the per-event values. Events, not entries, are the units: two partners of one event that land in the same $\delta_{eff}$ bin carry nearly the same value ($K(K-1)/2$ partner pairs per event, so about one such event per bin for $K = 10$), and counting them as independent entries makes the RMS about 4% too large. The summary rebuilds the partners of every event with the producer's rule and checks bin by bin that their weights add up to those of the producer's profile. Toy studies with these settings, Gaussian or heavy-tailed per-event values and spread weights, give an RMS of $0.99 \pm 0.01$. A clear excess means the mixed entries are not a random subsample of the events, a genuine failure of mixing.
+The sum is the exact variance factor of $\mathrm{mix} - \bar v$ for independent events with a common spread. For a random subsample it reduces to $1/n_{eff} - 1/N_{eff}$: the $-1/N_{eff}$ removes the events the two share, which a quadrature sum of the two errors counts twice (for $N = 250$ and $n \approx 25$, that sum makes the pulls 10% too small). The spread comes from all events, not from the ~25 in the bin, whose own spread would inflate the RMS through the tails of the per-event values. Events, not entries, are the units: two partners of one event that land in the same $\delta_{eff}$ bin carry nearly the same value ($K(K-1)/2$ partner pairs per event, so about one such event per bin for $K = 10$), and counting them as independent entries makes the RMS about 4% too large. The producer stores the $\delta_{eff}$ bin of every partner in the tree (`mixDeltaEffBin`), and PerConfig checks bin by bin that the weights of those entries add up to the producer's profile. Toy studies with these settings, Gaussian or heavy-tailed per-event values and spread weights, give an RMS of $0.99 \pm 0.01$. A clear excess means the mixed entries are not a random subsample of the events, a genuine failure of mixing.
 
 ### Ring overlap
 
@@ -251,9 +266,9 @@ with $P_R$ and $P_e$ of the true trigger (`QA/Decomposition/`). The leakage ansa
 
 What to expect. For the delta-scan, $\langle\cos\zeta\rangle(\delta)$ is set by the geometry alone and changes sign under $\delta \to \delta + \pi$ (the half-turn identity again), so both sides of the ansatz vanish on the uniform average and the test is informative at fixed $\delta$. Uniform mixing samples that: $\langle\cos\zeta\rangle \simeq 0$, with a broad distribution. Smudging keeps $\cos\zeta \simeq 1 - O(\sigma^2)$.
 
-The producer stores the per-bin sums of $w\cos\zeta$ and $w\sin\zeta$ in the tree (mixing and smudging, binned in the variant's $\Delta\phi'$) and their integrals per $\delta$ (delta-scan), so the summary can jackknife and pair them. It also fills the pooled curves and integrals, and the d$^3N$-weighted distributions `hCosZeta` and `hSinZeta` (mixing and smudging), and `h2dCosZetaVsDelta` and `h2dSinZetaVsDelta` (delta-scan).
+The producer stores the per-bin sums of $w\cos\zeta$ and $w\sin\zeta$ in the tree (mixing and smudging, binned in the variant's $\Delta\phi'$) and their integrals per $\delta$ (delta-scan), so PerConfig can jackknife and pair them. It also fills the pooled curves and integrals, and the d$^3N$-weighted distributions `hCosZeta` and `hSinZeta` (mixing and smudging), and `h2dCosZetaVsDelta` and `h2dSinZetaVsDelta` (delta-scan).
 
-The summary (`RingOverlap/`) jackknifes $\langle\cos\zeta\rangle$ and $\langle\sin\zeta\rangle$ per bin and integrated, and tests the ansatz: the prediction $L = R_{true}\langle\cos\zeta\rangle + \langle P_e\rangle\langle\sin\zeta\rangle$ against the measured $R'$, and the residual $R' - L$, which is exactly the covariance term above. Replica $k$ of the true trigger and of the variant drop the same event, so $L$ and $R' - L$ are jackknifed jointly, and for the difference they are formed pair by pair (`--paired=1` only). The test runs vs $\delta$ for the delta-scan and on the integrals for mixing and smudging: with constant $A$ and $B$ the ansatz cannot follow $R(\Delta\phi')$ bin by bin. At $\delta = 0$ the scan trigger is the true one, so $\langle\cos\zeta\rangle = 1$ and $\langle\sin\zeta\rangle = 0$ there, event by event (a closure of `DeltaScan/`).
+PerConfig (`RingOverlap/`) jackknifes $\langle\cos\zeta\rangle$ and $\langle\sin\zeta\rangle$ per bin and integrated, and tests the ansatz: the prediction $L = R_{true}\langle\cos\zeta\rangle + \langle P_e\rangle\langle\sin\zeta\rangle$ against the measured $R'$, and the residual $R' - L$, which is exactly the covariance term above. Replica $k$ of the true trigger and of the variant drop the same event, so $L$ and $R' - L$ are jackknifed jointly, and for the difference they are formed pair by pair (`--paired=1` only). The test runs vs $\delta$ for the delta-scan and on the integrals for mixing and smudging: with constant $A$ and $B$ the ansatz cannot follow $R(\Delta\phi')$ bin by bin. At $\delta = 0$ the scan trigger is the true one, so $\langle\cos\zeta\rangle = 1$ and $\langle\sin\zeta\rangle = 0$ there, event by event (a closure of `DeltaScan/`).
 
 ## Polarization maps
 
@@ -271,7 +286,7 @@ There is no `Aee/`: the azimuthal efficiency effect needs the decay proton, and 
 
 **Axes** come from the grid: bins of the $p_T$ cell width, transverse components up to the last $p_T$ edge ($\pm 3.0$ GeV/c), $|p_z|$ up to $m_T\sinh|y|$ at the outer $p_T$ and $y$ edges ($\pm 1.7$ GeV/c), and $p_T$ on its native nodes. They hold the whole momentum volume of the grid with less than one bin of margin.
 
-**Vector fields** (summary `PolarizationMaps/`). For each coordinate system and each sample, one canvas per set of planes, as in the consumer's per-config plots: the out-of-plane component of $\vec P^*$ as colour, and arrows of the in-plane components averaged over tiles of $4\times4$ bins (0.4 GeV/c), with the true angle on screen whatever the aspect of the panel. The drawing is ported from `DrawVectorFieldPanel()` of `auxiliaryPerConfigPlots.cxx`, with three changes for hydro. The maps are TH2Ds in percent, since a difference of two samples is no TProfile2D. A bin enters where its yield is positive (hydro has no counting statistics to cut on), and empty bins are left blank. The arrow of a tile is the yield-weighted mean of its bins, i.e. the d$^3N$-weighted mean polarization of the Lambdas in the tile. The scale box gives the 95th percentile of the tile magnitudes, to which the arrows are scaled. Its error propagates the pooled-master errors of the bins as if they were independent, as in the original, so it is indicative only. The bullet - no_bullet canvases show the difference of the two pooled maps, with errors in quadrature and the bullet yields for the populated bins and the tile weights. PrimeJet also gets the $R$ and $R_z$ maps, and every system the yields.
+**Vector fields** (PerConfig `PolarizationMaps/`). For each coordinate system and each sample, one canvas per set of planes, as in the consumer's per-config plots: the out-of-plane component of $\vec P^*$ as colour, and arrows of the in-plane components averaged over tiles of $4\times4$ bins (0.4 GeV/c), with the true angle on screen whatever the aspect of the panel. The drawing is ported from `DrawVectorFieldPanel()` of `auxiliaryPerConfigPlots.cxx`, with three changes for hydro. The maps are TH2Ds in percent, since a difference of two samples is no TProfile2D. A bin enters where its yield is positive (hydro has no counting statistics to cut on), and empty bins are left blank. The arrow of a tile is the yield-weighted mean of its bins, i.e. the d$^3N$-weighted mean polarization of the Lambdas in the tile. The scale box gives the 95th percentile of the tile magnitudes, to which the arrows are scaled. Its error propagates the pooled-master errors of the bins as if they were independent, as in the original, so it is indicative only. The bullet - no_bullet canvases show the difference of the two pooled maps, with errors in quadrature and the bullet yields for the populated bins and the tile weights. PrimeJet also gets the $R$ and $R_z$ maps, and every system the yields.
 
 `PolVsAngles/` (formerly `PolMaps/`) keeps the angular dependences: the lab $\vec P$ and $\vec P^*$ components vs $\phi - \Psi_{RP}$ and $(\phi - \Psi_{RP}, p_T)$, and the components in trigger-aligned coordinates ($\hat x'$ along $\hat t$, $\hat y' = \hat z\times\hat x'$, $\hat z$) vs $\Delta\phi$ and $(\Delta\phi, p_T)$. Its former momentum-space ring maps moved to `PolarizationMaps/PrimeJet/`, in the consumer's convention.
 
@@ -281,7 +296,9 @@ For an ideal detector and a small polarization, each Lambda contributes the esti
 
 $$\sigma_b = \frac{\sqrt{3\,\langle|\vec e|^2\rangle_b}}{|\alpha|\sqrt{N_b}}, \qquad |\vec e|^2 = 1,\ n_z^2,\ n_z^2\sin^2\theta,$$
 
-with $N_b = N f_b$ and $f_b$ the hydro yield fraction of bin $b$. Hydro only provides the shapes $\langle|\vec e|^2\rangle_b$ and $f_b$, both taken from the bullet sample. The summary always fills `Precision/` with $\sigma_b\sqrt N$ per bin and integrated ($f = 1$), with $\alpha$ from `--alphaLambda`. With `--nLambdaPrecision=N` it also stores $\sigma_b$ and the expected significance of the jet-induced signal: the paired difference over $\sigma_b$, the error of one measurement with $N$ Lambdas (a baseline measured with the same statistics would add a factor $\sqrt2$). $R_z^T$ has no per-bin difference (no per-bin sums in the tree), so its significance is integrated only.
+with $N_b = N f_b$ and $f_b$ the hydro yield fraction of bin $b$. Hydro only provides the shapes $\langle|\vec e|^2\rangle_b$ and $f_b$, both taken from the bullet sample. PerConfig always fills `Precision/` with $\sigma_b\sqrt N$ per bin and integrated ($f = 1$), with $\alpha$ from `--alphaLambda`. With `--nLambdaPrecision=N` it also stores $\sigma_b$ and the expected significance of the jet-induced signal: the paired difference over $\sigma_b$, the error of one measurement with $N$ Lambdas (a baseline measured with the same statistics would add a factor $\sqrt2$). $R_z^T$ has no per-bin difference (no per-bin sums in the tree), so its significance is integrated only. The coordinator passes $N = 288574517$, the Lambdas left after every cut of the O-O analysis: the significance of a signal as clean as hydro allows, a ceiling rather than a prediction (Pb-Pb hydro, ideal detector).
+
+> A small comment on that value: totally preliminary! Also, that counts $\Lambda$'s in a larger rapidity range than what is available in Hydro, so we should probably rescale this by some factor of around 3 ($|y|_{data}<1.5$, whilst $|y|_{hydro}<0.5$ after the cuts). It is only a rough estimate for reference though. There isn't much problem with this number being slightly off -- it offers only a better estimate of the required statistics (or of the uncertainty bars) in this specific O-O scenario.
 
 ## Closure checks
 
@@ -294,15 +311,15 @@ with $N_b = N f_b$ and $f_b$ the hydro yield fraction of bin $b$. Hydro only pro
 | $P^{*0}$ | `QA/Closure/hPStarTime` | print precision |
 | Our boost of the lab block vs the LRF block | `QA/Closure/hBoostClosure` | print precision |
 | $\vec P\cdot\hat n - \vec P^*\cdot\hat n$ | `QA/Closure/hRingLabMinusStar` | print precision |
-| Delta-scan at $\delta = 0$ vs the true trigger, event by event (`Ring`, `RingZ`, `NzSq`, and $\langle\cos\zeta\rangle - 1$, $\langle\sin\zeta\rangle$) | summary `DeltaScan/hClosure` | float noise |
-| $\max_k \lvert R(\delta_k + \pi) + R(\delta_k)\rvert$ per event | producer `DeltaScan/hClosureHalfTurn`, summed over the samples in summary `DeltaScan/` | float noise |
-| Half-turn and uniform average over $\delta$ of the pooled $R(\delta)$ | summary `DeltaScan/hClosure` | float noise |
-| Mixing vs $\delta_{eff}$ against the delta-scan vs $\delta$ | summary `Mixing/hPullMean`, `Mixing/hPullRms`, `Config/mixingPulls` | pull mean ~0, RMS ~1 (statistical scatter about 0.07 for 100 bins) |
-| Rebuilt mixing partners vs the producer's profiles | summary, per $\delta_{eff}$ bin | equal weights, warning and no pulls otherwise |
-| no_bullet in `jet` mode: integrated `Ring` and `RingZ` | summary log, `Config/noBulletClosure`, `Integrated/` | consistent with zero |
-| Pooled-master error vs jackknife, per bin | summary `Jackknife/` | close agreement |
-| `_EvtMean` profile error vs jackknife | summary `Jackknife/hErrorRatioIntegrated` | $\sqrt{(N-1)/N}$ exactly (TProfile uses the population spread) |
-| $R(\Delta\phi) - R(-\Delta\phi)$ | summary `QA/` | consistent with zero |
+| Delta-scan at $\delta = 0$ vs the true trigger, event by event (`Ring`, `RingZ`, `NzSq`, and $\langle\cos\zeta\rangle - 1$, $\langle\sin\zeta\rangle$) | PerConfig `DeltaScan/hClosure` | float noise |
+| $\max_k \lvert R(\delta_k + \pi) + R(\delta_k)\rvert$ per event | producer `DeltaScan/hClosureHalfTurn`, summed over the samples in PerConfig `DeltaScan/` | float noise |
+| Half-turn and uniform average over $\delta$ of the pooled $R(\delta)$ | PerConfig `DeltaScan/hClosure` | float noise |
+| Mixing vs $\delta_{eff}$ against the delta-scan vs $\delta$ | PerConfig `Mixing/hPullMean`, `Mixing/hPullRms`, `Config/mixingPulls` | pull mean ~0, RMS ~1 (statistical scatter about 0.07 for 100 bins) |
+| Mixed entries of the tree (`mixDeltaEffBin`) vs the producer's profiles | PerConfig, per $\delta_{eff}$ bin | equal weights, warning and no pulls otherwise |
+| no_bullet in `jet` mode: integrated `Ring` and `RingZ` | PerConfig log, `Config/noBulletClosure`, `Integrated/` | consistent with zero |
+| Pooled-master error vs jackknife, per bin | PerConfig `Jackknife/` | close agreement |
+| `_EvtMean` profile error vs jackknife | PerConfig `Jackknife/hErrorRatioIntegrated` | $\sqrt{(N-1)/N}$ exactly (TProfile uses the population spread) |
+| $R(\Delta\phi) - R(-\Delta\phi)$ | PerConfig `QA/` | consistent with zero |
 | Vitor's pooled bullet curve (`data/bullet_lumpy_40_50.root` in his `Polarization` folder, `h_RP_delta_phi`, in percent) vs `Paper/pRingVsDeltaPhi` | by eye | equal away from $\Delta\phi = \pm\pi$ (same columns, weights and trigger) |
 | Paper Fig. 2 (right) and Fig. 3 (left) | by eye | same patterns |
 
@@ -317,40 +334,57 @@ with $N_b = N f_b$ and $f_b$ the hydro yield fraction of bin $b$. Hydro only pro
 | Option | Effect |
 |---|---|
 | `-h`, `--help` | Show the help message. |
-| `-p`, `--post-process-only` | Skip the producers and rerun the summary on existing producer files. |
-| `-t`, `--tag NAME` | Name of the run subfolder (default: `default`). |
-| `--serial` | Run the two producers one after the other (default: both at once). |
+| `-p`, `--post-process-only` | Skip the producers and rerun PerConfig on the existing producer files. |
+| `-t`, `--tag NAME` | Name of the campaign folder (default: `default`). |
+| `-o`, `--only RUN` | Run only this run, e.g. `lumpy4050_default`. Repeatable. |
+| `-j`, `--jobs N` | Runs at a time (default: `MAX_PARALLEL_RUNS`, half the cores). 1 runs them one after the other. |
+| `--runs FILE`, `--datasets FILE` | Other registries (default: the two next to the script). |
 | `--cleanup` | Remove the compiled executables and exit. |
 
-Everything else is set in the CONFIGURATION block at the top of the script:
+**Configuration.** The CONFIGURATION block at the top of the script holds the defaults of every configurable, the registries only what changes:
 
-- the hydro base folder, the samples and the jet file;
-- `TRIGGER` (`jet` or `rp`);
-- `FIRST_EVENT` and `MAX_EVENTS` (0 = no cap). Event counts are not configured: for each sample, the coordinator counts the consecutive event folders from `FIRST_EVENT` that hold the input file, warns about folders beyond a gap, and caps both samples at the last event of the jet file in `jet` mode;
-- `MIX_DEPTH`, turned off for `rp`;
-- `SEED`, drawn from the current time once per run and shared by both samples (paired smudging). It is printed in the log and stored in each producer's `Config/`: set a fixed value to repeat a run exactly;
-- the output base folder (set only there), the option arrays passed to each macro, and the Lambda mass and decay parameter (each commented with its source in the consumer).
+- `PRODUCER_OPTS` and `PERCONFIG_OPTS`: the options of each macro, each commented with its source (the consumer for the Lambda mass and the decay parameter, the PRC paper for the cuts, the O-O analysis for `--nLambdaPrecision`);
+- `HYDRO_BASE` and `INPUT_NAME`, `FIRST_EVENT` and `MAX_EVENTS` (0 = no cap), `MAX_PARALLEL_RUNS`, and the output base folder `OUT_BASE` (set only there).
 
-The macros are found next to the script, so no repository path is configured. The coordinator compiles both macros ahead of time, runs the producers (one single-threaded process per sample), runs the summary and prints a table of failed or skipped steps. A missing summary macro skips that step with a warning. Every output is written as `<file>.part` and renamed only on success, and the file of an earlier run with the same tag is removed first, so a failed or interrupted run never leaves a partial or stale file under the final name. The coordinator also copies itself into the run folder as `backupOf_runHydroTruthLab.sh`, which records the complete configuration of the run. The compilation uses the flags of the main analysis chain, without `-DNDEBUG`, so `assert` stays active:
+`hydroTruthLab_datasets.conf` has one line per dataset, `label centrality bullet noBullet jetFile`, with paths relative to `HYDRO_BASE` and `none` for a dataset without no_bullet (PerConfig then runs on the bullet sample alone). `hydroTruthLab_runs.conf` has one line per run, `run <dataset> <variation> [option=value ...]`. An override replaces the default of that option in whichever macro has it, so a run lists only what it changes:
+
+```
+run lumpy4050 default
+run lumpy4050 rp          trigger=rp
+run lumpy4050 smudge0.1   smudgeSigma=0.1 seed=smudgeScan4050
+```
+
+An option missing from the two blocks is added there first, with its value, so that no run depends on a default hidden in a macro. `--jetFile`, `--inputName`, `--firstEvent`, `--nEvents` and `--seed` of the producer, and `--centralityLabel` and `--runLabel` of PerConfig, come from the registries. `trigger=rp` also turns mixing off, with a note in the log, since all `rp` triggers coincide. The registries are checked before anything runs: an unknown dataset, a duplicate run, an override that names no option of either macro (a typo), a seed above 32 bits or a comparison that names an unknown run stops the script there.
+
+**Event range.** Both samples of a run get the same range, which the mixing partners and the pairing need: from `FIRST_EVENT` to the last event of the bullet sample with iSS output, capped at the last event of the jet file for the jet trigger or mixing, and at `MAX_EVENTS`. Events of the range without iSS output in either sample are listed in the log ("which the producer skips"), and the producer skips them with a warning.
+
+**Seeds.** A run draws its own seed from the clock, shared by its two samples (paired smudging). `seed=<integer>` fixes it, to repeat a run exactly. `seed=<name>` gives every run of the invocation with that name one clock-drawn seed: the smudge draws are then identical, each rescaled by its width, so a width scan differs only through the width (common random numbers), and the first draws of a larger `smudgeDraws` repeat those of a smaller one. A group shares its seed within one invocation only, and rerunning part of it with `--only` gives that part a new seed (the log says so). `cone` and `phi` consume their draws differently, so they never share them. The seed of every run is printed in the plan and stored in each producer's `Config/`.
+
+**Execution.** The coordinator compiles both macros ahead of time, plans every run (range, seed, skipped events, all printed before anything runs), then starts up to `--jobs` runs at once. Each run starts its two producers together, single-threaded, then PerConfig. Progress lines carry the run label, and a table of failed or skipped steps closes the log. Every output is written as `<file>.part` and renamed only on success, after removing the file of an earlier invocation, so a failed or interrupted run never leaves a partial or stale file under the final name. Ctrl+C stops every run, with its producers. The compilation uses the flags of the main analysis chain, without `-DNDEBUG`, so `assert` stays active:
 
 ```
 g++ -Wall -Wextra -Wpedantic -Wshadow -O3 -march=native -fno-math-errno -flto=auto -fno-trapping-math $(root-config --cflags) -o hydroTruthLab.exe hydroTruthLab.cxx $(root-config --glibs) -lGenVector
 ```
 
-Output layout:
+**Output layout**, one flat folder per run, every file named after it:
 
 ```
 ${OUT_BASE}/${RUN_TAG}/
-  logHydroTruthLab.log
-  backupOf_runHydroTruthLab.sh
-  results_producer/
-    hydroTruthLab_bullet.root
-    hydroTruthLab_no_bullet.root
-    logs/
-  results_summary/
-    hydroTruthLabSummary.root
-    logs/
+  logHydroTruthLab.log                                      appended, one block per invocation
+  backupOf_runHydroTruthLab.sh                              the script and the registries as last run: the complete configuration
+  backupOf_hydroTruthLab_runs.conf
+  backupOf_hydroTruthLab_datasets.conf
+  lumpy4050_default/
+    hydroTruthLab_lumpy4050_default_bullet.root     (.log)
+    hydroTruthLab_lumpy4050_default_noBullet.root   (.log)
+    hydroTruthLabPerConfig_lumpy4050_default.root   (.log)
+  lumpy4050_smudge0.1/
+    ...
 ```
+
+Downstream code never parses these names: everything that identifies a file (run label, centrality, sample folders, options, seed, skipped events) is in its `Config/`.
+
+**Comparisons.** `hydroTruthLab_runs.conf` also lists the comparisons for `hydroTruthLabSummaryPlots.cxx`, `compare <name> <x> <run> <run> ...`, with `x` an option of either macro (its value in each run), `centralityLabel`, or `runLabel` (one point per run, in the order listed). The coordinator checks them and runs nothing for them.
 
 ### Running the executables by hand
 
@@ -360,9 +394,9 @@ ${OUT_BASE}/${RUN_TAG}/
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--jetFile` | none | Jet file. Required for `--trigger=jet` and for mixing. |
+| `--jetFile` | none | Jet file, rows of 5 or 4 fields (see Jet file). Required for `--trigger=jet` and for mixing. |
 | `--trigger` | `jet` | `jet` or `rp` (see Trigger modes). |
-| `--firstEvent`, `--nEvents` | 0, 250 | Event range. |
+| `--firstEvent`, `--nEvents` | 0, 250 | Event range. Events without the input file are skipped with a warning. |
 | `--inputName` | `Smu_dpTdphidy_Thermal_rapidity_3122.dat` | File name inside `<sampleDir>/<i>/results/`. |
 | `--ptMin`, `--ptMax`, `--absYMax` | 0.5, 1.5, 0.5 | Kinematic cuts on cell centres (GeV/c for pT). |
 | `--lambdaMass` | 1.115683 | GeV/c^2, used to build $E$ and $p_z$ from (y, pT). |
@@ -375,7 +409,7 @@ ${OUT_BASE}/${RUN_TAG}/
 | `--mapSubdivisions` | 3 | `PolarizationMaps/`: each cell spread over $n^3$ points of its momentum volume. 1 = nodes only (see Polarization maps). |
 
 ```
-./hydroTruthLabSummary.exe <bulletFile> <noBulletFile|none> <outputFile> [--option=value ...]
+./hydroTruthLabPerConfig.exe <bulletFile> <noBulletFile|none> <outputFile> [--option=value ...]
 ```
 
 | Option | Default | Meaning |
@@ -384,20 +418,22 @@ ${OUT_BASE}/${RUN_TAG}/
 | `--alphaLambda` | 0.749 | Decay parameter, used only in `Precision/`. |
 | `--nLambdaPrecision` | 0 | Number of Lambdas for $\sigma$ and the significance in `Precision/`. 0 = $\sigma\sqrt N$ only. |
 | `--centralityLabel` | `40-50%` | Label of the Fig. 11 point. |
+| `--runLabel` | `none` | Run of the coordinator, `<dataset>_<variation>`, stored in `Config/` for the cross-run plots. |
 
-With `none` as the no_bullet file, the summary skips everything that needs it: the difference curves, `Difference/`, Fig. 3 (left) and the significances.
+With `none` as the no_bullet file, PerConfig skips everything that needs it: the difference curves, `Difference/`, Fig. 3 (left) and the significances.
 
 ## Output reference
 
-### Producer: `hydroTruthLab_<sample>.root`
+### Producer: `hydroTruthLab_<run>_<sample>.root`
 
 ```
-Config/            one TNamed per option (name = option, title = value), input paths, grid summary, column-to-polarization factor and its provenance note
+Config/            one TNamed per option (name = option, title = value), input paths, grid summary, skippedEvents (ranges, or none), column-to-polarization
+                   factor and its provenance note
 Inputs/            yield vs phi, pT, y and (dphi, pT), trigger angles, per-event yield in the cuts
 Paper/
   p2dPzLabVsDeltaPhiVsPt                    Fig. 2 (right): lab P_z vs (dphi, pT), |y| < 0.5, all pT
   p2dPzLabVsPhiVsPt                         Fig. 3 (left): lab P_z vs (phi - Psi_RP, pT), Psi_RP = 0
-  pRingVsDeltaPhi                           Fig. 4 analogue at 40-50% (+ _EvtMean)
+  pRingVsDeltaPhi                           Fig. 4 analogue at the centrality of the run (+ _EvtMean)
   pRingFlat, pRingD3N                       Fig. 11 point, single-bin profiles (+ _EvtMean)
   hRingFlatPerEvent, hRingD3NPerEvent       per-event distributions (Fig. 11 band)
 Ring/                         true trigger, inside the cuts
@@ -436,6 +472,7 @@ polED3N                                                                   P_e of
 sumWDeltaPhi[100], sumARingDeltaPhi[100], sumARingZDeltaPhi[100], sumANzSqDeltaPhi[100]
 nDelta, scanRingD3N[nDelta], scanRingFlat[nDelta], scanRingZD3N[nDelta], scanRingZFlat[nDelta], scanNzSqD3N[nDelta], scanCosZetaD3N[nDelta], scanSinZetaD3N[nDelta]
 mixRingD3N, mixRingFlat, mixRingZD3N, mixRingZFlat                        pooled over the K partners
+nMixPartners, mixDeltaEffBin[nMixPartners]                               K, and the delta_eff bin of each partner (from 0, -1 outside the axis)
 nMixDeltaPhiBins, mixSumWDeltaPhi[100], mixSumARingDeltaPhi[100], mixSumARingZDeltaPhi[100], mixSumANzSqDeltaPhi[100],
                   mixSumACosZetaDeltaPhi[100], mixSumASinZetaDeltaPhi[100]                              the same, per bin (no bins when mixing is off)
 smudgeRingD3N, smudgeRingFlat, smudgeRingZD3N, smudgeRingZFlat            pooled over the draws
@@ -443,14 +480,15 @@ nSmudgeDeltaPhiBins, smudgeSumWDeltaPhi[100], smudgeSumARingDeltaPhi[100], smudg
                      smudgeSumACosZetaDeltaPhi[100], smudgeSumASinZetaDeltaPhi[100]                     the same, per bin (no bins when smudging is off)
 ```
 
-The per-bin sums let the summary jackknife and pair any pooled quantity, the true, mixed and smudged curves included. The delta-scan stores integrals only, which the summary turns back into sums with `sumWInCuts`: exact for transverse triggers, which see every in-cut cell.
+The per-bin sums let PerConfig jackknife and pair any pooled quantity, the true, mixed and smudged curves included. The delta-scan stores integrals only, which PerConfig turns back into sums with `sumWInCuts`: exact for transverse triggers, which see every in-cut cell. `mixDeltaEffBin` places each event's partners in the $\delta_{eff}$ bins of `Mixing/` for the pulls, so PerConfig never needs the partner rule.
 
-### Summary: `hydroTruthLabSummary.root`
+### PerConfig: `hydroTruthLabPerConfig_<run>.root`
 
 Every folder holds its canvases at the top, for a first skim, and every object they draw in its `Parts/` subfolder. "Samples" below means bullet, no_bullet and the bullet - no_bullet difference.
 
 ```
-Config/            options, inputs, event and pair counts, the no_bullet and delta-scan closures, the mixing pulls, the leakage test, every warning
+Config/            options (runLabel included), inputs, event and pair counts, the no_bullet and delta-scan closures, the mixing pulls, the leakage test,
+                   every warning. ProducerBullet/ and ProducerNoBullet/: copies of the Config/ of each producer file (seed, event range, skipped events, ...)
 Paper/             in percent: Fig. 2 (right), Fig. 3 (left), Fig. 4 analogue (R(dphi) of the samples, jackknife bands), Fig. 11 point (three estimators)
 Integrated/        per sample: every integral of the true trigger (in units of P, grouped by observable, and dimensionless), lobe positions and heights
                    of Ring and RingZ, R against R_z (lobe positions overlaid, centroid shifts, height ratios)
@@ -479,7 +517,9 @@ Raw units everywhere but `Paper/` and `PolarizationMaps/`. Every curve with per-
 ## Known issues and TODO
 
 - **Old toy model.** `lambda_pol_toy_model.cxx` multiplies the iSS columns by 2 (`Pol = 2S`), so its truth-level polarization is twice the true value. Not corrected yet.
-- **Paper scope.** This dataset is 40-50% with the jet deposited at the centre. Fig. 2 (right) and Fig. 3 (left) are reproduced directly. Fig. 4 is published for 0-5% only, so we build its 40-50% analogue. Fig. 11 has a 40-50% point. Fig. 10 (jets at random positions) uses a different dataset.
+- **Paper scope.** In `lumpy_events_40_50` the jet is deposited at the centre. Fig. 2 (right) and Fig. 3 (left) are reproduced directly. Fig. 4 is published for 0-5% only, so we build its analogue at the centrality of every run (`lumpy_events_0_5_fine` included). Fig. 11 gets one point per run, and the centrality comparison of the runs registry collects them. Whether the `position_lumpy_events_*` datasets are those of Fig. 10 (jets at random positions) is not checked yet.
+- **`hydroTruthLabSummaryPlots.cxx`.** The cross-run plots of the `compare` lines (Fig. 11 vs centrality, integrals vs smudge width, deposition, injection position, seed spread) are not written yet. It will read the `Parts/` and `Config/` of the PerConfig files.
+- **Rotated dataset.** `lumpy_events_40_50_rotated` (iSS output in events 0-99 of both samples) is in the datasets registry, commented out: what "rotated" means is not known yet.
 - **Config/ and hadd.** The histograms and the tree merge correctly, but `Config/` strings cannot be merged, so a merged file would not carry a correct event range. Not needed while each sample runs in one process.
 - **$A_z$.** Diagnostic only, since the ansatz $\vec P^*(\phi_\Lambda-\phi_{Jet}) = A\,\hat n$ (with A constant in $\phi_\Lambda-\phi_{Jet}$) does not hold here. It was something I tested by hand, analytically solvable, based on Figure 7.13 from Vitor's dissertation. See the logs close to 775 or earlier -- or just look into internal note 26, as it has most of the "Event Mixing Validity" considerations.
 - **Expected precision.** Ideal detector: no efficiency, no acceptance holes and no fake polarization.
