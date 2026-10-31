@@ -248,7 +248,8 @@ std::uint32_t toUInt32(const std::string& key, const std::string& value)
 
 double squared(double value) { return value * value; }
 
-/// \brief Wraps an angle into [low, low + 2 pi).
+/// \brief Wraps an angle into [low, low + 2 pi), up to rounding: an angle one ulp below low + 2 pi can come out one ulp below low. Fine for
+///        ROOT fills, which put such a value in the underflow. Array indices use AxisSpec::periodicBin instead.
 double wrapAngle(double angle, double low) { return angle - kTwoPi * std::floor((angle - low) / kTwoPi); }
 
 /// \brief Input file of one event: <sampleDir>/<eventId>/results/<inputName> (README, "Data layout").
@@ -335,6 +336,13 @@ struct AxisSpec {
     if (!(value >= low && value < high))
       return -1;
     return std::min(static_cast<int>((value - low) / width()), nBins - 1); // min() guards the rounding as value --> high
+  }
+  /// 0-based bin of an angle on an axis that spans 2 pi, wrapped as an integer: always a valid bin. Wrapping the angle first and then calling
+  /// findBin() is not safe, since wrapAngle() can return a value one ulp outside the axis, and findBin() then returns -1
+  int periodicBin(double angle) const
+  {
+    const long bin = std::floor((angle - low) / width());
+    return ((bin % nBins) + nBins) % nBins;
   }
 };
 
@@ -1939,7 +1947,9 @@ int main(int argc, char** argv)
 
         // chi exactly as in computeProxyRing of the consumer (n = cos(chi) phi_hat + sin(chi) theta_hat), from the unnormalized cross product
         const double chi = std::atan2(-crossZ * grid.pMag[iCell], crossY * px - crossX * py);
-        const int chiBin = chiAxis.findBin(wrapAngle(chi, -kPi)); // atan2 may return +pi exactly, outside [-pi, pi)
+        // atan2 returns [-pi, pi], and chi within an ulp of +pi does occur: when phi_J and a phi node are the same printed number (the regular
+        // jet grids of break_symmetry and lumpy_events_0_5_fine), Delta phi = 0 exactly and only rounding is left in crossZ
+        const int chiBin = chiAxis.periodicBin(chi);
         trueTriggerOutputs.ringVsChi.add(chiBin, weight, ringStar);
         trueTriggerOutputs.ringZVsChi.add(chiBin, weight, observable[kRingZ]);
         trueTriggerOutputs.chiYield.add(chiBin + 1, weight);

@@ -32,14 +32,15 @@
 #                              so a stale binary can never be picked up.
 #
 # Output (inside ${OUT_BASE}/${RUN_TAG}/):
-#   logHydroTruthLab.log                  this script's log (appended, one block per invocation)
 #   backupOf_runHydroTruthLab.sh          copies of this script and of both registries as they were last run: the complete configuration.
 #   backupOf_hydroTruthLab_runs.conf      Records only, not meant to be run from there. A -p run overwrites them, but the producer files
 #   backupOf_hydroTruthLab_datasets.conf  keep their own options in Config/ (and PerConfig copies them into its own Config/)
 #   <run>/                                one flat folder per run, every file named after it:
-#                                           hydroTruthLab_<run>_bullet.root (+ .log), hydroTruthLab_<run>_noBullet.root (+ .log),
-#                                           hydroTruthLabPerConfig_<run>.root (+ .log)
-#   hydroTruthLabSummaryPlots.root (+ .log)  one folder per compare line of the runs registry
+#                                           hydroTruthLab_<run>_bullet.root, hydroTruthLab_<run>_noBullet.root, hydroTruthLabPerConfig_<run>.root
+#   hydroTruthLabSummaryPlots.root        one folder per compare line of the runs registry
+#   logs/                                 every log, flat, named as the file it belongs to:
+#                                           logHydroTruthLab.log (this script's, overwritten instead of appended to keep the logs clean over time),
+#                                           hydroTruthLab_<run>_<sample>.log, hydroTruthLabPerConfig_<run>.log, hydroTruthLabSummaryPlots.log
 #   *.root.part                           never left behind: outputs are written under this name and renamed only on success
 #
 # Examples:
@@ -219,7 +220,9 @@ if [[ "$CAMPAIGN_DIR" == *,* ]]; then
   echo "Error: the campaign folder ${CAMPAIGN_DIR} contains a comma" >&2
   exit 1
 fi
-mkdir -p "$CAMPAIGN_DIR" || exit 1
+# Every log in one folder, so that the logs of all runs sit side by side
+LOG_DIR="${CAMPAIGN_DIR}/logs"
+mkdir -p "$LOG_DIR" || exit 1
 
 # # Appended rather than overwritten: a post-process-only rerun keeps the log of the run that made the producer files
 # exec > >(tee -a -i "${CAMPAIGN_DIR}/logHydroTruthLab.log") 2>&1
@@ -713,7 +716,8 @@ run_producer() {
   local LABEL="$1" KEY="$2" SAMPLE_DIR="$3" N_EVENTS="$4"
   local OUT="${CAMPAIGN_DIR}/${LABEL}/hydroTruthLab_${LABEL}_${KEY}.root"
   local PART="${OUT}.part"
-  local LOG="${OUT%.root}.log"
+  local OUT_NAME="${OUT##*/}"
+  local LOG="${LOG_DIR}/${OUT_NAME%.root}.log"
   rm -f "$OUT" "$PART"
   # </dev/null: no child may read this script's stdin
   if "$PRODUCER_EXE" "$SAMPLE_DIR" "$PART" "${RUN_PRODUCER_OPTS[@]}" --jetFile="$(hydro_path "${DATASET_JET_FILE[${RUN_DATASET[$LABEL]}]}")" --inputName="${INPUT_NAME}" --firstEvent="${RUN_FIRST_EVENT[$LABEL]}" --nEvents="${N_EVENTS}" --seed="${RUN_SEED[$LABEL]}" > "$LOG" 2>&1 < /dev/null && [ -f "$PART" ]; then
@@ -737,7 +741,8 @@ run_perconfig() {
   local NO_BULLET_ARG="${RUN_FOLDER}/hydroTruthLab_${LABEL}_noBullet.root"
   local OUT="${RUN_FOLDER}/hydroTruthLabPerConfig_${LABEL}.root"
   local PART="${OUT}.part"
-  local LOG="${OUT%.root}.log"
+  local OUT_NAME="${OUT##*/}"
+  local LOG="${LOG_DIR}/${OUT_NAME%.root}.log"
   if [ ! -f "$BULLET_FILE" ]; then
     echo "  [${LABEL}] PerConfig -> SKIPPED (no bullet producer file)"
     record_skip "${LABEL} | PerConfig (missing bullet producer file)"
@@ -804,7 +809,8 @@ fi
 run_summary_plots() {
   local OUT="${CAMPAIGN_DIR}/hydroTruthLabSummaryPlots.root"
   local PART="${OUT}.part"
-  local LOG="${OUT%.root}.log"
+  local OUT_NAME="${OUT##*/}"
+  local LOG="${LOG_DIR}/${OUT_NAME%.root}.log"
   local ENTRY SPEC LABEL FIELDS=() COMPARE_ARGS=()
   for ENTRY in "${COMPARE_LINES[@]}"; do
     read -r -a FIELDS <<< "${ENTRY#*|}"
@@ -846,7 +852,7 @@ else
   echo "  FAILURES (${#FAILURES[@]} total)"
   echo ""
   print_report_table "FAILED STEP" "${FAILURES[@]}"
-  echo "  (logs: next to each output, in ${CAMPAIGN_DIR}/<run>/ and, for SummaryPlots, in ${CAMPAIGN_DIR}/)"
+  echo "  (logs: ${LOG_DIR}/)"
 fi
 # Printed separately and only when non-empty, so it never competes with the failure table above
 if [ ${#SKIPPED[@]} -gt 0 ]; then

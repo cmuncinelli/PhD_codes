@@ -370,21 +370,24 @@ An option missing from the two blocks is added there first, with its value, so t
 g++ -Wall -Wextra -Wpedantic -Wshadow -O3 -march=native -fno-math-errno -flto=auto -fno-trapping-math $(root-config --cflags) -o hydroTruthLab.exe hydroTruthLab.cxx $(root-config --glibs) -lGenVector
 ```
 
-**Output layout**, one flat folder per run, every file named after it:
+**Output layout**: one flat folder per run, every file named after it, and every log in `logs/`, so that the logs of all runs sit side by side:
 
 ```
 ${OUT_BASE}/${RUN_TAG}/
-  logHydroTruthLab.log                                      appended, one block per invocation
   backupOf_runHydroTruthLab.sh                              the script and the registries as last run: the complete configuration
   backupOf_hydroTruthLab_runs.conf
   backupOf_hydroTruthLab_datasets.conf
   lumpy4050_default/
-    hydroTruthLab_lumpy4050_default_bullet.root     (.log)
-    hydroTruthLab_lumpy4050_default_noBullet.root   (.log)
-    hydroTruthLabPerConfig_lumpy4050_default.root   (.log)
+    hydroTruthLab_lumpy4050_default_bullet.root
+    hydroTruthLab_lumpy4050_default_noBullet.root
+    hydroTruthLabPerConfig_lumpy4050_default.root
   lumpy4050_smudge0.1/
     ...
-  hydroTruthLabSummaryPlots.root (.log)                     every comparison of the runs registry
+  hydroTruthLabSummaryPlots.root                            every comparison of the runs registry
+  logs/
+    logHydroTruthLab.log                                    the coordinator's, overwritten for each invocation instead of appended to
+    hydroTruthLab_lumpy4050_default_bullet.log              one per output file, named after it
+    ...
 ```
 
 Downstream code never parses these names: everything that identifies a file (run label, centrality, sample folders, options, seed, skipped events) is in its `Config/`.
@@ -572,4 +575,5 @@ Config/                       the comparisons, every warning
 - **Config/ and hadd.** The histograms and the tree merge correctly, but `Config/` strings cannot be merged, so a merged file would not carry a correct event range. Not needed while each sample runs in one process.
 - **$A_z$.** Diagnostic only, since the ansatz $\vec P^*(\phi_\Lambda-\phi_{Jet}) = A\,\hat n$ (with A constant in $\phi_\Lambda-\phi_{Jet}$) does not hold here. It was something I tested by hand, analytically solvable, based on Figure 7.13 from Vitor's dissertation. See the logs close to 775 or earlier -- or just look into internal note 26, as it has most of the "Event Mixing Validity" considerations.
 - **Expected precision.** Ideal detector: no efficiency, no acceptance holes and no fake polarization.
+- **Angles on the grid.** The 4-field jet files (`break_symmetry`, `lumpy_events_0_5_fine`) hold a regular grid of 180 directions printed with 6 significant digits, as the iSS $\phi$ nodes are, so every ninth $\phi_J$ equals a $\phi$ node bit for bit and $\Delta\phi = 0$ exactly for those cells. Only rounding is then left in the angles computed from them ($\chi$ within an ulp of $\pm\pi$, for instance): every array index of an angle is wrapped as an integer (`AxisSpec::periodicBin`), never by wrapping the angle first.
 - **Per-bin RingZT and RingZLab.** The tree has no per-bin sums of them, so their curves keep the producer's pooled-master errors and have no paired difference. Their integrals are fully jackknifed and paired.
