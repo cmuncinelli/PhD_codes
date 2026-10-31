@@ -6,15 +6,17 @@ Truth-level laboratory for the ring observable in hydrodynamics. The producer re
 |---|---|
 | `hydroTruthLab.cxx` | Producer. Hydro `.dat` files of one sample --> `hydroTruthLab_<run>_<sample>.root`. |
 | `hydroTruthLabPerConfig.cxx` | Downstream (PerConfig, formerly the summary). Both producer files of one run --> `hydroTruthLabPerConfig_<run>.root`. |
-| `runHydroTruthLab.sh` | Bash coordinator: compiles both macros, runs them for every run of the registries, in parallel, and holds the defaults of every configurable (including the output folder). |
-| `hydroTruthLab_datasets.conf` | Registry of the hydro datasets: samples, jet file and centrality of each. |
+| `hydroTruthLabSummaryPlots.cxx` | Cross-run (SummaryPlots). The runs of every comparison of the runs registry --> `hydroTruthLabSummaryPlots.root`. |
+| `hydroTruthLabCommon.h` | What PerConfig and SummaryPlots share: the reading of the producer files, the estimates with their jackknife, the drawing. Included from this folder, so the compilation needs no extra flag. |
+| `runHydroTruthLab.sh` | Bash coordinator: compiles the macros, runs them for every run of the registries, in parallel, then SummaryPlots, and holds the defaults of every configurable (including the output folder). |
+| `hydroTruthLab_datasets.conf` | Registry of the hydro datasets: samples, jet file, centrality and initial conditions of each. |
 | `hydroTruthLab_runs.conf` | Registry of the runs (a dataset and the options it changes) and of the comparisons across runs. |
 | `surveyHydroDatasets.sh` | Read-only survey of the hydro folders: samples, events, grid, MUSIC inputs and the bullet - no_bullet pairing, in a few lines per dataset. |
 | `README.md` | This file: design and "how to run me". Implementation details live in the code comments. |
 
-A run is one dataset with one configuration, labelled `<dataset>_<variation>` (`lumpy4050_default`, `lumpy4050_smudge0.1`). Comparisons across runs (centrality, smudge width, ...) will be drawn by `hydroTruthLabSummaryPlots.cxx`, not written yet (see Known issues and TODO).
+A run is one dataset with one configuration, labelled `<dataset>_<variation>` (`lumpy4050_default`, `lumpy4050_smudge0.1`). Comparisons across runs (centrality, smudge width, ...) are drawn by SummaryPlots.
 
-Both macros are single-threaded (no OpenMP, no NUMA binding) and use no fits.
+Every macro is single-threaded (no OpenMP, no NUMA binding) and uses no fits.
 
 ## IMPORTANT: the `S^mu` columns hold `P^mu`, not `S^mu`
 
@@ -50,7 +52,7 @@ grep -n "prefactor = \|omega_yz\*pmu\[1\]" <iSS>/src/spin_polarization.cpp
 /storage1/vribeiro/<dataset>/<sample>/<i>/results/Smu_dpTdphidy_Thermal_rapidity_3122.dat
 ```
 
-Vitor's events in jarvis4: fluctuating (lumpy) initial conditions for Pb-Pb collisions at 2.76 TeV, Lambda (PDG code 3122), thermal vorticity only, rapidity grid, events numbered from 0. The reference dataset is `lumpy_events_40_50` (40-50%, 250 events with iSS output in each sample, of the 300 folders of no_bullet). `hydroTruthLab_datasets.conf` lists every runnable dataset, with its samples, jet file and centrality, and `surveyHydroDatasets.sh` is how they were found:
+Vitor's events in jarvis4: fluctuating (lumpy) initial conditions for Pb-Pb collisions at 2.76 TeV, Lambda (PDG code 3122), thermal vorticity only, rapidity grid, events numbered from 0. The reference dataset is `lumpy_events_40_50` (40-50%, 250 events with iSS output in each sample, of the 300 folders of no_bullet). `hydroTruthLab_datasets.conf` lists every runnable dataset, with its samples, jet file, centrality and initial conditions, and `surveyHydroDatasets.sh` is how they were found:
 
 ```
 ./surveyHydroDatasets.sh                                       # every dataset under /storage1/vribeiro, a few lines each
@@ -128,7 +130,7 @@ and differ only by the bullet block above. Neither MUSIC nor the iSS polarizatio
 
 The whole `Difference/` folder of PerConfig rests on this hypothesis:
 
-- Both samples must run with the same trigger mode and the same event range: the coordinator gives both the range of the bullet sample. Pairs are formed over the event IDs both samples have, so an event without iSS output in either sample enters neither curve of the difference. When only one sample misses it, the curves of the other sample keep it, and the drawn difference is not exactly the drawn bullet curve minus the drawn no_bullet curve. Every legend gives its event or pair count.
+- Both samples must run with the same trigger mode. With mixing they also share the event range (the coordinator gives no_bullet the range of the bullet sample), since the partners of an event are chosen among the events of the range. Without mixing each sample runs to its own last event with iSS output. Pairs are formed over the event IDs both samples have, so an event missing from either sample enters neither curve of the difference, while the curves of the other sample keep it. The drawn difference is then not exactly the drawn bullet curve minus the drawn no_bullet curve. Every legend gives its event or pair count.
 - Differences are taken pair by pair, and their errors are computed over pairs (see Errors).
 - The trigger variants stay paired: random streams are seeded from (seed, eventId) instead of being drawn from one running sequence, both samples get the same seed (the coordinator sets one per run), and mixing partners are chosen by event index.
 - For every shared `eventId`, PerConfig checks that `phiTrigger` agrees in the two event trees and stops otherwise.
@@ -316,6 +318,7 @@ with $N_b = N f_b$ and $f_b$ the hydro yield fraction of bin $b$. Hydro only pro
 | Half-turn and uniform average over $\delta$ of the pooled $R(\delta)$ | PerConfig `DeltaScan/hClosure` | float noise |
 | Mixing vs $\delta_{eff}$ against the delta-scan vs $\delta$ | PerConfig `Mixing/hPullMean`, `Mixing/hPullRms`, `Config/mixingPulls` | pull mean ~0, RMS ~1 (statistical scatter about 0.07 for 100 bins) |
 | Mixed entries of the tree (`mixDeltaEffBin`) vs the producer's profiles | PerConfig, per $\delta_{eff}$ bin | equal weights, warning and no pulls otherwise |
+| Two runs that define a trigger set identically (same producer options for it), over the events they share | SummaryPlots `Config/<comparison>/closures` | identical, warning otherwise |
 | no_bullet in `jet` mode: integrated `Ring` and `RingZ` | PerConfig log, `Config/noBulletClosure`, `Integrated/` | consistent with zero |
 | Pooled-master error vs jackknife, per bin | PerConfig `Jackknife/` | close agreement |
 | `_EvtMean` profile error vs jackknife | PerConfig `Jackknife/hErrorRatioIntegrated` | $\sqrt{(N-1)/N}$ exactly (TProfile uses the population spread) |
@@ -334,7 +337,8 @@ with $N_b = N f_b$ and $f_b$ the hydro yield fraction of bin $b$. Hydro only pro
 | Option | Effect |
 |---|---|
 | `-h`, `--help` | Show the help message. |
-| `-p`, `--post-process-only` | Skip the producers and rerun PerConfig on the existing producer files. |
+| `-p`, `--post-process-only` | Skip the producers and rerun PerConfig and SummaryPlots on the existing producer files. |
+| `-s`, `--summary-plots-only` | Rerun SummaryPlots only, on the existing PerConfig files. |
 | `-t`, `--tag NAME` | Name of the campaign folder (default: `default`). |
 | `-o`, `--only RUN` | Run only this run, e.g. `lumpy4050_default`. Repeatable. |
 | `-j`, `--jobs N` | Runs at a time (default: `MAX_PARALLEL_RUNS`, half the cores). 1 runs them one after the other. |
@@ -346,7 +350,7 @@ with $N_b = N f_b$ and $f_b$ the hydro yield fraction of bin $b$. Hydro only pro
 - `PRODUCER_OPTS` and `PERCONFIG_OPTS`: the options of each macro, each commented with its source (the consumer for the Lambda mass and the decay parameter, the PRC paper for the cuts, the O-O analysis for `--nLambdaPrecision`);
 - `HYDRO_BASE` and `INPUT_NAME`, `FIRST_EVENT` and `MAX_EVENTS` (0 = no cap), `MAX_PARALLEL_RUNS`, and the output base folder `OUT_BASE` (set only there).
 
-`hydroTruthLab_datasets.conf` has one line per dataset, `label centrality bullet noBullet jetFile`, with paths relative to `HYDRO_BASE` and `none` for a dataset without no_bullet (PerConfig then runs on the bullet sample alone). `hydroTruthLab_runs.conf` has one line per run, `run <dataset> <variation> [option=value ...]`. An override replaces the default of that option in whichever macro has it, so a run lists only what it changes:
+`hydroTruthLab_datasets.conf` has one line per dataset, `label centrality initialConditions bullet noBullet jetFile`, with paths relative to `HYDRO_BASE` and `none` for a dataset without no_bullet (PerConfig then runs on the bullet sample alone). `initialConditions` names the set of initial conditions, after the folder of Vitor's TRENTo events (`lumpy_bg_40_50`, ...): datasets with the same one start event $i$ from the same initial condition, as the survey checked, and SummaryPlots pairs their events. `hydroTruthLab_runs.conf` has one line per run, `run <dataset> <variation> [option=value ...]`. An override replaces the default of that option in whichever macro has it, so a run lists only what it changes:
 
 ```
 run lumpy4050 default
@@ -354,13 +358,13 @@ run lumpy4050 rp          trigger=rp
 run lumpy4050 smudge0.1   smudgeSigma=0.1 seed=smudgeScan4050
 ```
 
-An option missing from the two blocks is added there first, with its value, so that no run depends on a default hidden in a macro. `--jetFile`, `--inputName`, `--firstEvent`, `--nEvents` and `--seed` of the producer, and `--centralityLabel` and `--runLabel` of PerConfig, come from the registries. `trigger=rp` also turns mixing off, with a note in the log, since all `rp` triggers coincide. The registries are checked before anything runs: an unknown dataset, a duplicate run, an override that names no option of either macro (a typo), a seed above 32 bits or a comparison that names an unknown run stops the script there.
+An option missing from the two blocks is added there first, with its value, so that no run depends on a default hidden in a macro. `--jetFile`, `--inputName`, `--firstEvent`, `--nEvents` and `--seed` of the producer, and `--centralityLabel`, `--initialConditions` and `--runLabel` of PerConfig, come from the registries. `trigger=rp` also turns mixing off, with a note in the log, since all `rp` triggers coincide. The registries are checked before anything runs: an unknown dataset, a duplicate run, an override that names no option of either macro (a typo), a seed above 32 bits or a comparison that names an unknown run stops the script there.
 
-**Event range.** Both samples of a run get the same range, which the mixing partners and the pairing need: from `FIRST_EVENT` to the last event of the bullet sample with iSS output, capped at the last event of the jet file for the jet trigger or mixing, and at `MAX_EVENTS`. Events of the range without iSS output in either sample are listed in the log ("which the producer skips"), and the producer skips them with a warning.
+**Event range.** Each sample runs from `FIRST_EVENT` to its last event with iSS output, capped at the last event of the jet file for the jet trigger or mixing, and at `MAX_EVENTS`. With mixing, no_bullet takes the range of the bullet sample instead: the partners of an event are chosen among the events of the range (mod $N$), so a longer no_bullet range would give the events of a pair different partners. Without mixing (`rp`, or `mixDepth=0`), a no_bullet sample with more events than its bullet sample (`lumpy_events_40_50/no_bullet` against `break_symmetry`, for instance) uses them all: they enter the no_bullet curves, and the difference keeps the pairs. Events of a range without iSS output are listed in the log ("which the producer skips"), and the producer skips them with a warning.
 
-**Seeds.** A run draws its own seed from the clock, shared by its two samples (paired smudging). `seed=<integer>` fixes it, to repeat a run exactly. `seed=<name>` gives every run of the invocation with that name one clock-drawn seed: the smudge draws are then identical, each rescaled by its width, so a width scan differs only through the width (common random numbers), and the first draws of a larger `smudgeDraws` repeat those of a smaller one. A group shares its seed within one invocation only, and rerunning part of it with `--only` gives that part a new seed (the log says so). `cone` and `phi` consume their draws differently, so they never share them. The seed of every run is printed in the plan and stored in each producer's `Config/`.
+**Seeds.** A run draws its own seed from the clock, shared by its two samples (paired smudging). `seed=<integer>` fixes it, to repeat a run exactly. `seed=<name>` gives every run of the invocation with that name one clock-drawn seed: the smudge draws are then identical, each rescaled by its width, so a width scan differs only through the width (common random numbers), and the first draws of a larger `smudgeDraws` repeat those of a smaller one. A group shares its seed within one invocation only, and rerunning part of it with `--only` gives that part a new seed (the log says so). `cone` and `phi` consume their draws differently, so they never share them. The seed of every run is printed in the plan and stored in each producer's `Config/`. Smudging is the only random part of the chain: mixing picks its partners by event index, so no seed changes it (the closures of SummaryPlots check that).
 
-**Execution.** The coordinator compiles both macros ahead of time, plans every run (range, seed, skipped events, all printed before anything runs), then starts up to `--jobs` runs at once. Each run starts its two producers together, single-threaded, then PerConfig. Progress lines carry the run label, and a table of failed or skipped steps closes the log. Every output is written as `<file>.part` and renamed only on success, after removing the file of an earlier invocation, so a failed or interrupted run never leaves a partial or stale file under the final name. Ctrl+C stops every run, with its producers. The compilation uses the flags of the main analysis chain, without `-DNDEBUG`, so `assert` stays active:
+**Execution.** The coordinator compiles the macros ahead of time, plans every run (ranges, seed, skipped events, all printed before anything runs), then starts up to `--jobs` runs at once. Each run starts its two producers together, single-threaded, then PerConfig. When every run is done, SummaryPlots runs once on all the comparisons. Progress lines carry the run label, and a table of failed or skipped steps closes the log. Every output is written as `<file>.part` and renamed only on success, after removing the file of an earlier invocation, so a failed or interrupted run never leaves a partial or stale file under the final name. Ctrl+C stops every run, with its producers. The compilation uses the flags of the main analysis chain, without `-DNDEBUG`, so `assert` stays active:
 
 ```
 g++ -Wall -Wextra -Wpedantic -Wshadow -O3 -march=native -fno-math-errno -flto=auto -fno-trapping-math $(root-config --cflags) -o hydroTruthLab.exe hydroTruthLab.cxx $(root-config --glibs) -lGenVector
@@ -380,11 +384,12 @@ ${OUT_BASE}/${RUN_TAG}/
     hydroTruthLabPerConfig_lumpy4050_default.root   (.log)
   lumpy4050_smudge0.1/
     ...
+  hydroTruthLabSummaryPlots.root (.log)                     every comparison of the runs registry
 ```
 
 Downstream code never parses these names: everything that identifies a file (run label, centrality, sample folders, options, seed, skipped events) is in its `Config/`.
 
-**Comparisons.** `hydroTruthLab_runs.conf` also lists the comparisons for `hydroTruthLabSummaryPlots.cxx`, `compare <name> <x> <run> <run> ...`, with `x` an option of either macro (its value in each run), `centralityLabel`, or `runLabel` (one point per run, in the order listed). The coordinator checks them and runs nothing for them.
+**Comparisons.** `hydroTruthLab_runs.conf` also lists the comparisons for SummaryPlots, `compare <name> <x> <run> <run> ...` (two to eight runs), with `x` an option of either macro (its value in each run), `centralityLabel`, `initialConditions`, or `runLabel`. The coordinator passes SummaryPlots the PerConfig file of every run of every line, whichever invocation made it, so `--only` reruns some runs and still redraws every comparison. A run without a PerConfig file is left out of its comparisons, with a warning.
 
 ### Running the executables by hand
 
@@ -418,9 +423,16 @@ Downstream code never parses these names: everything that identifies a file (run
 | `--alphaLambda` | 0.749 | Decay parameter, used only in `Precision/`. |
 | `--nLambdaPrecision` | 0 | Number of Lambdas for $\sigma$ and the significance in `Precision/`. 0 = $\sigma\sqrt N$ only. |
 | `--centralityLabel` | `40-50%` | Label of the Fig. 11 point. |
-| `--runLabel` | `none` | Run of the coordinator, `<dataset>_<variation>`, stored in `Config/` for the cross-run plots. |
+| `--runLabel` | `none` | Run of the coordinator, `<dataset>_<variation>`, stored in `Config/` for SummaryPlots. |
+| `--initialConditions` | `none` | Initial conditions of the dataset, stored in `Config/` for SummaryPlots, which pairs the events of runs that share them (`none` pairs nothing). |
 
 With `none` as the no_bullet file, PerConfig skips everything that needs it: the difference curves, `Difference/`, Fig. 3 (left) and the significances.
+
+```
+./hydroTruthLabSummaryPlots.exe <outputFile> --compare=<name>,<x>,<perConfigFile>,<perConfigFile>[,...] [--compare=...]
+```
+
+One `--compare` per comparison. The PerConfig files point to their producer files (`Config/bulletFile`, `Config/noBulletFile`). If the campaign folder has moved since, SummaryPlots looks for them next to the PerConfig file.
 
 ## Output reference
 
@@ -487,7 +499,7 @@ The per-bin sums let PerConfig jackknife and pair any pooled quantity, the true,
 Every folder holds its canvases at the top, for a first skim, and every object they draw in its `Parts/` subfolder. "Samples" below means bullet, no_bullet and the bullet - no_bullet difference.
 
 ```
-Config/            options (runLabel included), inputs, event and pair counts, the no_bullet and delta-scan closures, the mixing pulls, the leakage test,
+Config/            options (runLabel and initialConditions included), inputs, event and pair counts, the no_bullet and delta-scan closures, the mixing pulls, the leakage test,
                    every warning. ProducerBullet/ and ProducerNoBullet/: copies of the Config/ of each producer file (seed, event range, skipped events, ...)
 Paper/             in percent: Fig. 2 (right), Fig. 3 (left), Fig. 4 analogue (R(dphi) of the samples, jackknife bands), Fig. 11 point (three estimators)
 Integrated/        per sample: every integral of the true trigger (in units of P, grouped by observable, and dimensionless), lobe positions and heights
@@ -514,11 +526,48 @@ Drawing conventions:
 
 Raw units everywhere but `Paper/` and `PolarizationMaps/`. Every curve with per-bin sums in the tree carries jackknife errors. The few without them (R_z^T, H and R_z^lab vs dphi, the (dphi', delta) maps, mixing vs delta_eff, the integrals vs smudge angle, the polarization maps) are the producer's pooled curves with their pooled-master errors, and their titles or legends say so. An undefined estimate (for instance $A_z$ at $\Delta\phi = 0$ for the rp trigger, where $n_z = 0$) is left as an empty bin in `Parts/`, out of every drawn band or line, and logged.
 
+### SummaryPlots: `hydroTruthLabSummaryPlots.root`
+
+One folder per comparison, with its canvases at the top and their objects in `Parts/`, as in PerConfig. Each run is one labelled bin (tables) or one band (curves), labelled by its `x` in the order of the compare line. With `x = runLabel`, the label keeps the part of `<dataset>_<variation>` that tells the runs apart: the variation when they share the dataset (`seedA`), the dataset when they share the variation (`pos4050Rm4`). Numbers are bin labels too, so a scan is drawn with equal spacing: the scans of the registry are nearly evenly spaced on a log scale, so they read like a log axis.
+
+SummaryPlots recomputes the estimates of every run from its producer files, with the code of PerConfig (`hydroTruthLabCommon.h`), so its numbers are those of the PerConfig files. It needs the event trees anyway, for the differences between runs below.
+
+```
+Config/                       the comparisons, every warning
+  <comparison>/               x, runs, files, seeds, initial conditions, nLambdaPrecision of each run, the error of each difference
+                              (joint or independent), the closures, the seed spread
+<comparison>/
+  cFig11                      Fig. 11 analogue: integrated R of the bullet sample by three estimators, in percent
+  cRing_<sample>, cRingZ_<sample>, cProjections_<sample>
+                              integrals of the true trigger: R and R_z by their four estimators, the other projections
+  cLobePositions<Ring|RingZ>_<sample>, cLobeHeights<Ring|RingZ>_<sample>
+                              lobe features of R and R_z, bullet and difference only (no_bullet lobes are noise with lumpy initial conditions)
+  cRingVsDeltaPhi_<sample>, cRingZVsDeltaPhi_<sample>
+                              curves of the true trigger, one band per run
+  cSmudgedRingVsDeltaPhi_<sample>, cSmudgedRingZVsDeltaPhi_<sample>, cSmudgedOverTrue_<sample>, cLeakageResidualSmudged
+                              when every run smudges: the smudged curves, the smudged/true integrals (jackknifed jointly within each run) and
+                              the leakage residual R' - prediction of the integral
+  cSignificance               expected significance of the bullet - no_bullet integrals, with the N and alpha of each run's PerConfig
+  cSeedSpread                 when the runs differ only by their seed (below)
+  DifferenceToFirst/          each run minus the first (below): c<Ring|RingZ><True|Mixed|Smudged>_<sample>, by the four estimators
+```
+
+`<sample>` is `bullet`, `noBullet` or `difference`. The errors of a point are the jackknife errors of its own run. Points of runs that share initial conditions are correlated, so the error bars overstate the uncertainty of their differences, by a lot for the smudge scans: `DifferenceToFirst/` is where they are compared.
+
+**DifferenceToFirst/.** Every run minus the first run of the compare line, which is the reference only because it comes first. When the two datasets have the same `initialConditions` (and, for the difference sample, both runs are paired), both runs are restricted to the events they share (pairs, for the difference sample), in the same order, and replica $e$ of the jackknife drops event $e$ from both. The fluctuation of the initial conditions then cancels in the difference, as in the paired bullet - no_bullet difference of PerConfig. Otherwise the runs are independent, and the difference carries the two jackknife errors in quadrature. The canvas titles say which, and `Config/<comparison>/differenceErrors` lists it per run with the number of shared events. The delta-scan is left out: its integrals average over $\delta$, which vanishes identically.
+
+**Closures.** Two runs whose producer options define a trigger set identically for a sample (samples, jet file, trigger, cuts and grid, plus the event range and `mixDepth` for mixing, plus the smudge options and the seed for smudging) have identical per-event values, so their difference over the shared events must vanish exactly. In the smudge scans, for instance, the true and mixed triggers must not move. SummaryPlots checks every such pair and lists the result in `Config/<comparison>/closures`, with a warning when one differs.
+
+**Seed spread.** When the runs of a comparison differ only by their seed (`seedA`, `seedB`, `seedC`), `cSeedSpread` shows, for every smudged integral, the standard deviation across the runs over the mean jackknife error of one run. The events are the same, so the spread comes from the smudge draws alone, and the ratio is the share of the error they make. With three seeds it has two degrees of freedom, so it is a rough estimate. Mixing has no seed, and the closures show that its results do not change.
+
+**Seed groups.** A group shares its seed within one invocation of the coordinator only. When some runs of a comparison share a seed and others do not, which is what a group partly rerun with `--only` leaves behind, SummaryPlots warns.
+
 ## Known issues and TODO
 
 - **Old toy model.** `lambda_pol_toy_model.cxx` multiplies the iSS columns by 2 (`Pol = 2S`), so its truth-level polarization is twice the true value. Not corrected yet.
 - **Paper scope.** In `lumpy_events_40_50` the jet is deposited at the centre. Fig. 2 (right) and Fig. 3 (left) are reproduced directly. Fig. 4 is published for 0-5% only, so we build its analogue at the centrality of every run (`lumpy_events_0_5_fine` included). Fig. 11 gets one point per run, and the centrality comparison of the runs registry collects them. Whether the `position_lumpy_events_*` datasets are those of Fig. 10 (jets at random positions) is not checked yet.
-- **`hydroTruthLabSummaryPlots.cxx`.** The cross-run plots of the `compare` lines (Fig. 11 vs centrality, integrals vs smudge width, deposition, injection position, seed spread) are not written yet. It will read the `Parts/` and `Config/` of the PerConfig files.
+- TODO: check the band overlays of SummaryPlots (`c*VsDeltaPhi_*`) once the first campaign is in: with six runs the bands may bury each other, in which case lines for all runs and a band for the first only would read better.
+- **SummaryPlots memory.** Every run of a comparison is held at once, with its jackknife replicas: about 50 MB per run, 300 MB for the six runs of the smudge scan.
 - **Rotated dataset.** `lumpy_events_40_50_rotated` (iSS output in events 0-99 of both samples) is in the datasets registry, commented out: what "rotated" means is not known yet.
 - **Config/ and hadd.** The histograms and the tree merge correctly, but `Config/` strings cannot be merged, so a merged file would not carry a correct event range. Not needed while each sample runs in one process.
 - **$A_z$.** Diagnostic only, since the ansatz $\vec P^*(\phi_\Lambda-\phi_{Jet}) = A\,\hat n$ (with A constant in $\phi_\Lambda-\phi_{Jet}$) does not hold here. It was something I tested by hand, analytically solvable, based on Figure 7.13 from Vitor's dissertation. See the logs close to 775 or earlier -- or just look into internal note 26, as it has most of the "Event Mixing Validity" considerations.

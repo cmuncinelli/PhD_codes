@@ -8,11 +8,12 @@
 #   Runs the hydroTruthLab chain for every run of the runs registry, each on one dataset of the datasets registry (Vitor's hydro events):
 #     1. hydroTruthLab.cxx (one process per sample)  -> <run>/hydroTruthLab_<run>_bullet.root, hydroTruthLab_<run>_noBullet.root
 #     2. hydroTruthLabPerConfig.cxx (both samples)   -> <run>/hydroTruthLabPerConfig_<run>.root
+#     3. hydroTruthLabSummaryPlots.cxx (every run)   -> hydroTruthLabSummaryPlots.root, the compare lines of the runs registry
 #
 #   with <run> = <dataset>_<variation>. The defaults of every configurable live in the CONFIGURATION block below, and a run of the registry
-#   lists only what it changes. Runs go in parallel, MAX_PARALLEL_RUNS at a time, each with its two producers at once. Both samples of a
-#   run get the same event range and seed, set by the bullet sample (and by the jet file for the jet trigger) and by the registry: the
-#   producers skip the events of the range without hydro output, with a warning.
+#   lists only what it changes. Runs go in parallel, MAX_PARALLEL_RUNS at a time, each with its two producers at once, sharing one seed.
+#   Each sample runs to its last event with hydro output (and to the last entry of the jet file for the jet trigger), except with mixing,
+#   where both samples take the range of the bullet sample. The producers skip the events of the range without hydro output, with a warning.
 #   Design, definitions and the output reference: README.md in this folder.
 #
 # Usage:
@@ -20,7 +21,8 @@
 #
 # Options:
 #   -h, --help                 Show this help message.
-#   -p, --post-process-only    Skip the producers and rerun PerConfig on the existing producer files.
+#   -p, --post-process-only    Skip the producers and rerun PerConfig and SummaryPlots on the existing producer files.
+#   -s, --summary-plots-only   Rerun SummaryPlots only, on the existing PerConfig files.
 #   -t, --tag NAME             Name of the campaign folder under OUT_BASE (default: "default").
 #   -o, --only RUN             Run only this run (<dataset>_<variation>). Repeatable.
 #   -j, --jobs N               Runs at a time (default: MAX_PARALLEL_RUNS). 1 runs them one after the other.
@@ -37,12 +39,14 @@
 #   <run>/                                one flat folder per run, every file named after it:
 #                                           hydroTruthLab_<run>_bullet.root (+ .log), hydroTruthLab_<run>_noBullet.root (+ .log),
 #                                           hydroTruthLabPerConfig_<run>.root (+ .log)
+#   hydroTruthLabSummaryPlots.root (+ .log)  one folder per compare line of the runs registry
 #   *.root.part                           never left behind: outputs are written under this name and renamed only on success
 #
 # Examples:
 #   ./runHydroTruthLab.sh
 #   ./runHydroTruthLab.sh --only lumpy4050_default --only lumpy6070_default
 #   ./runHydroTruthLab.sh -p --tag smudgeStudy --jobs 4
+#   ./runHydroTruthLab.sh -s
 #
 ###############################################################################
 
@@ -54,8 +58,11 @@
 LAB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PRODUCER_MACRO="${LAB_DIR}/hydroTruthLab.cxx"
 PERCONFIG_MACRO="${LAB_DIR}/hydroTruthLabPerConfig.cxx"
+SUMMARY_MACRO="${LAB_DIR}/hydroTruthLabSummaryPlots.cxx"
+COMMON_HEADER="${LAB_DIR}/hydroTruthLabCommon.h" # included by PerConfig and SummaryPlots from this folder: no flag needed
 PRODUCER_EXE="${LAB_DIR}/hydroTruthLab.exe"
 PERCONFIG_EXE="${LAB_DIR}/hydroTruthLabPerConfig.exe"
+SUMMARY_EXE="${LAB_DIR}/hydroTruthLabSummaryPlots.exe"
 DATASETS_FILE="${LAB_DIR}/hydroTruthLab_datasets.conf"
 RUNS_FILE="${LAB_DIR}/hydroTruthLab_runs.conf"
 
@@ -66,8 +73,9 @@ OUT_BASE="${HOME}/RingPol/hydroTruthLab"
 HYDRO_BASE="/storage1/vribeiro"
 INPUT_NAME="Smu_dpTdphidy_Thermal_rapidity_3122.dat"
 
-# Event range of a dataset: from FIRST_EVENT to the last event of its bullet sample that holds INPUT_NAME, capped by the last entry of the
-# jet file when the jet trigger or mixing needs one per event. Both samples use it, since the mixing partners of an event depend on the range
+# Event range of a sample: from FIRST_EVENT to its last event that holds INPUT_NAME, capped by the last entry of the jet file when the jet
+# trigger or mixing needs one per event. With mixing, both samples take the range of the bullet sample: the partners of an event are chosen
+# among the events of the range, so the two samples must share it to stay paired
 FIRST_EVENT=0
 MAX_EVENTS=0 # 0 = no cap. A positive value caps the range (quick tests)
 
@@ -97,7 +105,8 @@ PRODUCER_OPTS=(
   --mapSubdivisions=3 # PolarizationMaps/: each cell spread over 3x3x3 points of its momentum volume (1 = nodes only, with empty bins at high p)
 )
 
-# PerConfig defaults (hydroTruthLabPerConfig.exe --help lists them all). --centralityLabel and --runLabel come from the registries
+# PerConfig defaults (hydroTruthLabPerConfig.exe --help lists them all). --centralityLabel, --initialConditions and --runLabel come from the
+# registries
 PERCONFIG_OPTS=(
   --paired=1 # key hypothesis: paired initial conditions (README)
   --alphaLambda="${ALPHA_LAMBDA}"
@@ -115,6 +124,7 @@ export LC_ALL=C
 shopt -s nullglob # a glob that matches nothing expands to nothing, not to itself
 
 POST_PROCESS_ONLY=0
+SUMMARY_ONLY=0
 CLEANUP_ONLY=0
 RUN_TAG="default"
 JOBS=$MAX_PARALLEL_RUNS
@@ -142,6 +152,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --post-process-only|-p)
       POST_PROCESS_ONLY=1
+      shift
+      ;;
+    --summary-plots-only|-s)
+      SUMMARY_ONLY=1
       shift
       ;;
     --tag|-t)
@@ -184,9 +198,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [ $POST_PROCESS_ONLY -eq 1 ] && [ $SUMMARY_ONLY -eq 1 ]; then
+  echo "Error: -p and -s exclude each other (-p already reruns SummaryPlots). Use --help for usage." >&2
+  exit 1
+fi
+
 if [ $CLEANUP_ONLY -eq 1 ]; then
   echo "Removing compiled macro executables..."
-  rm -f "$PRODUCER_EXE" "$PERCONFIG_EXE"
+  rm -f "$PRODUCER_EXE" "$PERCONFIG_EXE" "$SUMMARY_EXE"
   echo "Done."
   exit 0
 fi
@@ -195,10 +214,17 @@ fi
 # CAMPAIGN FOLDER AND LOGGING
 # ==============================================================================
 CAMPAIGN_DIR="${OUT_BASE}/${RUN_TAG}"
+# SummaryPlots gets its files as comma-separated lists
+if [[ "$CAMPAIGN_DIR" == *,* ]]; then
+  echo "Error: the campaign folder ${CAMPAIGN_DIR} contains a comma" >&2
+  exit 1
+fi
 mkdir -p "$CAMPAIGN_DIR" || exit 1
 
-# Appended rather than overwritten: a post-process-only rerun keeps the log of the run that made the producer files
-exec > >(tee -a -i "${CAMPAIGN_DIR}/logHydroTruthLab.log") 2>&1
+# # Appended rather than overwritten: a post-process-only rerun keeps the log of the run that made the producer files
+# exec > >(tee -a -i "${CAMPAIGN_DIR}/logHydroTruthLab.log") 2>&1
+# Overwritten rather than appended -- way cleaner!
+exec > >(tee -i "${CAMPAIGN_DIR}/logHydroTruthLab.log") 2>&1
 echo ""
 echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
 
@@ -379,7 +405,7 @@ missing_events() {
 # ==============================================================================
 # REGISTRIES
 # ==============================================================================
-for REQUIRED in "$PRODUCER_MACRO" "$PERCONFIG_MACRO" "$DATASETS_FILE" "$RUNS_FILE"; do
+for REQUIRED in "$PRODUCER_MACRO" "$PERCONFIG_MACRO" "$SUMMARY_MACRO" "$COMMON_HEADER" "$DATASETS_FILE" "$RUNS_FILE"; do
   if [ ! -f "$REQUIRED" ]; then
     echo "Error: not found: ${REQUIRED}"
     exit 1
@@ -388,21 +414,22 @@ done
 # Labels: no "_", which separates the dataset from the variation in the run label
 LABEL_PATTERN='^[A-Za-z0-9.+-]+$'
 
-# Datasets: label centrality bullet noBullet jetFile
-declare -A DATASET_CENTRALITY DATASET_BULLET DATASET_NO_BULLET DATASET_JET_FILE
+# Datasets: label centrality initialConditions bullet noBullet jetFile
+declare -A DATASET_CENTRALITY DATASET_INITIAL_CONDITIONS DATASET_BULLET DATASET_NO_BULLET DATASET_JET_FILE
 LINE_NUMBER=0
 while IFS= read -r LINE || [ -n "$LINE" ]; do
   LINE_NUMBER=$((LINE_NUMBER + 1))
   read -r -a FIELDS <<< "${LINE%%#*}"
   [ ${#FIELDS[@]} -eq 0 ] && continue
-  if [ ${#FIELDS[@]} -ne 5 ] || ! [[ "${FIELDS[0]}" =~ $LABEL_PATTERN ]] || [ -n "${DATASET_BULLET[${FIELDS[0]}]}" ]; then
-    echo "Error: ${DATASETS_FILE}, line ${LINE_NUMBER}: expected 'label centrality bullet noBullet jetFile' with a new label of letters, digits, '.', '+' or '-'"
+  if [ ${#FIELDS[@]} -ne 6 ] || ! [[ "${FIELDS[0]}" =~ $LABEL_PATTERN ]] || [ -n "${DATASET_BULLET[${FIELDS[0]}]}" ]; then
+    echo "Error: ${DATASETS_FILE}, line ${LINE_NUMBER}: expected 'label centrality initialConditions bullet noBullet jetFile' with a new label of letters, digits, '.', '+' or '-'"
     exit 1
   fi
   DATASET_CENTRALITY[${FIELDS[0]}]="${FIELDS[1]}"
-  DATASET_BULLET[${FIELDS[0]}]="${FIELDS[2]}"
-  DATASET_NO_BULLET[${FIELDS[0]}]="${FIELDS[3]}"
-  DATASET_JET_FILE[${FIELDS[0]}]="${FIELDS[4]}"
+  DATASET_INITIAL_CONDITIONS[${FIELDS[0]}]="${FIELDS[2]}"
+  DATASET_BULLET[${FIELDS[0]}]="${FIELDS[3]}"
+  DATASET_NO_BULLET[${FIELDS[0]}]="${FIELDS[4]}"
+  DATASET_JET_FILE[${FIELDS[0]}]="${FIELDS[5]}"
 done < "$DATASETS_FILE"
 
 # Runs: "run dataset variation [option=value ...]", and the comparisons for SummaryPlots, "compare name x run ...", only checked here
@@ -450,15 +477,15 @@ while IFS= read -r LINE || [ -n "$LINE" ]; do
 done < "$RUNS_FILE"
 
 # Comparisons can only name runs of the registry, along an x that every PerConfig file records in Config/: an option of either macro, the
-# centrality or the run itself (categorical, in the order listed)
+# centrality, the initial conditions or the run itself (categorical, in the order listed)
 for ENTRY in "${COMPARE_LINES[@]}"; do
   read -r -a FIELDS <<< "${ENTRY#*|}"
   if [ ${#FIELDS[@]} -lt 5 ]; then
     echo "Error: ${RUNS_FILE}, line ${ENTRY%%|*}: expected 'compare name x run run ...' with two runs at least"
     exit 1
   fi
-  if ! has_option PRODUCER_OPTS "${FIELDS[2]}" && ! has_option PERCONFIG_OPTS "${FIELDS[2]}" && [[ ! "${FIELDS[2]}" =~ ^(centralityLabel|runLabel|seed)$ ]]; then
-    echo "Error: ${RUNS_FILE}, line ${ENTRY%%|*}: x '${FIELDS[2]}' is neither an option of PRODUCER_OPTS or PERCONFIG_OPTS nor centralityLabel, runLabel or seed"
+  if ! has_option PRODUCER_OPTS "${FIELDS[2]}" && ! has_option PERCONFIG_OPTS "${FIELDS[2]}" && [[ ! "${FIELDS[2]}" =~ ^(centralityLabel|initialConditions|runLabel|seed)$ ]]; then
+    echo "Error: ${RUNS_FILE}, line ${ENTRY%%|*}: x '${FIELDS[2]}' is neither an option of PRODUCER_OPTS or PERCONFIG_OPTS nor centralityLabel, initialConditions, runLabel or seed"
     exit 1
   fi
   for LABEL in "${FIELDS[@]:3}"; do
@@ -497,7 +524,7 @@ cp "$DATASETS_FILE" "${CAMPAIGN_DIR}/backupOf_hydroTruthLab_datasets.conf"
 # Seeds: a run without seed= draws its own from the clock, seed=<integer> fixes it, and seed=<name> shares one clock-drawn seed among every
 # run with that name in this invocation (the same smudge draws, rescaled by each width). Both samples of a run always share theirs, which
 # keeps their smudged triggers paired (README, key hypothesis)
-declare -A RUN_FIRST_EVENT RUN_N_EVENTS RUN_SEED SEED_OF_GROUP
+declare -A RUN_FIRST_EVENT RUN_N_EVENTS_BULLET RUN_N_EVENTS_NO_BULLET RUN_SEED SEED_OF_GROUP
 draw_seed() { echo $(( $(date +%s%N) % 4294967296 )); }
 
 # The seed= value of a run (empty when it has none)
@@ -509,11 +536,39 @@ seed_spec() {
   done
 }
 
-# Checks the inputs of a run and sets its event range and seed. Stops the script on a missing input: nothing has run yet
+# Last event of the range of one sample folder ($1), with the jet file of the run ($2): its last event with iSS output, capped at the last
+# entry of the jet file when the jet trigger or mixing needs one per event, and at MAX_EVENTS. Prints "<last event>|<caps applied>", or an
+# error on stderr and a nonzero status
+range_end() {
+  local SAMPLE_DIR="$1" JET_FILE="$2" LAST LAST_JET CAPS=""
+  LAST=$(last_event_with_input "$SAMPLE_DIR")
+  if [ -z "$LAST" ]; then
+    echo "Error: no event of ${SAMPLE_DIR} from ${FIRST_EVENT} on holds ${INPUT_NAME}" >&2
+    return 1
+  fi
+  if [ "$(option_value RUN_PRODUCER_OPTS trigger)" = "jet" ] || [ "$(option_value RUN_PRODUCER_OPTS mixDepth)" != "0" ]; then
+    LAST_JET=$(awk '!/^[[:space:]]*#/ && NF {print int($1)}' "$JET_FILE" | sort -n | tail -1)
+    if [ -z "$LAST_JET" ] || [ "$LAST_JET" -lt "$FIRST_EVENT" ]; then
+      echo "Error: ${JET_FILE} has no event from ${FIRST_EVENT} on" >&2
+      return 1
+    fi
+    if [ "$LAST" -gt "$LAST_JET" ]; then
+      LAST=$LAST_JET
+      CAPS=", capped by the jet file"
+    fi
+  fi
+  if [ "$MAX_EVENTS" -gt 0 ] && [ $((LAST - FIRST_EVENT + 1)) -gt "$MAX_EVENTS" ]; then
+    LAST=$((FIRST_EVENT + MAX_EVENTS - 1))
+    CAPS="${CAPS}, capped by MAX_EVENTS"
+  fi
+  echo "${LAST}|${CAPS}"
+}
+
+# Checks the inputs of a run and sets the event range of each sample and the seed. Stops the script on a missing input: nothing has run yet
 plan_run() {
   local LABEL="$1"
   local DATASET="${RUN_DATASET[$LABEL]}"
-  local BULLET_DIR NO_BULLET_DIR="" JET_FILE SAMPLE_DIR LAST_EVENT LAST_JET_EVENT CAP_NOTE="" SEED_SPEC MISSING
+  local BULLET_DIR NO_BULLET_DIR="" JET_FILE SAMPLE_DIR RANGE LAST_BULLET LAST_NO_BULLET CAPS_BULLET CAPS_NO_BULLET="" SEED_SPEC MISSING
   resolve_run_options "$LABEL"
   BULLET_DIR=$(hydro_path "${DATASET_BULLET[$DATASET]}")
   [ "${DATASET_NO_BULLET[$DATASET]}" != "none" ] && NO_BULLET_DIR=$(hydro_path "${DATASET_NO_BULLET[$DATASET]}")
@@ -529,29 +584,25 @@ plan_run() {
     exit 1
   fi
 
-  # Event range, from the bullet sample. The jet trigger and mixing need a jet-file entry for every event of the range
-  LAST_EVENT=$(last_event_with_input "$BULLET_DIR")
-  if [ -z "$LAST_EVENT" ]; then
-    echo "Error: ${LABEL}: no event of ${BULLET_DIR} from ${FIRST_EVENT} on holds ${INPUT_NAME}"
-    exit 1
-  fi
-  if [ "$(option_value RUN_PRODUCER_OPTS trigger)" = "jet" ] || [ "$(option_value RUN_PRODUCER_OPTS mixDepth)" != "0" ]; then
-    LAST_JET_EVENT=$(awk '!/^[[:space:]]*#/ && NF {print int($1)}' "$JET_FILE" | sort -n | tail -1)
-    if [ -z "$LAST_JET_EVENT" ] || [ "$LAST_JET_EVENT" -lt "$FIRST_EVENT" ]; then
-      echo "Error: ${LABEL}: ${JET_FILE} has no event from ${FIRST_EVENT} on"
-      exit 1
+  # Event ranges. Mixing chooses the partners of an event among the events of the range (partner rule), so with mixing no_bullet takes the
+  # range of the bullet sample, which keeps the partners of each pair the same. Without mixing each sample runs to its own last event: an extra
+  # no_bullet event enters the no_bullet curves, and the difference uses the pairs only
+  RANGE=$(range_end "$BULLET_DIR" "$JET_FILE") || exit 1
+  LAST_BULLET=${RANGE%%|*}
+  CAPS_BULLET=${RANGE#*|}
+  LAST_NO_BULLET=$LAST_BULLET
+  if [ -n "$NO_BULLET_DIR" ]; then
+    if [ "$(option_value RUN_PRODUCER_OPTS mixDepth)" != "0" ]; then
+      CAPS_NO_BULLET=" (the bullet range, for mixing)"
+    else
+      RANGE=$(range_end "$NO_BULLET_DIR" "$JET_FILE") || exit 1
+      LAST_NO_BULLET=${RANGE%%|*}
+      CAPS_NO_BULLET=${RANGE#*|}
     fi
-    if [ "$LAST_EVENT" -gt "$LAST_JET_EVENT" ]; then
-      LAST_EVENT=$LAST_JET_EVENT
-      CAP_NOTE=", capped by the jet file"
-    fi
-  fi
-  if [ "$MAX_EVENTS" -gt 0 ] && [ $((LAST_EVENT - FIRST_EVENT + 1)) -gt "$MAX_EVENTS" ]; then
-    LAST_EVENT=$((FIRST_EVENT + MAX_EVENTS - 1))
-    CAP_NOTE="${CAP_NOTE}, capped by MAX_EVENTS"
   fi
   RUN_FIRST_EVENT[$LABEL]=$FIRST_EVENT
-  RUN_N_EVENTS[$LABEL]=$((LAST_EVENT - FIRST_EVENT + 1))
+  RUN_N_EVENTS_BULLET[$LABEL]=$((LAST_BULLET - FIRST_EVENT + 1))
+  RUN_N_EVENTS_NO_BULLET[$LABEL]=$((LAST_NO_BULLET - FIRST_EVENT + 1))
 
   # Seed
   SEED_SPEC=$(seed_spec "$LABEL")
@@ -564,17 +615,20 @@ plan_run() {
     RUN_SEED[$LABEL]=${SEED_OF_GROUP[$SEED_SPEC]}
   fi
 
-  echo "  ${LABEL}: events ${FIRST_EVENT}-${LAST_EVENT}${CAP_NOTE}, seed ${RUN_SEED[$LABEL]}${SEED_SPEC:+ (seed=${SEED_SPEC})}, overrides: ${RUN_OVERRIDES[$LABEL]:-none}"
+  echo "  ${LABEL}: events ${FIRST_EVENT}-${LAST_BULLET}${CAPS_BULLET}${NO_BULLET_DIR:+, no_bullet ${FIRST_EVENT}-${LAST_NO_BULLET}${CAPS_NO_BULLET}}, seed ${RUN_SEED[$LABEL]}${SEED_SPEC:+ (seed=${SEED_SPEC})}, overrides: ${RUN_OVERRIDES[$LABEL]:-none}"
   [ "$(option_value RUN_PRODUCER_OPTS trigger)" = "rp" ] && echo "    [NOTE] rp trigger: mixing turned off (all mixed triggers would coincide with phi_t = 0)"
-  for SAMPLE_DIR in "$BULLET_DIR" "$NO_BULLET_DIR"; do
-    [ -z "$SAMPLE_DIR" ] && continue
-    MISSING=$(missing_events "$SAMPLE_DIR" "$LAST_EVENT")
-    [ -n "$MISSING" ] && echo "    [NOTE] ${SAMPLE_DIR#"${HYDRO_BASE}"/}: no ${INPUT_NAME} in events ${MISSING}, which the producer skips"
-  done
+  MISSING=$(missing_events "$BULLET_DIR" "$LAST_BULLET")
+  [ -n "$MISSING" ] && echo "    [NOTE] ${BULLET_DIR#"${HYDRO_BASE}"/}: no ${INPUT_NAME} in events ${MISSING}, which the producer skips"
+  if [ -n "$NO_BULLET_DIR" ]; then
+    MISSING=$(missing_events "$NO_BULLET_DIR" "$LAST_NO_BULLET")
+    [ -n "$MISSING" ] && echo "    [NOTE] ${NO_BULLET_DIR#"${HYDRO_BASE}"/}: no ${INPUT_NAME} in events ${MISSING}, which the producer skips"
+  fi
 }
 
-if [ $POST_PROCESS_ONLY -eq 1 ]; then
-  echo "Post-processing ${#SELECTED_RUNS[@]} runs: PerConfig on their producer files in ${CAMPAIGN_DIR}"
+if [ $SUMMARY_ONLY -eq 1 ]; then
+  echo "SummaryPlots only: ${#COMPARE_LINES[@]} comparisons, on the PerConfig files in ${CAMPAIGN_DIR}"
+elif [ $POST_PROCESS_ONLY -eq 1 ]; then
+  echo "Post-processing ${#SELECTED_RUNS[@]} runs: PerConfig on their producer files in ${CAMPAIGN_DIR}, then SummaryPlots"
 else
   echo "Planning ${#SELECTED_RUNS[@]} runs (${RUNS_FILE}, ${DATASETS_FILE})"
   for LABEL in "${SELECTED_RUNS[@]}"; do
@@ -610,16 +664,17 @@ OPTIMIZATION_FLAGS="-O3 -march=native -fno-math-errno -flto=auto -fno-trapping-m
 # -lGenVector for the ROOT::Math vectors and boosts: header-only in practice, but linked explicitly in case a ROOT build moves them into the library
 ROOT_LIBS="$(root-config --glibs) -lGenVector"
 
-if [ $POST_PROCESS_ONLY -eq 0 ]; then
-  echo -n "Compiling $(basename "$PRODUCER_MACRO")..."
+# Compiles macro $1 into executable $2
+compile_macro() {
+  echo -n "Compiling $(basename "$1")..."
   # shellcheck disable=SC2086 # the flag strings must split into separate words
-  g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$PRODUCER_EXE" "$PRODUCER_MACRO" $ROOT_LIBS || exit 1
+  g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$2" "$1" $ROOT_LIBS || exit 1
   echo " done!"
-fi
-echo -n "Compiling $(basename "$PERCONFIG_MACRO")..."
-# shellcheck disable=SC2086 # the flag strings must split into separate words
-g++ $COMPILE_WARN_FLAGS $OPTIMIZATION_FLAGS $ROOT_AWARE_FLAGS -o "$PERCONFIG_EXE" "$PERCONFIG_MACRO" $ROOT_LIBS || exit 1
-echo " done!"
+}
+
+[ $POST_PROCESS_ONLY -eq 0 ] && [ $SUMMARY_ONLY -eq 0 ] && compile_macro "$PRODUCER_MACRO" "$PRODUCER_EXE"
+[ $SUMMARY_ONLY -eq 0 ] && compile_macro "$PERCONFIG_MACRO" "$PERCONFIG_EXE"
+[ ${#COMPARE_LINES[@]} -gt 0 ] && compile_macro "$SUMMARY_MACRO" "$SUMMARY_EXE"
 echo "Compilation successful!"
 echo ""
 
@@ -633,7 +688,14 @@ echo "  Hydro base   : ${HYDRO_BASE}"
 echo "  Runs         : ${#SELECTED_RUNS[@]} of ${#RUN_LABELS[@]}, ${JOBS} at a time"
 echo "  Producer     : ${PRODUCER_OPTS[*]}"
 echo "  PerConfig    : ${PERCONFIG_OPTS[*]}"
-echo "  Mode         : $( [ $POST_PROCESS_ONLY -eq 1 ] && echo 'POST-PROCESS ONLY' || echo 'FULL CHAIN' )"
+echo "  Comparisons  : ${#COMPARE_LINES[@]}"
+if [ $SUMMARY_ONLY -eq 1 ]; then
+  echo "  Mode         : SUMMARY PLOTS ONLY"
+elif [ $POST_PROCESS_ONLY -eq 1 ]; then
+  echo "  Mode         : POST-PROCESS ONLY"
+else
+  echo "  Mode         : FULL CHAIN"
+fi
 echo "========================================================"
 echo ""
 
@@ -646,15 +708,15 @@ echo ""
 # "<file>.part", renamed only on success, and the file of an earlier invocation is removed first: PerConfig and later -p runs can only ever see
 # complete files.
 
-# Arguments: $1 RUN, $2 SAMPLE KEY (bullet or noBullet), $3 SAMPLE FOLDER. Uses RUN_PRODUCER_OPTS of the calling run
+# Arguments: $1 RUN, $2 SAMPLE KEY (bullet or noBullet), $3 SAMPLE FOLDER, $4 NUMBER OF EVENTS. Uses RUN_PRODUCER_OPTS of the calling run
 run_producer() {
-  local LABEL="$1" KEY="$2" SAMPLE_DIR="$3"
+  local LABEL="$1" KEY="$2" SAMPLE_DIR="$3" N_EVENTS="$4"
   local OUT="${CAMPAIGN_DIR}/${LABEL}/hydroTruthLab_${LABEL}_${KEY}.root"
   local PART="${OUT}.part"
   local LOG="${OUT%.root}.log"
   rm -f "$OUT" "$PART"
   # </dev/null: no child may read this script's stdin
-  if "$PRODUCER_EXE" "$SAMPLE_DIR" "$PART" "${RUN_PRODUCER_OPTS[@]}" --jetFile="$(hydro_path "${DATASET_JET_FILE[${RUN_DATASET[$LABEL]}]}")" --inputName="${INPUT_NAME}" --firstEvent="${RUN_FIRST_EVENT[$LABEL]}" --nEvents="${RUN_N_EVENTS[$LABEL]}" --seed="${RUN_SEED[$LABEL]}" > "$LOG" 2>&1 < /dev/null && [ -f "$PART" ]; then
+  if "$PRODUCER_EXE" "$SAMPLE_DIR" "$PART" "${RUN_PRODUCER_OPTS[@]}" --jetFile="$(hydro_path "${DATASET_JET_FILE[${RUN_DATASET[$LABEL]}]}")" --inputName="${INPUT_NAME}" --firstEvent="${RUN_FIRST_EVENT[$LABEL]}" --nEvents="${N_EVENTS}" --seed="${RUN_SEED[$LABEL]}" > "$LOG" 2>&1 < /dev/null && [ -f "$PART" ]; then
     mv "$PART" "$OUT"
     # The executable only ever saw the temporary name: point its log at the final file. A failed run keeps ".part", which is what it wrote
     sed -i 's/\.root\.part/.root/g' "$LOG"
@@ -690,7 +752,7 @@ run_perconfig() {
     NO_BULLET_ARG="none"
   fi
   rm -f "$OUT" "$PART"
-  if "$PERCONFIG_EXE" "$BULLET_FILE" "$NO_BULLET_ARG" "$PART" "${RUN_PERCONFIG_OPTS[@]}" --centralityLabel="${DATASET_CENTRALITY[$DATASET]}" --runLabel="${LABEL}" > "$LOG" 2>&1 < /dev/null && [ -f "$PART" ]; then
+  if "$PERCONFIG_EXE" "$BULLET_FILE" "$NO_BULLET_ARG" "$PART" "${RUN_PERCONFIG_OPTS[@]}" --centralityLabel="${DATASET_CENTRALITY[$DATASET]}" --initialConditions="${DATASET_INITIAL_CONDITIONS[$DATASET]}" --runLabel="${LABEL}" > "$LOG" 2>&1 < /dev/null && [ -f "$PART" ]; then
     mv "$PART" "$OUT"
     sed -i 's/\.root\.part/.root/g' "$LOG" # as for the producers
     echo "  [${LABEL}] PerConfig -> OK  (warning lines in its log: $(grep -c '^\[WARNING\]' "$LOG"))"
@@ -709,10 +771,10 @@ run_one() {
   if [ $POST_PROCESS_ONLY -eq 0 ]; then
     mkdir -p "${CAMPAIGN_DIR}/${LABEL}" || { record_failure "${LABEL} | run folder"; return; }
     local PRODUCER_PIDS=()
-    run_producer "$LABEL" bullet "$(hydro_path "${DATASET_BULLET[$DATASET]}")" &
+    run_producer "$LABEL" bullet "$(hydro_path "${DATASET_BULLET[$DATASET]}")" "${RUN_N_EVENTS_BULLET[$LABEL]}" &
     PRODUCER_PIDS+=($!)
     if [ "${DATASET_NO_BULLET[$DATASET]}" != "none" ]; then
-      run_producer "$LABEL" noBullet "$(hydro_path "${DATASET_NO_BULLET[$DATASET]}")" &
+      run_producer "$LABEL" noBullet "$(hydro_path "${DATASET_NO_BULLET[$DATASET]}")" "${RUN_N_EVENTS_NO_BULLET[$LABEL]}" &
       PRODUCER_PIDS+=($!)
     fi
     wait "${PRODUCER_PIDS[@]}"
@@ -720,16 +782,56 @@ run_one() {
   run_perconfig "$LABEL"
 }
 
-for LABEL in "${SELECTED_RUNS[@]}"; do
-  # At most JOBS runs at once: wait for one to finish before starting the next
-  while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do
-    wait -n
+if [ $SUMMARY_ONLY -eq 0 ]; then
+  for LABEL in "${SELECTED_RUNS[@]}"; do
+    # At most JOBS runs at once: wait for one to finish before starting the next
+    while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do
+      wait -n
+    done
+    run_one "$LABEL" &
+    LANE_PIDS+=($!)
   done
-  run_one "$LABEL" &
-  LANE_PIDS+=($!)
-done
-wait "${LANE_PIDS[@]}"
-LANE_PIDS=()
+  wait "${LANE_PIDS[@]}"
+  LANE_PIDS=()
+  echo ""
+fi
+
+# ==============================================================================
+# SUMMARY PLOTS
+# ==============================================================================
+# One call for every compare line of the registry, with the PerConfig file of each run of the line, whichever invocation made it (--only
+# included). The macro leaves out the runs without one, with a warning
+run_summary_plots() {
+  local OUT="${CAMPAIGN_DIR}/hydroTruthLabSummaryPlots.root"
+  local PART="${OUT}.part"
+  local LOG="${OUT%.root}.log"
+  local ENTRY SPEC LABEL FIELDS=() COMPARE_ARGS=()
+  for ENTRY in "${COMPARE_LINES[@]}"; do
+    read -r -a FIELDS <<< "${ENTRY#*|}"
+    SPEC="${FIELDS[1]},${FIELDS[2]}"
+    for LABEL in "${FIELDS[@]:3}"; do
+      SPEC="${SPEC},${CAMPAIGN_DIR}/${LABEL}/hydroTruthLabPerConfig_${LABEL}.root"
+    done
+    COMPARE_ARGS+=("--compare=${SPEC}")
+  done
+  rm -f "$OUT" "$PART"
+  if "$SUMMARY_EXE" "$PART" "${COMPARE_ARGS[@]}" > "$LOG" 2>&1 < /dev/null && [ -f "$PART" ]; then
+    mv "$PART" "$OUT"
+    sed -i 's/\.root\.part/.root/g' "$LOG" # as for the producers
+    echo "  SummaryPlots -> OK  (warning lines in its log: $(grep -c '^\[WARNING\]' "$LOG"))"
+  else
+    rm -f "$PART"
+    echo "  SummaryPlots -> FAILED  (log: ${LOG})"
+    record_failure "comparisons | SummaryPlots"
+  fi
+}
+
+if [ ${#COMPARE_LINES[@]} -eq 0 ]; then
+  echo "  [NOTE] no compare line in ${RUNS_FILE}, so no SummaryPlots"
+else
+  echo "Running SummaryPlots on ${#COMPARE_LINES[@]} comparisons..."
+  run_summary_plots
+fi
 echo ""
 
 # ==============================================================================
@@ -744,7 +846,7 @@ else
   echo "  FAILURES (${#FAILURES[@]} total)"
   echo ""
   print_report_table "FAILED STEP" "${FAILURES[@]}"
-  echo "  (logs: next to each output, in ${CAMPAIGN_DIR}/<run>/)"
+  echo "  (logs: next to each output, in ${CAMPAIGN_DIR}/<run>/ and, for SummaryPlots, in ${CAMPAIGN_DIR}/)"
 fi
 # Printed separately and only when non-empty, so it never competes with the failure table above
 if [ ${#SKIPPED[@]} -gt 0 ]; then
