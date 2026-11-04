@@ -173,9 +173,23 @@ every version. Standard productions with the same O2 version are exposed to the 
 | installed O2 | setting | effect |
 |---|---|---|
 | before 2026-07-24 | default | no geometrical protection, so there is no failure path |
-| 2026-07-24 … 2026-09-03 (jarvis15) | `GenTPCLoopers.geomProtection=false` | loopers **kept**; the protection, and with it the failure/retry chain, is off. Cost: some loopers start outside the TPC gas, i.e. the pre-July-2026 behaviour of the model |
-| 2026-09-04 or later | default | fixed upstream (`c575d91`, plus the per-collision time windows of `c756dc9`/`1f4567d`, 2026-10-31) |
+| 2026-07-24 … `daily-20260904-0700` (jarvis15 until 2026-11-05) | `GenTPCLoopers.geomProtection=false` | loopers **kept**; the protection, and with it the failure/retry chain, is off. Cost: some loopers start outside the TPC gas, i.e. the pre-July-2026 behaviour of the model |
+| `daily-20260905-0000` or later | default | fixed upstream (see below) |
 | `INJPOL_LOOPERS=veto` | `GenTPCLoopers.loopersVeto=true` | no looper background at all (last resort) |
+
+**Where it was fixed (all in [AliceO2Group/AliceO2](https://github.com/AliceO2Group/AliceO2), i.e. the `O2` package, not
+O2Physics; O2Physics only pulls O2 in as a dependency):**
+
+| commit | date | what | first daily tag containing it |
+|---|---|---|---|
+| [`51d8507`](https://github.com/AliceO2Group/AliceO2/commit/51d8507439564840878828062f2c14d80ccc9571) | 2026-07-24 | "Add geometrical TPC protection against misfired loopers (#15621)": introduces the failure path | (not checked; on jarvis15 since `daily-20260821-0000`) |
+| [`c575d91`](https://github.com/AliceO2Group/AliceO2/commit/c575d910d57ae0f3fa0a73bf62be3dce683b0de1) | 2026-09-04 | "Add protection against skipped loopers": all-skipped is no longer a failure, so no retry and no desync. **This fixes the hang.** | `daily-20260905-0000` |
+| [`c756dc9`](https://github.com/AliceO2Group/AliceO2/commit/c756dc946b622cea3d22a3f98b3c432cd8b1c4e6) | 2026-10-31 | "Fix loopers double counting when using embedding": per-collision looper time windows (`mEventLooperTime`) | `daily-20261031-0000` |
+| [`1f4567d`](https://github.com/AliceO2Group/AliceO2/commit/1f4567dbcfd04f266f6c648997bb5ea7cbffb6e2) | 2026-10-31 | "Flip order of collision owner to prefer the signal + implemented review" | `daily-20261031-0000` |
+
+(Tag containment checked with `git merge-base --is-ancestor` on 2026-11-05.) With O2 `daily-20261031-0000` or later
+all of the above are in, and `injpol_loopers_confkey` leaves the O2 defaults untouched (`mode: default`). Nothing in
+our code needs to change. jarvis15 moves to alidist's `daily-20261104-0000` (O2, O2Physics and O2DPG) on 2026-11-05.
 
 The confKey actually used is written to `logs/confKey_used.txt`. **Best long-term fix: update O2/O2Physics** (and
 O2DPG) to a version from 2026-10-31 or later. That is also what the official productions do: they run tagged O2
@@ -223,7 +237,7 @@ from cheapest to most complete:
 | 14 | `--event-gen-mode` | **integrated** | O2DPG default is "separated", which drops our daughters (§4b) |
 | 15 | Trigger requirement | **none** by default (`presel.requireLeadP = 0`) | Data-like dilution; about 2.5× more Geant4 events per triggered event (§7b) |
 | 16 | Generator RNG | Pythia's own `rndm`, seeded by O2 from `-seed` per TF | Reproducible productions (could be randomised later if wanted) |
-| 17 | TPC loopers | kept; `GenTPCLoopers.geomProtection=false` **only** on O2 versions 2026-07-24 … 2026-09-03 | Workaround for an O2 bug that hangs the run (§4c); best fix is a newer O2 |
+| 17 | TPC loopers | kept; `GenTPCLoopers.geomProtection=false` **only** on O2 versions 2026-07-24 … `daily-20260904-0700`; O2 defaults from `daily-20260905-0000` on ([`c575d91`](https://github.com/AliceO2Group/AliceO2/commit/c575d910d57ae0f3fa0a73bf62be3dce683b0de1)) | Workaround for an O2 bug that hangs the run (§4c); best fix is a newer O2 |
 
 **Your friend's setup** (`ALICE_PhotonReconstruction/GenProduction`), designed for topological Σ⁰ reconstruction, not
 for this analysis:

@@ -94,7 +94,7 @@ injpol_check_kine() { # usage: injpol_check_kine <kine prefix> <logfile> (the lo
 }
 
 # --- TPC-loopers workaround, chosen from the installed O2 version (DESIGN.md section 4c) ---
-# O2 versions between the geometrical protection (2026-07-24, 51d8507) and its fix (2026-09-04, c575d91) treat "all candidate
+# O2 versions between the geometrical protection (2026-07-24, 51d8507) and its fix (c575d91, first in daily-20260905-0000) treat "all candidate
 # loopers outside the TPC" as a generation FAILURE. Each failure makes the primary server retry the event, which advances the
 # loopers' internal event counter once more; at the end of the timeframe it then reads past the collision list
 # (TPCLoopers.cxx: mInteractionTimeRecords[mCurrentEvent]) and asks for ~1e9 loopers -> the run hangs for hours.
@@ -106,8 +106,8 @@ injpol_loopers_confkey() {
     date=$(echo "${ver}" | grep -oE '20[0-9]{6}' | head -1)
     if [ -n "${date}" ]; then
       if   [ "${date}" -lt 20260724 ]; then mode=default           # no geometrical protection yet -> no failure path
-      elif [ "${date}" -lt 20260904 ]; then mode=noGeomProtection  # affected versions
-      else mode=default; fi                                          # fixed (c575d91 and later)
+      elif [ "${date}" -lt 20260905 ]; then mode=noGeomProtection  # affected versions (daily-20260904-0700 still lacks the fix)
+      else mode=default; fi                                          # fixed: c575d91 is in daily-20260905-0000 and later
       echo "[loopers] O2 version '${ver}' (date ${date}) -> TPC loopers mode: ${mode}" >&2
     elif grep -q "ownsContextCollisions" "${inc}/TPCLoopers.h" 2>/dev/null; then
       mode=default

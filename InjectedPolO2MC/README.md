@@ -160,9 +160,11 @@ scripts print only the generator messages, the errors and the check results.
 - `G4Exception : mat031 ... FDD_PMMA sum of fractional masses 1.001`: a standard Geant4 material-definition warning.
 - `'ENABLE_UPGRADES' macro redefined`, `Particle with PDGcode=... already defined`: ROOT/O2 header noise.
 - `Failed to import loopers particles` / `ReadEvent failed in finalizeEvent` / `ReadEvent failed for generator ALICEo2`
-  (full chain only): **harmless only with the loopers workaround or a recent O2.** In O2 versions from 2026-07-24 to
-  2026-09-03 each of these desynchronises the TPC-loopers generator, and the run later **hangs**, asking for ~1e9
-  loopers (DESIGN.md §4c). `runInjectedPol.sh` detects the O2 version and applies the workaround automatically.
+  (full chain only): **harmless only with the loopers workaround or a recent O2.** In O2 versions from 2026-07-24 up to
+  `daily-20260904-0700` each of these desynchronises the TPC-loopers generator, and the run later **hangs**, asking for
+  ~1e9 loopers (DESIGN.md §4c). **Fixed in O2 (AliceO2) by [`c575d91`](https://github.com/AliceO2Group/AliceO2/commit/c575d910d57ae0f3fa0a73bf62be3dce683b0de1), first in `daily-20260905-0000`**; the related
+  follow-ups [`c756dc9`](https://github.com/AliceO2Group/AliceO2/commit/c756dc946b622cea3d22a3f98b3c432cd8b1c4e6) and [`1f4567d`](https://github.com/AliceO2Group/AliceO2/commit/1f4567dbcfd04f266f6c648997bb5ea7cbffb6e2) are in `daily-20261031-0000` and later. With such an O2 nothing is changed; on older
+  versions `runInjectedPol.sh` detects the O2 version and applies the workaround automatically.
 
 **If a run hangs:** `run/progress.py <folder>` flags stalls (no log activity for 20 min) and runaway loopers.
 `run/killRun.sh <folder>` lists, and with `--kill` stops, only the processes of that run (working directory inside the
