@@ -136,12 +136,51 @@ Found in the first full-chain test (jarvis15, 2026-11-05: B3–B5 and A3 failed 
 Other observations from the same run (standard O2/O2DPG behaviour, not related to our generator):
 - *97 events for `-ns 50`:* the collision context holds up to `--maxCollsPerTF` (= `-ns`) collisions in the TF, plus
   "orbits-early" collisions before the TF start (pile-up from earlier bunch crossings), which are simulated too.
-- *`Failed to import loopers particles` / `ReadEvent failed ...`:* O2's TPC-loopers background generator (active when
-  a collision context exists) occasionally fails in `Generator::finalizeEvent`. The primary server retries with a new
-  event (`run/O2PrimaryServerDevice.cxx:219-227`). In separated mode each retry consumed one more pre-generated event,
-  hence the final `GeneratorFromO2Kine: Ran out of events`. In integrated mode a retry is a fresh Pythia event.
+- *`Failed to import loopers particles` / `ReadEvent failed ...`:* **not harmless in the O2 version on jarvis15**; see §4c.
+  In separated mode each retry also consumed one more pre-generated event, hence `GeneratorFromO2Kine: Ran out of events`.
 - *All AO2D particles carry `FromBackgroundEvent` (0x2):* the AOD producer flags source 0 as background
   (`AODProducerWorkflowSpec.cxx:1215`), and `sgn` is source 0 without embedding.
+
+## 4c. TPC loopers: an O2 bug that hangs the run, and the version-aware workaround
+
+Found in the second full-chain test (jarvis15, 2026-11-05): the run hung for 4+ hours at event 94/97. The particle
+server had logged `Flat gas loopers: 841227478` and `Time constraint for loopers: -2.5049e+14 ns`, then used ~70 GB of
+memory. Diagnosis (code of AliceO2 `dev` as of 2026-08-22, i.e. jarvis15's `O2/daily-20260821`):
+
+1. Since O2 2026-07, every generator derived from `o2::eventgen::Generator` adds **TPC loopers** (a machine-learned
+   e±-looper background, `GenTPCLoopers`) in `Generator::finalizeEvent` whenever a collision context exists. That
+   covers all O2DPG productions, ours included. O2DPG never switches it off; it only sets `GenTPCLoopers.colsys`
+   (`o2dpg_sim_config.py:192`).
+2. The geometrical protection added on 2026-07-24 (`51d8507`, `GenTPCLoopers.geomProtection = true`) drops candidate
+   loopers outside the TPC gas. In versions before **2026-09-04** (`c575d91`, "Add protection against skipped loopers"),
+   "all candidates dropped" is reported as a **failure** (`Failed to import loopers particles`).
+3. A failure makes the primary server **retry** the event (`O2PrimaryServerDevice.cxx:219-227`). The loopers generator
+   counts its calls (`mCurrentEvent++`) and uses that counter to index the collision list of the timeframe
+   (`TPCLoopers.cxx:238`: `mInteractionTimeRecords[mCurrentEvent]`). Each retry pushes the counter one step ahead.
+4. After k failures, the last k events of the timeframe read **past the end** of that list. A garbage time window
+   gives a negative looper number, which becomes ~1e9 loopers once cast to `unsigned int`, so the run never finishes.
+   Our run: 4 failures and 97 collisions, so event 94 used index 93 + 4 = 97, the first index past the end. The
+   arithmetic matches the hang exactly.
+
+**Not caused by our generator.** The looper count depends only on the collision-context timing, never on the event
+content (Λ, nπ⁰ channel, photons from π⁰ → γγ: none of it enters). Which events fail depends only on where the ML
+model puts looper vertices. Our pre-selection loop also lives inside `generateEvent()`, not in O2 triggers. That
+matters: an O2 trigger would call `finalizeEvent` once per *rejected* event too, and desynchronise the counter in
+every version. Standard productions with the same O2 version are exposed to the same bug.
+
+**What we do** (`run/envcheck.sh: injpol_loopers_confkey`, used by `runInjectedPol.sh`; override with `INJPOL_LOOPERS`):
+
+| installed O2 | setting | effect |
+|---|---|---|
+| before 2026-07-24 | default | no geometrical protection, so there is no failure path |
+| 2026-07-24 … 2026-09-03 (jarvis15) | `GenTPCLoopers.geomProtection=false` | loopers **kept**; the protection, and with it the failure/retry chain, is off. Cost: some loopers start outside the TPC gas, i.e. the pre-July-2026 behaviour of the model |
+| 2026-09-04 or later | default | fixed upstream (`c575d91`, plus the per-collision time windows of `c756dc9`/`1f4567d`, 2026-10-31) |
+| `INJPOL_LOOPERS=veto` | `GenTPCLoopers.loopersVeto=true` | no looper background at all (last resort) |
+
+The confKey actually used is written to `logs/confKey_used.txt`. **Best long-term fix: update O2/O2Physics** (and
+O2DPG) to a version from 2026-10-31 or later. That is also what the official productions do: they run tagged O2
+releases with these fixes rather than switching the feature off. `run/progress.py` raises an ALARM if it ever sees a
+runaway looper request, and `run/killRun.sh` stops one run without touching other jobs.
 
 ## 5. Generator-level vs Geant4 decays: characterization plan
 
@@ -184,6 +223,7 @@ from cheapest to most complete:
 | 14 | `--event-gen-mode` | **integrated** | O2DPG default is "separated", which drops our daughters (§4b) |
 | 15 | Trigger requirement | **none** by default (`presel.requireLeadP = 0`) | Data-like dilution; about 2.5× more Geant4 events per triggered event (§7b) |
 | 16 | Generator RNG | Pythia's own `rndm`, seeded by O2 from `-seed` per TF | Reproducible productions (could be randomised later if wanted) |
+| 17 | TPC loopers | kept; `GenTPCLoopers.geomProtection=false` **only** on O2 versions 2026-07-24 … 2026-09-03 | Workaround for an O2 bug that hangs the run (§4c); best fix is a newer O2 |
 
 **Your friend's setup** (`ALICE_PhotonReconstruction/GenProduction`), designed for topological Σ⁰ reconstruction, not
 for this analysis:

@@ -50,7 +50,11 @@ injpol_summarize_logs() { # usage: injpol_summarize_logs log1 [log2 ...]
       | grep -a -v -E "TNetXNGFile::Open.*No servers are available|G4Exception-(START|END)|mat031|Beware of errors and use common sense|Failed to import loopers particles|ReadEvent failed in finalizeEvent|ReadEvent failed for generator ALICEo2" \
       | sed "s|^|$(basename "$f"):|" | head -30
   done
-  [ "$nloop" -gt 0 ] && echo "[harmless] ${nloop} TPC-loopers import failure(s): O2 issue, the primary server regenerated those events (README, 'Known harmless messages')"
+  [ "$nloop" -gt 0 ] && echo "[loopers] ${nloop} TPC-loopers import failure(s), each followed by a regenerated event: harmless with a recent O2 or with the
+          workaround in logs/confKey_used.txt; on O2 2026-07-24..09-03 WITHOUT it they make the run hang later (DESIGN.md 4c)"
+  for f in "$@"; do
+    [ -f "$f" ] && awk '/Flat gas loopers: [0-9]+/{for(i=1;i<=NF;i++) if($i=="loopers:" && $(i+1)+0>5000000){print "[ALARM] runaway TPC loopers in " FILENAME ": " $0; exit}}' "$f"
+  done
   [ "$nout" -gt 0 ] && echo "[WARNING] 'GeneratorFromO2Kine: Ran out of events' seen: the generator ran in a SEPARATE step (O2DPG --event-gen-mode separated), which DROPS the Lambda daughters. Use --event-gen-mode integrated."
   for f in "$@"; do [ -f "$f" ] && echo "     (full log: $(readlink -f "$f"), $(wc -l < "$f") lines)"; done
   return 0
@@ -87,4 +91,39 @@ injpol_check_kine() { # usage: injpol_check_kine <kine prefix> <logfile> (the lo
   grep -a -E "^\[ OK \]|^\[FAIL\]|^\[info\]|^generator-level|^checkKine:|WARNING|  event " "$2" \
     || { echo "checkKine.C produced no results; first errors from $2:"; grep -a -n -i "error" "$2" | head -15; }
   echo "     (full ROOT output: $(readlink -f "$2"))"
+}
+
+# --- TPC-loopers workaround, chosen from the installed O2 version (DESIGN.md section 4c) ---
+# O2 versions between the geometrical protection (2026-07-24, 51d8507) and its fix (2026-09-04, c575d91) treat "all candidate
+# loopers outside the TPC" as a generation FAILURE. Each failure makes the primary server retry the event, which advances the
+# loopers' internal event counter once more; at the end of the timeframe it then reads past the collision list
+# (TPCLoopers.cxx: mInteractionTimeRecords[mCurrentEvent]) and asks for ~1e9 loopers -> the run hangs for hours.
+# INJPOL_LOOPERS = auto (default) | default | noGeomProtection | veto
+injpol_loopers_confkey() {
+  local mode="${INJPOL_LOOPERS:-auto}" ver date inc="${O2_ROOT}/include/Generators"
+  if [ "${mode}" = "auto" ]; then
+    ver=$(basename "${O2_ROOT}")
+    date=$(echo "${ver}" | grep -oE '20[0-9]{6}' | head -1)
+    if [ -n "${date}" ]; then
+      if   [ "${date}" -lt 20260724 ]; then mode=default           # no geometrical protection yet -> no failure path
+      elif [ "${date}" -lt 20260904 ]; then mode=noGeomProtection  # affected versions
+      else mode=default; fi                                          # fixed (c575d91 and later)
+      echo "[loopers] O2 version '${ver}' (date ${date}) -> TPC loopers mode: ${mode}" >&2
+    elif grep -q "ownsContextCollisions" "${inc}/TPCLoopers.h" 2>/dev/null; then
+      mode=default
+      echo "[loopers] O2 version '${ver}' not dated; headers contain the 2026-10-31 loopers fixes -> mode: ${mode}" >&2
+    elif grep -q "geomProtection" "${inc}/TPCLoopersParam.h" 2>/dev/null; then
+      mode=noGeomProtection
+      echo "[loopers] O2 version '${ver}' not dated; may be affected by the loopers retry bug -> mode: ${mode}" >&2
+    else
+      mode=default
+      echo "[loopers] O2 version '${ver}' not dated; no geometrical protection in its headers -> mode: ${mode}" >&2
+    fi
+  fi
+  case "${mode}" in
+    default)          echo "" ;;
+    noGeomProtection) echo "GenTPCLoopers.geomProtection=false" ;;
+    veto)             echo "GenTPCLoopers.loopersVeto=true" ;;
+    *) echo "[loopers] unknown INJPOL_LOOPERS='${mode}'" >&2; echo "" ;;
+  esac
 }

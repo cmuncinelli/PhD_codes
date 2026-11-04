@@ -46,13 +46,19 @@ INI
 #                                     inside the transport, as in the smoke test.
 #   --skipModules ZDC               : O2DPG convention (most O2DPG run scripts); ZDC is ~112 m away, no effect on the barrel
 #   -confKey Diamond.width[2]=6.    : 6 cm luminous-region sigma along z, as in the O2DPG run scripts
+#   GenTPCLoopers.*                 : workaround for an O2 TPC-loopers bug in some O2 versions, chosen automatically
+#                                     (INJPOL_LOOPERS=auto|default|noGeomProtection|veto; DESIGN.md section 4c)
 #   (NOT used: --readoutDets restrictions; anchored productions set them to the detectors read out in the anchor run)
+LOOPERSKEY=$(injpol_loopers_confkey)
+CONFKEY="Diamond.width[2]=6.${LOOPERSKEY:+;${LOOPERSKEY}}"
+echo "${CONFKEY}" > logs/confKey_used.txt
+
 echo "Creating workflow in ${WORKDIR} -> logs/workflow_creation.log ..."
 ${O2DPG_ROOT}/MC/bin/o2dpg_sim_workflow.py -eCM 13600 -col pp -gen external -ini "${WORKDIR}/injectedPol.ini" \
     --event-gen-mode integrated \
     -j "${NWORKERS}" -ns "${NSIGEVENTS}" -tf "${NTIMEFRAMES}" -interactionRate "${INTRATE}" \
     -seed "${SEED}" -e "${SIMENGINE}" --skipModules ZDC \
-    -confKey "Diamond.width[2]=6." > logs/workflow_creation.log 2>&1 || { tail -30 logs/workflow_creation.log; echo "workflow creation FAILED"; exit 1; }
+    -confKey "${CONFKEY}" > logs/workflow_creation.log 2>&1 || { tail -30 logs/workflow_creation.log; echo "workflow creation FAILED"; exit 1; }
 
 echo "Running workflow up to AOD -> logs/workflow_runner.log (this takes a while) ..."
 echo "  progress from another terminal:  ${INJPOL_ROOT}/run/progress.py ${WORKDIR} --watch 30"

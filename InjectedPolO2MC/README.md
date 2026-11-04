@@ -77,7 +77,8 @@ InjectedPolO2MC/
 │   └── configs/                           <- model configs: none, ring (leadP default / leadP requiring a trigger / jet), global, longitudinal, helicity, 5-Λ test
 ├── run/
 │   ├── envcheck.sh                        <- environment checks, path normalisation, log summaries/moves, disk report, compiled checkKine (sourced)
-│   ├── progress.py                        <- progress bar, ETA, per-task timing and disk usage of a full-chain output folder
+│   ├── progress.py                        <- progress bar, ETA, per-task timing, disk usage, stall/runaway-loopers alarms
+│   ├── killRun.sh                         <- stop ONE run (only processes working inside its output folder)
 │   ├── runTests.sh                        <- unit tests + step 0 (stand-alone Pythia closure), builds *.exe in ${OUT_BASE}/bin
 │   ├── recheckKine.sh                     <- re-run only checkKine.C on existing o2-sim output
 │   ├── smokeTestSim.sh                    <- step 1: o2-sim only, 10 events, then checkKine.C
@@ -159,9 +160,13 @@ scripts print only the generator messages, the errors and the check results.
 - `G4Exception : mat031 ... FDD_PMMA sum of fractional masses 1.001`: a standard Geant4 material-definition warning.
 - `'ENABLE_UPGRADES' macro redefined`, `Particle with PDGcode=... already defined`: ROOT/O2 header noise.
 - `Failed to import loopers particles` / `ReadEvent failed in finalizeEvent` / `ReadEvent failed for generator ALICEo2`
-  (full chain only): O2's TPC-loopers background generator, active when a collision context exists, occasionally
-  fails. The primary server then simply generates a new event (`O2PrimaryServerDevice.cxx`). The summaries count these
-  instead of listing them.
+  (full chain only): **harmless only with the loopers workaround or a recent O2.** In O2 versions from 2026-07-24 to
+  2026-09-03 each of these desynchronises the TPC-loopers generator, and the run later **hangs**, asking for ~1e9
+  loopers (DESIGN.md §4c). `runInjectedPol.sh` detects the O2 version and applies the workaround automatically.
+
+**If a run hangs:** `run/progress.py <folder>` flags stalls (no log activity for 20 min) and runaway loopers.
+`run/killRun.sh <folder>` lists, and with `--kill` stops, only the processes of that run (working directory inside the
+folder); your other jobs and your terminals are never touched. Then delete the folder and start again.
 - More events than requested (e.g. 97 for `NSIGEVENTS=50`): O2DPG adds "orbits-early" pile-up collisions before the
   timeframe start. All particles carrying the AO2D flag `FromBackgroundEvent` is also normal without embedding.
 - Should you ever see `GeneratorFromO2Kine: Ran out of events`: the generator ran in O2DPG's *separated* mode, which

@@ -13,7 +13,10 @@ What it reads (all written by O2DPG / O2 anyway):
   <tfN>/<task>.log_done                 marker left by the O2 task wrapper when a task succeeded
   <tfN>/<task>.log_time                 "#walltime <s>" written by the task wrapper (exact wall time per task)
   pipeline_action_<pid>.log             runner log; "Submitting task <name>" lines give task start times
-  <tfN>/sgnsim_<N>.log                  o2-sim steering output; "EVENT FINISHED" lines give event-level progress
+  <tfN>/sgnsim_<N>.log                  o2-sim steering output; "EVENT FINISHED" lines give event-level progress and
+                                        "Setting number of events to simulate to N" the expected total
+  <tfN>/sgn_serverlog                   generator output; used to detect runaway TPC loopers (DESIGN.md section 4c)
+Warnings: a running transport with no log activity for --stall-minutes (default 20) is flagged as possibly stalled.
 After a successful run, runInjectedPol.sh moves these logs to <workdir>/logs/; both places are searched.
 """
 import argparse
@@ -26,6 +29,7 @@ import sys
 import time
 
 TARGET_DEFAULT = "aod"  # same target as `o2_dpg_workflow_runner.py -tt aod`
+STALL_MINUTES = 20      # warn if a running transport task has written no log line for this long (--stall-minutes)
 
 
 def find_file(workdir, rel):
@@ -92,19 +96,52 @@ def base_name(name):
 
 
 def sim_events(workdir, task):
-    """(finished, distributed) events from an o2-sim steering log (sgnsim_N.log)."""
+    """(finished, distributed, expected) events from an o2-sim steering log (sgnsim_N.log).
+    expected comes from o2-sim's 'Setting number of events to simulate to N' (collision context), None if not found."""
     rel = os.path.join(task.get("cwd", "") or "", task["name"] + ".log")
     p = find_file(workdir, rel)
     if not p:
-        return 0, 0
-    fin, dist = 0, 0
+        return 0, 0, None
+    fin, dist, expected = 0, 0, None
+    rx = re.compile(r"Setting number of events to simulate to (\d+)")
     with open(p, errors="replace") as f:
         for line in f:
             if "EVENT FINISHED" in line:
                 fin += 1
             elif "DISTRIBUTING EVENT" in line:
                 dist += 1
-    return fin, dist
+            elif expected is None:
+                m = rx.search(line)
+                if m:
+                    expected = int(m.group(1))
+    return fin, dist, expected
+
+
+def sim_health(workdir, task, stall_minutes):
+    """Warnings for a RUNNING transport task: stalled logs, runaway TPC loopers (DESIGN.md section 4c)."""
+    warns = []
+    cwd = os.path.join(workdir, task.get("cwd", "") or "")
+    files = [p for p in glob.glob(os.path.join(cwd, "sgn*")) if re.search(r"(\.log|serverlog|workerlog\d*|mergerlog)$", p)]
+    if files:
+        idle = (time.time() - max(os.path.getmtime(p) for p in files)) / 60.0
+        if idle > stall_minutes:
+            warns.append(f"   WARNING {task['name']}: no log activity for {idle:.0f} min (threshold {stall_minutes} min) -- possibly STALLED")
+    server = os.path.join(cwd, "sgn_serverlog")
+    if os.path.exists(server):
+        rx = re.compile(r"Flat gas loopers: (\d+)")
+        worst, neg = 0, False
+        with open(server, errors="replace") as f:
+            for line in f:
+                m = rx.search(line)
+                if m:
+                    worst = max(worst, int(m.group(1)))
+                if "Time constraint for loopers: -" in line:
+                    neg = True
+        if neg or worst > 5_000_000:
+            warns.append(f"   ALARM {task['name']}: runaway TPC loopers (max {worst} requested{', negative time window' if neg else ''}).")
+            warns.append("         This O2 bug never finishes (DESIGN.md section 4c): stop the run with run/killRun.sh and re-run")
+            warns.append("         (runInjectedPol.sh applies the workaround automatically; or set INJPOL_LOOPERS=noGeomProtection).")
+    return warns
 
 
 def human_bytes(n):
@@ -189,16 +226,23 @@ def report(workdir, targets, final=False):
     out.append(f"   [{bar}] {100 * frac_w:5.1f}%   elapsed {human_time(elapsed)}")
 
     # event-level progress of the Geant4 stage (the dominant cost)
+    health = []
     for t, s, w in rows:
         if base_name(t["name"]) == "sgnsim":
-            fin, dist = sim_events(workdir, t)
-            line = f"   {t['name']}: {fin} events finished ({dist} distributed so far)"
+            fin, dist, expected = sim_events(workdir, t)
+            total = expected if expected else dist
+            line = f"   {t['name']}: {fin}/{expected if expected else '?'} events finished ({dist} distributed)"
             if s == "running/failed" and fin > 0 and t["name"] in starts:
                 el = (now - starts[t["name"]]).total_seconds()
-                line += f", {el / fin:.1f} s/event so far; this TF's transport ends in ~{human_time(el / fin * max(dist - fin, 0))} if no more events are distributed"
+                line += f", {el / fin:.1f} s/event so far; transport of this TF ends in ~{human_time(el / fin * max(total - fin, 0))}"
+                if not expected:
+                    line += " (total unknown: counted from distributed events only)"
             elif w and fin > 0:
                 line += f", wall {human_time(w)} = {w / fin:.2f} s/event (Geant4 + generator, {t.get('resources', {}).get('cpu', '?')} CPU booked)"
             out.append(line)
+            if s == "running/failed":
+                health += sim_health(workdir, t, STALL_MINUTES)
+    out += health
     if rem > 0:
         extra = "" if unknown == 0 else f" + {unknown} task(s) with no timing reference yet ({', '.join(unknown_names[:4])}{', ...' if unknown > 4 else ''})"
         out.append(f"   ETA: <= ~{human_time(rem)}{extra}")
@@ -247,7 +291,9 @@ def main():
     ap.add_argument("--targets", nargs="+", default=[TARGET_DEFAULT])
     ap.add_argument("--watch", type=int, default=0, help="refresh period in seconds (0 = one shot)")
     ap.add_argument("--final", action="store_true", help="full report, also written to <workdir>/logs/run_report.txt")
+    ap.add_argument("--stall-minutes", type=int, default=STALL_MINUTES, help="warn when a running transport writes no log for this long")
     a = ap.parse_args()
+    globals()["STALL_MINUTES"] = a.stall_minutes
     workdir = os.path.abspath(a.workdir.rstrip("/"))
     if not os.path.exists(os.path.join(workdir, "workflow.json")):
         sys.exit(f"no workflow.json in {workdir}")
