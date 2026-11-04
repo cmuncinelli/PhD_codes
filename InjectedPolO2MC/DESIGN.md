@@ -1,30 +1,24 @@
 # InjectedPolO2MC -- archaeology findings and afterburner design
 
-*First draft, 2026-11-04. Source versions inspected: AliceO2 `a6674c4` (2026-11-03), O2DPG (fork,
-in sync with upstream) `e9d5f2d` (2026-11-03), O2Physics (fork) `8018361` (2026-10-13).
-File/line references below are relative to those trees.*
+*v1, 2026-11-04. Source versions inspected: AliceO2 `a6674c4` (2026-11-03), O2DPG `e9d5f2d` (2026-11-03; your fork is
+in sync with upstream), O2Physics fork `master` `8018361` and **`LambdaPolRing-v4` `ab79d01`**, alidist `master`.
+File/line references are relative to those trees. Links to all repositories are in [`README.md`](README.md).*
 
 ---
 
 ## 1. TL;DR
 
-- **Where to inject:** an O2DPG-style **external generator macro**, i.e. a subclass of
-  `o2::eventgen::GeneratorPythia8` that overrides `importParticles()`. After Pythia fills the event,
-  we decay every final-state Λ/Λ̄ ourselves with a polarized angular distribution, and we append the
-  daughters to the particle list with a **displaced production vertex**. Geant4 then transports the
-  daughters (and everything else) normally. No change to O2, O2DPG or O2Physics is needed.
-- **Recipe already exists in O2:** `Generators/src/EventDecayer.cxx:303-362` (`EventDecayer::decayOne`)
-  and `O2DPG/MC/config/PWGEM/external/generator/Generator_pythia8_forcedDecays.C` do this for
-  isotropic Pythia decays. We copy their bookkeeping and replace the kinematics with the polarized
-  kernel already in `vorticity_hydro/lambda_pol_toy_model.cxx` (`sample_P_angle_proton_from_cos_xi`
-  and `Lambda_decay`).
-- **Main pitfall:** if we copy that recipe verbatim, the **Λ loses `isPhysicalPrimary` and the p/π
-  daughters gain it**. The daughters also get process code 0 instead of 4 (`kPDecay`), which
-  breaks the strangeness builder's generated-V0 MC tables. Section 4 gives the fix: Λ keeps HepMC
-  status 1 but is not transported, and the daughters get `UniqueID = kPDecay`.
-- **Alternative rejected for now:** letting Geant4 hand Λ decays to a custom external decayer.
-  O2DPG already routes Λ decays this way in one case, but polarization cannot reach the decayer
-  without patching O2 core (section 3.2).
+- **Injection point:** an O2DPG-style **external generator macro**, i.e. a subclass of `o2::eventgen::GeneratorPythia8`
+  that overrides `importParticles()`. After Pythia fills the event, every final-state Λ/Λ̄ is decayed by us with a
+  polarized angular distribution, and the daughters are appended with a **displaced production vertex**. Geant4
+  then transports the daughters (and everything else) normally. No change to O2, O2DPG or O2Physics is needed.
+- **Recipe already exists in O2/O2DPG:** `AliceO2/Generators/src/EventDecayer.cxx:303-362` and
+  `O2DPG/MC/config/PWGEM/external/generator/Generator_pythia8_forcedDecays.C` do generator-level isotropic decays.
+  We follow their structure and replace the kinematics with the polarized kernel.
+- **Bookkeeping fixed so that MC truth looks standard** (§4): the Λ stays a *physical primary*, and the daughters are
+  *secondaries from a decay* (process 4). This is what the strangeness builder needs for MC matching.
+- **Known deviation from standard productions:** the Λ does not interact with material before decaying.
+  §5 gives a characterization plan.
 
 ---
 
@@ -35,226 +29,237 @@ o2dpg_sim_workflow.py  ──► workflow.json ──► o2_dpg_workflow_runner.
                                                │
    per timeframe:  o2-sim (generator + Geant4) │ digitization │ reco (ITS/TPC/TOF/...) │ secondary vertexing
                    │                                                        │ AOD producer ──► tfN/AO2D.root
-                   └─ generator = Pythia8 or external macro (.C, JIT-compiled by ROOT/Cling)
+                   └─ generator = Pythia8 or external macro (.C, loaded with gROOT->LoadMacro, i.e. JIT by Cling)
 ```
 
-- An external generator is selected with `-gen external -ini my.ini`, where the ini contains
-  ```ini
-  [GeneratorExternal]
-  fileName=/abs/path/generator_pythia8_injectedPol.C
-  funcName=generator_injectedPol(<args>)
-  [GeneratorPythia8]
-  config=/abs/path/pythia8.cfg
-  ```
-  Concrete local example: `gianniliveraro/ALICE_PhotonReconstruction/GenProduction/` (`configParticleGun.ini`,
-  `generator_pythia8_gun.C`, `runSimulation.sh`). It uses exactly this mechanism plus batch scripts.
-- **Event loop** (`AliceO2/Generators/src/Generator.cxx:308-384`): `generateEvent()` → `importParticles()`
-  → `finalizeEvent()` → trigger (loop until accepted) → `decayParticles()` (optional `EventDecayer`)
-  → `addTracks()`.
-- **Units in `mParticles`:** whatever the generator uses. For `GeneratorPythia8` that means mm and mm/c.
-  The base class converts with `mPositionUnit = 0.1` and `mTimeUnit = 3.3356410e-12`
-  (`Generator.h:157-158`).
-- **Vertices:** `PrimaryGenerator::AddTrack` adds the smeared interaction vertex on top of the
-  particle's own production vertex (`PrimaryGenerator.cxx:148-150`). A displaced decay vertex set in
-  the generator is therefore preserved.
-- **Transport flag:** `ParticleStatus::kToBeDone` on each `TParticle` decides whether Geant4 tracks it.
-  Particles with the flag off still go to the stack and the MC record (`Detectors/Base/src/Stack.cxx:228-247`).
-- **Process code:** the generator's `TParticle::UniqueID` is stored as the MC process
-  (`Stack.cxx:240`, `MCTrack.h:399`), and `MCTrack::isPrimary()` is
-  `process == kPPrimary || no mothers` (`MCTrack.h:75`).
-- **Pythia defaults already keep Λ undecayed** (`ParticleDecays:limitTau0 on`, `tau0Max = 10` mm/c;
-  Λ has cτ = 78.9 mm), so in standard productions Geant4 decays Λ isotropically.
+- An external generator is selected with `-gen external -ini my.ini` ([GeneratorExternal] `fileName`/`funcName`, plus
+  [GeneratorPythia8] `config` for a Pythia card). `${ENV}` inside the ini is expanded (O2DPG uses it in both
+  `fileName` and `funcName` arguments). Macros include shared headers with `R__ADD_INCLUDE_PATH($ENVVAR/...)`, which
+  is what we do with `$INJPOL_ROOT`.
+- **Event loop** (`Generators/src/Generator.cxx:308-384`): `generateEvent()` → `importParticles()` → `finalizeEvent()`
+  → trigger (loop until accepted) → `decayParticles()` (optional `EventDecayer`, off by default) → `addTracks()`.
+- **Units in `mParticles`:** those of the generator. Pythia uses mm and mm/c, converted with `mPositionUnit = 0.1`,
+  `mTimeUnit = 3.3356410e-12` (`Generator.h:157-158`).
+- **Vertices:** `PrimaryGenerator::AddTrack` adds the smeared interaction vertex to the particle's own production
+  vertex (`PrimaryGenerator.cxx:148-150`), so displaced decay vertices set in the generator survive.
+- **Transport flag:** `ParticleStatus::kToBeDone`. Non-transported generator particles are still stored (`Stack.cxx:228-247`).
+- **Process code:** the generator's `TParticle::UniqueID` becomes the MC creation process (`Stack.cxx:240`,
+  `MCTrack.h:399`). `MCTrack::isPrimary()` is `process == kPPrimary || no mothers` (`MCTrack.h:75`).
+- **Seeding:** with `-gen pythia8`, O2DPG writes a per-TF card with the TF seed (`o2dpg_sim_workflow.py:913`).
+  With `-gen external` it does not. `GeneratorPythia8` then seeds Pythia from `gRandom`, which follows
+  `o2-sim --seed` (set per TF by O2DPG), provided the card has **no `Random:` lines** (`GeneratorPythia8.cxx:114-140`).
+  The afterburner draws from Pythia's own `rndm`, so a production is reproducible from `-seed` alone.
+- **What standard productions do with Λ:** Pythia leaves every particle with τ₀ > 10 mm/c undecayed
+  (`ParticleDecays:limitTau0 = on`, `tau0Max = 10`; Λ has cτ = 78.9 mm). The same holds for K⁰_S, Σ±, Ξ, Ω, π±, K±.
+  Geant4 transports them through the material, where hadronic interactions are possible, and decays them where they
+  actually decay, **isotropically** (phase space, no polarization). The one exception in O2DPG is the PWGLF
+  double-Λ production, which forces the charged decay channel through Geant4's external-decayer interface (§3.2).
 
 ---
 
 ## 3. Injection points considered
 
-### 3.1 Generator-level decay (chosen)
+### 3.1 Generator-level decay (chosen for v1)
 
-Override `importParticles()` (pattern used by about 30 macros in O2DPG, e.g. `PWGLF/pythia8/generator_pythia8_LF.C`,
-`PWGEM/external/generator/Generator_pythia8_forcedDecays.C`):
+`importParticles()` override (as in about 30 O2DPG macros). The whole event is available (jet axis, multiplicity,
+a reaction plane). It needs no core change, runs in a single process, and is reproducible.
+Cost: the Λ does not interact with material before its decay (§5), and the decay length is sampled by us
+(same cτ as Geant4).
 
-```cpp
-bool importParticles() override {
-  if (!GeneratorPythia8::importParticles()) return false;
-  computeEventAxes();      // jet proxy, (random) reaction plane, ...
-  injectPolarizedDecays(); // decay every toBeDone Λ/Λ̄ with our kernel, append daughters
-  return true;
-}
-```
-
-Pros: the whole event (jet axis, multiplicity, a reaction plane) is available. It needs no core change,
-runs in a single process, and is easy to make reproducible.
-Cons: the Λ does not interact with material before its decay (absorption/scattering in the beam
-pipe/ITS over a few cm is a small effect, but it should be listed as a systematic of the method),
-and the decay length has to be sampled by us.
-
-### 3.2 Decay during Geant4 transport through an external decayer (rejected for v1)
+### 3.2 Decay during Geant4 transport through a custom external decayer (possible v2)
 
 There is a precedent: `O2DPG/MC/run/PWGLF/run_DoubleLambdaTriggered.sh` with
 `MC/config/PWGLF/pythia8/decayer/g4_ext_decayer_lambda.in` (`/mcPhysics/setExtDecayerSelection lambda anti_lambda`).
-In that setup Geant4 hands Λ decays to `o2::eventgen::DecayerPythia8` (`G4.configMacroFile=...`).
-A custom `TVirtualMCDecayer` could do polarized decays there, which would keep material effects and
-all bookkeeping exactly as standard. However:
+Geant4 hands Λ decays to `o2::eventgen::DecayerPythia8`. A polarized `TVirtualMCDecayer` would keep the material
+effects exactly standard. It is blocked because:
+- `TVirtualMCDecayer::Decay(int pdg, TLorentzVector* p)` gets only the PDG code and momentum, with no event context;
+- the polarization of primaries is **hard-coded to zero** (`PrimaryGenerator.cxx:165-167`), so it cannot travel with the Λ;
+- `o2-sim` transports chunks of an event in **separate worker processes**, so a shared lookup table fails too.
 
-- `TVirtualMCDecayer::Decay(int pdg, TLorentzVector* p)` receives only the PDG code and momentum, with
-  no event context;
-- polarization is **hard-coded to zero** when primaries are pushed (`PrimaryGenerator.cxx:165-167`),
-  so it cannot travel with the Λ;
-- `o2-sim` transports chunks of the same event in **separate worker processes**, so a shared lookup
-  table filled by the generator does not work either.
+This would need a small O2 core patch: pass the `TParticle` polarisation through `AddTrack`, and read it in the
+decayer from the stack's current track. Worth doing only if §5 shows that the material effect matters.
 
-This would need an O2 core patch (propagate `TParticle` polarisation in `AddTrack`, read it in the
-decayer from the current stack track). Keep it as a possible v2 if Λ-material effects turn out to matter.
+### 3.3 Reweighting a standard production (rejected)
 
-### 3.3 Post-hoc reweighting of a standard production (not chosen)
-
-We could reweight standard-MC Λ candidates by 1 + α P·p̂*. It's cheap, but it is not a real
-"injected" sample. Reweighting does not change the topologies seen by the reconstruction. It is
-still useful later as a fast cross-check of the full injection.
+Weighting candidates by 1 + α P·p̂* (as in D. Scheirich's ATLAS thesis) does not change the topologies seen by the
+reconstruction. Fake polarization comes largely from reconstruction, so this cannot replace a real injection.
 
 ---
 
-## 4. Bookkeeping: how to append the daughters (the critical part)
+## 4. MC bookkeeping (the critical part)
 
-Relevant O2 code:
-
+What the code downstream does:
 - `MCTrackNavigator::isPhysicalPrimary` (`DataFormats/simulation/src/MCUtils.cxx:73-...`):
-  - returns false for any generator particle with HepMC status > 1;
-  - for generator particles (`isPrimary()`), returns true if stable (Λ, p, π are all "stable" in
-    `MCUtils.h:87-...`), with no check of the mother's identity apart from K0L;
-  - for transport particles, returns false if the mother is a light-flavour hadron (Λ).
-- AOD producer (`Detectors/AOD/src/AODMcProducerHelpers.cxx:229-235`): non-primaries get the
-  `ProducedByTransport` flag, and their `statusCode` is replaced by the process code.
-- O2Physics strangeness builder (`PWGLF/TableProducer/Strangeness/strangenessbuilder.cxx:2020`) only
-  accepts V0 daughters with `getProcess() == 4` (`kPDecay`) when building generated-V0 MC info. It
-  also uses the mother's `isPhysicalPrimary()` (`:1874`, `:1999`).
-
-What `EventDecayer` / `forcedDecays` do, and what that would give us:
+  - false for generator particles with HepMC status > 1;
+  - for generator particles, true if "stable" (Λ, p, π are; `MCUtils.h:87-...`), whatever the mother;
+  - for transport particles, false if the mother is a light-flavour hadron.
+- AOD producer (`Detectors/AOD/src/AODMcProducerHelpers.cxx:229-235`): non-primaries get `ProducedByTransport`, and
+  their `statusCode` is replaced by the process code. Decay daughters of a primary are kept (`isKeepPhysics` →
+  `isFromPrimaryDecayChain`, process `kPDecay`).
+- O2Physics strangeness builder (`strangenessbuilder.cxx:2020`): generated-V0 info only counts daughters with
+  `getProcess() == 4`. It also uses the mother's `isPhysicalPrimary()` (`:1874`, `:1999`).
+- `McParticles_001` (current) stores the flags as written. The vertex-based "protection" only exists in the old `_000` version.
 
 | | Λ (mother) | p, π daughters |
 |---|---|---|
-| Recipe as-is (HepMC 2 on mother, daughters `kPPrimary`) | **not** PhysicalPrimary | **PhysicalPrimary**, process 0, not `ProducedByTransport` |
+| `EventDecayer` / `forcedDecays` recipe as-is | **not** PhysicalPrimary (HepMC 2) | **PhysicalPrimary**, process 0 |
 | Standard production (Geant4 decay) | PhysicalPrimary | secondary, process 4, `ProducedByTransport` |
-| **Proposed** | PhysicalPrimary | secondary, process 4, `ProducedByTransport` |
+| **This generator** | PhysicalPrimary (HepMC 1, not transported) | secondary, process 4 (`UniqueID = kPDecay`), `ProducedByTransport` |
 
-**Proposed encoding:**
-
-```cpp
-// mother Λ at index iL
-encodeParticleStatusAndTracking(L, /*hepmc*/ 1, genStatus(L), /*toBeDone*/ false); // keep HepMC "final" -> stays PhysicalPrimary
-L.SetFirstDaughter(iD1); L.SetLastDaughter(iD2);
-
-// each daughter d
-TParticle d(pdg, 0, iL, -1, -1, -1, px, py, pz, E,
-            L.Vx() + dx, L.Vy() + dy, L.Vz() + dz, L.T() + dt);   // displaced decay vertex, generator units (mm, mm/c)
-encodeParticleStatusAndTracking(d, 1, 91, /*toBeDone*/ true);
-d.SetUniqueID(kPDecay);                // -> MCTrack::isPrimary() == false (has mother & process != kPPrimary)
-d.SetWeight(L.GetWeight());
-```
-
-This must be **verified on a 10-event test**, as the first thing we do (see section 7), by dumping
-`o2sim_Kine.root` and the AO2D `McParticles` flags. Things to watch:
-- that the stack's index remapping keeps the daughter → Λ link (generator particles are kept
-  1:1, `Stack.cxx:242`);
-- that `PrimaryGenerator::AddTrack` does not complain (it only checks status encoding when
-  `proc == kPPrimary`, `PrimaryGenerator.cxx:143`);
-- whether any downstream code assumes "HepMC status 1 ⇒ transported" (none found so far).
+Implemented in `generator_pythia8_injectedPol.C` (`injectPolarizedDecays`, `pushDaughter`). It is verified by
+`checks/checkKine.C` (B1-B5, on o2sim kinematics) and `checks/checkAODFlags.C` (A1-A4, on the AO2D).
+Remaining question for the smoke test: does any downstream code assume "HepMC status 1 ⇒ transported"? None found in
+O2 or the PWGLF code read so far.
 
 ---
 
-## 5. Afterburner physics
+## 5. Generator-level vs Geant4 decays: characterization plan
 
-**Decay kinematics:** reuse the kernel in `vorticity_hydro/lambda_pol_toy_model.cxx`:
-- `sample_P_angle_proton_from_cos_xi` samples cos ξ* from dN/dcos ξ* ∝ 1 + α|P*| cos ξ* by
-  inverse CDF;
-- `Lambda_decay` builds p* in the rest frame and boosts it to the lab. The pion is p_π* = −p_p*.
-  This needs adding (the toy only returns the proton).
+Our Λ skip whatever Geant4 would have done to them before the decay point: elastic/inelastic hadronic interactions
+in the beam pipe, ITS and TPC inner field cage. Everything after the decay point is standard. Three QA steps,
+from cheapest to most complete:
 
-**Constants:** these must match the analysis exactly (`lambdaJetPolarizationIonsDerived.cxx:81-82`):
-α_Λ = **0.749**, α_Λ̄ = **−0.758**. The toy model uses 0.747, so use one shared header and no
-hard-coded copies. A mismatch would be a guaranteed non-closure of about 0.3% plus a sign issue for Λ̄.
-
-**Decay channels:** for the analysis only Λ → pπ⁻ (BR ≈ 63.9%) matters. Λ → nπ⁰ (≈ 35.8%) must
-still be decayed, to keep yields right. Options are isotropic, or polarized with α₀ ≈ α. Take masses
-and BRs from `TDatabasePDG` or Pythia's particle data, to stay consistent with the rest of the
-simulation.
-
-**Decay vertex:** sample the proper decay length from an exponential with cτ = 78.9 mm (taken from the
-same particle table Geant4 uses). The lab displacement is βγ cτ p̂_Λ, with dt = γ τ. Daughters that start outside the
-TPC are fine.
-
-**Which Λ get polarized:** all generator-level, to-be-transported Λ/Λ̄. That includes Λ from Σ⁰
-(decayed electromagnetically inside Pythia, and counted as primary in ALICE). Λ from Ξ/Ω are decayed
-by Geant4 and stay **unpolarized**. That is a realistic, unpolarized feed-down contamination, and it should be
-documented. Polarization transfer in Ξ → Λπ can be added later.
-
-**Polarization models** (configurable, combinable, each with an amplitude):
-
-| Model | P* direction (rest frame) | Notes |
-|---|---|---|
-| `none` | – | baseline, all estimators → 0 |
-| `ring` | t̂ = (p̂_jet × p_Λ)/\|…\| | **same sign convention as the analysis** (`...Derived.cxx:2020-2021`) |
-| `global` | −ŷ′ (normal to a random ψ_RP) | pp has no RP, so draw ψ_RP per event and record it |
-| `longitudinal` | ẑ · A sin(2(φ − ψ₂)) | also the variant ẑ · A sin(φ − ψ_RP) from the talk |
-| `helicity` | p̂_Λ | jet-fragmentation-like |
-
-Frame convention: the axis is defined from lab vectors and used directly as the quantization axis in
-the Λ rest frame. That is exactly what the measured R observable projects on. Add the option of a lab-frame
-4-vector boost (`boost_polarization_to_rest_frame`) for vorticity-like models.
-
-**Jet proxy at generator level:** start with the **leading charged final-state particle** (|η| < 0.9,
-pT > threshold). This mirrors the leadP proxy of the analysis and is trivially Cling-compilable.
-FastJet anti-kT can come later, if FastJet is available in the O2sim environment (check this; it is
-not guaranteed there).
-
-**Truth record:** `McParticles` has no polarization column. Write a small sidecar ROOT tree from the
-generator, keyed by (run seed, event number, Λ index), holding the injected P*, the axes and the model
-parameters. Because the models are deterministic functions of McParticles plus event-level random numbers,
-the truth can also be recomputed in an O2Physics MC process.
-
-**Event pre-selection (speed):** optionally loop `mPythia.next()` inside `generateEvent()` until the
-event has a leading particle above threshold **and** at least one Λ/Λ̄ in acceptance. This saves
-Geant4 time (the same idea as the gap-triggered generators in O2DPG). It biases the event sample, which
-is fine for closure tests, but the bias must be stated and applied identically everywhere.
+1. **Size of the effect, from a standard production.** For every generator-level Λ (|y| < 1) in a standard
+   pp production (anchored LHC25 MC, or our own run with the same Pythia card and `-gen pythia8`), classify its
+   fate from the Kine/McParticles daughters: (a) decayed by Geant4 (daughters with process 4); (b) interacted before
+   decaying (daughters with hadronic process codes, or no decay daughters while inside the volume); (c) left the
+   volume. The fraction (b), as a function of p_T and of the would-be decay radius, bounds the problem. Λ in (b)
+   rarely give a reconstructable V0, so the bias on the V0 sample is smaller still.
+2. **Method systematic (validation step 3).** Compare `configs/none.cfg` (our isotropic generator-level decays)
+   with a standard production at equal statistics and settings: V0 yields vs p_T/η/φ, decay radius, cos PA,
+   DCA between daughters, DCA to PV, invariant-mass peak, and the fake ring signal R itself. Any significant
+   difference is a systematic of the injection method, and becomes an entry in the systematics table.
+3. **If (1) or (2) is not negligible:** implement §3.2 (transport-level polarized decayer, with a small O2 patch)
+   and repeat (2).
 
 ---
 
-## 6. Production settings worth fixing early
+## 6. Simplifications and departures from defaults (complete list)
 
-- **Pin the software release.** The friend's setup uses `O2PDPSuite::MC-prod-2026-v1` / `daily-20260106-0000-1`.
-  `EventDecayer` (2026) is fairly new, so check which features exist in the release we use.
-- **Speed without changing physics:** restrict hit creation with `--readoutDets ITS,TPC,TOF,FT0,FV0,...`.
-  This keeps the material budget (`o2dpg_sim_workflow.py:76`). **Do not** use `--skipModules` on detectors
-  between the IP and the TOF, because it removes their geometry (`:114`). FT0 is needed for `sel8` (TVX).
-  Also delete `*_Hits*.root` after digitization, as `ALICE_PhotonReconstruction/GenProduction/micro.sh` does.
-- **Anchoring:** for a meaningful closure against LHC23 data, consider `o2dpg_sim_workflow_anchored.py` with
-  the same anchor settings as LHC23k4i. That needs CCDB access from the cluster.
-- **Seeds:** pass `-seed` per job, and seed the afterburner from the generator seed (not
-  `TRandom3(0)`, as in the friend's macro) so that productions are reproducible.
+| # | Item | Choice | Standard practice / justification |
+|---|---|---|---|
+| 1 | Λ decay | generator level, polarized | Standard: Geant4, isotropic. Necessary for injection; characterized in §5 |
+| 2 | Pre-selection | ≥ 1 Λ/Λ̄ with \|y\| < 1, leading charged particle p_T > 2 GeV/c | Biases the sample; applied identically to every model; saves Geant4 time (as the O2DPG gap-triggered generators do) |
+| 3 | `--skipModules ZDC` | yes | O2DPG convention (42 O2DPG configs/scripts). ZDC is ~112 m from the IP and does not affect the barrel |
+| 4 | `--readoutDets` | **not restricted** | My earlier "speed" suggestion is withdrawn. Anchored productions set it to the detectors read out in the anchor run (`o2dpg_sim_workflow_anchored.py:750-751`); unanchored runs keep all |
+| 5 | `Diamond.width[2]=6.` | yes | As in the O2DPG run scripts (unanchored); anchored runs take the vertex from CCDB |
+| 6 | Interaction rate | 500 kHz (unanchored) | Anchored runs take it from the run |
+| 7 | Anchoring | unanchored for the first tests | Goal: anchor to a 2025 pp run (§9) |
+| 8 | Λ from Ξ/Ω | **unpolarized** (Geant4 decays them) | Realistic unpolarized feed-down; polarization transfer to be added later |
+| 9 | Λ from Σ⁰ | polarized like primary Λ | Pythia decays Σ⁰ → Λγ, and the Λ counts as primary in ALICE. Σ⁰→Λ polarization transfer not modelled |
+| 10 | BRs | PDG 2025: 64.1% pπ, 35.9% nπ⁰ | Geant4 uses 63.9/35.8%; negligible, but it enters the step-3 comparison |
+| 11 | cτ | Pythia τ₀ = 78.9 mm | Same value as Geant4 |
+| 12 | α parameters | 0.749 / −0.758 (pπ), 0.670 / −0.675 (nπ⁰) | Identical to `lambdaJetPolarizationIonsDerived.cxx:81-82` + PDG 2025 |
+| 13 | Generator-level jets | SlowJet (fjcore) anti-kT | Same algorithm as FastJet in the producer (§7) |
+
+**Your friend's setup** (`ALICE_PhotonReconstruction/GenProduction`), designed for topological Σ⁰ reconstruction, not
+for this analysis:
+- **Reused:** `--skipModules ZDC`, `Diamond.width[2]=6.`, 500 kHz, `-tt aod`, and the overall structure
+  (external macro + ini + batches).
+- **Not reused:**
+  - `Random:setSeed = on` in the Pythia card: it overrides O2's seeding and makes runs non-reproducible;
+  - `TRandom3(0)` inside the generator;
+  - deleting `*_Hits*.root` inside the batch scripts. That is fine for disk space later, but we keep the Kine files for truth checks;
+  - the particle-gun enrichment.
+- He used no `--readoutDets` restriction.
 
 ---
 
-## 7. Validation plan (in order)
+## 7. Jets: generator side vs reconstructed side
 
-0. **Pythia-only, no O2:** run the afterburner's kernel inside the existing `lambda_pol_PYTHIA.cxx`
-   pipeline. Truth-level R must recover the injected P₀.
-1. **o2-sim smoke test** (10 events, `-tt sgngen` or `o2-sim -g external`): in `o2sim_Kine.root`,
-   check that the daughters exist with displaced vertices, the Λ is not transported, the mother/daughter
-   links are right, and the process codes are right.
-2. **Small full chain** (1 TF, about 50 events) → AO2D. Check the `McParticles` flags (Λ PhysicalPrimary;
-   daughters `ProducedByTransport`, process 4), and check that the strangeness builder MC labels find the V0s.
-3. **Method systematic:** zero-polarization generator-level decays vs. a standard production (Geant4
-   decays) with the same settings and statistics. Compare V0 yields, decay radius, η/φ and DCA distributions,
-   and R. Any difference is a systematic of the injection method itself.
-4. **Injected productions:** `ring` scan in P₀, then `ring` + contaminants. Run them through `lambdaJetPolarizationIons`
-   → `...Derived` exactly as data, and compare with the truth sidecar.
+- **Is FastJet available?** Yes. `alidist/o2.sh` lists `fastjet` as a hard dependency of O2. But no O2 or O2DPG code uses
+  it: AliceO2 only has `find_package(FastJet)`, and GitHub code search finds no FastJet or SlowJet use in O2DPG.
+  Loading the FastJet library from a Cling macro is possible but untested. We therefore use **Pythia8's `SlowJet`**,
+  which delegates by default to **fjcore**, the FastJet core bundled inside Pythia. That gives the same anti-kT
+  algorithm with no external dependency.
+- **Definitions mirror the producer** (`lambdaJetPolarizationIons.cxx`, LambdaPolRing-v4):
+  - candidates: final-state charged particles, p_T > 0.15 GeV/c, |η| < 0.9, pion-mass hypothesis;
+  - leading particle: valid if p_T > 2 GeV/c;
+  - jets: anti-kT R = 0.4, E-scheme, |η_jet| < 0.9 − R, p_T > 20 GeV/c, no background subtraction.
+  At generator level Λ are neutral, so they are excluded, and their daughters do not exist yet. Charged Σ/Ξ/Ω
+  are included, which is also what particle-level physical-primary selections do.
+- **Generator-level vs reconstructed jets as a study:** the standard JE practice is to find **particle-level jets in
+  O2Physics from `McParticles`** (`PWGJE/JetFinders/jetFinderMCPCharged.cxx`), with the same FastJet code as
+  detector level. That is allowed and well trodden. For your producer: add a particle-level jet table to your
+  datamodel, built with the same `jetsProcess` code on McParticles (physical-primary charged particles). The
+  generator's own axis is stored in the MC header (`injpol.jet.*`, `injpol.leadP.*` in `o2sim_MCHeader`) and should
+  agree **exactly** with that O2Physics particle-level axis. That agreement is a good cross-check of both sides.
+- **Cost of the jet selection:** in minimum-bias pp, a 20 GeV/c fiducial jet is rare, so `configs/ring_jet_0p30.cfg`
+  rejects many Pythia events per accepted one. That's cheap next to Geant4, but `standalonePythiaClosure` prints
+  the acceptance and Pythia time per accepted event so we can decide. The alternative is a p̂_T-biased card
+  (`HardQCD:all` + `PhaseSpace:pTHatMin`), with event weights in the analysis.
 
 ---
 
-## 8. Open questions / later
+## 8. Afterburner physics
 
-- An MC process in `lambdaJetPolarizationIons` (currently commented out, `:2156`) for truth-level R and efficiency maps.
-- Correction-factor families from several injected productions (General Framework note "16"). See the
-  README and the paper roadmap; this is deliberately out of scope for v1.
-- Upstreaming: if this works, propose the generator to O2DPG (`MC/config/PWGLF/...`) through the PWG-LF MC contacts.
+- **Decay kernel** (`InjectedPolKernel.h`). This is your `lambda_pol_toy_model.cxx` kernel, reviewed:
+  - *Correct:* the inverse CDF c = (−1 + √((1−A)² + 4Au))/A of dN/dc ∝ 1 + A c (checked analytically and numerically);
+    the random azimuth around P*, which makes the arbitrary transverse basis harmless; and the boost to the lab.
+  - *Improved:* (i) rationalised form c = (A − 2 + 4u)/(1 + √(...)), exact at A = 0 and free of cancellation for
+    small |A|; your version switches formula at |P| < 1e-9 but loses relative precision for small A·|P|. (ii) cos ξ*
+    used directly, removing an `acos` plus `cos`/`sin` round trip per decay. (iii) both daughters returned,
+    back-to-back in the rest frame. (iv) parent mass from its own 4-momentum, giving exact conservation. (v) no
+    `TLorentzVector`/`TVector3` temporaries passed by value.
+  - *Speed:* about 3 × 10⁶ decays plus estimators per second on one core (`tests/testKernel.cxx`), negligible next to Geant4.
+    Your original was already efficient: inverse-CDF sampling, no rejection.
+- **Channels:** Λ → pπ⁻ (α₋ = 0.749), Λ̄ → p̄π⁺ (α₊ = −0.758), Λ → nπ⁰ (α₀ = 0.670), Λ̄ → n̄π⁰ (ᾱ₀ = −0.675). The
+  π⁰ and n are handed to Geant4 (π⁰ → γγ, as in standard productions).
+- **Decay vertex:** proper length ~ exp(cτ), lab displacement βγ l p̂, lab time γ l.
+- **Models** (`ModelConfig`; any combination; |P*| is capped at 1, and the number of capped cases is reported):
+
+  | key | P* | notes |
+  |---|---|---|
+  | `model.ring` | P₀ t̂, t̂ = (ĵ × p_Λ)/\|ĵ × p_Λ\| | same cross-product order as the consumer task (`...Derived.cxx:2020`); ĵ = jet or leadP (`model.ringProxy`) |
+  | `model.global` | P_G (sin ψ, −cos ψ, 0) | random ψ_RP per event → AO2D `McCollisions.eventPlaneAngle` |
+  | `model.longitudinal` | A sin(n(φ_Λ − ψ)) ẑ | n = 2 by default, n = 1 is the variant from your slides |
+  | `model.helicity` | P_H p̂_Λ | fragmentation-like |
+  | `model.antiSign` | multiplies P* of Λ̄ | +1: same sign as Λ (vorticity-like) |
+
+  Axes come from lab vectors and are used as quantization axes in the rest frame. That is exactly what
+  R = (3/α)⟨p̂*·t̂⟩ projects on, so a perfect detector returns R = P₀ (verified in `testKernel.cxx`).
+  > **Reminder for the next model iteration:** please share your internal note **"19 - PolarizationSourcesPaperReview"**
+  > so the model suite can cover all known theoretical sources.
+- **Truth record:** `McParticles` has no polarization column. ψ_RP goes to `McCollisions.eventPlaneAngle` (the only
+  header quantity propagated to the AO2D). The axes and model amplitudes go to `o2sim_MCHeader` (`injpol.*` keys).
+  The models are deterministic given the Λ momentum and these event quantities, so a later O2Physics MC process can
+  recompute the injected P* of every Λ.
+- **Cheap 5-Λ test:** `configs/test_5lambdas_ring_leadP_0p30.cfg` (`presel.minLambdas = 5`). It selects
+  high-multiplicity events, so it is a test of the machinery only. Injecting extra Λ "guns" into each event would be
+  the other option, but those would not be correlated with the jets.
+
+---
+
+## 9. Anchoring to 2025 pp
+
+- Anchored productions use `MC/run/ANCHOR/anchorMC.sh`. It needs the anchor run number, the data pass name,
+  production tags (`ALIEN_JDL_LPM*` variables) and CCDB access. It takes the reconstruction settings of that async
+  pass from O2DPG itself. **Our generator plugs in through `ALIEN_JDL_ANCHOR_SIM_OPTIONS="-gen external -ini <ini>"`**
+  (default `-gen pythia8`), with nothing else to change. The template is `MC/run/ANCHOR/tests/test_anchor_2023_apass2_pp.sh`.
+- `MC/run/ANCHOR/tests/test_anchor_cases.csv` has 2025 anchors for pO, OO and NeNe (LHC25ad/ae/af, apass1/apass2), but
+  **no 2025 pp entry**. We need from the PWG-LF/DPG MC contacts (or the MonALISA/Hyperloop dataset pages): an LHC25 pp run
+  number, its pass name (for your `LHC25_pass1_MinBias`-type data), and the matching O2PDPSuite async tag. We should
+  also ask whether an anchored general-purpose 2025 pp MC already exists, since it would be the reference for step 3.
+
+---
+
+## 10. Validation plan (in order)
+
+0. **Pythia only** (`tests/standalonePythiaClosure.cxx`): truth-level R = injected P₀; pre-selection efficiency and cost.
+1. **o2-sim smoke test** (`run/smokeTestSim.sh` → `checks/checkKine.C`): B1-B5 bookkeeping, plus truth-level R in the Kine.
+2. **Small full chain** (`run/runInjectedPol.sh` → `checks/checkAODFlags.C`): A1-A4. Then run the strangeness builder with MC
+   labels, and check that MC-matched Λ are found and flagged physical primary.
+3. **Method systematic** (§5.2): `none.cfg` vs a standard production.
+4. **Injected productions:** ring scan in P₀, then ring + contaminants. Run them through `lambdaJetPolarizationIons` →
+   `...Derived` as data. Then apply the correction methods of other polarization papers to the same samples.
+
+---
+
+## 11. Later
+
+- O2Physics MC stage: MC tables in the `lambdaJetPolarizationIons` datamodel (particle-level jets, true Λ ↔ V0 links,
+  injected P*), a producer `processMC`, and consumer processes that use them.
+- Correction-factor families from several injected productions (General Framework note "16"), and a systematic from
+  the choice of correction method.
+- Ξ → Λπ (and Σ⁰ → Λγ) polarization transfer.
+- Upstreaming to O2DPG (`MC/config/PWGLF/...`) through the PWG-LF MC contacts, if it proves useful.
