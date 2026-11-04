@@ -175,17 +175,25 @@ for this analysis:
 - **Definitions mirror the producer** (`lambdaJetPolarizationIons.cxx`, LambdaPolRing-v4):
   - candidates: final-state charged particles, p_T > 0.15 GeV/c, |η| < 0.9, pion-mass hypothesis;
   - leading particle: valid if p_T > 2 GeV/c;
-  - jets: anti-kT R = 0.4, E-scheme, |η_jet| < 0.9 − R, p_T > 20 GeV/c, no background subtraction.
+  - jets: anti-kT R = 0.4, E-scheme, |η_jet| < 0.9 − R, no background subtraction.
+  - **Thresholds are looser than in the analysis on purpose:** generator-level jet p_T > 8 GeV/c (charged-only, pp;
+    the producer's reconstructed-jet default of 20 GeV/c would be far too tight at generator level), leading particle
+    p_T > 2 GeV/c (4 GeV/c is the more jet-pure alternative, `axes.leadPtMin`). Generator-level cuts only pre-select
+    and define the injection axis; the analysis thresholds are applied later, by FastJet on reconstructed tracks, so a
+    loose generator cut avoids sculpting the reconstructed sample.
   At generator level Λ are neutral, so they are excluded, and their daughters do not exist yet. Charged Σ/Ξ/Ω
   are included, which is also what particle-level physical-primary selections do.
 - **Generator-level vs reconstructed jets as a study:** the standard JE practice is to find **particle-level jets in
   O2Physics from `McParticles`** (`PWGJE/JetFinders/jetFinderMCPCharged.cxx`), with the same FastJet code as
   detector level. That is allowed and well trodden. For your producer: add a particle-level jet table to your
   datamodel, built with the same `jetsProcess` code on McParticles (physical-primary charged particles). The
-  generator's own axis is stored in the MC header (`injpol.jet.*`, `injpol.leadP.*` in `o2sim_MCHeader`) and should
+  generator's own axis, when it computed one, is stored in the MC header (`injpol.jet.*`, `injpol.leadP.*` in `o2sim_MCHeader`) and should
   agree **exactly** with that O2Physics particle-level axis. That agreement is a good cross-check of both sides.
-- **Cost of the jet selection:** in minimum-bias pp, a 20 GeV/c fiducial jet is rare, so `configs/ring_jet_0p30.cfg`
-  rejects many Pythia events per accepted one. That's cheap next to Geant4, but `standalonePythiaClosure` prints
+- **Jet finding in the generator is only done when needed** (`Config::needJets()`): for the ring model with the jet
+  proxy, or `presel.requireJet = 1`. Leading-particle and contaminant-only configurations run no jet finder at all.
+  All generator-vs-reconstructed jet studies are done in O2Physics on `McParticles` (above), not in the production.
+- **Cost of the jet selection:** a fiducial 8 GeV/c charged jet still rejects a fraction of minimum-bias Pythia events
+  in `configs/ring_jet_0p30.cfg`. That's cheap next to Geant4, but `standalonePythiaClosure` prints
   the acceptance and Pythia time per accepted event so we can decide. The alternative is a p̂_T-biased card
   (`HardQCD:all` + `PhaseSpace:pTHatMin`), with event weights in the analysis.
 

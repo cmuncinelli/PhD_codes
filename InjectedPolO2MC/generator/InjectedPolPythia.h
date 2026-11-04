@@ -7,11 +7,16 @@
 //
 // Contents:
 //   * Config: all user settings, read from a simple "key = value" text file (unknown keys are fatal).
-//   * computeAxes(): generator-level jet proxies that MIRROR the reconstruction-level ones of
+//   * computeAxes(): generator-level jet proxies with the same definitions as the reconstruction-level ones of
 //     O2Physics PWGLF/TableProducer/Strangeness/lambdaJetPolarizationIons.cxx (LambdaPolRing-v4):
 //       - candidates: final-state charged particles, pT > 0.15 GeV/c, |eta| < 0.9, pion-mass hypothesis;
 //       - leading particle: highest-pT candidate, valid if pT > 2 GeV/c;
-//       - jets: anti-kT R = 0.4, E-scheme, |eta_jet| < 0.9 - R, pT > 20 GeV/c, no background subtraction (pp);
+//       - jets: anti-kT R = 0.4, E-scheme, |eta_jet| < 0.9 - R, no background subtraction (pp),
+//         pT > 8 GeV/c by default: a LOOSE generator-level threshold for charged-only jets in pp, kept below the
+//         analysis threshold so that the generator-level selection does not sculpt the reconstructed jet sample.
+//     Jets are ONLY computed when something needs them (ring model with the jet proxy, or presel.requireJet).
+//     Generator-vs-reconstructed jet comparisons are NOT done here: they belong in O2Physics, with particle-level
+//     jets found on McParticles (PWGJE/JetFinders/jetFinderMCPCharged.cxx practice).
 //     Jets are found with Pythia8::SlowJet, which by default delegates to fjcore (the FastJet core shipped
 //     inside Pythia), so anti-kT results are those of FastJet without needing an external FastJet library.
 //   * preselect(): cheap generator-level event filter applied BEFORE Geant4.
@@ -49,7 +54,7 @@ struct Config {
   bool pionMassHypothesis = true;
   double leadPtMin = 2.0;
   double jetR = 0.4;
-  double jetPtMin = 20.0;
+  double jetPtMin = 8.0;       // generator-level threshold (charged jets, pp); loose on purpose
 
   // --- event pre-selection (before Geant4) ---
   int minLambdas = 1;           // number of Lambda + AntiLambda required in the acceptance below
@@ -58,6 +63,9 @@ struct Config {
   bool requireLeadP = true;
   bool requireJet = false;
   long maxTries = 100000000;    // safety net against infinite loops
+
+  /// Jet finding is only needed to define the ring axis with the jet proxy, or to pre-select on jets.
+  bool needJets() const { return requireJet || (model.ring != 0. && model.ringProxy == kRingJet); }
 
   // --- reaction plane for global/longitudinal models ---
   bool randomPsiRP = true;      // false: psi_RP = 0 in every event
@@ -148,7 +156,8 @@ struct Config {
        << "  alpha: Lambda->p pi- " << constants::kAlphaLambdaToPPi << ", AntiLambda->pbar pi+ " << constants::kAlphaAntiLambdaToPPi
        << ", Lambda->n pi0 " << constants::kAlphaLambdaToNPi0 << ", AntiLambda->nbar pi0 " << constants::kAlphaAntiLambdaToNPi0 << "\n"
        << "  axes: track pT>" << trackPtMin << " |eta|<" << trackEtaMax << " pionMass=" << pionMassHypothesis
-       << " leadP pT>" << leadPtMin << " anti-kT R=" << jetR << " jet pT>" << jetPtMin << " |eta_jet|<" << trackEtaMax - jetR << "\n"
+       << " leadP pT>" << leadPtMin << " anti-kT R=" << jetR << " jet pT>" << jetPtMin << " |eta_jet|<" << trackEtaMax - jetR
+       << " (jet finding " << (needJets() ? "ON" : "OFF: not needed by this configuration") << ")\n"
        << "  presel: >=" << minLambdas << " (anti)Lambda with |y|<" << lambdaRapMax << " pT>" << lambdaPtMin
        << " requireLeadP=" << requireLeadP << " requireJet=" << requireJet << " maxTries=" << maxTries << "\n"
        << "  psiRP random=" << randomPsiRP << std::endl;
@@ -206,7 +215,7 @@ inline EventAxes computeAxes(const Pythia8::Event& event, const Config& cfg,
     info.leadPhi = p.phi();
   }
 
-  if (info.nCandidates > 0 && slowJet.analyze(work)) {
+  if (cfg.needJets() && info.nCandidates > 0 && slowJet.analyze(work)) {
     // jets are ordered in decreasing pT; take the leading one inside the fiducial acceptance
     for (int j = 0; j < slowJet.sizeJet(); ++j) {
       const Pythia8::Vec4 pj = slowJet.p(j);
