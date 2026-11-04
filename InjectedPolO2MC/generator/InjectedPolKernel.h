@@ -3,7 +3,8 @@
 // Polarized two-body hyperon decay kernel + polarization models for the InjectedPolO2MC afterburner.
 // TEST CODE -- see ../README.md. Not an official ALICE tool.
 //
-// Header-only, no ROOT / Pythia / O2 dependency on purpose:
+// Header-only, no ROOT / Pythia / O2 dependency on purpose, and C++11-compatible (some `pythia8-config --cxxflags`
+// add -std=c++11, which overrides an earlier -std=c++17 on the command line):
 //   - it is #included by the O2 external generator macro (JIT-compiled by Cling inside o2-sim),
 //   - and compiled stand-alone by ../tests/testKernel.cxx (plain g++) for unit tests.
 //
@@ -113,11 +114,13 @@ inline double twoBodyMomentum(double M, double m1, double m2)
 /// Same solution as lambda_pol_toy_model.cxx, c = (-1 + sqrt((1-A)^2 + 4 A u)) / A, but rationalised:
 ///   c = (A - 2 + 4u) / (1 + sqrt((1-A)^2 + 4 A u)),
 /// which is exact for A = 0 (c = 2u - 1) and has no catastrophic cancellation for small |A|.
+inline double clampUnit(double x) { return std::max(-1., std::min(1., x)); } // C++11-safe (no std::clamp)
+
 inline double sampleCosXi(double A, double u)
 {
-  A = std::clamp(A, -1., 1.);
+  A = clampUnit(A);
   const double s = std::sqrt(std::max(0., (1. - A) * (1. - A) + 4. * A * u));
-  return std::clamp((A - 2. + 4. * u) / (1. + s), -1., 1.);
+  return clampUnit((A - 2. + 4. * u) / (1. + s));
 }
 
 struct TwoBodyDecay {

@@ -68,6 +68,7 @@ InjectedPolO2MC/
 │   ├── injectedPol.ini                    <- example [GeneratorExternal]/[GeneratorPythia8] configuration
 │   └── configs/                           <- model configs: none, ring (leadP / jet), global, longitudinal, helicity, 5-Λ test
 ├── run/
+│   ├── envcheck.sh                        <- environment checks + log summarizer (sourced by the scripts)
 │   ├── smokeTestSim.sh                    <- step 1: o2-sim only, 10 events, then checkKine.C
 │   └── runInjectedPol.sh                  <- step 2+: full O2DPG chain to AO2D, then checkKine.C + checkAODFlags.C
 ├── checks/
@@ -80,6 +81,21 @@ InjectedPolO2MC/
 
 ## Quick start (on the cluster)
 
+**Environment.** The package `O2DPG` in aliBuild contains only scripts and has no runtime dependencies, so
+`alienv enter O2DPG/...` alone does **not** give you O2 (no `o2-sim`, no `O2_ROOT`). What each step needs:
+
+| Step | Needs | Example |
+|---|---|---|
+| kernel unit tests | g++ only | any shell |
+| Pythia-only closure | Pythia8 (`pythia8-config`) | `alienv enter O2Physics/latest` |
+| o2-sim smoke test | O2 | `alienv enter O2Physics/latest` |
+| full chain to AO2D | O2 **and** O2DPG | `alienv enter O2Physics/latest O2DPG/latest-master-o2` |
+
+`O2sim` (`aliBuild build O2sim --defaults o2`) is the official MC meta-package: O2Physics + O2DPG + QualityControl +
+extra generators. Use it if mixing separately built O2Physics and O2DPG versions causes trouble.
+The run scripts check this (`run/envcheck.sh`) and print the `alienv` command to use.
+The very long o2-sim / workflow outputs go to log files; the scripts print only a short summary.
+
 ```bash
 export INJPOL_ROOT=/path/to/PhD_codes/InjectedPolO2MC
 ```
@@ -90,7 +106,7 @@ export INJPOL_ROOT=/path/to/PhD_codes/InjectedPolO2MC
    ```
 1. Pythia-only closure and cost estimate (Pythia8 needed, e.g. inside the O2 environment):
    ```bash
-   cd ${INJPOL_ROOT}/tests && g++ -O2 -std=c++17 -I../generator standalonePythiaClosure.cxx -o standalonePythiaClosure $(pythia8-config --cxxflags --libs)
+   cd ${INJPOL_ROOT}/tests && g++ -O2 -I../generator standalonePythiaClosure.cxx -o standalonePythiaClosure $(pythia8-config --cxxflags --libs) -std=c++17
    ```
    ```bash
    ./standalonePythiaClosure ../generator/pythia8_pp_13600.cfg ../generator/configs/ring_leadP_0p30.cfg 2000

@@ -9,7 +9,8 @@
 //     analysis-style formulas, to be compared with the injected amplitudes.
 //
 // Build (needs Pythia8 only; e.g. inside the O2/O2Physics environment, or your own Pythia install):
-//   g++ -O2 -std=c++17 -I../generator standalonePythiaClosure.cxx -o standalonePythiaClosure $(pythia8-config --cxxflags --libs)
+//   g++ -O2 -I../generator standalonePythiaClosure.cxx -o standalonePythiaClosure $(pythia8-config --cxxflags --libs) -std=c++17
+// (-std=c++17 LAST: pythia8-config may add an older -std, and the last one wins.)
 // Run:
 //   ./standalonePythiaClosure ../generator/pythia8_pp_13600.cfg ../generator/configs/ring_leadP_0p30.cfg 2000 [seed]
 
