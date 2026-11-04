@@ -14,7 +14,7 @@
 //       - jets: anti-kT R = 0.4, E-scheme, |eta_jet| < 0.9 - R, no background subtraction (pp),
 //         pT > 8 GeV/c by default: a LOOSE generator-level threshold for charged-only jets in pp, kept below the
 //         analysis threshold so that the generator-level selection does not sculpt the reconstructed jet sample.
-//     Jets are ONLY computed when something needs them (ring model with the jet proxy, or presel.requireJet).
+//     Jets are ONLY computed when something needs them (ring model with the jet trigger, or presel.requireJet).
 //     Generator-vs-reconstructed jet comparisons are NOT done here: they belong in O2Physics, with particle-level
 //     jets found on McParticles (PWGJE/JetFinders/jetFinderMCPCharged.cxx practice).
 //     Jets are found with Pythia8::SlowJet, which by default delegates to fjcore (the FastJet core shipped
@@ -64,8 +64,8 @@ struct Config {
   bool requireJet = false;
   long maxTries = 100000000;    // safety net against infinite loops
 
-  /// Jet finding is only needed to define the ring axis with the jet proxy, or to pre-select on jets.
-  bool needJets() const { return requireJet || (model.ring != 0. && model.ringProxy == kRingJet); }
+  /// Jet finding is only needed when the jet is the trigger t_hat of the ring model, or to pre-select on jets.
+  bool needJets() const { return requireJet || (model.ring != 0. && model.trigger == kTriggerJet); }
 
   // --- reaction plane for global/longitudinal models ---
   bool randomPsiRP = true;      // false: psi_RP = 0 in every event
@@ -114,9 +114,9 @@ struct Config {
     auto L = [&](long& x) { return static_cast<bool>(is >> x); };
     auto B = [&](bool& x) { int v; if (!(is >> v)) return false; x = (v != 0); return true; };
     if (key == "model.ring") return D(model.ring);
-    if (key == "model.ringProxy") {
-      if (val == "jet") { model.ringProxy = kRingJet; return true; }
-      if (val == "leadP") { model.ringProxy = kRingLeadP; return true; }
+    if (key == "model.trigger" || key == "model.ringProxy") { // "model.ringProxy": deprecated alias (configs before 2026-11-05)
+      if (val == "jet") { model.trigger = kTriggerJet; return true; }
+      if (val == "leadP") { model.trigger = kTriggerLeadP; return true; }
       return false;
     }
     if (key == "model.global") return D(model.global);
@@ -148,7 +148,7 @@ struct Config {
   void print(std::ostream& os) const
   {
     os << "[InjectedPol] configuration:\n"
-       << "  model: ring=" << model.ring << " (proxy " << (model.ringProxy == kRingJet ? "jet" : "leadP") << ")"
+       << "  model: ring=" << model.ring << " (trigger t_hat = " << (model.trigger == kTriggerJet ? "jet" : "leadP") << ")"
        << " global=" << model.global << " longitudinal=" << model.longitudinal << " (n=" << model.longHarmonic << ")"
        << " helicity=" << model.helicity << " antiSign=" << model.antiSign << "\n"
        << "  decay: ctauMM=" << ctauMM << " (<=0: Pythia tau0)  BR(p pi)=" << brPPi << " BR(n pi0)=" << brNPi0

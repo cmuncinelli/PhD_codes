@@ -169,7 +169,7 @@ int main()
 
       // --- Analysis-style estimators: only lab quantities + boost of the reconstructed baryon ---
       const V3 pStarHat = unit(boostToRest(d.baryon, L, L.mass()).p);
-      const V3 cr = cross(unit(ax.jet), L.p); // leadingJetUnitVec.Cross(lambdaLike3Vec)
+      const V3 cr = cross(unit(ax.leadP), L.p); // t_hat x p_Lambda = n_hat * norm, as leadingJetUnitVec.Cross(lambdaLike3Vec)
       ring.add(3. / alpha * dot(pStarHat, cr) / norm(cr));
       glob.add(3. / alpha * dot(pStarHat, V3{std::sin(ax.psiRP), -std::cos(ax.psiRP), 0.}));
       lng.add(3. / alpha * pStarHat.z * std::sin(2. * (phiOf(L.p) - ax.psiRP)));

@@ -14,8 +14,11 @@
 //     hyperon rest frame and the polarization vector P* (also in the rest frame).
 //   * Polarization axes are built from LAB-frame vectors and used directly as quantization axes in the
 //     hyperon rest frame. This is exactly what the measured ring observable projects on:
-//       R = (3/alpha) < p_hat*_baryon . (j_hat x p_Lambda) / |j_hat x p_Lambda| >
-//   * Ring axis t_hat = (j_hat x p_Lambda) / |j_hat x p_Lambda|  (same order of the cross product as the analysis).
+//       R = (3/alpha) < p_hat*_baryon . n_hat >
+//   * NOTATION (same as the analysis notes):
+//       t_hat = TRIGGER direction (leading jet or leading particle),
+//       n_hat = (t_hat x p_Lambda) / |t_hat x p_Lambda| = ring direction (same cross-product order as the analysis:
+//               leadingJetUnitVec.Cross(lambdaLike3Vec) in lambdaJetPolarizationIonsDerived.cxx).
 //
 // Kernel originally from PhD_codes/vorticity_hydro/lambda_pol_toy_model.cxx
 // (sample_P_angle_proton_from_cos_xi + Lambda_decay), re-written to:
@@ -190,12 +193,13 @@ struct EventAxes {
   double psiRP = 0.;     // (random) reaction-plane angle used by global/longitudinal models
 };
 
-enum RingProxy { kRingLeadP = 0,
-                 kRingJet = 1 };
+/// Which trigger defines t_hat.
+enum Trigger { kTriggerLeadP = 0,
+               kTriggerJet = 1 };
 
 struct ModelConfig {
-  double ring = 0.;         // P0 for P* = P0 t_hat
-  int ringProxy = kRingJet; // which axis defines t_hat
+  double ring = 0.;           // P0 for P* = P0 n_hat, n_hat = (t_hat x p_Lambda)/|...|
+  int trigger = kTriggerLeadP; // which trigger defines t_hat (leading particle for now, see DESIGN.md "Trigger")
   double global = 0.;       // P_G along -y' (normal to the reaction plane, see below)
   double longitudinal = 0.; // A in P*_z = A sin(n (phi_Lambda - psi))
   int longHarmonic = 2;     // n (2 = usual elliptic-flow-driven longitudinal polarization)
@@ -209,13 +213,13 @@ inline V3 polarization(const ModelConfig& cfg, const EventAxes& ax, const V3& pL
 {
   V3 P{0., 0., 0.};
   if (cfg.ring != 0.) {
-    const bool useJet = (cfg.ringProxy == kRingJet);
+    const bool useJet = (cfg.trigger == kTriggerJet);
     if ((useJet && ax.hasJet) || (!useJet && ax.hasLeadP)) {
-      const V3 jHat = unit(useJet ? ax.jet : ax.leadP);
-      const V3 t = cross(jHat, pL); // same order as the analysis: leadingJetUnitVec.Cross(lambdaLike3Vec)
-      const double tn = norm(t);
-      if (tn > 1e-12) {
-        P = P + (cfg.ring / tn) * t;
+      const V3 tHat = unit(useJet ? ax.jet : ax.leadP); // trigger direction
+      const V3 n = cross(tHat, pL);                     // same order as the analysis: leadingJetUnitVec.Cross(lambdaLike3Vec)
+      const double nn = norm(n);
+      if (nn > 1e-12) {
+        P = P + (cfg.ring / nn) * n; // P0 n_hat
       }
     }
   }

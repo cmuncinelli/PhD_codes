@@ -190,7 +190,7 @@ for this analysis:
   generator's own axis, when it computed one, is stored in the MC header (`injpol.jet.*`, `injpol.leadP.*` in `o2sim_MCHeader`) and should
   agree **exactly** with that O2Physics particle-level axis. That agreement is a good cross-check of both sides.
 - **Jet finding in the generator is only done when needed** (`Config::needJets()`): for the ring model with the jet
-  proxy, or `presel.requireJet = 1`. Leading-particle and contaminant-only configurations run no jet finder at all.
+  trigger, or `presel.requireJet = 1`. Leading-particle and contaminant-only configurations run no jet finder at all.
   All generator-vs-reconstructed jet studies are done in O2Physics on `McParticles` (above), not in the production.
 - **Cost of the jet selection:** a fiducial 8 GeV/c charged jet still rejects a fraction of minimum-bias Pythia events
   in `configs/ring_jet_0p30.cfg`. That's cheap next to Geant4, but `standalonePythiaClosure` prints
@@ -198,6 +198,46 @@ for this analysis:
   (`HardQCD:all` + `PhaseSpace:pTHatMin`), with event weights in the analysis.
 
 ---
+
+## 7b. Trigger t̂, pre-selection and signal dilution (to settle before the final workflow)
+
+**Notation** (as in the analysis notes): **t̂ = trigger direction** (leading jet or leading particle), and
+**n̂ = (t̂ × p_Λ)/|t̂ × p_Λ|** = the ring direction. The injected ring polarization is P* = P₀ n̂.
+
+**What the generator does now (v1).** t̂ is the generator-level **leading charged particle** (`model.trigger = leadP`,
+p_T > 2 GeV/c). The pre-selection keeps only events with ≥ 1 Λ/Λ̄ (|y| < 1) **and** such a leading particle
+(`presel.requireLeadP = 1`).
+
+**Why this matters for comparison with data: dilution.** In data, the reconstructed trigger is sometimes found in
+events with no genuine hard scattering (fluctuations, combinatorics), and those events add R ≈ 0 to the average.
+A closure test that only simulates events with a true generator trigger lacks part of that dilution. The ideal
+default would therefore *not* require a generator trigger.
+
+**Why the cut stays for now.** The leading particle is what we inject the ring around. The cut cannot simply be
+dropped without deciding what P* is in events without a generator trigger. Two consistent options:
+- **(a) Current default:** require a generator trigger. Cleanest closure (every Λ has a well-defined injected n̂),
+  but less dilution than data.
+- **(b) `presel.requireLeadP = 0`, already supported:** events without a generator trigger are simulated too, and
+  their Λ get **P* = 0**, which is the dilution. The cost is Geant4 time on events that mostly carry no signal.
+  The extra cost (Geant4-transported events per signal event) is not known yet. Measure it with
+  `run/runTests.sh generator/configs/ring_leadP_0p30_dilution.cfg`, whose summary prints the pre-selection
+  efficiency and the fraction of events with a trigger. For comparison, about 8% of Pythia events pass the
+  pre-selection with `requireLeadP = 1`. Note that 2 GeV/c is also the analysis threshold, so reconstructed triggers
+  just above it can come from generator particles just below it. With (a), those events are missing.
+
+**Planned direction.** Use the **jet** (anti-kT, `model.trigger = jet`) as the default t̂, the same definition as the
+FastJet jets of the producer, with the leading particle kept as a cross-check. Before that we must define carefully
+**what a physical generator-level jet is**:
+- which particles enter: physical-primary charged particles (as JE particle-level jets do), so weak-decay products
+  and the Λ itself are excluded at generator level;
+- the mass hypothesis: pion mass, mirroring reconstruction, or true masses;
+- R, the p_T threshold (8 GeV/c for now, charged-only in pp) and the fiducial |η| < 0.9 − R;
+- what to do with several jets: leading only, or all jets with each Λ attached to the closest;
+- how generator and reconstructed jets are matched (ΔR) when quantifying t̂ smearing. That study belongs in O2Physics,
+  on McParticles, not in the production.
+
+Whatever is chosen, it must be identical in the generator (`InjectedPolPythia.h`) and in the O2Physics particle-level
+jet table, and stated in the analysis note.
 
 ## 8. Afterburner physics
 
@@ -218,14 +258,14 @@ for this analysis:
 
   | key | P* | notes |
   |---|---|---|
-  | `model.ring` | P₀ t̂, t̂ = (ĵ × p_Λ)/\|ĵ × p_Λ\| | same cross-product order as the consumer task (`...Derived.cxx:2020`); ĵ = jet or leadP (`model.ringProxy`) |
+  | `model.ring` | P₀ n̂, n̂ = (t̂ × p_Λ)/\|t̂ × p_Λ\| | same cross-product order as the consumer task (`...Derived.cxx:2020`); t̂ = trigger: leadP (default) or jet (`model.trigger`) |
   | `model.global` | P_G (sin ψ, −cos ψ, 0) | random ψ_RP per event → AO2D `McCollisions.eventPlaneAngle` |
   | `model.longitudinal` | A sin(n(φ_Λ − ψ)) ẑ | n = 2 by default, n = 1 is the variant from your slides |
   | `model.helicity` | P_H p̂_Λ | fragmentation-like |
   | `model.antiSign` | multiplies P* of Λ̄ | +1: same sign as Λ (vorticity-like) |
 
   Axes come from lab vectors and are used as quantization axes in the rest frame. That is exactly what
-  R = (3/α)⟨p̂*·t̂⟩ projects on, so a perfect detector returns R = P₀ (verified in `testKernel.cxx`).
+  R = (3/α)⟨p̂*·n̂⟩ projects on, so a perfect detector returns R = P₀ (verified in `testKernel.cxx`).
   > **Reminder for the next model iteration:** please share your internal note **"19 - PolarizationSourcesPaperReview"**
   > so the model suite can cover all known theoretical sources.
 - **Truth record:** `McParticles` has no polarization column. ψ_RP goes to `McCollisions.eventPlaneAngle` (the only

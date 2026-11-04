@@ -23,6 +23,13 @@ Repositories inspected to design this (read-only):
 
 Upstream links point to the default branches. The exact commits inspected are listed at the top of [`DESIGN.md`](DESIGN.md).
 
+## Notation
+
+Same as in the analysis notes:
+- **t̂ = trigger direction**: the leading jet or the leading particle (`model.trigger = jet | leadP`);
+- **n̂ = (t̂ × p_Λ)/|t̂ × p_Λ|**: the ring direction, with the same cross-product order as the consumer task;
+- **R = (3/α)⟨p̂*_B · n̂⟩**: the ring observable, where p̂*_B is the baryon direction in the Λ rest frame.
+
 ## Goal
 
 Produce full-detector pp MC (Pythia8 → our afterburner → Geant4 → digitization → reconstruction → AO2D)
@@ -32,7 +39,7 @@ These cover our ring observable and its correction framework, and also the corre
 other polarization papers:
 
 - **no polarization** → every estimator (R_z, STAR-like signal extraction, correction framework) must recover zero;
-- **ring-like polarization** P* = P₀ t̂, with t̂ = (p̂_jet × p_Λ)/|p̂_jet × p_Λ| → compare injected vs reconstructed magnitude;
+- **ring-like polarization** P* = P₀ n̂, with n̂ = (t̂ × p_Λ)/|t̂ × p_Λ| → compare injected vs reconstructed magnitude;
 - **contaminants** (global, longitudinal, helicity-like, ...) → measure how they leak into the ring observable.
 
 Reweighting a standard MC is explicitly *not* enough. Most of the fake polarization comes from
@@ -66,10 +73,11 @@ InjectedPolO2MC/
 │   ├── generator_pythia8_injectedPol.C    <- O2 external generator (GeneratorPythia8 subclass), MC bookkeeping
 │   ├── pythia8_pp_13600.cfg               <- Pythia card (same as O2DPG's default pp card; Λ left undecayed; no seed lines)
 │   ├── injectedPol.ini                    <- example [GeneratorExternal]/[GeneratorPythia8] configuration
-│   └── configs/                           <- model configs: none, ring (leadP / jet), global, longitudinal, helicity, 5-Λ test
+│   └── configs/                           <- model configs: none, ring (leadP / jet / leadP without trigger requirement), global, longitudinal, helicity, 5-Λ test
 ├── run/
 │   ├── envcheck.sh                        <- environment checks, path normalisation, log summaries, compiled checkKine (sourced)
 │   ├── runTests.sh                        <- unit tests + step 0 (stand-alone Pythia closure), builds *.exe in ${OUT_BASE}/bin
+│   ├── recheckKine.sh                     <- re-run only checkKine.C on existing o2-sim output
 │   ├── smokeTestSim.sh                    <- step 1: o2-sim only, 10 events, then checkKine.C
 │   └── runInjectedPol.sh                  <- step 2+: full O2DPG chain to AO2D, then checkKine.C + checkAODFlags.C
 ├── checks/
@@ -92,6 +100,11 @@ InjectedPolO2MC/
 | o2-sim smoke test | O2 | `alienv enter O2Physics/latest` |
 | full chain to AO2D | O2 **and** O2DPG | `alienv enter O2Physics/latest O2DPG/latest-master-o2` |
 
+**Shortcut:** if your `~/.bashrc` contains the block from
+[`O2PhysicsTools/O2EnvHelper-bashrcBlockToAppend`](../O2PhysicsTools/O2EnvHelper-bashrcBlockToAppend), just type
+**`o2envsim`** (same as `o2env sim`). It enters `O2Physics/latest,O2DPG/latest-master-o2` from the current folder,
+which is the environment for every step below. `o2env` alone gives `O2Physics/latest`.
+
 `O2sim` (`aliBuild build O2sim --defaults o2`) is the official MC meta-package: O2Physics + O2DPG + QualityControl +
 extra generators. Use it if mixing separately built O2Physics and O2DPG versions causes trouble.
 The run scripts check this (`run/envcheck.sh`) and print the `alienv` command to use.
@@ -111,9 +124,12 @@ The scripts can be launched from any directory; each one changes to its own outp
 |---|---|---|
 | unit + 0 | `/home/users/cicerodm/PhD_codes/InjectedPolO2MC/run/runTests.sh [modelCfg] [nEvents]` | `${OUT_BASE}/tests/` (logs), `${OUT_BASE}/bin/` (`*.exe`) |
 | 1 | `/home/users/cicerodm/PhD_codes/InjectedPolO2MC/run/smokeTestSim.sh [modelCfg] [nEvents]` | `${OUT_BASE}/smoke/<cfg>/` |
+| 1 (re-check only) | `/home/users/cicerodm/PhD_codes/InjectedPolO2MC/run/recheckKine.sh [dir] [prefix]` | same folder as the checked output |
 | 2+ | `MODELCFG=<cfg> NSIGEVENTS=50 /home/users/cicerodm/PhD_codes/InjectedPolO2MC/run/runInjectedPol.sh` | `${OUT_BASE}/full/<cfg>_seed<N>/` |
 
 Model configs are in `generator/configs/` (default: `ring_leadP_0p30.cfg` for the tests, `none.cfg` for the full chain).
+`ring_leadP_0p30_dilution.cfg` does not require a generator trigger, so events without one get P* = 0 (data-like
+dilution; see DESIGN.md §7b for why this is not the default yet).
 The very long o2-sim / workflow outputs stay in log files: o2-sim writes `o2sim.log` (steering), `o2sim_serverlog`
 (**the generator, including all `[InjectedPol]` messages**), `o2sim_workerlog*` (Geant4) and `o2sim_mergerlog`. The
 scripts print only the generator messages, the errors and the check results.
@@ -123,6 +139,24 @@ scripts print only the generator messages, the errors and the check results.
   element. The next line shows it read from another one.
 - `G4Exception : mat031 ... FDD_PMMA sum of fractional masses 1.001`: a standard Geant4 material-definition warning.
 - `'ENABLE_UPGRADES' macro redefined`, `Particle with PDGcode=... already defined`: ROOT/O2 header noise.
+
+## Naming used in this directory
+
+| Name | Meaning |
+|---|---|
+| **afterburner** | Code that runs on a generator's output and modifies it before transport; here, the polarized Λ decays applied after Pythia (HEP jargon: a step "after" the main generator) |
+| **closure test** | Run a measurement + correction on MC with a *known* input and check that the input is recovered ("the loop closes") |
+| **smoke test** | The shortest run that exercises the whole chain, here 10 events of o2-sim plus the bookkeeping checks. From hardware testing: switch it on and see whether smoke comes out. It catches crashes and gross mistakes, not subtle physics |
+| **trigger, t̂** | The direction the ring is defined around: leading jet or leading particle (`model.trigger`). Same meaning as in the analysis notes |
+| **n̂** | Ring direction n̂ = (t̂ × p_Λ)/\|t̂ × p_Λ\| |
+| **pre-selection** | Generator-level event filter applied before Geant4 (`presel.*`), to save transport time |
+| **dilution** | Events/Λ that enter the measured average with zero true ring signal (e.g. a reconstructed trigger without a genuine jet) |
+| **Kine / MCHeader** | o2-sim kinematics output (`<prefix>_Kine.root`, all MC particles) and per-event header (`<prefix>_MCHeader.root`) |
+| **`o2sim` / `sgn` prefix** | o2-sim output prefix: `o2sim` in the smoke test; `sgn` ("signal") inside each `tfN/` of an O2DPG production |
+| **TF** | Timeframe, the O2 unit of data (a fixed number of LHC orbits); O2DPG productions are organised per TF (`tf1/`, `tf2/`, ...) |
+| **B1–B5, P1–P2** | Checks in `checks/checkKine.C`: B = bookkeeping, P = physics (truth-level) |
+| **A1–A4** | Checks in `checks/checkAODFlags.C`, on the AO2D |
+| **steps 0–4** | Validation plan in DESIGN.md §10 (unit tests and step 0: `runTests.sh`; step 1: `smokeTestSim.sh`; step 2+: `runInjectedPol.sh`) |
 
 ## Where each repository fits
 

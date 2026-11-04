@@ -8,9 +8,11 @@
 //        other than kPDecay (anything else would mean Geant4 also transported the Lambda);
 //   [B4] daughters: process kPDecay, isPrimary() == false, NOT physical primaries, transported;
 //   [B5] daughters share one production vertex, displaced from the Lambda vertex ALONG the Lambda momentum,
-//        and p_B + p_M = p_Lambda;
-//   [P1] truth-level closure: R = 3/alpha <p_hat*_baryon . t_hat> (p pi channel) reproduces the injected
-//        ring amplitude, with t_hat built from the generator jet/leadP axis stored in the MC header;
+//        and p_B + p_M = p_Lambda. Tolerances scale with float precision (o2::MCTrack stores floats), and every
+//        failure is printed with the offending quantity;
+//   [P1] truth-level closure: R = 3/alpha <p_hat*_baryon . n_hat> (p pi channel), n_hat = (t_hat x p_Lambda)/|...|,
+//        reproduces the injected ring amplitude; t_hat = generator TRIGGER direction (jet or leading particle)
+//        stored in the MC header;
 //   [P2] <proper decay length> ~ 78.9 mm.
 //
 // Run: through run/smokeTestSim.sh or run/runInjectedPol.sh, which call it COMPILED (ACLiC), as is the O2 convention
@@ -69,11 +71,16 @@ void checkKine(const char* prefix = "o2sim", int maxPrint = 5)
   std::printf("checkKine: %d events in %s_Kine.root\n", nEv, prefix);
 
   Counter b1, b2, b3, b4, b5;
-  long nLambda = 0, nPPi = 0, nPrinted = 0;
+  long nLambda = 0, nPPi = 0, nPrinted = 0, nPrintedB5 = 0;
   double sumR = 0., sumR2 = 0., sumL = 0., sumL2 = 0.;
   long nR = 0, nL = 0;
+  long nDecayOutsideTPC = 0, nDecayBeyond10m = 0; // decay radius (3D distance from the PV) > 250 cm / > 1000 cm
+  double maxDecayDist = 0.;
   double ringAmp = 0.;
-  int ringProxy = kRingJet;
+  int trigger = kTriggerJet;
+  // o2::MCTrack is MCTrackT<float>: positions/momenta carry ~7 significant digits. Tolerances must scale with the
+  // magnitudes involved, otherwise Lambdas decaying metres away fail on rounding alone.
+  constexpr double kFloatEps = 1.2e-7;
 
   for (int iev = 0; iev < nEv; ++iev) {
     const auto& tracks = reader.getTracks(iev);
@@ -81,15 +88,20 @@ void checkKine(const char* prefix = "o2sim", int maxPrint = 5)
 
     bool hdrOk = true;
     ringAmp = headerDouble(header, "injpol.model.ring", hdrOk);
-    ringProxy = headerInt(header, "injpol.model.ringProxy", hdrOk);
-    const bool useJet = (ringProxy == kRingJet);
-    const bool hasAxis = headerInt(header, useJet ? "injpol.hasJet" : "injpol.hasLeadP", hdrOk) == 1;
-    const double aEta = headerDouble(header, useJet ? "injpol.jet.eta" : "injpol.leadP.eta", hdrOk);
-    const double aPhi = headerDouble(header, useJet ? "injpol.jet.phi" : "injpol.leadP.phi", hdrOk);
+    {
+      // "injpol.model.trigger" since 2026-11-05; older files have "injpol.model.ringProxy" (same meaning/values)
+      bool okNew = true;
+      trigger = header.hasInfo("injpol.model.trigger") ? headerInt(header, "injpol.model.trigger", okNew)
+                                                       : headerInt(header, "injpol.model.ringProxy", hdrOk);
+    }
+    const bool useJet = (trigger == kTriggerJet);
+    const bool hasTrigger = headerInt(header, useJet ? "injpol.hasJet" : "injpol.hasLeadP", hdrOk) == 1;
+    const double tEta = headerDouble(header, useJet ? "injpol.jet.eta" : "injpol.leadP.eta", hdrOk);
+    const double tPhi = headerDouble(header, useJet ? "injpol.jet.phi" : "injpol.leadP.phi", hdrOk);
     if (!hdrOk && iev == 0) {
       std::printf("WARNING: injpol.* header keys missing -- was the injected-polarization generator used?\n");
     }
-    const V3 axis{std::cos(aPhi), std::sin(aPhi), std::sinh(aEta)}; // direction only
+    const V3 tHat = unit(V3{std::cos(tPhi), std::sin(tPhi), std::sinh(tEta)}); // trigger direction t_hat
 
     // mother -> daughters map built from the mother indices (robust against daughter-index conventions)
     std::vector<std::vector<int>> daughters(tracks.size());
@@ -124,24 +136,43 @@ void checkKine(const char* prefix = "o2sim", int maxPrint = 5)
         const V3 v0{D0.Vx(), D0.Vy(), D0.Vz()}, v1{D1.Vx(), D1.Vy(), D1.Vz()}, vL{L.Vx(), L.Vy(), L.Vz()};
         const V3 pLv{L.Px(), L.Py(), L.Pz()};
         const V3 disp = v0 - vL;
-        const double perp = norm(cross(disp, unit(pLv)));
+        const double dist = norm(disp);
         const V3 psum{D0.Px() + D1.Px(), D0.Py() + D1.Py(), D0.Pz() + D1.Pz()};
-        ok5 = norm(v0 - v1) < 1e-6 && perp < 1e-4 && dot(disp, pLv) >= 0. && norm(psum - pLv) < 1e-5;
+
+        // B5 sub-conditions with float-aware tolerances
+        const double dVtx = norm(v0 - v1), tolVtx = 1e-6 + 4. * kFloatEps * std::max(norm(v0), norm(v1));
+        const double perp = norm(cross(disp, unit(pLv))), tolPerp = 1e-6 + 8. * kFloatEps * (norm(vL) + norm(v0));
+        const double along = dot(disp, unit(pLv));
+        const double dP = norm(psum - pLv), tolP = 1e-6 + 8. * kFloatEps * (norm(pLv) + norm(V3{D0.Px(), D0.Py(), D0.Pz()}) + norm(V3{D1.Px(), D1.Py(), D1.Pz()}));
+        const bool c1 = dVtx < tolVtx, c2 = perp < tolPerp, c3 = along >= -tolPerp, c4 = dP < tolP;
+        ok5 = c1 && c2 && c3 && c4;
+        if (!ok5 && nPrintedB5 < 20) {
+          ++nPrintedB5;
+          std::printf("  B5 detail: event %d track %zu pdg %d p=%.2f GeV/c decay distance=%.1f cm | "
+                      "|v_d0-v_d1|=%.2e (tol %.1e)%s  perp=%.2e (tol %.1e)%s  along=%.2e%s  |sum p_d - p_L|=%.2e (tol %.1e)%s\n",
+                      iev, i, L.GetPdgCode(), norm(pLv), dist, dVtx, tolVtx, c1 ? "" : " <-- FAIL", perp, tolPerp, c2 ? "" : " <-- FAIL",
+                      along, c3 ? "" : " <-- FAIL", dP, tolP, c4 ? "" : " <-- FAIL");
+        }
+
+        // decay-distance bookkeeping
+        maxDecayDist = std::max(maxDecayDist, dist);
+        nDecayOutsideTPC += (dist > 250.);
+        nDecayBeyond10m += (dist > 1000.);
 
         // proper decay length (cm -> mm)
-        const double lProper = 10. * norm(disp) * L.GetMass() / norm(pLv);
+        const double lProper = 10. * dist * L.GetMass() / norm(pLv);
         sumL += lProper;
         sumL2 += lProper * lProper;
         ++nL;
 
-        // truth-level ring observable, p pi channel only
+        // truth-level ring observable, p pi channel only: R = 3/alpha <p_hat*_B . n_hat>, n_hat = (t_hat x p_L)/|...|
         const MCTrack* B = nullptr;
         for (int d : dau) {
           if (std::abs(tracks[d].GetPdgCode()) == 2212) {
             B = &tracks[d];
           }
         }
-        if (B && hasAxis) {
+        if (B && hasTrigger) {
           ++nPPi;
           P4 pL;
           pL.p = pLv;
@@ -150,10 +181,10 @@ void checkKine(const char* prefix = "o2sim", int maxPrint = 5)
           pB.p = {B->Px(), B->Py(), B->Pz()};
           pB.e = B->GetEnergy();
           const V3 pStarHat = unit(boostToRest(pB, pL, pL.mass()).p);
-          const V3 cr = cross(unit(axis), pLv);
-          if (norm(cr) > 1e-12) {
+          const V3 n = cross(tHat, pLv);
+          if (norm(n) > 1e-12) {
             const double alpha = anti ? constants::kAlphaAntiLambdaToPPi : constants::kAlphaLambdaToPPi;
-            const double r = 3. / alpha * dot(pStarHat, cr) / norm(cr);
+            const double r = 3. / alpha * dot(pStarHat, n) / norm(n);
             sumR += r;
             sumR2 += r * r;
             ++nR;
@@ -180,7 +211,7 @@ void checkKine(const char* prefix = "o2sim", int maxPrint = 5)
   line("B2 Lambda is physical primary", b2);
   line("B3 exactly 2 daughters, all kPDecay (no Geant4 transport of the Lambda)", b3);
   line("B4 daughters: kPDecay, not primary, not physical primary, transported", b4);
-  line("B5 common displaced vertex along p_Lambda, momentum conservation", b5);
+  line("B5 common displaced vertex along p_Lambda, momentum conservation (float tol.)", b5);
   if (nR > 1) {
     const double m = sumR / nR, e = std::sqrt(std::max(0., sumR2 / nR - m * m) / nR);
     std::printf("[%s] P1 truth-level ring R = %+.4f +- %.4f   (injected %+.4f, pull %+.2f)\n",
@@ -189,5 +220,7 @@ void checkKine(const char* prefix = "o2sim", int maxPrint = 5)
   if (nL > 1) {
     const double m = sumL / nL, e = std::sqrt(std::max(0., sumL2 / nL - m * m) / nL);
     std::printf("[info] P2 <proper decay length> = %.2f +- %.2f mm (expected 78.9 mm with the default c*tau)\n", m, e);
+    std::printf("[info] decay distance from the PV: > 250 cm (outside the TPC) %ld / %ld, > 10 m %ld, max %.0f cm\n",
+                nDecayOutsideTPC, nL, nDecayBeyond10m, maxDecayDist);
   }
 }

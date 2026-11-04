@@ -155,7 +155,7 @@ class GeneratorPythia8InjectedPol : public GeneratorPythia8
     // Everything else stays in o2sim_MCHeader.root (not propagated to the AO2D)
     header->putInfo<std::string>("injpol.config", mCfgPath);
     header->putInfo<double>("injpol.model.ring", mCfg.model.ring);
-    header->putInfo<int>("injpol.model.ringProxy", mCfg.model.ringProxy);
+    header->putInfo<int>("injpol.model.trigger", mCfg.model.trigger); // 0 = leadP, 1 = jet (t_hat of the ring model)
     header->putInfo<double>("injpol.model.global", mCfg.model.global);
     header->putInfo<double>("injpol.model.longitudinal", mCfg.model.longitudinal);
     header->putInfo<int>("injpol.model.longHarmonic", mCfg.model.longHarmonic);

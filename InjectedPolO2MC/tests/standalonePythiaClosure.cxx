@@ -5,7 +5,7 @@
 // decay (injpol::decayLambda). Reports
 //   - pre-selection efficiency and Pythia time per accepted event (to budget productions),
 //   - Lambdas per accepted event and fraction of decays inside a typical V0 radius window,
-//   - truth-level estimators (ring R with the configured proxy, global, longitudinal, helicity) computed with
+//   - truth-level estimators (ring R with the configured trigger, global, longitudinal, helicity) computed with
 //     analysis-style formulas, to be compared with the injected amplitudes.
 //
 // Build (needs Pythia8 only; e.g. inside the O2/O2Physics environment, or your own Pythia install):
@@ -78,7 +78,7 @@ int main(int argc, char** argv)
   const injpol::DecayConsts dc = injpol::makeDecayConsts(cfg, pythia.particleData);
   std::printf("c*tau = %.2f mm, fraction p pi = %.4f\n", dc.ctauMM, dc.fracPPi);
 
-  long nTries = 0, nAccepted = 0, nLambda = 0, nPPi = 0, nInRadius = 0, nClamped = 0, nWithJet = 0;
+  long nTries = 0, nAccepted = 0, nLambda = 0, nPPi = 0, nInRadius = 0, nClamped = 0, nWithJet = 0, nWithLeadP = 0;
   Mean ring, glob, lng, hel;
   const auto t0 = std::chrono::steady_clock::now();
 
@@ -102,10 +102,11 @@ int main(int argc, char** argv)
     ax.psiRP = cfg.randomPsiRP ? 2. * injpol::constants::kPi * pythia.rndm.flat() : 0.;
     ++nAccepted;
     nWithJet += ax.hasJet;
+    nWithLeadP += ax.hasLeadP;
 
-    const bool useJet = (cfg.model.ringProxy == injpol::kRingJet);
+    const bool useJet = (cfg.model.trigger == injpol::kTriggerJet);
     const bool hasAxis = useJet ? ax.hasJet : ax.hasLeadP;
-    const injpol::V3 axis = useJet ? ax.jet : ax.leadP;
+    const injpol::V3 tHat = injpol::unit(useJet ? ax.jet : ax.leadP); // trigger direction
 
     // --- same per-Lambda treatment as GeneratorPythia8InjectedPol::injectPolarizedDecays() ---
     for (int i = 0; i < pythia.event.size(); ++i) {
@@ -129,7 +130,7 @@ int main(int argc, char** argv)
       // analysis-style estimators (truth level, full acceptance)
       const injpol::V3 pStarHat = injpol::unit(injpol::boostToRest(d.dec.baryon, pL, pL.mass()).p);
       if (hasAxis) {
-        const injpol::V3 cr = injpol::cross(injpol::unit(axis), pL.p);
+        const injpol::V3 cr = injpol::cross(tHat, pL.p); // n_hat * |t_hat x p_Lambda|
         if (injpol::norm(cr) > 1e-12) {
           ring.add(3. / d.alpha * injpol::dot(pStarHat, cr) / injpol::norm(cr));
         }
@@ -144,10 +145,12 @@ int main(int argc, char** argv)
   std::printf("\n=== summary ===\n");
   std::printf("accepted %ld / %ld Pythia events (efficiency %.3e), %.3f s Pythia+afterburner per accepted event\n",
               nAccepted, nTries, double(nAccepted) / nTries, secs / nAccepted);
-  std::printf("accepted events with a fiducial jet: %ld; (anti)Lambdas: %ld (%.2f / event), p pi: %ld, 1 < R_decay < 30 cm: %.3f, |P|>1 clamped: %ld\n",
-              nWithJet, nLambda, double(nLambda) / nAccepted, nPPi, nLambda ? double(nInRadius) / nLambda : 0., nClamped);
+  std::printf("accepted events with a leading particle (trigger candidate): %ld (%.3f), with a fiducial jet: %ld (%.3f; 0 unless jets are needed)\n",
+              nWithLeadP, double(nWithLeadP) / nAccepted, nWithJet, double(nWithJet) / nAccepted);
+  std::printf("(anti)Lambdas: %ld (%.2f / event), p pi: %ld, 1 < R_decay < 30 cm: %.3f, |P|>1 clamped: %ld\n",
+              nLambda, double(nLambda) / nAccepted, nPPi, nLambda ? double(nInRadius) / nLambda : 0., nClamped);
   std::printf("truth-level estimators (p pi channel, full acceptance):\n");
-  report("ring R (configured proxy)", ring, cfg.model.ring);
+  report("ring R = 3/a <p*.n_hat> (configured trigger)", ring, cfg.model.ring);
   report("global <3/a p*.(-y')>", glob, cfg.model.global);
   report("longitudinal <3/a p*_z sin(n dphi)> = A/2", lng, cfg.model.longitudinal / 2.);
   report("helicity <3/a p*.p_hat>", hel, cfg.model.helicity);
