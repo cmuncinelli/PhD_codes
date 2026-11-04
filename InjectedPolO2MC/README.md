@@ -52,14 +52,15 @@ reconstruction. See the paper roadmap, section 4, "Closure-test for the framewor
 |---|---|
 | Archaeology of O2 / O2DPG / O2Physics | done, see [`DESIGN.md`](DESIGN.md) |
 | Afterburner design | done (v1), see [`DESIGN.md`](DESIGN.md) |
-| Decay kernel + polarization models (`generator/InjectedPolKernel.h`) | written; **unit tests pass** (`tests/testKernel.cxx`, run with plain g++) |
-| Pythia-side logic (`generator/InjectedPolPythia.h`) | written; compiled and parser-tested against a Pythia API stub only |
-| O2 generator macro (`generator/generator_pythia8_injectedPol.C`) | written; **not yet run in O2** |
-| Step 0: Pythia-only truth closure (`tests/standalonePythiaClosure.cxx`) | to run on the cluster |
-| Step 1: o2-sim smoke test (`run/smokeTestSim.sh` + `checks/checkKine.C`) | to run on the cluster |
-| Step 2: small full chain → AO2D (`run/runInjectedPol.sh` + `checks/checkAODFlags.C`) | to run on the cluster |
-| Step 3: zero-polarization baseline vs standard Geant4 decays | not started |
+| Decay kernel + polarization models (`generator/InjectedPolKernel.h`) | **unit tests pass** (here and on jarvis15) |
+| Pythia-side logic (`generator/InjectedPolPythia.h`) | **runs with real Pythia** (step 0) |
+| O2 generator macro (`generator/generator_pythia8_injectedPol.C`) | **runs inside o2-sim** (step 1) |
+| Step 0: Pythia-only truth closure (`run/runTests.sh`) | **passed** (jarvis15, 2026-11-05): ring R recovered within 1σ, with and without a trigger requirement |
+| Step 1: o2-sim smoke test (`run/smokeTestSim.sh` + `checks/checkKine.C`) | **passed** (jarvis15, 2026-11-05): B1–B5 all OK on 44 Λ |
+| Step 2: small full chain → AO2D (`run/runInjectedPol.sh`) | first run found the O2DPG "separated" event-generation problem (DESIGN.md §4b); fixed with `--event-gen-mode integrated`; **re-run pending** |
+| Step 3: zero-polarization baseline vs standard Geant4 decays (method systematic, DESIGN.md §5) | not started |
 | Step 4: injected-polarization productions + closure | not started |
+| Deployment on the cluster (parallel runs, then other machines) | planned after step 3: a step-by-step, machine-by-machine guide will be added (jarvis15 first) |
 
 ## Layout
 
@@ -73,9 +74,10 @@ InjectedPolO2MC/
 │   ├── generator_pythia8_injectedPol.C    <- O2 external generator (GeneratorPythia8 subclass), MC bookkeeping
 │   ├── pythia8_pp_13600.cfg               <- Pythia card (same as O2DPG's default pp card; Λ left undecayed; no seed lines)
 │   ├── injectedPol.ini                    <- example [GeneratorExternal]/[GeneratorPythia8] configuration
-│   └── configs/                           <- model configs: none, ring (leadP / jet / leadP without trigger requirement), global, longitudinal, helicity, 5-Λ test
+│   └── configs/                           <- model configs: none, ring (leadP default / leadP requiring a trigger / jet), global, longitudinal, helicity, 5-Λ test
 ├── run/
-│   ├── envcheck.sh                        <- environment checks, path normalisation, log summaries, compiled checkKine (sourced)
+│   ├── envcheck.sh                        <- environment checks, path normalisation, log summaries/moves, disk report, compiled checkKine (sourced)
+│   ├── progress.py                        <- progress bar, ETA, per-task timing and disk usage of a full-chain output folder
 │   ├── runTests.sh                        <- unit tests + step 0 (stand-alone Pythia closure), builds *.exe in ${OUT_BASE}/bin
 │   ├── recheckKine.sh                     <- re-run only checkKine.C on existing o2-sim output
 │   ├── smokeTestSim.sh                    <- step 1: o2-sim only, 10 events, then checkKine.C
@@ -122,14 +124,31 @@ The scripts can be launched from any directory; each one changes to its own outp
 
 | Step | Command | Output folder |
 |---|---|---|
-| unit + 0 | `/home/users/cicerodm/PhD_codes/InjectedPolO2MC/run/runTests.sh [modelCfg] [nEvents]` | `${OUT_BASE}/tests/` (logs), `${OUT_BASE}/bin/` (`*.exe`) |
-| 1 | `/home/users/cicerodm/PhD_codes/InjectedPolO2MC/run/smokeTestSim.sh [modelCfg] [nEvents]` | `${OUT_BASE}/smoke/<cfg>/` |
+| unit + 0 | `/home/users/cicerodm/PhD_codes/InjectedPolO2MC/run/runTests.sh [modelCfg] [nEvents]` | `${OUT_BASE}/tests/logs/`, `${OUT_BASE}/bin/` (`*.exe`) |
+| 1 | `/home/users/cicerodm/PhD_codes/InjectedPolO2MC/run/smokeTestSim.sh [modelCfg] [nEvents]` | `${OUT_BASE}/tests/smoke/<cfg>/` |
 | 1 (re-check only) | `/home/users/cicerodm/PhD_codes/InjectedPolO2MC/run/recheckKine.sh [dir] [prefix]` | same folder as the checked output |
 | 2+ | `MODELCFG=<cfg> NSIGEVENTS=50 /home/users/cicerodm/PhD_codes/InjectedPolO2MC/run/runInjectedPol.sh` | `${OUT_BASE}/full/<cfg>_seed<N>/` |
+| monitor | `/home/users/cicerodm/PhD_codes/InjectedPolO2MC/run/progress.py <full-chain folder> [--watch 30] [--final]` | prints; `--final` also writes `logs/run_report.txt` |
+
+**Logs** always go to a `logs/` subfolder of the output folder (`tests/logs/`, `tests/smoke/<cfg>/logs/`,
+`full/<...>/logs/`). For the full chain, our own logs are written there directly. The O2DPG task logs (`tfN/*.log`,
+`*.log_done`, `sgn_serverlog`, ...) are moved there only **after a successful run**, because the O2DPG runner uses the
+`*.log_done` files to skip finished tasks when a failed run is resumed in place.
+
+**Progress, ETA, timing, disk.** While a full chain runs, open a second terminal (same environment not needed, plain
+`python3`) and run `progress.py <folder> --watch 30`. It shows:
+- a progress bar over the workflow tasks;
+- event-level progress and seconds per event of the Geant4 transport (`sgnsim_N`), the dominant cost;
+- an ETA once a first timeframe has finished (an upper bound: timeframes run in parallel when CPUs allow);
+- at the end, wall time per task kind and disk usage by category (logs, AO2D, kinematics, hits, digits, other),
+  total and per event.
+
+Per-event numbers from small runs (< ~500 events) are dominated by fixed per-timeframe costs and **overestimate**
+large productions; the report says so. `smokeTestSim.sh` and `runTests.sh` also print their wall times and disk usage.
 
 Model configs are in `generator/configs/` (default: `ring_leadP_0p30.cfg` for the tests, `none.cfg` for the full chain).
-`ring_leadP_0p30_dilution.cfg` does not require a generator trigger, so events without one get P* = 0 (data-like
-dilution; see DESIGN.md §7b for why this is not the default yet).
+**By default no generator trigger is required**: events without one are simulated too, with P* = 0, which gives the
+data-like dilution (DESIGN.md §7b). `ring_leadP_0p30_requireTrigger.cfg` keeps only events with a generator trigger.
 The very long o2-sim / workflow outputs stay in log files: o2-sim writes `o2sim.log` (steering), `o2sim_serverlog`
 (**the generator, including all `[InjectedPol]` messages**), `o2sim_workerlog*` (Geant4) and `o2sim_mergerlog`. The
 scripts print only the generator messages, the errors and the check results.
@@ -139,6 +158,14 @@ scripts print only the generator messages, the errors and the check results.
   element. The next line shows it read from another one.
 - `G4Exception : mat031 ... FDD_PMMA sum of fractional masses 1.001`: a standard Geant4 material-definition warning.
 - `'ENABLE_UPGRADES' macro redefined`, `Particle with PDGcode=... already defined`: ROOT/O2 header noise.
+- `Failed to import loopers particles` / `ReadEvent failed in finalizeEvent` / `ReadEvent failed for generator ALICEo2`
+  (full chain only): O2's TPC-loopers background generator, active when a collision context exists, occasionally
+  fails. The primary server then simply generates a new event (`O2PrimaryServerDevice.cxx`). The summaries count these
+  instead of listing them.
+- More events than requested (e.g. 97 for `NSIGEVENTS=50`): O2DPG adds "orbits-early" pile-up collisions before the
+  timeframe start. All particles carrying the AO2D flag `FromBackgroundEvent` is also normal without embedding.
+- Should you ever see `GeneratorFromO2Kine: Ran out of events`: the generator ran in O2DPG's *separated* mode, which
+  breaks this generator. The scripts use `--event-gen-mode integrated` (DESIGN.md §4b).
 
 ## Naming used in this directory
 

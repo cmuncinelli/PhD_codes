@@ -60,7 +60,7 @@ struct Config {
   int minLambdas = 1;           // number of Lambda + AntiLambda required in the acceptance below
   double lambdaRapMax = 1.0;    // |y| (producer's rapidityCut default)
   double lambdaPtMin = 0.0;
-  bool requireLeadP = true;
+  bool requireLeadP = false;   // default: NO trigger requirement -> events without a trigger get P* = 0 (data-like dilution)
   bool requireJet = false;
   long maxTries = 100000000;    // safety net against infinite loops
 

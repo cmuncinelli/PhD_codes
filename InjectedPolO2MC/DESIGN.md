@@ -30,6 +30,8 @@ o2dpg_sim_workflow.py  ──► workflow.json ──► o2_dpg_workflow_runner.
    per timeframe:  o2-sim (generator + Geant4) │ digitization │ reco (ITS/TPC/TOF/...) │ secondary vertexing
                    │                                                        │ AOD producer ──► tfN/AO2D.root
                    └─ generator = Pythia8 or external macro (.C, loaded with gROOT->LoadMacro, i.e. JIT by Cling)
+                      By default O2DPG runs the generator in a SEPARATE o2-sim (task sgngen_N) and the transport re-reads
+                      the events; for this generator we need --event-gen-mode integrated (§4b).
 ```
 
 - An external generator is selected with `-gen external -ini my.ini` ([GeneratorExternal] `fileName`/`funcName`, plus
@@ -113,6 +115,34 @@ O2 or the PWGLF code read so far.
 
 ---
 
+## 4b. O2DPG event-generation mode: `--event-gen-mode integrated` is required
+
+Found in the first full-chain test (jarvis15, 2026-11-05: B3–B5 and A3 failed for every Λ, smoke test fine).
+
+- Current O2DPG defaults to `--event-gen-mode separated` (`o2dpg_sim_workflow.py:148`). Task `sgngen_N` runs the
+  generator alone (`o2-sim --noGeant -g external ... -o genevents`), and the transport task `sgnsim_N` re-reads the
+  events with `-g extkinO2` (`GeneratorFromO2Kine`).
+- `GeneratorFromO2Kine::importParticles` keeps **only primary tracks** unless in "continue mode"
+  (`AliceO2/Generators/src/GeneratorFromFile.cxx:282`). Our daughters are deliberately not primary (process `kPDecay`,
+  with a mother; §4), so they are dropped. The non-transported Λ then never decays. The skipped particles also leave
+  gaps that are not re-indexed, so the Λ's daughter indices point to unrelated particles in the AO2D (A2 passed, A3 failed).
+- **Fix:** `--event-gen-mode integrated` (`run/runInjectedPol.sh`). The generator runs inside the transport `o2-sim`,
+  exactly as in the smoke test, and the bookkeeping of §4 survives. `checkKine.C` and `checkAODFlags.C` print a hint
+  if this ever happens again, and `checkAODFlags.C` A2 now also requires the daughters to point back to the Λ.
+- Making the generator compatible with *separated* mode would require the daughters to be "primary" for
+  `GeneratorFromO2Kine`. That is exactly the bookkeeping we avoided (it flips the physical-primary flags). Integrated
+  mode is an official, supported O2DPG option, so we use it.
+
+Other observations from the same run (standard O2/O2DPG behaviour, not related to our generator):
+- *97 events for `-ns 50`:* the collision context holds up to `--maxCollsPerTF` (= `-ns`) collisions in the TF, plus
+  "orbits-early" collisions before the TF start (pile-up from earlier bunch crossings), which are simulated too.
+- *`Failed to import loopers particles` / `ReadEvent failed ...`:* O2's TPC-loopers background generator (active when
+  a collision context exists) occasionally fails in `Generator::finalizeEvent`. The primary server retries with a new
+  event (`run/O2PrimaryServerDevice.cxx:219-227`). In separated mode each retry consumed one more pre-generated event,
+  hence the final `GeneratorFromO2Kine: Ran out of events`. In integrated mode a retry is a fresh Pythia event.
+- *All AO2D particles carry `FromBackgroundEvent` (0x2):* the AOD producer flags source 0 as background
+  (`AODProducerWorkflowSpec.cxx:1215`), and `sgn` is source 0 without embedding.
+
 ## 5. Generator-level vs Geant4 decays: characterization plan
 
 Our Λ skip whatever Geant4 would have done to them before the decay point: elastic/inelastic hadronic interactions
@@ -139,7 +169,7 @@ from cheapest to most complete:
 | # | Item | Choice | Standard practice / justification |
 |---|---|---|---|
 | 1 | Λ decay | generator level, polarized | Standard: Geant4, isotropic. Necessary for injection; characterized in §5 |
-| 2 | Pre-selection | ≥ 1 Λ/Λ̄ with \|y\| < 1, leading charged particle p_T > 2 GeV/c | Biases the sample; applied identically to every model; saves Geant4 time (as the O2DPG gap-triggered generators do) |
+| 2 | Pre-selection | ≥ 1 Λ/Λ̄ with \|y\| < 1 (no trigger requirement by default, §7b) | Biases the sample (applied identically to every model); saves Geant4 time (as the O2DPG gap-triggered generators do) |
 | 3 | `--skipModules ZDC` | yes | O2DPG convention (42 O2DPG configs/scripts). ZDC is ~112 m from the IP and does not affect the barrel |
 | 4 | `--readoutDets` | **not restricted** | My earlier "speed" suggestion is withdrawn. Anchored productions set it to the detectors read out in the anchor run (`o2dpg_sim_workflow_anchored.py:750-751`); unanchored runs keep all |
 | 5 | `Diamond.width[2]=6.` | yes | As in the O2DPG run scripts (unanchored); anchored runs take the vertex from CCDB |
@@ -151,6 +181,9 @@ from cheapest to most complete:
 | 11 | cτ | Pythia τ₀ = 78.9 mm | Same value as Geant4 |
 | 12 | α parameters | 0.749 / −0.758 (pπ), 0.670 / −0.675 (nπ⁰) | Identical to `lambdaJetPolarizationIonsDerived.cxx:81-82` + PDG 2025 |
 | 13 | Generator-level jets | SlowJet (fjcore) anti-kT | Same algorithm as FastJet in the producer (§7) |
+| 14 | `--event-gen-mode` | **integrated** | O2DPG default is "separated", which drops our daughters (§4b) |
+| 15 | Trigger requirement | **none** by default (`presel.requireLeadP = 0`) | Data-like dilution; about 2.5× more Geant4 events per triggered event (§7b) |
+| 16 | Generator RNG | Pythia's own `rndm`, seeded by O2 from `-seed` per TF | Reproducible productions (could be randomised later if wanted) |
 
 **Your friend's setup** (`ALICE_PhotonReconstruction/GenProduction`), designed for topological Σ⁰ reconstruction, not
 for this analysis:
@@ -199,31 +232,34 @@ for this analysis:
 
 ---
 
-## 7b. Trigger t̂, pre-selection and signal dilution (to settle before the final workflow)
+## 7b. Trigger t̂, pre-selection and signal dilution
 
 **Notation** (as in the analysis notes): **t̂ = trigger direction** (leading jet or leading particle), and
 **n̂ = (t̂ × p_Λ)/|t̂ × p_Λ|** = the ring direction. The injected ring polarization is P* = P₀ n̂.
 
-**What the generator does now (v1).** t̂ is the generator-level **leading charged particle** (`model.trigger = leadP`,
-p_T > 2 GeV/c). The pre-selection keeps only events with ≥ 1 Λ/Λ̄ (|y| < 1) **and** such a leading particle
-(`presel.requireLeadP = 1`).
+**Default since 2026-11-05: no trigger requirement.** t̂ is the generator-level **leading charged particle**
+(`model.trigger = leadP`, p_T > 2 GeV/c). The pre-selection keeps events with ≥ 1 Λ/Λ̄ (|y| < 1) **whether or not**
+they have a trigger (`presel.requireLeadP = 0`). In events without a generator trigger the Λ get **P* = 0**.
 
-**Why this matters for comparison with data: dilution.** In data, the reconstructed trigger is sometimes found in
-events with no genuine hard scattering (fluctuations, combinatorics), and those events add R ≈ 0 to the average.
-A closure test that only simulates events with a true generator trigger lacks part of that dilution. The ideal
-default would therefore *not* require a generator trigger.
+**Why: dilution, as in data.** In data the reconstructed trigger is sometimes found in events with no genuine hard
+scattering (fluctuations, combinatorics), and those events add R ≈ 0 to the average. A closure test that only
+simulates events with a generator trigger would lack that dilution. Also, 2 GeV/c is the analysis threshold too, so
+reconstructed triggers just above it can come from generator particles just below it. Requiring a generator trigger
+would remove exactly those events.
 
-**Why the cut stays for now.** The leading particle is what we inject the ring around. The cut cannot simply be
-dropped without deciding what P* is in events without a generator trigger. Two consistent options:
-- **(a) Current default:** require a generator trigger. Cleanest closure (every Λ has a well-defined injected n̂),
-  but less dilution than data.
-- **(b) `presel.requireLeadP = 0`, already supported:** events without a generator trigger are simulated too, and
-  their Λ get **P* = 0**, which is the dilution. The cost is Geant4 time on events that mostly carry no signal.
-  The extra cost (Geant4-transported events per signal event) is not known yet. Measure it with
-  `run/runTests.sh generator/configs/ring_leadP_0p30_dilution.cfg`, whose summary prints the pre-selection
-  efficiency and the fraction of events with a trigger. For comparison, about 8% of Pythia events pass the
-  pre-selection with `requireLeadP = 1`. Note that 2 GeV/c is also the analysis threshold, so reconstructed triggers
-  just above it can come from generator particles just below it. With (a), those events are missing.
+**What it costs** (`run/runTests.sh`, step 0, jarvis15, 2000 accepted events each):
+
+| configuration | Pythia events accepted | accepted events with a generator trigger | Pythia + afterburner per accepted event |
+|---|---|---|---|
+| `ring_leadP_0p30.cfg` (default, no trigger requirement) | 19.1% | 39.6% | 0.008 s |
+| `ring_leadP_0p30_requireTrigger.cfg` | 7.8% | 100% | 0.020 s |
+
+So the default transports about **2.5×** more events through Geant4 per injected-signal (triggered) event. Each
+accepted event also carries fewer Λ (3.5 vs 4.3 per event). The requirement can be switched back on per
+configuration (`presel.requireLeadP = 1`), e.g. for high-statistics closure checks of the signal itself.
+
+**Why a trigger is still needed at all.** The leading particle (later the jet) defines n̂ for the injection, so the
+model needs *a* trigger definition. What changed is only that events without one are no longer thrown away.
 
 **Planned direction.** Use the **jet** (anti-kT, `model.trigger = jet`) as the default t̂, the same definition as the
 FastJet jets of the producer, with the leading particle kept as a cross-check. Before that we must define carefully
@@ -293,10 +329,14 @@ jet table, and stated in the analysis note.
 
 ## 10. Validation plan (in order)
 
-0. **Pythia only** (`tests/standalonePythiaClosure.cxx`): truth-level R = injected P₀; pre-selection efficiency and cost.
+0. **Pythia only** (`run/runTests.sh`): truth-level R = injected P₀; pre-selection efficiency and cost.
+   **Passed** on jarvis15 (2026-11-05), with and without the trigger requirement (§7b).
 1. **o2-sim smoke test** (`run/smokeTestSim.sh` → `checks/checkKine.C`): B1-B5 bookkeeping, plus truth-level R in the Kine.
-2. **Small full chain** (`run/runInjectedPol.sh` → `checks/checkAODFlags.C`): A1-A4. Then run the strangeness builder with MC
-   labels, and check that MC-matched Λ are found and flagged physical primary.
+   **Passed** on jarvis15 (2026-11-05): B1-B5 OK for all 44 Λ (B5 after making its tolerances float-aware).
+2. **Small full chain** (`run/runInjectedPol.sh` → `checkKine.C` per TF + `checks/checkAODFlags.C`): B1-B5 and A1-A4.
+   Then run the strangeness builder with MC labels, and check that MC-matched Λ are found and flagged physical primary.
+   First attempt (2026-11-05) found the separated event-generation problem (§4b); **re-run with
+   `--event-gen-mode integrated` pending.**
 3. **Method systematic** (§5.2): `none.cfg` vs a standard production.
 4. **Injected productions:** ring scan in P₀, then ring + contaminants. Run them through `lambdaJetPolarizationIons` →
    `...Derived` as data. Then apply the correction methods of other polarization papers to the same samples.

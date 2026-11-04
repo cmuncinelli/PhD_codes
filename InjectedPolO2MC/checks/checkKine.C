@@ -212,6 +212,11 @@ void checkKine(const char* prefix = "o2sim", int maxPrint = 5)
   line("B3 exactly 2 daughters, all kPDecay (no Geant4 transport of the Lambda)", b3);
   line("B4 daughters: kPDecay, not primary, not physical primary, transported", b4);
   line("B5 common displaced vertex along p_Lambda, momentum conservation (float tol.)", b5);
+  if (nLambda > 0 && b3.pass == 0) {
+    std::printf("[HINT] NO Lambda has its daughters in this file. If it comes from an O2DPG production, the generator most likely ran\n"
+                "       in a SEPARATE step (o2dpg_sim_workflow.py default --event-gen-mode separated): the transport re-reads the events\n"
+                "       with GeneratorFromO2Kine, which keeps only primary tracks and drops the daughters. Use --event-gen-mode integrated.\n");
+  }
   if (nR > 1) {
     const double m = sumR / nR, e = std::sqrt(std::max(0., sumR2 / nR - m * m) / nR);
     std::printf("[%s] P1 truth-level ring R = %+.4f +- %.4f   (injected %+.4f, pull %+.2f)\n",

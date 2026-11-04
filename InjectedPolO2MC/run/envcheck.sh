@@ -35,29 +35,56 @@ injpol_require() { # usage: injpol_require [o2] [o2dpg] [pythia] [gxx]
 }
 
 # Print only the lines worth reading from very long o2-sim / workflow logs.
-# Known harmless messages (see README, "Known harmless messages") are filtered out of the error list.
+# Known harmless messages (see README, "Known harmless messages") are filtered out of the error list; the TPC-loopers
+# failures (an O2 issue: the event is simply regenerated) are counted separately.
 injpol_summarize_logs() { # usage: injpol_summarize_logs log1 [log2 ...]
-  local f
+  local f nloop=0 nout=0
   echo "---- [InjectedPol] generator messages ----"
   for f in "$@"; do [ -f "$f" ] && grep -a -h "\[InjectedPol\]" "$f"; done | sed 's/^\[[0-9:]*\]//' | sort | uniq -c | sort -rn | head -20
   echo "---- errors / fatals / exceptions (harmless known messages filtered; first 30) ----"
   for f in "$@"; do
     [ -f "$f" ] || continue
+    nloop=$((nloop + $(grep -a -c "Failed to import loopers particles" "$f")))
+    nout=$((nout + $(grep -a -c "GeneratorFromO2Kine: Ran out of events" "$f")))
     grep -a -n -i -E "\[fatal\]|\[error\]|error:|error in <|segmentation|exception|cannot open|failed to|no matching function" "$f" \
-      | grep -a -v -E "TNetXNGFile::Open.*No servers are available|G4Exception-(START|END)|mat031|Beware of errors and use common sense" \
+      | grep -a -v -E "TNetXNGFile::Open.*No servers are available|G4Exception-(START|END)|mat031|Beware of errors and use common sense|Failed to import loopers particles|ReadEvent failed in finalizeEvent|ReadEvent failed for generator ALICEo2" \
       | sed "s|^|$(basename "$f"):|" | head -30
   done
-  for f in "$@"; do [ -f "$f" ] && echo "     (full log: ${PWD}/$f, $(wc -l < "$f") lines)"; done
+  [ "$nloop" -gt 0 ] && echo "[harmless] ${nloop} TPC-loopers import failure(s): O2 issue, the primary server regenerated those events (README, 'Known harmless messages')"
+  [ "$nout" -gt 0 ] && echo "[WARNING] 'GeneratorFromO2Kine: Ran out of events' seen: the generator ran in a SEPARATE step (O2DPG --event-gen-mode separated), which DROPS the Lambda daughters. Use --event-gen-mode integrated."
+  for f in "$@"; do [ -f "$f" ] && echo "     (full log: $(readlink -f "$f"), $(wc -l < "$f") lines)"; done
+  return 0
+}
+
+# Move the o2-sim / O2DPG log files of a directory tree into <dir>/logs/<same relative path>.
+# Only call it when a run is FINISHED: the O2DPG runner uses <task>.log_done to skip finished tasks on a re-run.
+injpol_move_logs() { # usage: injpol_move_logs <dir>
+  local dir="$1" f rel
+  ( cd "${dir}" || exit 0
+    find . -path ./logs -prune -o -type f \( -name "*.log" -o -name "*.log_done" -o -name "*.log_time" -o -name "*_serverlog" \
+         -o -name "*_workerlog*" -o -name "*_mergerlog" \) -print | while read -r f; do
+      rel="${f#./}"; mkdir -p "logs/$(dirname "${rel}")"; mv "${f}" "logs/${rel}"
+    done )
+}
+
+# Disk usage of a directory, total and per event, with a warning for small samples.
+injpol_disk_report() { # usage: injpol_disk_report <dir> <nEvents>
+  local dir="$1" nev="$2" tot logs
+  tot=$(du -sb "${dir}" | cut -f1); logs=$( [ -d "${dir}/logs" ] && du -sb "${dir}/logs" | cut -f1 || echo 0)
+  awk -v t="${tot}" -v l="${logs}" -v n="${nev}" 'function h(x){u="B";if(x>1024){x/=1024;u="kB"};if(x>1024){x/=1024;u="MB"};if(x>1024){x/=1024;u="GB"};return sprintf("%.1f %s",x,u)}
+    BEGIN{printf "[disk] %s total (logs %s)", h(t), h(l); if(n>0) printf ", %s per event over %d events", h(t/n), n; printf "\n";
+          if(n>0 && n<500) printf "[disk] WARNING: %d events only -- per-event numbers are dominated by fixed per-run files (geometry, GRP,\n       CCDB objects, logs) and overestimate large productions.\n", n}'
 }
 
 # Run checks/checkKine.C COMPILED with ACLiC (the O2 macro convention). Interpreting it would make ROOT
 # auto-parse the VMC dictionary (TMCProcess) recursively; compiling avoids that. ACLiC build products go
 # to ${OUT_BASE}/aclic, never into the repository.
-injpol_check_kine() { # usage: injpol_check_kine <kine prefix> <logfile>
+injpol_check_kine() { # usage: injpol_check_kine <kine prefix> <logfile> (the log's directory is created if needed)
+  mkdir -p "$(dirname "$2")"
   root -l -b -q \
     -e "gSystem->SetBuildDir(\"${OUT_BASE}/aclic\", kTRUE); gSystem->Load(\"libO2CommonUtils\"); gSystem->Load(\"libO2SimulationDataFormat\"); gSystem->Load(\"libO2Steer\");" \
     "${INJPOL_ROOT}/checks/checkKine.C+(\"$1\")" > "$2" 2>&1
   grep -a -E "^\[ OK \]|^\[FAIL\]|^\[info\]|^generator-level|^checkKine:|WARNING|  event " "$2" \
     || { echo "checkKine.C produced no results; first errors from $2:"; grep -a -n -i "error" "$2" | head -15; }
-  echo "     (full ROOT output: ${PWD}/$2)"
+  echo "     (full ROOT output: $(readlink -f "$2"))"
 }
