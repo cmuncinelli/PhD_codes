@@ -68,7 +68,8 @@ InjectedPolO2MC/
 │   ├── injectedPol.ini                    <- example [GeneratorExternal]/[GeneratorPythia8] configuration
 │   └── configs/                           <- model configs: none, ring (leadP / jet), global, longitudinal, helicity, 5-Λ test
 ├── run/
-│   ├── envcheck.sh                        <- environment checks + log summarizer (sourced by the scripts)
+│   ├── envcheck.sh                        <- environment checks, path normalisation, log summaries, compiled checkKine (sourced)
+│   ├── runTests.sh                        <- unit tests + step 0 (stand-alone Pythia closure), builds *.exe in ${OUT_BASE}/bin
 │   ├── smokeTestSim.sh                    <- step 1: o2-sim only, 10 events, then checkKine.C
 │   └── runInjectedPol.sh                  <- step 2+: full O2DPG chain to AO2D, then checkKine.C + checkAODFlags.C
 ├── checks/
@@ -94,31 +95,34 @@ InjectedPolO2MC/
 `O2sim` (`aliBuild build O2sim --defaults o2`) is the official MC meta-package: O2Physics + O2DPG + QualityControl +
 extra generators. Use it if mixing separately built O2Physics and O2DPG versions causes trouble.
 The run scripts check this (`run/envcheck.sh`) and print the `alienv` command to use.
-The very long o2-sim / workflow outputs go to log files; the scripts print only a short summary.
 
+**Paths (no `export` needed).** Every script in `run/` has two hard-coded lines at the top:
 ```bash
-export INJPOL_ROOT=/path/to/PhD_codes/InjectedPolO2MC
+REPO_DIR="/home/users/cicerodm/PhD_codes"            # this repository
+OUT_BASE="/home/users/cicerodm/RingPol/InjectedPolMC" # ALL outputs (binaries, logs, simulations, AO2Ds)
 ```
+Edit them there if the cluster paths change. A trailing `/` is stripped automatically. `INJPOL_ROOT` is derived from
+`REPO_DIR` inside the scripts (the generator macro needs it); never set it by hand. **Nothing is written into the
+repository**: binaries are `*.exe` in `${OUT_BASE}/bin`, ACLiC build products in `${OUT_BASE}/aclic`.
 
-0. Kernel unit tests (any machine with g++):
-   ```bash
-   cd ${INJPOL_ROOT}/tests && g++ -O2 -std=c++17 -I../generator testKernel.cxx -o testKernel && ./testKernel
-   ```
-1. Pythia-only closure and cost estimate (Pythia8 needed, e.g. inside the O2 environment):
-   ```bash
-   cd ${INJPOL_ROOT}/tests && g++ -O2 -I../generator standalonePythiaClosure.cxx -o standalonePythiaClosure $(pythia8-config --cxxflags --libs) -std=c++17
-   ```
-   ```bash
-   ./standalonePythiaClosure ../generator/pythia8_pp_13600.cfg ../generator/configs/ring_leadP_0p30.cfg 2000
-   ```
-2. o2-sim smoke test (O2sim environment):
-   ```bash
-   ${INJPOL_ROOT}/run/smokeTestSim.sh ${INJPOL_ROOT}/generator/configs/ring_leadP_0p30.cfg 10
-   ```
-3. Small full chain (O2sim + O2DPG environment):
-   ```bash
-   MODELCFG=${INJPOL_ROOT}/generator/configs/ring_leadP_0p30.cfg NSIGEVENTS=50 NTIMEFRAMES=1 ${INJPOL_ROOT}/run/runInjectedPol.sh
-   ```
+The scripts can be launched from any directory; each one changes to its own output folder:
+
+| Step | Command | Output folder |
+|---|---|---|
+| unit + 0 | `/home/users/cicerodm/PhD_codes/InjectedPolO2MC/run/runTests.sh [modelCfg] [nEvents]` | `${OUT_BASE}/tests/` (logs), `${OUT_BASE}/bin/` (`*.exe`) |
+| 1 | `/home/users/cicerodm/PhD_codes/InjectedPolO2MC/run/smokeTestSim.sh [modelCfg] [nEvents]` | `${OUT_BASE}/smoke/<cfg>/` |
+| 2+ | `MODELCFG=<cfg> NSIGEVENTS=50 /home/users/cicerodm/PhD_codes/InjectedPolO2MC/run/runInjectedPol.sh` | `${OUT_BASE}/full/<cfg>_seed<N>/` |
+
+Model configs are in `generator/configs/` (default: `ring_leadP_0p30.cfg` for the tests, `none.cfg` for the full chain).
+The very long o2-sim / workflow outputs stay in log files: o2-sim writes `o2sim.log` (steering), `o2sim_serverlog`
+(**the generator, including all `[InjectedPol]` messages**), `o2sim_workerlog*` (Geant4) and `o2sim_mergerlog`. The
+scripts print only the generator messages, the errors and the check results.
+
+**Known harmless messages** (filtered out of the summaries):
+- `Error in <TNetXNGFile::Open>: ... [3011] No servers are available`: a CCDB alignment file not found on one storage
+  element. The next line shows it read from another one.
+- `G4Exception : mat031 ... FDD_PMMA sum of fractional masses 1.001`: a standard Geant4 material-definition warning.
+- `'ENABLE_UPGRADES' macro redefined`, `Particle with PDGcode=... already defined`: ROOT/O2 header noise.
 
 ## Where each repository fits
 

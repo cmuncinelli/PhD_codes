@@ -1,7 +1,8 @@
 // testKernel.cxx -- stand-alone unit/closure tests of generator/InjectedPolKernel.h (no ROOT, no Pythia).
 //
 // Build & run:
-//   g++ -O2 -std=c++17 -I../generator testKernel.cxx -o testKernel && ./testKernel
+//   g++ -O2 -std=c++17 -I../generator testKernel.cxx -o testKernel.exe && ./testKernel.exe
+// (normally done by run/runTests.sh, which builds into ${OUT_BASE}/bin and keeps the repository clean)
 //
 // Exit code 0 if all checks pass. Every check compares an estimator with its expectation in units of its
 // statistical uncertainty (pull), or with a tight absolute tolerance for exact identities.

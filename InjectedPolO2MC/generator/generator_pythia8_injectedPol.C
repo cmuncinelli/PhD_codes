@@ -5,7 +5,8 @@
 // ALICE generator; never use its output as, or mix it with, an official MC production.
 //
 // Usage (via O2DPG, see ../run/runInjectedPol.sh):
-//   export INJPOL_ROOT=/path/to/PhD_codes/InjectedPolO2MC
+//   (the run/ scripts set INJPOL_ROOT = <REPO_DIR>/InjectedPolO2MC themselves, from their hard-coded REPO_DIR;
+//    if you ever set it by hand: absolute path, NO trailing "/")
 //   o2dpg_sim_workflow.py ... -gen external -ini ${INJPOL_ROOT}/generator/injectedPol.ini
 // with injectedPol.ini containing
 //   [GeneratorExternal]

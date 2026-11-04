@@ -9,10 +9,11 @@
 //     analysis-style formulas, to be compared with the injected amplitudes.
 //
 // Build (needs Pythia8 only; e.g. inside the O2/O2Physics environment, or your own Pythia install):
-//   g++ -O2 -I../generator standalonePythiaClosure.cxx -o standalonePythiaClosure $(pythia8-config --cxxflags --libs) -std=c++17
+//   g++ -O2 -I../generator standalonePythiaClosure.cxx -o standalonePythiaClosure.exe $(pythia8-config --cxxflags --libs) -std=c++17
+// (normally done by run/runTests.sh, which builds into ${OUT_BASE}/bin and keeps the repository clean)
 // (-std=c++17 LAST: pythia8-config may add an older -std, and the last one wins.)
 // Run:
-//   ./standalonePythiaClosure ../generator/pythia8_pp_13600.cfg ../generator/configs/ring_leadP_0p30.cfg 2000 [seed]
+//   ./standalonePythiaClosure.exe ../generator/pythia8_pp_13600.cfg ../generator/configs/ring_leadP_0p30.cfg 2000 [seed]
 
 #include "InjectedPolKernel.h"
 #include "InjectedPolPythia.h"

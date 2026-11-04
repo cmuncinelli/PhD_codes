@@ -13,13 +13,15 @@
 //        ring amplitude, with t_hat built from the generator jet/leadP axis stored in the MC header;
 //   [P2] <proper decay length> ~ 78.9 mm.
 //
-// Run (inside the O2 environment, after `export INJPOL_ROOT=/path/to/InjectedPolO2MC`):
-//   root -l -b -q '${INJPOL_ROOT}/checks/checkKine.C("o2sim")'
-// where "o2sim" is the o2-sim output prefix (o2sim_Kine.root, o2sim_MCHeader.root).
+// Run: through run/smokeTestSim.sh or run/runInjectedPol.sh, which call it COMPILED (ACLiC), as is the O2 convention
+// for macros using O2 headers. Interpreting it makes ROOT auto-parse the VMC dictionary (TMCProcess) recursively and
+// fail. By hand, from the directory with <prefix>_Kine.root, inside the O2 environment:
+//   root -l -b -q -e 'gSystem->SetBuildDir("/tmp/aclic", kTRUE); gSystem->Load("libO2CommonUtils"); gSystem->Load("libO2SimulationDataFormat"); gSystem->Load("libO2Steer");' \
+//        '/home/users/cicerodm/PhD_codes/InjectedPolO2MC/checks/checkKine.C+("o2sim")'
+// where "o2sim" is the o2-sim output prefix (O2DPG productions use "sgn" inside each tfN/ directory).
 
-R__ADD_INCLUDE_PATH($INJPOL_ROOT/generator)
-
-#include "InjectedPolKernel.h"
+#if !defined(__CLING__) || defined(__ROOTCLING__)
+#include "../generator/InjectedPolKernel.h" // relative to this file: no environment variable needed
 #include "SimulationDataFormat/MCEventHeader.h"
 #include "SimulationDataFormat/MCGenProperties.h"
 #include "SimulationDataFormat/MCTrack.h"
@@ -31,6 +33,7 @@ R__ADD_INCLUDE_PATH($INJPOL_ROOT/generator)
 #include <cstdio>
 #include <string>
 #include <vector>
+#endif
 
 namespace
 {
