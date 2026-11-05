@@ -68,6 +68,7 @@ reconstruction. See the paper roadmap, section 4, "Closure-test for the framewor
 InjectedPolO2MC/
 ├── README.md                              <- this file
 ├── DESIGN.md                              <- archaeology findings, design decisions, simplifications, validation plan
+├── PHASE2_DESIGN.md                       <- DRAFT plan for what comes next (model suite v2, step 2b, publishing, statistics)
 ├── generator/
 │   ├── InjectedPolKernel.h                <- ROOT-free: polarized 2-body decay, decay vertex, polarization models, constants
 │   ├── InjectedPolPythia.h                <- Pythia8-based: config parser, generator-level jet proxies, pre-selection, per-Λ decay
@@ -159,6 +160,7 @@ scripts print only the generator messages, the errors and the check results.
   element. The next line shows it read from another one.
 - `G4Exception : mat031 ... FDD_PMMA sum of fractional masses 1.001`: a standard Geant4 material-definition warning.
 - `'ENABLE_UPGRADES' macro redefined`, `Particle with PDGcode=... already defined`: ROOT/O2 header noise.
+- `Error in <TGeoPcon::ComputeBBox>: Duplicated section ...`: an O2 geometry-definition message, also in standard productions.
 - `Failed to import loopers particles` / `ReadEvent failed in finalizeEvent` / `ReadEvent failed for generator ALICEo2`
   (full chain only): **harmless only with the loopers workaround or a recent O2.** In O2 versions from 2026-07-24 up to
   `daily-20260904-0700` each of these desynchronises the TPC-loopers generator, and the run later **hangs**, asking for

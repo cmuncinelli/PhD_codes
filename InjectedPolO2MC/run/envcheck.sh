@@ -47,7 +47,7 @@ injpol_summarize_logs() { # usage: injpol_summarize_logs log1 [log2 ...]
     nloop=$((nloop + $(grep -a -c "Failed to import loopers particles" "$f")))
     nout=$((nout + $(grep -a -c "GeneratorFromO2Kine: Ran out of events" "$f")))
     grep -a -n -i -E "\[fatal\]|\[error\]|error:|error in <|segmentation|exception|cannot open|failed to|no matching function" "$f" \
-      | grep -a -v -E "TNetXNGFile::Open.*No servers are available|G4Exception-(START|END)|mat031|Beware of errors and use common sense|Failed to import loopers particles|ReadEvent failed in finalizeEvent|ReadEvent failed for generator ALICEo2" \
+      | grep -a -v -E "TNetXNGFile::Open.*No servers are available|TGeoPcon::ComputeBBox.*Duplicated section|G4Exception-(START|END)|mat031|Beware of errors and use common sense|Failed to import loopers particles|ReadEvent failed in finalizeEvent|ReadEvent failed for generator ALICEo2" \
       | sed "s|^|$(basename "$f"):|" | head -30
   done
   [ "$nloop" -gt 0 ] && echo "[loopers] ${nloop} TPC-loopers import failure(s), each followed by a regenerated event: harmless with a recent O2 or with the
