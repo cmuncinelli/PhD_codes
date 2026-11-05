@@ -70,7 +70,8 @@ void checkKine(const char* prefix = "o2sim", int maxPrint = 5)
   const int nEv = reader.getNEvents(0);
   std::printf("checkKine: %d events in %s_Kine.root\n", nEv, prefix);
 
-  Counter b1, b2, b3, b4, b5;
+  Counter b1, b2, b3, b4, b5, b3e;
+  long nEscapedTotal = 0;
   long nLambda = 0, nPPi = 0, nPrinted = 0, nPrintedB5 = 0;
   double sumR = 0., sumR2 = 0., sumL = 0., sumL2 = 0.;
   long nR = 0, nL = 0;
@@ -102,6 +103,11 @@ void checkKine(const char* prefix = "o2sim", int maxPrint = 5)
       std::printf("WARNING: injpol.* header keys missing -- was the injected-polarization generator used?\n");
     }
     const V3 tHat = unit(V3{std::cos(tPhi), std::sin(tPhi), std::sinh(tEta)}); // trigger direction t_hat
+    // Lambdas left undecayed because their decay vertex was outside the world ("escaped"; header key since 2026-11-05)
+    const bool hasEscInfo = header.hasInfo("injpol.nEscaped");
+    bool okEsc = true;
+    const int nEscHeader = hasEscInfo ? headerInt(header, "injpol.nEscaped", okEsc) : 0;
+    int nNoDaughters = 0;
 
     // mother -> daughters map built from the mother indices (robust against daughter-index conventions)
     std::vector<std::vector<int>> daughters(tracks.size());
@@ -123,6 +129,13 @@ void checkKine(const char* prefix = "o2sim", int maxPrint = 5)
       const bool ok1 = !L.getToBeDone() && o2::mcgenstatus::getHepMCStatusCode(L.getStatusCode()) == 1;
       const bool ok2 = MCTrackNavigator::isPhysicalPrimary(L, tracks);
       const auto& dau = daughters[i];
+      if (dau.empty() && ok1 && hasEscInfo) {
+        // escaped Lambda: no decay by construction; B1/B2 still apply, B3-B5 do not
+        ++nNoDaughters;
+        b1.add(ok1);
+        b2.add(ok2);
+        continue;
+      }
       bool ok3 = (dau.size() == 2);
       bool ok4 = ok3, ok5 = ok3;
       for (int d : dau) {
@@ -201,9 +214,16 @@ void checkKine(const char* prefix = "o2sim", int maxPrint = 5)
         std::printf("  event %d track %zu pdg %d: B1 %d B2 %d B3 %d (ndau %zu) B4 %d B5 %d\n", iev, i, L.GetPdgCode(), ok1, ok2, ok3, dau.size(), ok4, ok5);
       }
     }
+    if (hasEscInfo) {
+      b3e.add(nNoDaughters == nEscHeader);
+      nEscapedTotal += nNoDaughters;
+    }
   }
 
   auto line = [](const char* name, const Counter& c) {
+    if (c.pass == 0 && c.fail == 0) {
+      return;
+    }
     std::printf("[%s] %-72s pass %ld fail %ld\n", c.fail == 0 && c.pass > 0 ? " OK " : "FAIL", name, c.pass, c.fail);
   };
   std::printf("\ngenerator-level (anti)Lambdas: %ld (p pi channel with valid axis: %ld)\n", nLambda, nPPi);
@@ -212,6 +232,8 @@ void checkKine(const char* prefix = "o2sim", int maxPrint = 5)
   line("B3 exactly 2 daughters, all kPDecay (no Geant4 transport of the Lambda)", b3);
   line("B4 daughters: kPDecay, not primary, not physical primary, transported", b4);
   line("B5 common displaced vertex along p_Lambda, momentum conservation (float tol.)", b5);
+  line("B3e per event: Lambdas without daughters == escaped count in the header (decay vertex outside world)", b3e);
+  std::printf("[info] escaped Lambdas (not decayed, decay vertex outside the world): %ld\n", nEscapedTotal);
   if (nLambda > 0 && b3.pass == 0) {
     std::printf("[HINT] NO Lambda has its daughters in this file. If it comes from an O2DPG production, the generator most likely ran\n"
                 "       in a SEPARATE step (o2dpg_sim_workflow.py default --event-gen-mode separated): the transport re-reads the events\n"

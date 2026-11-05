@@ -47,6 +47,11 @@ struct Config {
   double brPPi = constants::kBRLambdaToPPi;      // renormalised with brNPi0
   double brNPi0 = constants::kBRLambdaToNPi0;
   bool polarizeNPi0 = true;                      // false: n pi0 channel decayed isotropically
+  // Lambdas whose sampled decay vertex lies OUTSIDE the simulated world are not decayed (they "escape", exactly as in
+  // a standard production where Geant4 transports them out of the world). Defaults = O2 cave without ZDC
+  // (AliceO2 Detectors/Passive/src/Cave.cxx; our scripts use --skipModules ZDC). With ZDC: 2500, 2500, 15000.
+  bool decayOnlyInsideWorld = true;
+  double worldHalfXcm = 2000., worldHalfYcm = 2000., worldHalfZcm = 3000.;
 
   // --- generator-level jet proxies (defaults = LambdaPolRing-v4 producer defaults) ---
   double trackPtMin = 0.15;
@@ -128,6 +133,10 @@ struct Config {
     if (key == "decay.brPPi") return D(brPPi);
     if (key == "decay.brNPi0") return D(brNPi0);
     if (key == "decay.polarizeNPi0") return B(polarizeNPi0);
+    if (key == "decay.onlyInsideWorld") return B(decayOnlyInsideWorld);
+    if (key == "decay.worldHalfXcm") return D(worldHalfXcm);
+    if (key == "decay.worldHalfYcm") return D(worldHalfYcm);
+    if (key == "decay.worldHalfZcm") return D(worldHalfZcm);
     if (key == "axes.trackPtMin") return D(trackPtMin);
     if (key == "axes.trackEtaMax") return D(trackEtaMax);
     if (key == "axes.pionMassHypothesis") return B(pionMassHypothesis);
@@ -152,7 +161,8 @@ struct Config {
        << " global=" << model.global << " longitudinal=" << model.longitudinal << " (n=" << model.longHarmonic << ")"
        << " helicity=" << model.helicity << " antiSign=" << model.antiSign << "\n"
        << "  decay: ctauMM=" << ctauMM << " (<=0: Pythia tau0)  BR(p pi)=" << brPPi << " BR(n pi0)=" << brNPi0
-       << " polarizeNPi0=" << polarizeNPi0 << "\n"
+       << " polarizeNPi0=" << polarizeNPi0 << " onlyInsideWorld=" << decayOnlyInsideWorld
+       << " (world half-sizes " << worldHalfXcm << ", " << worldHalfYcm << ", " << worldHalfZcm << " cm)\n"
        << "  alpha: Lambda->p pi- " << constants::kAlphaLambdaToPPi << ", AntiLambda->pbar pi+ " << constants::kAlphaAntiLambdaToPPi
        << ", Lambda->n pi0 " << constants::kAlphaLambdaToNPi0 << ", AntiLambda->nbar pi0 " << constants::kAlphaAntiLambdaToNPi0 << "\n"
        << "  axes: track pT>" << trackPtMin << " |eta|<" << trackEtaMax << " pionMass=" << pionMassHypothesis
@@ -296,6 +306,12 @@ struct LambdaDecay {
   V3 dx;                  // lab displacement of the decay vertex (mm)
   double dt = 0.;         // lab decay time (mm/c)
 };
+
+/// Is a decay vertex (generator units: mm, relative to the nominal interaction point) inside the simulated world?
+inline bool insideWorld(const Config& cfg, double xmm, double ymm, double zmm)
+{
+  return std::abs(0.1 * xmm) < cfg.worldHalfXcm && std::abs(0.1 * ymm) < cfg.worldHalfYcm && std::abs(0.1 * zmm) < cfg.worldHalfZcm;
+}
 
 inline LambdaDecay decayLambda(const Config& cfg, const EventAxes& ax, const P4& pL, bool anti, const DecayConsts& dc, Pythia8::Rndm& rndm)
 {

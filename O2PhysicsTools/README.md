@@ -3,8 +3,34 @@ A simple collection of tools that may come in hand before creating a PR (see [PR
 Contents:
 
 - [jsonCleaner.py](jsonCleaner.py) -- prunes a DPL configuration JSON down to the values that are genuinely non-default.
+- [dropDefaultEnabledTables.py](dropDefaultEnabledTables.py) -- removes all-default `enabledTables` blocks from DPL JSONs, which crash service tasks after O2Physics renames a table (see below).
 - [shrMemCleanup.md](shrMemCleanup.md) -- commands for clearing stuck shared memory after an ungraceful exit.
 - [PRs/](PRs/) -- linting, clang-format and cppcheck helpers to run before opening a PR.
+
+---
+
+# dropDefaultEnabledTables.py
+
+Service tasks such as `mult-cent-table` (`Common/Tools/Multiplicity/MultModule.h`) and `propagation-service`
+(`PWGLF/Utils/strangenessBuilderModule.h`) read an `enabledTables` LabeledArray and look every table up **by label**.
+When O2Physics renames or adds a table, a JSON written by an older version lacks that label, and the task
+**segfaults in `Init()`** inside `o2::framework::Array2D<int>::operator()`.
+
+Seen on 2026-11-05 after updating to O2Physics of 2026-11-04: the JSON listed 39 mult-cent tables (including
+`FV0AOuterMults`), while the code expects 42 (`FITExtraMults`, `CentFT0MAnchorCols`, `CentFT0MAnchorBCs`,
+`CentFT0MOuterAs`). Every value in those blocks was `-1` ("enable if a task needs it", the default), so they carry
+no information. The fix is to drop them and let the task use its own, current list:
+
+```bash
+python3 dropDefaultEnabledTables.py /path/to/producer_configs/
+```
+```bash
+python3 dropDefaultEnabledTables.py /path/to/producer_configs/ --apply
+```
+
+The first command is a dry run. `--apply` rewrites the files and keeps a timestamped backup in
+`<folder>/preEnabledTablesDrop/`. Blocks with explicit 0/1 values are reported and kept; those need updating by hand.
+Run it after every O2Physics update, on producer **and** consumer configs.
 
 ---
 

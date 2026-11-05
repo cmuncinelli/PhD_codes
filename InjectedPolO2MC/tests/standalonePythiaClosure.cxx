@@ -78,7 +78,7 @@ int main(int argc, char** argv)
   const injpol::DecayConsts dc = injpol::makeDecayConsts(cfg, pythia.particleData);
   std::printf("c*tau = %.2f mm, fraction p pi = %.4f\n", dc.ctauMM, dc.fracPPi);
 
-  long nTries = 0, nAccepted = 0, nLambda = 0, nPPi = 0, nInRadius = 0, nClamped = 0, nWithJet = 0, nWithLeadP = 0;
+  long nTries = 0, nAccepted = 0, nLambda = 0, nPPi = 0, nInRadius = 0, nClamped = 0, nWithJet = 0, nWithLeadP = 0, nEscaped = 0;
   Mean ring, glob, lng, hel;
   const auto t0 = std::chrono::steady_clock::now();
 
@@ -121,6 +121,10 @@ int main(int argc, char** argv)
       pL.e = p.e();
       const injpol::LambdaDecay d = injpol::decayLambda(cfg, ax, pL, anti, dc, pythia.rndm);
       nClamped += d.clamped;
+      if (cfg.decayOnlyInsideWorld && !injpol::insideWorld(cfg, p.xProd() + d.dx.x, p.yProd() + d.dx.y, p.zProd() + d.dx.z)) {
+        ++nEscaped; // same rule as the generator: not decayed, no daughters
+        continue;
+      }
       const double rDecayCM = 0.1 * std::hypot(p.xProd() + d.dx.x, p.yProd() + d.dx.y);
       nInRadius += (rDecayCM > 1.0 && rDecayCM < 30.); // illustrative V0 window (producer: v0radius > 1 cm; lifetime cut 30 cm)
       if (!d.chargedChannel) {
@@ -147,6 +151,7 @@ int main(int argc, char** argv)
               nAccepted, nTries, double(nAccepted) / nTries, secs / nAccepted);
   std::printf("accepted events with a leading particle (trigger candidate): %ld (%.3f), with a fiducial jet: %ld (%.3f; 0 unless jets are needed)\n",
               nWithLeadP, double(nWithLeadP) / nAccepted, nWithJet, double(nWithJet) / nAccepted);
+  std::printf("escaped (decay vertex outside the world, not decayed): %ld\n", nEscaped);
   std::printf("(anti)Lambdas: %ld (%.2f / event), p pi: %ld, 1 < R_decay < 30 cm: %.3f, |P|>1 clamped: %ld\n",
               nLambda, double(nLambda) / nAccepted, nPPi, nLambda ? double(nInRadius) / nLambda : 0., nClamped);
   std::printf("truth-level estimators (p pi channel, full acceptance):\n");

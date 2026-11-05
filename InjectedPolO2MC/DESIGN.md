@@ -238,6 +238,7 @@ from cheapest to most complete:
 | 15 | Trigger requirement | **none** by default (`presel.requireLeadP = 0`) | Data-like dilution; about 2.5× more Geant4 events per triggered event (§7b) |
 | 16 | Generator RNG | Pythia's own `rndm`, seeded by O2 from `-seed` per TF | Reproducible productions (could be randomised later if wanted) |
 | 17 | TPC loopers | kept; `GenTPCLoopers.geomProtection=false` **only** on O2 versions 2026-07-24 … `daily-20260904-0700`; O2 defaults from `daily-20260905-0000` on ([`c575d91`](https://github.com/AliceO2Group/AliceO2/commit/c575d910d57ae0f3fa0a73bf62be3dce683b0de1)) | Workaround for an O2 bug that hangs the run (§4c); best fix is a newer O2 |
+| 18 | Λ decaying outside the world | not decayed (`decay.onlyInsideWorld = 1`): it escapes, as in standard MC | Daughters would otherwise start outside the simulated world (PHASE2_DESIGN.md §1) |
 
 **Your friend's setup** (`ALICE_PhotonReconstruction/GenProduction`), designed for topological Σ⁰ reconstruction, not
 for this analysis:

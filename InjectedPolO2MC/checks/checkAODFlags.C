@@ -36,7 +36,7 @@ void checkAODFlags(const char* fileName = "AO2D.root", int maxPrint = 5)
     std::printf("cannot open %s\n", fileName);
     return;
   }
-  long nL = 0, a1 = 0, a2 = 0, a3 = 0, nPrinted = 0, nColl = 0, nPsiNonZero = 0;
+  long nL = 0, a1 = 0, a2 = 0, a3 = 0, nPrinted = 0, nColl = 0, nPsiNonZero = 0, nNoDau = 0;
   long nDauAll = 0, nDauPhysPrim = 0;
   double psiMin = 1e9, psiMax = -1e9;
 
@@ -89,6 +89,11 @@ void checkAODFlags(const char* fileName = "AO2D.root", int maxPrint = 5)
       ++nL;
       const bool ok1 = (flags[i] & kPhysicalPrimary);
       const int nd = (d0[i] >= 0 && d1[i] >= d0[i]) ? d1[i] - d0[i] + 1 : 0;
+      if (nd == 0 && ok1) {
+        ++nNoDau; // "escaped" Lambda (decay vertex outside the world): no decay by construction
+        ++a1;
+        continue;
+      }
       bool ok2 = (nd == 2);
       for (int d = d0[i]; ok2 && d <= d1[i]; ++d) {
         ok2 = ok2 && d < (int)pdg.size() && m0[d] == (int)i; // daughter -> mother back-reference
@@ -114,10 +119,11 @@ void checkAODFlags(const char* fileName = "AO2D.root", int maxPrint = 5)
   };
   std::printf("\n%s: %ld generator-level (anti)Lambdas, %ld MC collisions\n", fileName, nL, nColl);
   line("A1 Lambda producedByGenerator && PhysicalPrimary", a1, nL);
-  line("A2 Lambda has 2 daughters in McParticles, pointing back to it", a2, nL);
-  line("A3 daughters ProducedByTransport, process 4, not PhysicalPrimary", a3, nL);
+  line("A2 Lambda has 2 daughters in McParticles, pointing back to it", a2, nL - nNoDau);
+  line("A3 daughters ProducedByTransport, process 4, not PhysicalPrimary", a3, nL - nNoDau);
+  std::printf("[info] Lambdas without daughters (escaped: decay vertex outside the world, not decayed): %ld / %ld\n", nNoDau, nL);
   std::printf("[info] daughters flagged PhysicalPrimary: %ld / %ld (must be 0)\n", nDauPhysPrim, nDauAll);
-  if (nL > 0 && a3 < nL / 2) {
+  if (nL > 0 && a3 < (nL - nNoDau) / 2) {
     std::printf("[HINT] most Lambdas have no proper decay daughters: was the production made with o2dpg_sim_workflow.py\n"
                 "       --event-gen-mode integrated? (the default 'separated' mode drops the daughters; DESIGN.md section 4b)\n");
   }

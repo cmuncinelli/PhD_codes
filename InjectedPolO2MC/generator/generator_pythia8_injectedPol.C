@@ -163,6 +163,7 @@ class GeneratorPythia8InjectedPol : public GeneratorPythia8
     header->putInfo<double>("injpol.model.antiSign", mCfg.model.antiSign);
     header->putInfo<int>("injpol.nTries", static_cast<int>(mEventTries));
     header->putInfo<int>("injpol.nDecayed", mEventDecayed);
+    header->putInfo<int>("injpol.nEscaped", mEventEscaped); // Lambdas left undecayed: decay vertex outside the world
     header->putInfo<int>("injpol.hasLeadP", mAxes.hasLeadP ? 1 : 0);
     header->putInfo<double>("injpol.leadP.pt", mAxesInfo.leadPt);
     header->putInfo<double>("injpol.leadP.eta", mAxesInfo.leadEta);
@@ -178,6 +179,7 @@ class GeneratorPythia8InjectedPol : public GeneratorPythia8
   void injectPolarizedDecays()
   {
     mEventDecayed = 0;
+    mEventEscaped = 0;
     const int nOrig = mParticles.size(); // daughters are appended after this index
     for (int i = 0; i < nOrig; ++i) {
       TParticle& lambda = mParticles[i];
@@ -197,6 +199,15 @@ class GeneratorPythia8InjectedPol : public GeneratorPythia8
       // decay vertex, in the generator units of mParticles (Pythia: mm and mm/c)
       const double vx = lambda.Vx() + d.dx.x, vy = lambda.Vy() + d.dx.y, vz = lambda.Vz() + d.dx.z, vt = lambda.T() + d.dt;
       const double weight = lambda.GetWeight();
+
+      // Decay vertex outside the simulated world: no decay, the Lambda "escapes" (non-transported physical primary
+      // without daughters: the same MC truth as a Lambda that Geant4 transports out of the world undecayed).
+      if (mCfg.decayOnlyInsideWorld && !injpol::insideWorld(mCfg, vx, vy, vz)) {
+        o2::mcutils::MCGenHelper::encodeParticleStatusAndTracking(lambda, 1, o2::mcgenstatus::getGenStatusCode(lambda.GetStatusCode()), false);
+        ++mEventEscaped;
+        ++mNEscaped;
+        continue;
+      }
 
       // Mother: keep HepMC status 1 (=> physical primary, as in standard productions), do not transport.
       const int iDau = mParticles.size();
@@ -232,6 +243,7 @@ class GeneratorPythia8InjectedPol : public GeneratorPythia8
     LOG(info) << "[InjectedPol] summary: accepted events " << mNAccepted << " / Pythia events " << mTotalTries
               << " (efficiency " << double(mNAccepted) / mTotalTries << ")"
               << " | decayed (anti)Lambdas " << mNDecayed << " (p pi: " << mNDecayedPPi << ")"
+              << " | escaped (decay vertex outside the world, not decayed) " << mNEscaped
               << " | |P|>1 clamped " << mNClamped;
   }
 
@@ -245,8 +257,8 @@ class GeneratorPythia8InjectedPol : public GeneratorPythia8
   injpol::DecayConsts mDecayConsts;
 
   long mEventTries = 0, mTotalTries = 0, mNAccepted = 0;
-  int mEventDecayed = 0;
-  long mNDecayed = 0, mNDecayedPPi = 0, mNClamped = 0;
+  int mEventDecayed = 0, mEventEscaped = 0;
+  long mNDecayed = 0, mNDecayedPPi = 0, mNClamped = 0, mNEscaped = 0;
 };
 
 } // namespace eventgen
