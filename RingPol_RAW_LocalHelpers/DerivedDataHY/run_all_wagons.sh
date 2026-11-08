@@ -42,6 +42,12 @@ echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
 #   -s, --skip-sig-extract     Skip Step 3 (signal extraction) during execution.
 #   -f, --skip-forensics       Skip Step 7 (AO2D bit forensics). Useful when the
 #                              AO2Ds have already been checked or deleted.
+#   -d, --debug                Build every macro for debugging (-O0 -g, assert() and
+#                              std container bounds checks on) and run Step 6 under
+#                              gdb. On a crash, the full backtrace with every local
+#                              variable goes to its log. gdb turns address-space
+#                              randomisation off, so a layout-dependent crash
+#                              reproduces as it does under setarch -R.
 #       --cleanup              Remove the compiled macro executables and exit.
 #                              They are no longer deleted automatically: g++ always
 #                              rebuilds from source on every run, so a stale binary
@@ -100,7 +106,10 @@ MC_REF_DIR="/home/users/cicerodm/RingPol/LHC25h3c/ITSandTPC_min3ITS/results_cons
 
 # Same thing, but for the pp baseline dataset:
 # PP_REF_DIR="/home/users/cicerodm/RingPol/LHC23_pass4_Thin_small/ITSandTPC_min3ITS/results_consumer"
-PP_REF_DIR="/home/users/cicerodm/RingPol/LHC23_pass4_Thin_medium/ITSandTPC-pp/results_consumer"
+# Using the medium-sized dataset:
+# PP_REF_DIR="/home/users/cicerodm/RingPol/LHC23_pass4_Thin_medium/ITSandTPC-pp/results_consumer"
+# Updating to use pp25 datasets instead (closer reconstruction algorithms to the LHC25ae OO datasets, so R_fake is better):
+PP_REF_DIR="/home/users/cicerodm/RingPol/LHC25_pass1_MinBias/ITSandTPC-pp25/results_consumer"
 
 # Absolute path to the Toy Model ROOT file for Auxiliary Plots (chose the Toy Model representative whose configurations are 
 # closest to what an actual data selection would do in data processing, as an attempt to keep everything consistent)
@@ -129,13 +138,24 @@ SIGMA=0.0017127606
 #   --rightSidebandMax=$(bc -l <<< "$LAMBDA_MASS + 7*$SIGMA")
 # )
 # Wider intervals:
+# SIGEXTRACT_OPTS=(
+#   --bkgMethod=window
+#   --signalMassMin=$(bc -l <<< "$LAMBDA_MASS - 2.0*$SIGMA")
+#   --signalMassMax=$(bc -l <<< "$LAMBDA_MASS + 2.0*$SIGMA")
+#   --leftSidebandMin=$(bc -l <<< "$LAMBDA_MASS - 7.5*$SIGMA")
+#   --leftSidebandMax=$(bc -l <<< "$LAMBDA_MASS - 5.5*$SIGMA")
+#   --rightSidebandMin=$(bc -l <<< "$LAMBDA_MASS + 5.5*$SIGMA")
+#   --rightSidebandMax=$(bc -l <<< "$LAMBDA_MASS + 7.5*$SIGMA")
+# )
+# Wider, growing towards the center of the interval -- This SIGMA parameter of mine doesn't really fit the "Gaussian" peak: it seems to small!
+# (I fit with a single Gaussian, not a double Gaussian yet)
 SIGEXTRACT_OPTS=(
   --bkgMethod=window
-  --signalMassMin=$(bc -l <<< "$LAMBDA_MASS - 2.0*$SIGMA")
-  --signalMassMax=$(bc -l <<< "$LAMBDA_MASS + 2.0*$SIGMA")
+  --signalMassMin=$(bc -l <<< "$LAMBDA_MASS - 2.3*$SIGMA")
+  --signalMassMax=$(bc -l <<< "$LAMBDA_MASS + 2.3*$SIGMA")
   --leftSidebandMin=$(bc -l <<< "$LAMBDA_MASS - 7.5*$SIGMA")
-  --leftSidebandMax=$(bc -l <<< "$LAMBDA_MASS - 5.5*$SIGMA")
-  --rightSidebandMin=$(bc -l <<< "$LAMBDA_MASS + 5.5*$SIGMA")
+  --leftSidebandMax=$(bc -l <<< "$LAMBDA_MASS - 5.2*$SIGMA")
+  --rightSidebandMin=$(bc -l <<< "$LAMBDA_MASS + 5.2*$SIGMA")
   --rightSidebandMax=$(bc -l <<< "$LAMBDA_MASS + 7.5*$SIGMA")
 )
 
@@ -171,6 +191,7 @@ LANE_OTHER_TAG="Unclassified"
 POST_PROCESS_ONLY=0
 SKIP_SIG_EXTRACT=0
 SKIP_FORENSICS=0
+DEBUG_BUILD=0
 CLEANUP_ONLY=0
 REGISTRY_ARG=""
 CONFIGS_DIR_ARG=""
@@ -197,6 +218,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-forensics|-f)
             SKIP_FORENSICS=1
+            shift
+            ;;
+        --debug|-d)
+            DEBUG_BUILD=1
             shift
             ;;
         --cleanup)
@@ -358,6 +383,11 @@ if [ ! -d "$CONSUMER_CONFIGS_DIR" ]; then
   exit 1
 fi
 
+if [ $DEBUG_BUILD -eq 1 ] && ! command -v gdb >/dev/null 2>&1; then
+  echo "Error: --debug runs Step 6 under gdb, which was not found in PATH"
+  exit 1
+fi
+
 # GNU parallel is preferred for Step 7: it runs in the foreground, so Ctrl+C
 # propagates to the workers normally, and it provides an ETA.
 USE_PARALLEL=0
@@ -441,11 +471,18 @@ echo "Compiling ROOT macros into native executables..."
 
 COMPILE_WARN_FLAGS="-Wall -Wextra -Wpedantic -Wshadow" # For bug catching (TODO: check some unused variables that were revealed! May be buggy code!)
 # COMPILE_WARN_FLAGS="" # For quick compiling without warnings (do NOT use me without care!)
-ROOT_AWARE_FLAGS="-DNDEBUG $(root-config --cflags)" # Strips out all assert() checks. ROOT headers respect this flag!
-OPTIMIZATION_FLAGS="-O3 -march=native -fno-math-errno -flto=auto -fno-trapping-math" # Using the fno-math-errno to disable the errno verification of passing negative numbers to sqrts and the such.
-                                                                                     # My code should be safe, so this will never be used!
-                                                                                     # Also introduced -fno-trapping-math as there is no explicit usage of NaNs
-                                                                                     # nor any expected unsafe divisions by zero appearing anywhere in the code!
+if [ $DEBUG_BUILD -eq 1 ]; then
+  # No optimisation, so every local survives for gdb; NDEBUG left undefined, so assert() is active;
+  # _GLIBCXX_ASSERTIONS bounds-checks std::vector::operator[] and friends
+  ROOT_AWARE_FLAGS="-D_GLIBCXX_ASSERTIONS $(root-config --cflags)"
+  OPTIMIZATION_FLAGS="-O0 -g -fno-omit-frame-pointer"
+else
+  ROOT_AWARE_FLAGS="-DNDEBUG $(root-config --cflags)" # Strips out all assert() checks. ROOT headers respect this flag!
+  OPTIMIZATION_FLAGS="-O3 -march=native -fno-math-errno -flto=auto -fno-trapping-math" # Using the fno-math-errno to disable the errno verification of passing negative numbers to sqrts and the such.
+                                                                                       # My code should be safe, so this will never be used!
+                                                                                       # Also introduced -fno-trapping-math as there is no explicit usage of NaNs
+                                                                                       # nor any expected unsafe divisions by zero appearing anywhere in the code!
+fi
 ROOT_LIBS="$(root-config --glibs)"
 
 # Compile Step (Stops script if compilation fails)
@@ -497,6 +534,7 @@ echo "  Configs Dir  : ${CONSUMER_CONFIGS_DIR}"
 echo "  Toy Model    : ${TOY_MODEL_PATH:-None}"
 echo "  Aux 1-vs-1   : $( [ "${AUX_DO_INDIVIDUAL_COMPARISONS}" = "1" ] && echo "ON" || echo "OFF (default)" )"
 echo "  Mode         : $( [ $POST_PROCESS_ONLY -eq 1 ] && echo 'POST-PROCESS ONLY' || echo 'FULL CHAIN' )$( [ $SKIP_SIG_EXTRACT -eq 1 ] && echo ' [SKIP SIG EXTRACT]' )$( [ $SKIP_FORENSICS -eq 1 ] && echo ' [SKIP FORENSICS]' )"
+echo "  Build        : $( [ $DEBUG_BUILD -eq 1 ] && echo 'DEBUG (-O0 -g, Step 6 under gdb)' || echo 'optimised' )"
 echo "  Forensics    : $( [ $SKIP_FORENSICS -eq 1 ] && echo 'skipped' || echo "${FORENSICS_JOBS} workers$( [ $USE_PARALLEL -eq 1 ] && echo ' (GNU parallel, with ETA)' || echo ' (bash fallback)' )" )"
 echo "========================================================"
 echo ""
@@ -753,8 +791,25 @@ for LINE in "${WAGON_LINES[@]}"; do
   else
     # Forwarding the consumer results directory, the MC and pp references, the Toy Model path and the
     # one-vs-one switch. sigExtractDir is left to its default, <workDir>/results_SigExtract.
-    "$AUXILIARY_PLOTS_EXE" "${WORK_DIR}/results_consumer" "${MC_REF_DIR}" "${PP_REF_DIR}" "${TOY_MODEL_PATH}" "${AUX_DO_INDIVIDUAL_COMPARISONS}" > "$AUX_LOG" 2>&1 < /dev/null
-    AUX_EXIT=$?
+    AUX_ARGS=("${WORK_DIR}/results_consumer" "${MC_REF_DIR}" "${PP_REF_DIR}" "${TOY_MODEL_PATH}" "${AUX_DO_INDIVIDUAL_COMPARISONS}")
+    if [ $DEBUG_BUILD -eq 1 ]; then
+      ## Earlier debug tests - Trying to catch a problem with RelabelRingDirectory()//TCollection::GarbageCollect//TList::Clear//TPad::Close (the destructor caller):
+      # MALLOC_PERTURB_=204 "$AUXILIARY_PLOTS_EXE" "${WORK_DIR}/results_consumer" "${MC_REF_DIR}" "${PP_REF_DIR}" "${TOY_MODEL_PATH}" "${AUX_DO_INDIVIDUAL_COMPARISONS}" > "$AUX_LOG" 2>&1 < /dev/null
+      ## This second test actually reveals the bug consistently -- It deactivates ASLR for this particular command (memory address randomization)
+      # setarch $(uname -m) -R "$AUXILIARY_PLOTS_EXE" "${WORK_DIR}/results_consumer" "${MC_REF_DIR}" "${PP_REF_DIR}" "${TOY_MODEL_PATH}" "${AUX_DO_INDIVIDUAL_COMPARISONS}" > "$AUX_LOG" 2>&1 < /dev/null
+
+      # gdb stops at the signal before ROOT's own handler runs, and "bt full" prints every frame with its locals.
+      # gdb's own exit status says nothing about the program's: after a clean exit "bt full" finds no stack and
+      # fails, so the batch returns 1 either way. The outcome is read from gdb's report in the log instead, and
+      # anything but a clean exit (a crash, a nonzero exit code) counts as a failure.
+      gdb -q -batch -ex "set pagination off" -ex "run" -ex "bt full" \
+        --args "$AUXILIARY_PLOTS_EXE" "${AUX_ARGS[@]}" > "$AUX_LOG" 2>&1 < /dev/null
+      AUX_EXIT=1
+      grep -qE '^\[Inferior [0-9]+ \(process [0-9]+\) exited normally\]$' "$AUX_LOG" && AUX_EXIT=0
+    else
+      "$AUXILIARY_PLOTS_EXE" "${AUX_ARGS[@]}" > "$AUX_LOG" 2>&1 < /dev/null
+      AUX_EXIT=$?
+    fi
 
     if [ $AUX_EXIT -ne 0 ]; then
       echo "  -> FAILED  (log: ${AUX_LOG})"
