@@ -27,6 +27,7 @@
 #include <cmath>
 #include <algorithm>
 #include <utility>   // std::swap, used when canonicalising the tanh fit parameter signs
+#include <cstdlib>   // std::strtod, for the mass-window sigma argument
 
 #include "TFile.h"
 #include "TProfile.h"
@@ -35,6 +36,7 @@
 #include "TCanvas.h"
 #include "TPad.h"
 #include "TBox.h"
+#include "TGaxis.h"   // The eta colour bar of the p0-vs-p1 canvases
 #include "TLegend.h"
 #include "TF1.h"
 #include "TFitResult.h"
@@ -4405,6 +4407,31 @@ struct PocCell {
     std::string dirPath; // ProofOfConcept/<Selection>/<Family>/<Proxy>
 };
 
+/**
+ * @brief The files, formula and ring symbol of one (selection, family, ring definition) cell; the caller sets the proxy,
+ *        the title head and the folder. Shared by ProofOfConcept/ and StreamlinedStory/, so both read the same files.
+ *
+ * Files: <consumerDir>/ConsumerResults_<family><ringTag>[_MixedEventProxies]<selectionTag><centralityTag><resampleTag>.root,
+ * and the pp references <ppRefDir>/ConsumerResults_<family><ringTag>[_MixedEventProxies]<selectionTag><resampleTag>.root
+ * (minimum bias), as the consumer configs are named.
+ * @param resampleTag Only on the two mixed-event files: "" (single borrow) or MIXED_RESAMPLES_TAG.
+ */
+PocCell PocMakeCell(const std::string& consumerDir, const std::string& ppRefDir, const PocSelection& sel,
+                    const FamilyConfig& fam, const LongitudinalRing* lr, const std::string& resampleTag = "") {
+    const std::string stem = "/ConsumerResults_" + fam.dataSuffix + (lr ? lr->fileTag : std::string());
+    PocCell cell;
+    cell.dataFile  = consumerDir + stem + sel.tag + POC_CENTRALITY_TAG + ".root";
+    cell.mixedFile = consumerDir + stem + POC_MIXED_TAG + sel.tag + POC_CENTRALITY_TAG + resampleTag + ".root";
+    if (!ppRefDir.empty()) { // Empty pp paths: no pp reference requested
+        cell.ppFile      = ppRefDir + stem + sel.tag + ".root";
+        cell.ppMixedFile = ppRefDir + stem + POC_MIXED_TAG + sel.tag + resampleTag + ".root";
+    }
+    // Exact inversion for the full ring (k = alpha^2/3), linear for the longitudinal rings (k = 0)
+    cell.k       = lr ? 0. : fam.alphaSq / 3.;
+    cell.ringSym = "R" + (lr ? lr->symbolSuffix : std::string());
+    return cell;
+}
+
 /// @brief Every look of ProofOfConcept/, taken from the macro's own configs in the main function. dataInRef is the
 ///        money plot's reference (Data InPeak, emphasised as the data), ppIn the pp mass peak.
 struct PocStyles { VariationConfig data, dataIn, dataOut, mixed, mixedIn, mixedOut, pp, dataInRef, ppIn; };
@@ -5101,6 +5128,7 @@ struct PocSlice {
     int first = 0, last = 0; // Bins of the sliced axis, inclusive
     double lo = 0., hi = 0.;
     std::string label;
+    bool shown = true;       // Drawn on its own (Overlay/, PerSlice/); every slice is fitted and condensed either way
 };
 
 /// @brief The same slices of one system: one profile per slice (nullptr where absent or empty).
@@ -5334,37 +5362,55 @@ void DrawPocAsymSeries(const std::vector<PocAsymSeries>& series, double xLo, dou
 }
 
 
+/// @brief One fit result per (system, slice), indexed [system][slice].
+using PocSliceFitTable = std::vector<std::vector<OddPlusConstantFitResult>>;
+
+/// @brief Fits every slice of every system with one model (fit only, nothing drawn). A system without that slice keeps
+///        an invalid result. Kept apart from the drawing so one set of fits can be drawn in several views.
+PocSliceFitTable PocFitSlices(const std::vector<PocSystemSlices>& systems, size_t nSlices, const OddPlusConstantModel& model,
+                              const std::string& stem) {
+    const ProfileConfig pc{};
+    PocSliceFitTable fits(systems.size(), std::vector<OddPlusConstantFitResult>(nSlices));
+    for (size_t s = 0; s < systems.size(); ++s)
+        for (size_t k = 0; k < nSlices; ++k)
+            if (TProfile* prof = systems[s].profiles[k]) // No output directory; the name only has to be unique among live functions
+                fits[s][k] = OddPlusConstantFitter(prof, model, pc, systems[s].cfg,
+                                                   Form("fitPoc_%s_%zu_%zu", stem.c_str(), s, k), nullptr);
+    return fits;
+}
+
 /**
- * @brief Fits every slice of every system with one model and writes: PerSlice/Canvas_<stem>SliceXX (the systems with
- *        their fitted curves), Canvas_{p0,p1,p2,RedChi2}Vs<stem> (one series per system) and Canvas_p0DiffVs<stem>
- *        (Reference - each control), the p0 and Delta p0 canvases with a constant fitted per series. SymmetrizationQA/
- *        holds the same two on the pair averages (Canvas_*_Symmetrized, constant fitted over |x|) and their odd parts
- *        (Canvas_*_OddPart, p1's included, constant fitted). systems[0] is the reference of the differences.
+ * @brief Draws the fits of every slice of every system (PocFitSlices) and writes: PerSlice/Canvas_<stem>SliceXX (the
+ *        systems with their fitted curves, for the shown slices, if writePerSlice), Canvas_{p0,p1,p2,RedChi2}Vs<stem>
+ *        (one series per system, every slice) and Canvas_p0DiffVs<stem> (Reference - each control), the p0 and Delta p0
+ *        canvases with a constant fitted per series. SymmetrizationQA/ holds the same two on the pair averages
+ *        (Canvas_*_Symmetrized, constant fitted over |x|) and their odd parts (Canvas_*_OddPart, p1's included, constant
+ *        fitted). systems[0] is the reference of the differences.
  * @return The condensed p0 and p1 of every system and Delta p0 of every control, plain, symmetrised and odd part
- *         (empty fits where a series has no value).
+ *         (empty fits where a series has no value), always over every slice.
  *
+ * @param fits              [system][slice], aligned with systems.
  * @param fitXTitle         x title of the fitted profiles (the axis within a slice).
  * @param sliceXTitle       x title of the parameter canvases (the sliced axis).
  * @param curveOnOccupied   Draw each curve only over its profile's filled bins (tanh in eta_Proxy, where the acceptance
  *                          is narrower than the axis); otherwise over the whole axis (sine in phi_AEE).
+ * @param writePerSlice     Write PerSlice/ at all (one canvas per shown slice, the bulk of the output).
  */
 PocSliceFitSummary DrawPocSliceFits(TDirectory* fileRoot, const std::string& dirPath, const std::string& head, const std::string& stem,
                       const std::vector<PocSlice>& slices, const std::vector<PocSystemSlices>& systems,
-                      const OddPlusConstantModel& model, const std::string& fitXTitle, const std::string& sliceXTitle,
-                      const std::string& yTitle, bool curveOnOccupied) {
+                      const PocSliceFitTable& fits, const OddPlusConstantModel& model, const std::string& fitXTitle,
+                      const std::string& sliceXTitle, const std::string& yTitle, bool curveOnOccupied,
+                      bool writePerSlice = true) {
     const size_t nS = slices.size(), nSys = systems.size();
-    // fits[system][slice]; a system without that slice keeps an invalid result
-    std::vector<std::vector<OddPlusConstantFitResult>> fits(nSys, std::vector<OddPlusConstantFitResult>(nS));
     const ProfileConfig pc{}; // Titles are passed explicitly
 
-    for (size_t k = 0; k < nS; ++k) {
+    for (size_t k = 0; k < nS && writePerSlice; ++k) {
+        if (!slices[k].shown) continue; // Fitted, and condensed below, but not drawn on its own
         std::vector<ProfileBundle> bundles;
         std::vector<TF1*> curves;
         for (size_t s = 0; s < nSys; ++s) {
             TProfile* prof = systems[s].profiles[k];
             if (!prof) continue;
-            // Fit only (no output directory); the name only has to be unique among live functions
-            fits[s][k] = OddPlusConstantFitter(prof, model, pc, systems[s].cfg, Form("fitPoc_%s_%zu_%zu", stem.c_str(), s, k), nullptr);
             const auto& f = fits[s][k];
             VariationConfig cfg = systems[s].cfg;
             if (f.valid)
@@ -5555,18 +5601,25 @@ bool PocSameMapBinning(const TProfile2D* a, const TProfile2D* b) {
     return PocEdgesOf(a->GetXaxis()) == PocEdgesOf(b->GetXaxis()) && PocEdgesOf(a->GetYaxis()) == PocEdgesOf(b->GetYaxis());
 }
 
+/// @brief Single eta_Proxy bins per side drawn on their own (Overlay/ and PerSlice/ of AEE/RingVsPhiAEE/ and of
+///        StreamlinedStory/SineFitQA/): enough to see the fits at a glance and still read every canvas. Every bin of
+///        the acceptance is fitted and condensed whatever this says; it only decides what is drawn slice by slice.
+const int POC_ETA_SLICES_PER_SIDE = 5;
+
 /**
- * @brief The eta_Proxy slices of AEE/RingVsPhiAEE/: single bins of the fine axis, never merged ones, so no slice
- *        straddles the acceptance edge or rebins across it.
+ * @brief The eta_Proxy slices of AEE/RingVsPhiAEE/ and StreamlinedStory/: single bins of the fine axis, never merged
+ *        ones, so no slice straddles the acceptance edge or rebins across it.
  *
  * - The centre slice merges the two bins around zero, [-w, w].
- * - Five single bins per side, mirrored (bin b and nBins + 1 - b), so the slices pair up at +/- eta.
+ * - Each remaining bin of the acceptance is a slice of its own, mirrored (bin b and nBins + 1 - b), so the slices pair
+ *   up at +/- eta. The fits and their condensed values use them all.
  * - The range comes from the data's occupancy, so jets and the leading particle each get theirs: the outermost filled
- *   bin of each side is dropped (it holds the acceptance edge, which falls inside it), the narrower side sets both, and
- *   the five are evenly spaced from the outside in, short of the centre slice.
+ *   bin of each side is dropped (it holds the acceptance edge, which falls inside it), and the narrower side sets both.
+ * - shownPerSide of them per side, evenly spaced from the outside in, and the centre slice are marked shown: the ones
+ *   drawn on their own (0: all of them).
  * Needs an axis symmetric about zero with zero on a bin edge; anything else is refused with a warning.
  */
-std::vector<PocSlice> PocEtaSlices(const TProfile2D* data, const std::string& what) {
+std::vector<PocSlice> PocEtaSlices(const TProfile2D* data, const std::string& what, int shownPerSide = POC_ETA_SLICES_PER_SIDE) {
     std::vector<PocSlice> out;
     const TAxis* ax = data->GetYaxis();
     const int nb = ax->GetNbins();
@@ -5590,20 +5643,60 @@ std::vector<PocSlice> PocEtaSlices(const TProfile2D* data, const std::string& wh
     const int start = std::max(firstNeg, mirror(lastPos)) + 1; // The narrower side, its edge bin dropped
     const int stop  = nb / 2 - 1;                              // Short of the centre slice (bins nb/2 and nb/2 + 1)
     const int nAvail = stop - start + 1;
-    std::vector<int> negBins;
+    // The shown bins of the negative side (their mirrors follow): evenly spaced from the outside in
+    std::set<int> shownBins;
     if (nAvail > 0) {
-        const int nPick = std::min(5, nAvail);
+        const int nPick = (shownPerSide > 0) ? std::min(shownPerSide, nAvail) : nAvail;
         const int step  = (nPick > 1) ? (nAvail - 1) / (nPick - 1) : 1;
-        for (int k = 0; k < nPick; ++k) negBins.push_back(start + k * step);
+        for (int k = 0; k < nPick; ++k) shownBins.insert(start + k * step);
     }
-    auto single = [&](int b) {
-        return PocSlice{b, b, ax->GetBinLowEdge(b), ax->GetBinUpEdge(b), Form("#eta in [%+.2f, %+.2f)", ax->GetBinLowEdge(b), ax->GetBinUpEdge(b))};
+    auto single = [&](int b, bool shown) {
+        return PocSlice{b, b, ax->GetBinLowEdge(b), ax->GetBinUpEdge(b),
+                        Form("#eta in [%+.2f, %+.2f)", ax->GetBinLowEdge(b), ax->GetBinUpEdge(b)), shown};
     };
-    for (int b : negBins) out.push_back(single(b)); // Ascending eta
+    for (int b = start; b <= stop; ++b) out.push_back(single(b, shownBins.count(b) > 0)); // Ascending eta
     out.push_back({nb / 2, nb / 2 + 1, ax->GetBinLowEdge(nb / 2), ax->GetBinUpEdge(nb / 2 + 1),
-                   Form("#eta in [%+.2f, %+.2f)", ax->GetBinLowEdge(nb / 2), ax->GetBinUpEdge(nb / 2 + 1))});
-    for (auto it = negBins.rbegin(); it != negBins.rend(); ++it) out.push_back(single(mirror(*it)));
+                   Form("#eta in [%+.2f, %+.2f)", ax->GetBinLowEdge(nb / 2), ax->GetBinUpEdge(nb / 2 + 1)), true});
+    for (int b = stop; b >= start; --b) out.push_back(single(mirror(b), shownBins.count(b) > 0));
     return out;
+}
+
+/**
+ * @brief R(phi_AEE) in every eta_Proxy slice, for each sample, from the sample's own region map: one profile per slice,
+ *        nullptr where the slice is empty. Shared by AEE/RingVsPhiAEE/ and StreamlinedStory/.
+ *
+ * Each region map must share ref's binning edge by edge (it is refused with a warning otherwise), so every sample is
+ * sliced alike. Without the reference (the first sample) nothing is returned, since every difference needs it; any other
+ * missing sample is left out. The profiles are added to owned, for the caller to delete.
+ */
+std::vector<PocSystemSlices> PocSliceSamples(FileCache& cache, const TProfile2D* ref, const std::vector<PocSlice>& slices,
+                                             const std::vector<PocFitSample>& samples, const std::string& proxy,
+                                             const std::string& place, std::vector<TH1*>& owned) {
+    std::vector<PocSystemSlices> systems;
+    for (size_t i = 0; i < samples.size(); ++i) {
+        const PocFitSample& smp = samples[i];
+        TProfile2D* map = PocFetchAeeEtaMapRegion(cache, smp.file, proxy, smp.regionBin);
+        if (map && !PocSameMapBinning(ref, map)) {
+            WarnSkip(smp.cfg.legendLabel + ", " + proxy + " AEE vs eta map", "binning differs from the data's", place);
+            delete map;
+            map = nullptr;
+        }
+        if (!map) {
+            if (i == 0) break; // No reference: no differences, so nothing of this group is drawn
+            continue;
+        }
+        PocSystemSlices sys{smp.cfg, {}};
+        for (const auto& sl : slices) {
+            static int counter = 0; // ProfileX attaches to gDirectory under its name: unique names, detached at once
+            TProfile* pr = map->ProfileX(Form("pPocAeeSlice_%d", counter++), sl.first, sl.last);
+            pr->SetDirectory(nullptr);
+            owned.push_back(pr);
+            sys.profiles.push_back(pr->GetEntries() > 0. ? pr : nullptr);
+        }
+        delete map; // The slices are profiles of their own
+        systems.push_back(sys);
+    }
+    return systems;
 }
 
 /// @brief The sine fits of DrawPocAeeVsPhi, condensed per fit group (empty where the group has no reference sample).
@@ -5613,8 +5706,8 @@ struct PocSineFits {
 
 /**
  * @brief AEE/RingVsPhiAEE/: R(phi_AEE) of every fitted sample (PocFitGroup) in the eta_Proxy slices of PocEtaSlices,
- *        overlaid per sample (Overlay/Canvas_<Sample>), then sine-fitted per slice with the parameters vs eta_Proxy
- *        (DrawPocSliceFits). pp's own group goes to PpOwnBaselines/.
+ *        the shown ones overlaid per sample (Overlay/Canvas_<Sample>), then sine-fitted in every slice with the
+ *        parameters vs eta_Proxy (DrawPocSliceFits). pp's own group goes to PpOwnBaselines/.
  *
  * The slices come from the data's all-candidates map, so every sample, region and group is sliced alike; each region
  * map must share its binning edge by edge. A group whose reference has no map is skipped (its differences need it).
@@ -5632,45 +5725,27 @@ PocSineFits DrawPocAeeVsPhi(FileCache& cache, TDirectory* fileRoot, const PocCel
     for (int g = 0; g < kPocFitGroups && !slices.empty(); ++g) {
         const std::vector<PocFitSample> samples = PocFitGroup(cell, st, g);
         const std::string dirPath = cell.dirPath + "/AEE/RingVsPhiAEE" + POC_FIT_GROUP_DIR[g];
-        std::vector<PocSystemSlices> systems;
         std::vector<TH1*> owned;
-        for (size_t i = 0; i < samples.size(); ++i) {
-            const PocFitSample& smp = samples[i];
-            TProfile2D* map = PocFetchAeeEtaMapRegion(cache, smp.file, cell.proxy, smp.regionBin);
-            if (map && !PocSameMapBinning(ref, map)) {
-                WarnSkip(smp.cfg.legendLabel + ", " + cell.proxy + " AEE vs eta map", "binning differs from the data's", cell.dirPath);
-                delete map;
-                map = nullptr;
-            }
-            if (!map) {
-                if (i == 0) break; // No reference: no differences, so nothing of this group is drawn
-                continue;
-            }
-            PocSystemSlices sys{smp.cfg, {}};
+        const std::vector<PocSystemSlices> systems = PocSliceSamples(cache, ref, slices, samples, cell.proxy, cell.dirPath, owned);
+        // Overlay/: the shown slices of one sample on one canvas
+        for (const PocSystemSlices& sys : systems) {
             std::vector<ProfileBundle> overlay;
             for (size_t k = 0; k < slices.size(); ++k) {
-                static int counter = 0; // ProfileX attaches to gDirectory under its name: unique names, detached at once
-                TProfile* pr = map->ProfileX(Form("pPocAeeSlice_%d", counter++), slices[k].first, slices[k].last);
-                pr->SetDirectory(nullptr);
-                owned.push_back(pr);
-                const bool filled = pr->GetEntries() > 0.;
-                sys.profiles.push_back(filled ? pr : nullptr);
-                if (!filled) continue;
+                if (!slices[k].shown || !sys.profiles[k]) continue; // Every slice is fitted; a few are drawn
                 const double centre = 0.5 * (slices[k].lo + slices[k].hi);
                 VariationConfig vc{"", slices[k].label, EtaSliceColor(centre, etaMax), 1,
                                    (std::abs(centre) < 1e-9) ? 33 : (centre < 0. ? 24 : 20), false};
-                overlay.push_back({pr, vc});
+                overlay.push_back({sys.profiles[k], vc});
             }
-            delete map; // The slices are profiles of their own
             if (!overlay.empty())
-                DrawComparisonCanvas(overlay, "Canvas_" + CanvasSafe(smp.cfg.legendLabel),
-                                     cell.head + ", " + smp.cfg.legendLabel + ": " + yTitle + " vs " + phiName + " in #eta_{" +
+                DrawComparisonCanvas(overlay, "Canvas_" + CanvasSafe(sys.cfg.legendLabel),
+                                     cell.head + ", " + sys.cfg.legendLabel + ": " + yTitle + " vs " + phiName + " in #eta_{" +
                                          cell.proxy + "} slices",
                                      EnsureDir(fileRoot, dirPath + "/Overlay"), ProfileConfig{}, phiName, yTitle);
-            systems.push_back(sys);
         }
         if (!systems.empty())
-            out.group[g] = DrawPocSliceFits(fileRoot, dirPath, cell.head, "Eta", slices, systems, kSineModel, phiName,
+            out.group[g] = DrawPocSliceFits(fileRoot, dirPath, cell.head, "Eta", slices, systems,
+                                            PocFitSlices(systems, slices.size(), kSineModel, "Eta"), kSineModel, phiName,
                                             "#eta_{" + cell.proxy + "}", yTitle, false);
         for (TH1* h : owned) delete h;
     }
@@ -5815,14 +5890,17 @@ PocEtaFitResults DrawPocEtaFits(FileCache& cache, TDirectory* fileRoot, const Po
     }
     if (!systems.empty())
         results.vsPhi = DrawPocSliceFits(fileRoot, cell.dirPath + "/EtaFits/VsPhiAEE", cell.head, "PhiAEE", slices, systems,
-                                         kTanhModel, etaName, "#phi_{#Lambda}-#phi_{p}^{*}", yTitle, true);
+                                         PocFitSlices(systems, slices.size(), kTanhModel, "PhiAEE"), kTanhModel, etaName,
+                                         "#phi_{#Lambda}-#phi_{p}^{*}", yTitle, true);
     for (TH1* h : owned) delete h;
     delete ref;
     return results;
 }
 
 // -------------------------------------------------------------------------------------------------
-// ProofOfConcept summaries: every method on one canvas, per proxy, at the root of each <Selection>/<Family>/ folder
+// ProofOfConcept summaries: every method on one canvas, per proxy, at the root of each <Selection>/<Family>/<Proxy>/
+// folder; their QA folders (SymmetrizationQA/, PurityCorrected/, PpBaselineQA/) stay at <Selection>/<Family>/, the
+// three proxies side by side, which keeps the tree shallow
 // -------------------------------------------------------------------------------------------------
 // Canvas_SummaryR_<Proxy>  left: the four levels (Data InPeak, Data OutOfPeak, MixedEv InPeak, pp InPeak); right: the
 //                          estimates in R units: per baseline, the InPeak difference, then one column with its three
@@ -5853,21 +5931,26 @@ struct PocPanel {
     std::string note = "";    // Drawn in a box in the value pad when not empty, one line per '\n' (PDG errors, formulas)
     std::vector<int> columnOf = {}; // Column of each value; empty: value i in column i, one value per column
     std::vector<std::pair<std::string, int>> markerLegend = {}; // (text, marker style), drawn in a neutral colour; empty: none
+    bool columnSeparators = false; // Dashed lines between the columns, in place of the vertical grid (StreamlinedStory/)
+    bool fitKeyToText = false;     // Size the marker key to its longest entry (the default width suits short method names)
 };
 
 /**
- * @brief Draws panels side by side on one canvas, each a categorical value pad over its own value/sigma strip.
+ * @brief Draws panels side by side on one canvas, each a categorical value pad over its own value/sigma strip, or the
+ *        value pad alone, carrying the column labels itself (withStrip false).
  * One single-point graph per value (no histogram, so an empty slot draws nothing). A column holding several values
  * spreads them sideways, in the order they were given, over half the column width; every value keeps its slot even
  * when empty, so a method sits at the same place in every column. The same offsets are used in the strip. Everything
  * drawn is owned by the canvas (kCanDelete), so deleting the canvas frees it all.
- * The title is drawn over each value pad as text of its own (the frame keeps only the y title), so it always shows. The
- * y range leaves room at the top for the note and the marker key, and the strip's range follows its pulls, however
- * large and on either side, never shorter than the 2 sigma band. The strip's bottom margin is sized to its labels.
+ * The title is drawn centred over each value pad's frame as text of its own (the frame keeps only the y title), so it
+ * always shows. The y range leaves room at the top for the note (top left) and the marker key (top right; a key sized
+ * to long entries pushes the note underneath it), and the strip's range follows its pulls, however large and on either
+ * side, never shorter than the 2 sigma band. Whichever pad carries the column labels has its bottom margin sized to them.
  * @param sharedRange One y range (and one pull range) for every panel, so panels side by side compare by eye (Redux/).
+ * @param withStrip   The value/sigma strips; StreamlinedStory/ leaves them out.
  */
 void DrawPocPanels(const std::vector<PocPanel>& panels, const std::string& name, const std::string& title,
-                   TDirectory* fileRoot, const std::string& dirPath, bool sharedRange = false) {
+                   TDirectory* fileRoot, const std::string& dirPath, bool sharedRange = false, bool withStrip = true) {
     bool anyValue = false;
     for (const auto& pn : panels)
         for (const auto& v : pn.vals) anyValue = anyValue || v.second >= 0.;
@@ -5876,9 +5959,15 @@ void DrawPocPanels(const std::vector<PocPanel>& panels, const std::string& name,
         return;
     }
     const int nP = static_cast<int>(panels.size());
-    // The value pad's frame spans NDC [kUpBottom, 1 - kUpTop]; the note hangs from kNoteTop and the key from kKeyTop
+    // The value pad's frame spans NDC [its bottom margin, 1 - kUpTop]; the note hangs from kNoteTop and the key from kKeyTop
     const double kUpTop = 0.10, kUpBottom = 0.02, kNoteTop = 0.88, kKeyTop = 0.89;
     const double kNoteLine = 0.040, kKeyLine = 0.055;
+    const double kLeft = 0.14, kRight = 0.03;                                  // Side margins of both pads
+    const int kPanelWidthPx = 900, kCanvasHeightPx = withStrip ? 750 : 600;   // One panel's width, the canvas height
+    // The column labels sit on the strip, scaled so their apparent size matches the value pad's text, or on the value pad
+    const double kLowerFraction = withStrip ? 0.32 : 0.;
+    const double textScale = withStrip ? (1.0 - kLowerFraction) / kLowerFraction : 1.;
+    const double labelSize = 0.035 * textScale;
     auto noteLinesOf = [](const std::string& note) {
         std::vector<std::string> lines;
         size_t from = 0;
@@ -5890,12 +5979,67 @@ void DrawPocPanels(const std::vector<PocPanel>& panels, const std::string& name,
         }
         return lines;
     };
+    // Printed length of a TLatex label, roughly: a #command prints as about one glyph, braces and scripts as none
+    auto printedLength = [](const std::string& t) {
+        int n = 0;
+        bool inCommand = false;
+        for (char ch : t) {
+            if (ch == '#') { inCommand = true; ++n; continue; }
+            if (inCommand && std::isalpha(static_cast<unsigned char>(ch))) continue;
+            inCommand = false;
+            if (ch == '{' || ch == '}' || ch == '_' || ch == '^') continue;
+            ++n;
+        }
+        return n;
+    };
+    auto longestOf = [&](const PocPanel& pn) {
+        int longest = 0;
+        for (const auto& l : pn.labels) longest = std::max(longest, printedLength(l));
+        return longest;
+    };
+    // Labels are tilted (LabelsOption("u"), 20 degrees) once the axis gets busy: past three columns on a strip, and on a
+    // value pad alone only when the longest label (about half an em per character) would overrun its column
+    auto isTilted = [&](const PocPanel& pn) {
+        if (withStrip) return pn.labels.size() > 3;
+        const double columnPx = kPanelWidthPx * (1. - kLeft - kRight) / std::max<size_t>(pn.labels.size(), 1);
+        return 0.5 * labelSize * kCanvasHeightPx * longestOf(pn) > 0.9 * columnPx;
+    };
+    // The bottom margin of the pad carrying a panel's labels: one text line for horizontal labels, the drop of the
+    // longest one for tilted labels
+    auto labelMarginOf = [&](const PocPanel& pn) {
+        return isTilted(pn) ? std::min(0.50, 0.05 + 0.94 * labelSize + 0.171 * labelSize * longestOf(pn)) : labelSize + 0.09;
+    };
+    // The boxes of a panel's value pad, in NDC: the key at the top right, 0.24 wide or as wide as its longest entry
+    // (text at about half an em per character, after the legend's 25% marker margin); the note at the top left, or
+    // under a key that would reach it, at full width. lowest is the lowest box edge.
+    struct PanelBoxes { double keyLeft, keyBottom, noteTop, noteRight, noteBottom, lowest; };
+    const double kKeyText = 0.032, kKeyRight = 0.96, kNoteLeft = 0.16;
+    auto boxesOf = [&](const PocPanel& pn) {
+        PanelBoxes b;
+        int longest = 0;
+        for (const auto& mk : pn.markerLegend) longest = std::max(longest, printedLength(mk.first));
+        // Text sizes are fractions of the pad's height (its smaller side), so a character's width in NDC is:
+        const double charWidth = 0.5 * kKeyText * kCanvasHeightPx * (1. - kLowerFraction) / kPanelWidthPx;
+        const double keyWidth = pn.fitKeyToText ? charWidth * longest / 0.75 + 0.02 : 0.24;
+        b.keyLeft = std::max(kNoteLeft, kKeyRight - keyWidth);
+        b.keyBottom = kKeyTop - kKeyLine * pn.markerLegend.size();
+        const bool stacked = !pn.markerLegend.empty() && b.keyLeft < 0.70 + 0.01; // The note's default right edge is 0.70
+        b.noteTop = stacked ? b.keyBottom - 0.012 : kNoteTop;
+        b.noteRight = stacked ? kKeyRight : 0.70;
+        const size_t nLines = noteLinesOf(pn.note).size();
+        b.noteBottom = b.noteTop - 0.012 - kNoteLine * nLines;
+        b.lowest = 1. - kUpTop;
+        if (nLines) b.lowest = std::min(b.lowest, b.noteBottom);
+        if (!pn.markerLegend.empty()) b.lowest = std::min(b.lowest, b.keyBottom);
+        return b;
+    };
     // Each panel's value range (and zero, where it is the reference), the fraction of its frame left below the boxes,
     // and its pull range, merged when sharedRange is set
-    std::vector<double> yMinOf(nP), yMaxOf(nP), freeOf(nP), pullLoOf(nP), pullHiOf(nP);
+    std::vector<double> yMinOf(nP), yMaxOf(nP), freeOf(nP), pullLoOf(nP), pullHiOf(nP), upBottomOf(nP);
     std::vector<bool> hasOf(nP, false);
     for (int ip = 0; ip < nP; ++ip) {
         const PocPanel& pn = panels[ip];
+        upBottomOf[ip] = withStrip ? kUpBottom : labelMarginOf(pn);
         double yLo = 1e300, yHi = -1e300, pLo = 1e300, pHi = -1e300;
         for (const auto& v : pn.vals) {
             if (v.second < 0.) continue;
@@ -5911,11 +6055,8 @@ void DrawPocPanels(const std::vector<PocPanel>& panels, const std::string& name,
         yMaxOf[ip] = yHi + margin;
         if (pn.zeroLine) { yMinOf[ip] = std::min(yMinOf[ip], -margin); yMaxOf[ip] = std::max(yMaxOf[ip], margin); }
         // The lowest box edge sets how much of the frame the points may use (2% clearance under it)
-        double boxBottom = 1. - kUpTop;
-        const size_t nLines = noteLinesOf(pn.note).size();
-        if (nLines) boxBottom = std::min(boxBottom, kNoteTop - 0.012 - kNoteLine * nLines);
-        if (!pn.markerLegend.empty()) boxBottom = std::min(boxBottom, kKeyTop - kKeyLine * pn.markerLegend.size());
-        freeOf[ip] = std::max(0.3, (boxBottom - 0.02 - kUpBottom) / (1. - kUpTop - kUpBottom));
+        const double boxBottom = boxesOf(pn).lowest;
+        freeOf[ip] = std::max(0.3, (boxBottom - 0.02 - upBottomOf[ip]) / (1. - kUpTop - upBottomOf[ip]));
         // Pulls: whatever they are, always including the +/-2 sigma band, padded on the side they extend
         const bool anyPull = (pHi >= pLo);
         double lo = std::min(-2.5, anyPull ? pLo : 0.), hi = std::max(2.5, anyPull ? pHi : 0.);
@@ -5941,23 +6082,17 @@ void DrawPocPanels(const std::vector<PocPanel>& panels, const std::string& name,
     // Headroom: the points keep their range in the part of the frame below the boxes
     for (int ip = 0; ip < nP; ++ip) yMaxOf[ip] = yMinOf[ip] + (yMaxOf[ip] - yMinOf[ip]) / freeOf[ip];
 
-    const double kLowerFraction = 0.32;
-    const double textScale = (1.0 - kLowerFraction) / kLowerFraction; // Same apparent text size in both pads
-    const double labelSize = 0.035 * textScale;                       // Of the strip's column labels
-    // Printed length of a TLatex label, roughly: a #command prints as about one glyph, braces and scripts as none
-    auto printedLength = [](const std::string& t) {
-        int n = 0;
-        bool inCommand = false;
-        for (char ch : t) {
-            if (ch == '#') { inCommand = true; ++n; continue; }
-            if (inCommand && std::isalpha(static_cast<unsigned char>(ch))) continue;
-            inCommand = false;
-            if (ch == '{' || ch == '}' || ch == '_' || ch == '^') continue;
-            ++n;
+    // Dashed lines on every inner column edge, from yLo to yHi, in the current pad
+    auto drawSeparators = [](int nColumns, double yLo, double yHi) {
+        for (int i = 1; i < nColumns; ++i) {
+            TLine* sep = new TLine(i, yLo, i, yHi);
+            sep->SetLineStyle(2);
+            sep->SetLineColor(kGray + 2);
+            sep->SetBit(kCanDelete);
+            sep->Draw();
         }
-        return n;
     };
-    TCanvas* c = new TCanvas(name.c_str(), title.c_str(), 900 * nP, 750);
+    TCanvas* c = new TCanvas(name.c_str(), title.c_str(), kPanelWidthPx * nP, kCanvasHeightPx);
     for (int ip = 0; ip < nP; ++ip) {
         const PocPanel& pn = panels[ip];
         const int n = static_cast<int>(pn.labels.size()); // Columns
@@ -5979,20 +6114,22 @@ void DrawPocPanels(const std::vector<PocPanel>& panels, const std::string& name,
             }
         }
         const double x1 = static_cast<double>(ip) / nP, x2 = static_cast<double>(ip + 1) / nP;
+        const bool tilted = isTilted(pn);
         c->cd();
         TPad* up = new TPad(Form("%s_up%d", name.c_str(), ip), "", x1, kLowerFraction, x2, 1.0);
-        TPad* lo = new TPad(Form("%s_lo%d", name.c_str(), ip), "", x1, 0.0, x2, kLowerFraction);
-        // The strip's bottom margin: one text line for horizontal labels; for the tilted ones (LabelsOption("u"), 20
-        // degrees) their drop, from the longest printed label at about half an em per character
-        const bool tilted = (n > 3);
-        int longest = 0;
-        for (const auto& l : pn.labels) longest = std::max(longest, printedLength(l));
-        const double bottom = tilted ? std::min(0.50, 0.05 + 0.94 * labelSize + 0.171 * labelSize * longest) : labelSize + 0.09;
-        up->SetMargin(0.14, 0.03, kUpBottom, kUpTop);
-        lo->SetMargin(0.14, 0.03, bottom, 0.02);
-        up->SetGridx(); up->SetGridy(); lo->SetGridx();
-        up->SetBit(kCanDelete); lo->SetBit(kCanDelete);
-        up->Draw(); lo->Draw();
+        up->SetMargin(kLeft, kRight, upBottomOf[ip], kUpTop);
+        if (!pn.columnSeparators) up->SetGridx(); // The separators replace the vertical grid: the two would double up
+        up->SetGridy();
+        up->SetBit(kCanDelete);
+        up->Draw();
+        TPad* lo = nullptr;
+        if (withStrip) {
+            lo = new TPad(Form("%s_lo%d", name.c_str(), ip), "", x1, 0.0, x2, kLowerFraction);
+            lo->SetMargin(kLeft, kRight, labelMarginOf(pn), 0.02);
+            if (!pn.columnSeparators) lo->SetGridx();
+            lo->SetBit(kCanDelete);
+            lo->Draw();
+        }
 
         // Value pad: the range found above
         const double yMin = yMinOf[ip], yMax = yMaxOf[ip];
@@ -6003,15 +6140,23 @@ void DrawPocPanels(const std::vector<PocPanel>& panels, const std::string& name,
         frame->SetStats(0);
         frame->SetMinimum(yMin);
         frame->SetMaximum(yMax);
-        frame->GetXaxis()->SetLabelSize(0.0); // The labels live on the strip below
+        if (withStrip) {
+            frame->GetXaxis()->SetLabelSize(0.0); // The labels live on the strip below
+        } else {
+            for (int i = 0; i < n; ++i) frame->GetXaxis()->SetBinLabel(i + 1, pn.labels[i].c_str());
+            if (tilted) frame->GetXaxis()->LabelsOption("u");
+            frame->GetXaxis()->SetLabelSize(labelSize);
+        }
         frame->GetYaxis()->SetTitleSize(0.05);
         frame->GetYaxis()->SetLabelSize(0.04);
         frame->SetBit(kCanDelete);
         frame->Draw("AXIS");
-        // The title, in the top margin over the frame's left edge
-        TLatex* head = new TLatex(0.14, 1. - kUpTop + 0.025, pn.title.c_str());
+        if (pn.columnSeparators) drawSeparators(n, yMin, yMax);
+        const PanelBoxes boxes = boxesOf(pn);
+        // The title, in the top margin, centred over the frame
+        TLatex* head = new TLatex(0.5 * (kLeft + 1. - kRight), 1. - kUpTop + 0.025, pn.title.c_str());
         head->SetNDC();
-        head->SetTextAlign(11);
+        head->SetTextAlign(21);
         head->SetTextSize(0.048);
         head->SetBit(kCanDelete);
         head->Draw();
@@ -6024,7 +6169,7 @@ void DrawPocPanels(const std::vector<PocPanel>& panels, const std::string& name,
         }
         const std::vector<std::string> noteLines = noteLinesOf(pn.note);
         if (!noteLines.empty()) {
-            TPaveText* note = new TPaveText(0.16, kNoteTop - 0.012 - kNoteLine * noteLines.size(), 0.70, kNoteTop, "NDC");
+            TPaveText* note = new TPaveText(kNoteLeft, boxes.noteBottom, boxes.noteRight, boxes.noteTop, "NDC");
             note->SetFillColor(kWhite);
             note->SetFillStyle(1001); // Opaque, so the grid does not run through it
             note->SetBorderSize(1);
@@ -6046,11 +6191,11 @@ void DrawPocPanels(const std::vector<PocPanel>& panels, const std::string& name,
         }
         // The marker key of the merged columns: the shape tells the method, the colour (in the points) the baseline
         if (!pn.markerLegend.empty()) {
-            TLegend* key = new TLegend(0.72, kKeyTop - kKeyLine * pn.markerLegend.size(), 0.96, kKeyTop);
+            TLegend* key = new TLegend(boxes.keyLeft, boxes.keyBottom, kKeyRight, kKeyTop);
             key->SetFillColor(kWhite);
             key->SetFillStyle(1001);
             key->SetBorderSize(1);
-            key->SetTextSize(0.032);
+            key->SetTextSize(kKeyText);
             for (const auto& mk : pn.markerLegend) {
                 // A null object: the entry draws with its own marker attributes, so nothing else needs owning
                 TLegendEntry* le = key->AddEntry(static_cast<TObject*>(nullptr), mk.first.c_str(), "p");
@@ -6061,6 +6206,7 @@ void DrawPocPanels(const std::vector<PocPanel>& panels, const std::string& name,
             key->SetBit(kCanDelete);
             key->Draw();
         }
+        if (!withStrip) continue;
 
         // value/sigma strip, with the column labels
         lo->cd();
@@ -6068,7 +6214,7 @@ void DrawPocPanels(const std::vector<PocPanel>& panels, const std::string& name,
         lowFrame->SetDirectory(nullptr);
         lowFrame->SetStats(0);
         for (int i = 0; i < n; ++i) lowFrame->GetXaxis()->SetBinLabel(i + 1, pn.labels[i].c_str());
-        if (tilted) lowFrame->GetXaxis()->LabelsOption("u"); // Tilted once the axis gets busy
+        if (tilted) lowFrame->GetXaxis()->LabelsOption("u");
         lowFrame->GetXaxis()->SetLabelSize(labelSize);
         lowFrame->GetYaxis()->SetTitleSize(0.045 * textScale);
         lowFrame->GetYaxis()->SetLabelSize(0.035 * textScale);
@@ -6090,6 +6236,7 @@ void DrawPocPanels(const std::vector<PocPanel>& panels, const std::string& name,
         zeroLow->SetLineWidth(2);
         zeroLow->SetBit(kCanDelete);
         zeroLow->Draw();
+        if (pn.columnSeparators) drawSeparators(n, pullLoOf[ip], pullHiOf[ip]);
         for (int j = 0; j < nV; ++j) {
             if (pn.vals[j].second <= 0.) continue;
             TGraphAsymmErrors* g = new TGraphAsymmErrors(1);
@@ -6250,7 +6397,7 @@ PocSummaryData PocBuildSummary(FileCache& cache, const PocCell& cell, const PocS
     // The sideband keeps its InPeak difference only: its Delta p0 fits are in Redux/, and on the summary they made the
     // estimates panel too crowded to read
     struct Baseline { std::string tag, diffLabel; const VariationConfig* cfg; int sample; bool withFits; };
-    const std::vector<Baseline> baselines = {{"Sideband", "Data: InPeak - OutPeak", &st.dataOut, 1, false},
+    const std::vector<Baseline> baselines = {{"Sideband", "Data: InPeak - OutOfPeak", &st.dataOut, 1, false},
                                              {"MixEv", "MixEv: InPeak", &st.mixedIn, 2, true},
                                              {"pp", "pp: InPeak (cheap)", &st.ppIn, 3, true}};
     for (int sym = 0; sym < 2; ++sym) {
@@ -6338,8 +6485,9 @@ PocSummaryData PocBuildSummary(FileCache& cache, const PocCell& cell, const PocS
 }
 
 /**
- * @brief Writes the summaries of one <Selection>/<Family>/ folder, every proxy's canvases next to each other:
- *        the main pair, then SymmetrizationQA/, PurityCorrected/ (and its SymmetrizationQA/), then PpBaselineQA/.
+ * @brief Writes the summaries of one <Selection>/<Family>/ folder: the main canvases into each proxy's own folder,
+ *        then SymmetrizationQA/, PurityCorrected/ (and its SymmetrizationQA/) and PpBaselineQA/ at the family level,
+ *        every proxy's canvases next to each other.
  */
 void DrawPocSummaries(TDirectory* fileRoot, const std::string& rootPath, const std::vector<PocSummaryData>& data,
                       const std::string& ringSym) {
@@ -6399,12 +6547,12 @@ void DrawPocSummaries(TDirectory* fileRoot, const std::string& rootPath, const s
         PocPanel pn{padTitle(d, "The four levels"), sym, d.levelLabels, d.levelCfgs, d.levels, false};
         return pn;
     };
-    // Main pair, then the symmetrised one
+    // Main pair (in the proxy's folder), then the symmetrised one (at the family level)
     for (int which = 0; which < 2; ++which) {
-        const std::string dir = rootPath + (which ? "/SymmetrizationQA" : "");
         const std::string tag = which ? ", pair-symmetrised #Deltap_{0}" : "";
         for (const auto& d : data) {
             if (!d.valid) continue;
+            const std::string dir = rootPath + (which ? "/SymmetrizationQA" : "/" + d.proxy);
             DrawPocPanels({levelPanel(d), estimatePanel(d, which, 0, "Estimates, R units" + tag)}, "Canvas_SummaryR_" + d.proxy,
                           d.head + ": levels and estimates (R units)" + tag, fileRoot, dir);
             DrawPocPanels({estimatePanel(d, which, 1, "Estimates, converted with the data's response" + tag)},
@@ -6703,15 +6851,18 @@ void DrawPocRedux(TDirectory* fileRoot, const std::string& rootPath, const std::
 // Only P enters (R units are not comparable across ring definitions), in the two flavours of the summaries: diluted by
 // f_S (the main folders) and purity-corrected (PurityCorrected/), each also with the pair-symmetrised Delta p0
 // (SymmetrizationQA/). One folder per estimate, holding the three proxies' canvases side by side.
-//   <Sel>/MasterSpeciesVsRing/        x: species, series: ring definitions. A true aligned ring agrees everywhere:
-//                                     across species (Lambda and AntiLambda are independent samples; Both is their
-//                                     union) and across ring definitions (same Lambdas, very different fakes).
-//   <Sel>/SpeciesCombinationQA/       x: ring definitions, series: 1/2 (Lambda + AntiLambda) and 1/2 (Lambda - AntiLambda),
-//                                     disjoint samples, so 1/2 hypot errors. Topological fakes flip with alpha.
-//   MasterDefaultVsAnalysisCuts/      x: species x ring definition, series: the selections; and Canvas_<Proxy>_Difference,
-//                                     each selection minus the first, with Barlow's sqrt|sigma_A^2 - sigma_D^2|: the
-//                                     stricter selection's samples are subsets of the default's, so their errors are
-//                                     largely shared and quadrature would hide a genuine shift.
+// Each master sits in a Masters/ folder at the lowest level holding every cell it compares: next to the family folders
+// for the per-selection ones (they span families, so no single family folder can hold them), at the top for the
+// selections compared.
+//   <Sel>/Masters/SpeciesVsRing/        x: species, series: ring definitions. A true aligned ring agrees everywhere:
+//                                       across species (Lambda and AntiLambda are independent samples; Both is their
+//                                       union) and across ring definitions (same Lambdas, very different fakes).
+//   <Sel>/Masters/SpeciesCombinationQA/ x: ring definitions, series: 1/2 (Lambda + AntiLambda) and 1/2 (Lambda - AntiLambda),
+//                                       disjoint samples, so 1/2 hypot errors. Topological fakes flip with alpha.
+//   Masters/DefaultVsAnalysisCuts/      x: species x ring definition, series: the selections; and Canvas_<Proxy>_Difference,
+//                                       each selection minus the first, with Barlow's sqrt|sigma_A^2 - sigma_D^2|: the
+//                                       stricter selection's samples are subsets of the default's, so their errors are
+//                                       largely shared and quadrature would hide a genuine shift.
 
 /// @brief One <Selection>/<Family>/ folder's summaries, kept for the master plots.
 struct PocCellSummary {
@@ -6822,7 +6973,7 @@ void DrawPocMasters(TDirectory* fileRoot, const std::vector<PocCellSummary>& cel
                     }
                     DrawPocSeriesByColumn(species, ringSeries, vals, "Canvas_" + proxy,
                                           sel.folder + ", " + proxy + ": " + estimateTitle(e, f) + ", species vs ring definition",
-                                          fileRoot, "ProofOfConcept/" + sel.folder + "/MasterSpeciesVsRing" + f.subdir + "/" + e.tag,
+                                          fileRoot, "ProofOfConcept/" + sel.folder + "/Masters/SpeciesVsRing" + f.subdir + "/" + e.tag,
                                           f.yTitle);
 
                     // Species combinations, where both species exist
@@ -6841,7 +6992,7 @@ void DrawPocMasters(TDirectory* fileRoot, const std::vector<PocCellSummary>& cel
                                                                      {"", "#frac{1}{2}(#Lambda - #bar{#Lambda}): topological fakes only", kRed + 1, 1, 24, false}};
                     DrawPocSeriesByColumn(ringLabels, combSeries, comb, "Canvas_" + proxy,
                                           sel.folder + ", " + proxy + ": " + estimateTitle(e, f) + ", species combinations",
-                                          fileRoot, "ProofOfConcept/" + sel.folder + "/SpeciesCombinationQA" + f.subdir + "/" + e.tag,
+                                          fileRoot, "ProofOfConcept/" + sel.folder + "/Masters/SpeciesCombinationQA" + f.subdir + "/" + e.tag,
                                           f.yTitle);
                 }
 
@@ -6881,7 +7032,7 @@ void DrawPocMasters(TDirectory* fileRoot, const std::vector<PocCellSummary>& cel
                     diffSeries.push_back({"", POC_SELECTIONS[si].folder + " - " + POC_SELECTIONS[0].folder + " (Barlow error)",
                                           kGray + 2, 2, 24, false});
                 }
-                const std::string dir = "ProofOfConcept/MasterDefaultVsAnalysisCuts" + f.subdir + "/" + e.tag;
+                const std::string dir = "ProofOfConcept/Masters/DefaultVsAnalysisCuts" + f.subdir + "/" + e.tag;
                 DrawPocSeriesByColumn(columns, selSeries, vals, "Canvas_" + proxy,
                                       proxy + ": " + estimateTitle(e, f) + ", selections compared", fileRoot, dir, f.yTitle);
                 DrawPocSeriesByColumn(columns, diffSeries, diffs, "Canvas_" + proxy + "_Difference",
@@ -6893,10 +7044,8 @@ void DrawPocMasters(TDirectory* fileRoot, const std::vector<PocCellSummary>& cel
 
 /**
  * @brief Writes ProofOfConcept/: for every selection, family and ring definition whose centrality-selected data file
- *        exists, and for every proxy, the data against its three controls (see the block comment above).
- *
- * Files: <consumerDir>/ConsumerResults_<family><ringTag>[_MixedEventProxies]<selectionTag><centralityTag>.root, and the
- * pp references <ppRefDir>/ConsumerResults_<family><ringTag>[_MixedEventProxies]<selectionTag>.root (minimum bias).
+ *        exists, and for every proxy, the data against its three controls (see the block comment above). The files of
+ *        each cell are those of PocMakeCell, single-borrow mixing.
  *
  * @param families Full-ring families: each ring definition is the same family with its tag after the family suffix.
  */
@@ -6908,28 +7057,12 @@ void DrawProofOfConcept(FileCache& cache, TDirectory* fileRoot, const std::strin
         for (const auto& fam : families)
             for (size_t def = 0; def <= LONGITUDINAL_RINGS.size(); ++def) { // 0 is the full ring, then LONGITUDINAL_RINGS
                 const LongitudinalRing* lr = (def == 0) ? nullptr : &LONGITUDINAL_RINGS[def - 1];
-                const std::string ringTag   = lr ? lr->fileTag : "";
                 const std::string famFolder = fam.familyName + (lr ? "_" + lr->name : "");
-                auto consumerFile = [&](const std::string& mixTag) {
-                    return consumerDir + "/ConsumerResults_" + fam.dataSuffix + ringTag + mixTag + sel.tag + POC_CENTRALITY_TAG + ".root";
-                };
-                auto ppFile = [&](const std::string& mixTag) {
-                    return ppRefDir.empty() ? std::string()
-                                            : ppRefDir + "/ConsumerResults_" + fam.dataSuffix + ringTag + mixTag + sel.tag + ".root";
-                };
-
-                PocCell cell;
-                cell.dataFile = consumerFile("");
+                PocCell cell = PocMakeCell(consumerDir, ppRefDir, sel, fam, lr);
                 if (gSystem->AccessPathName(cell.dataFile.c_str())) { // Not run: counted once, and none of its files is read
                     CountSkip("ProofOfConcept", "data file not run", sel.folder + "/" + famFolder);
                     continue;
                 }
-                cell.mixedFile   = consumerFile(POC_MIXED_TAG);
-                cell.ppFile      = ppFile("");
-                cell.ppMixedFile = ppFile(POC_MIXED_TAG);
-                // Exact inversion for the full ring (k = alpha^2/3), linear for the longitudinal rings (k = 0)
-                cell.k       = lr ? 0. : fam.alphaSq / 3.;
-                cell.ringSym = "R" + (lr ? lr->symbolSuffix : std::string());
 
                 std::vector<PocSummaryData> summaries; // One per proxy, drawn after the loop so their canvases sit together
                 std::vector<PocReduxData> reduxes;     // Likewise, for Redux/
@@ -6958,6 +7091,846 @@ void DrawProofOfConcept(FileCache& cache, TDirectory* fileRoot, const std::strin
     DrawPocMasters(fileRoot, allCells, families);
 }
 
+// ===============================
+// StreamlinedStory: the analysis in five plots, for every selection, species and proxy
+// ===============================
+// Layout: ProofOfConcept/StreamlinedStory/<Selection>/<Species>/<Proxy>/. Each plot sets the full ring against R_z or
+// fits it, so the story is keyed by species rather than by family and ring definition. The canvases are numbered so
+// they list in story order, whatever the browser sorts by:
+//   Canvas_1_IntegratedR   <R> of four samples, the columns OO Data, Mix. Jet OO, pp Data and Mix. Jet pp, each with
+//                          its InPeak and OutOfPeak side by side (filled and open markers), dashed lines between columns
+//   Canvas_2_IntegratedRz  the same for R_z
+//   Canvas_3_SineP0R       the sine p0 of the full ring: p0 + p1 sin(p2 phi_AEE) fitted in every eta_Proxy bin of the
+//                          acceptance, p0 condensed over the bins (inverse-variance mean, PocFitConstant), plain error;
+//                          _PDG with the PDG-scaled errors, and each constant's chi2/ndf in a panel beside it;
+//                          _InMinusOut[_PDG] the two levels' difference per column, as for plots 1 and 2
+//   Canvas_4_SineDeltaP0R  in-peak Data - Mix. Jet of the same p0, per system (two columns): subtracted in each eta_Proxy
+//                          bin first, then condensed, so the eta dependence the two share cancels before the constant;
+//                          _PDG as for plot 3
+//   Canvas_4_1_SineDeltaP0R  plot 4's columns, each followed by its system's data InPeak - OutOfPeak, also formed
+//                          bin by bin; _PDG as for plot 4
+//   Canvas_5_SineInterceptR  each sample's line p0 = C_0 + C_1 p1 over the same bins (FitP0VsP1, errors on both axes):
+//                          C_0, the p0 at zero sine, beside C_1, the slope of the opening-angle leak; _PDG adds the
+//                          lines' chi2/ndf
+// Each has a _10Resamples twin, whose mixed columns use the resampled mixed events (MIXED_RESAMPLES_TAG, last in the file
+// name: after the centrality tag in OO, after the selection tag in pp), and plots 1 and 2 an _InMinusOut companion per
+// twin (disjoint regions of one file: quadrature is exact). The files are PocMakeCell's, as in the rest of ProofOfConcept/.
+// No value/sigma strips, and R units throughout: each plot is a null test within its own ring definition, and the scales
+// of R, R_z and the sine p0 differ (see the README, "StreamlinedStory/"). The fits behind plot 3 are in SineFitQA/<System>/,
+// without the resampled mixed events, and again with them in SineFitQA/<System>/With<N>Resamples/; each view's P0VsP1/
+// has p0 against p1 for its own samples, with the line of plot 5 drawn over them. The keys name the mass windows by
+// their mass (StoryMassKeyOf).
+
+/// @brief The two systems as the story names them: the centrality-selected heavy-ion data, and the pp reference.
+const std::string STORY_SYSTEM[2] = {"OO", "pp"};
+/// @brief The story's name for the mixed-event proxies (the rest of the macro still calls them "MixedEv Jet").
+const std::string STORY_MIXED_LABEL = "Mix. Jet";
+/// @brief The longitudinal ring of plot 2, by its LONGITUDINAL_RINGS name.
+const std::string STORY_LONG_RING = "RingZ";
+
+/// @brief The story's labels and looks, built in the main function from the macro's own configs: one colour per column
+///        (its system's), one marker per mass region (massVariations': filled InPeak, open OutOfPeak).
+///        Columns: 0 OO Data, 1 Mix. Jet OO, 2 pp Data, 3 Mix. Jet pp (the odd ones are the mixed events).
+struct StoryStyles {
+    std::string column[4];
+    VariationConfig in[4], out[4];             // Each column's InPeak and OutOfPeak
+    VariationConfig resampledIn, resampledOut; // The mixed columns of the _10Resamples twins
+    std::string resampledTag;                  // " (10 resamp.)", read from MIXED_RESAMPLES_TAG
+    // The sigma the consumer's mass windows are set in (PeakWindowNSigma, SidebandInnerNSigma, SidebandOuterNSigma):
+    // run_all_wagons.sh's SIGMA, passed on the command line, since the output keeps the edges but not their unit.
+    // A fixed value from earlier fits, for approximate windows only (see the README). 0: unknown, generic names
+    double massWindowSigma = 0.;
+};
+
+/// @brief The names of the two mass regions in the story's keys (InPeak and OutOfPeak until StoryMassKeyOf finds the edges).
+struct StoryMassKey { std::string peak = "InPeak", sideband = "OutOfPeak"; };
+
+/**
+ * @brief The mass regions of one file as the story names them, from the consumer's own edges (LoadMassRegionEdges):
+ *        "m_{V0} #in m_{#Lambda} #pm 2#sigma" and "m_{V0} #in m_{#Lambda} #pm [3.5#sigma, 7.5#sigma]". The centre is
+ *        the peak window's midpoint, the distances are in sigma (StoryStyles::massWindowSigma). False, with the default
+ *        names, without a sigma or without the edges (booked behind doFakePolDiagnosticsQA; counted by the fetch).
+ */
+bool StoryMassKeyOf(FileCache& cache, const std::string& file, const std::string& proxy, double sigma, StoryMassKey& key) {
+    double e[6];
+    if (!(sigma > 0.) || file.empty() || !LoadMassRegionEdges(cache, file, proxy, e)) return false;
+    const double centre = 0.5 * (e[2] + e[3]);
+    auto nSigma = [&](double edge) { // In units of sigma, to two decimals: the configurables are short decimals
+        return Form("%g", std::round(100. * std::abs(edge - centre) / sigma) / 100.);
+    };
+    // One Form() at a time: its buffer is reused, so each result is copied before the next call
+    const std::string peak = nSigma(e[3]);
+    const std::string inner = nSigma(e[4]);
+    const std::string outer = nSigma(e[5]);
+    key.peak = "m_{V0} #in m_{#Lambda} #pm " + peak + "#sigma";
+    key.sideband = "m_{V0} #in m_{#Lambda} #pm [" + inner + "#sigma, " + outer + "#sigma]";
+    return true;
+}
+
+/// @brief One value per (column, mass region) of a story canvas; a negative error leaves its slot empty.
+struct StoryColumns {
+    ValErr in[4], out[4];
+    StoryColumns() {
+        std::fill_n(in, 4, kPocMissing);
+        std::fill_n(out, 4, kPocMissing);
+    }
+    /// True when a mixed column holds anything (a twin without resampled mixed events would only repeat the data)
+    bool AnyMixed() const { return in[1].second >= 0. || out[1].second >= 0. || in[3].second >= 0. || out[3].second >= 0.; }
+};
+
+/// @brief A column's label in one twin: the mixed columns of a _10Resamples twin say so.
+std::string StoryLabel(const StoryStyles& ss, int column, bool resampled) {
+    return ss.column[column] + ((resampled && column % 2 == 1) ? ss.resampledTag : "");
+}
+
+/// @brief A column's look in one twin: the mixed columns of a _10Resamples twin take the resampled look.
+const VariationConfig& StoryLook(const StoryStyles& ss, int column, bool inPeak, bool resampled) {
+    if (resampled && column % 2 == 1) return inPeak ? ss.resampledIn : ss.resampledOut;
+    return inPeak ? ss.in[column] : ss.out[column];
+}
+
+/// @brief The four columns with their InPeak and OutOfPeak side by side, keyed by marker with the mass windows' names,
+///        zero kept in frame (the level of a sample without a ring).
+PocPanel StoryRegionsPanel(const StoryStyles& ss, const StoryMassKey& key, const StoryColumns& v, bool resampled,
+                           const std::string& title, const std::string& yTitle) {
+    PocPanel pn;
+    pn.title = title;
+    pn.yTitle = yTitle;
+    pn.zeroLine = true;
+    pn.columnSeparators = true;
+    for (int col = 0; col < 4; ++col) {
+        pn.labels.push_back(StoryLabel(ss, col, resampled));
+        for (int region = 0; region < 2; ++region) { // InPeak on the left, OutOfPeak on the right
+            pn.columnOf.push_back(col);
+            pn.cfgs.push_back(StoryLook(ss, col, region == 0, resampled));
+            pn.vals.push_back(region == 0 ? v.in[col] : v.out[col]);
+        }
+    }
+    pn.markerLegend = {{key.peak, ss.in[0].markerStyle}, {key.sideband, ss.out[0].markerStyle}};
+    pn.fitKeyToText = true; // The windows' names are longer than the default key fits
+    return pn;
+}
+
+/// @brief InPeak - OutOfPeak in each column: disjoint candidates of one file, so quadrature is exact.
+PocPanel StoryInMinusOutPanel(const StoryStyles& ss, const StoryColumns& v, bool resampled, const std::string& title,
+                              const std::string& yTitle) {
+    PocPanel pn;
+    pn.title = title;
+    pn.yTitle = yTitle;
+    pn.zeroLine = true;
+    pn.columnSeparators = true;
+    for (int col = 0; col < 4; ++col) {
+        pn.labels.push_back(StoryLabel(ss, col, resampled));
+        pn.cfgs.push_back(StoryLook(ss, col, true, resampled));
+        pn.vals.push_back(PocDiff(v.in[col], v.out[col]));
+    }
+    return pn;
+}
+
+/// @brief Data - Mix. Jet per system (both InPeak), two columns: OO, then pp. vals[0] is OO's, vals[1] pp's.
+PocPanel StoryDeltaPanel(const StoryStyles& ss, const ValErr (&vals)[2], bool resampled, const std::string& title,
+                         const std::string& yTitle) {
+    PocPanel pn;
+    pn.title = title;
+    pn.yTitle = yTitle;
+    pn.zeroLine = true;
+    pn.columnSeparators = true;
+    for (int g = 0; g < 2; ++g) { // The data column of each system against its mixed column
+        pn.labels.push_back(ss.column[2 * g] + " - " + StoryLabel(ss, 2 * g + 1, resampled));
+        pn.cfgs.push_back(ss.in[2 * g]);
+        pn.vals.push_back(vals[g]);
+    }
+    return pn;
+}
+
+/// @brief Plot 4_1's four columns, two per system (OO, then pp): in-peak Data - Mix. Jet, then the data's InPeak -
+///        OutOfPeak. vals is in that order. Both columns of a system take its data look: their labels tell them apart.
+PocPanel StoryDeltaInOutPanel(const StoryStyles& ss, const ValErr (&vals)[4], bool resampled, const std::string& title,
+                              const std::string& yTitle) {
+    PocPanel pn;
+    pn.title = title;
+    pn.yTitle = yTitle;
+    pn.zeroLine = true;
+    pn.columnSeparators = true;
+    for (int g = 0; g < 2; ++g) {
+        pn.labels.push_back(ss.column[2 * g] + " - " + StoryLabel(ss, 2 * g + 1, resampled));
+        pn.labels.push_back(ss.column[2 * g] + " InPeak - OutOfPeak");
+        for (int k = 0; k < 2; ++k) {
+            pn.cfgs.push_back(ss.in[2 * g]);
+            pn.vals.push_back(vals[2 * g + k]);
+        }
+    }
+    return pn;
+}
+
+/// @brief The suffix of the resampled twins, "_10Resamples", the count read from MIXED_RESAMPLES_TAG.
+std::string StoryTwinSuffix() { return "_" + ResampleCountOf(MIXED_RESAMPLES_TAG) + "Resamples"; }
+
+/// @brief The head of every story pad title: the proxy, OO's centrality and pp minimum bias (the resampled mixing is
+///        named in its columns' labels, which keeps the title short enough for the pad).
+std::string StorySamplesText(const std::string& proxy) {
+    return proxy + ", " + STORY_SYSTEM[0] + " " + PocCentralityLabel() + " (" + STORY_SYSTEM[1] + " MB)";
+}
+
+/**
+ * @brief Plot 1 or 2 of the story (see the block comment): Canvas_<stem> and Canvas_<stem>_InMinusOut, then their
+ *        _10Resamples twins. cells[0] holds the single-borrow files, cells[1] the resampled ones (same data and pp).
+ *
+ * Every value is the mean of one mass region of one file, from the consumer's ...VsMassRegion moments in KappaEff/
+ * (LoadRegionSample), so the columns hold the same candidates as Corrections/ and the summaries.
+ */
+void DrawStoryIntegrated(FileCache& cache, TDirectory* fileRoot, const PocCell (&cells)[2], const std::string& stem,
+                         const StoryStyles& ss, const StoryMassKey& key) {
+    const std::string sym = "<" + cells[0].ringSym + ">";
+    for (int twin = 0; twin < 2; ++twin) {
+        const PocCell& cell = cells[twin];
+        const bool resampled = (twin == 1);
+        const std::string files[4] = {cell.dataFile, cell.mixedFile, cell.ppFile, cell.ppMixedFile};
+        StoryColumns v;
+        for (int col = 0; col < 4; ++col) {
+            RegionSample reg;
+            if (files[col].empty() || !LoadRegionSample(cache, files[col], cell.proxy, reg)) continue; // Counted or warned by the loader
+            v.in[col]  = PocMean(reg.ring[1]); // Region index 1 is the peak, 0 the sideband
+            v.out[col] = PocMean(reg.ring[0]);
+        }
+        const std::string suffix = resampled ? StoryTwinSuffix() : "";
+        if (resampled && !v.AnyMixed()) {
+            CountSkip("StreamlinedStory, Canvas_" + stem + suffix, "no resampled mixed events", cell.dirPath);
+            continue;
+        }
+        const std::string what = StorySamplesText(cell.proxy);
+        DrawPocPanels({StoryRegionsPanel(ss, key, v, resampled, what + ": integrated " + sym, sym)}, "Canvas_" + stem + suffix,
+                      cell.head + ": integrated " + sym + " of every sample", fileRoot, cell.dirPath, false, false);
+        DrawPocPanels({StoryInMinusOutPanel(ss, v, resampled, what + ": InPeak - OutOfPeak", "#Delta" + sym)},
+                      "Canvas_" + stem + "_InMinusOut" + suffix, cell.head + ": integrated " + sym + ", InPeak - OutOfPeak",
+                      fileRoot, cell.dirPath, false, false);
+    }
+}
+
+/// @brief A straight line p0 = C_0 + C_1 p1 through one sample's sine fits (FitP0VsP1). Hesse errors; the PDG scale,
+///        as for PocConstantFit, applies to both coefficients.
+struct PocLineFit {
+    bool   valid = false;
+    double c0 = 0., c0Error = 0., c1 = 0., c1Error = 0., cov01 = 0.;
+    double chi2 = 0.;
+    int    ndf = 0;
+    double PdgScale() const { return (ndf > 0 && chi2 > ndf) ? std::sqrt(chi2 / ndf) : 1.; }
+};
+
+/**
+ * @brief Fits p0 = C_0 + C_1 p1 to one sample's converged sine fits, one point per eta_Proxy slice, with the errors of
+ *        both coordinates: x = p1 with its Minos errors, y = p0 with its Hesse error.
+ *
+ * Why this chi2, and why no orthogonal-distance regression (ODR). With Gaussian errors on both coordinates, ODR
+ * minimises sum_i [(x_i - u_i)^2/sx_i^2 + (y_i - C_0 - C_1 u_i)^2/sy_i^2] over the line and the unknown true abscissae
+ * u_i. For a straight line that is quadratic in each u_i, and minimising over them leaves exactly
+ *     chi2 = sum_i (y_i - C_0 - C_1 x_i)^2 / (sy_i^2 + C_1^2 sx_i^2),
+ * the "effective variance" chi2 that ROOT's graph fit uses whenever the graph has x errors. For a line it is ODR, not
+ * an approximation to it (it is one for a curved function, which it linearises at each x_i), and its minimum keeps
+ * n - 2 degrees of freedom, so chi2/ndf still tests the model and sets the PDG scale. ROOT projects the x interval
+ * through the function, ((f(x+exh) - f(x-exl))/2)^2, which for a line is C_1^2 times the mean of the two Minos errors,
+ * squared; ey is taken on the side facing the line (both sides are equal here).
+ * Neglected: the p0-p1 covariance within each sine fit, small because the constant and the odd sine are nearly
+ * orthogonal over the symmetric phi_AEE axis (see OddPlusConstantFitter).
+ *
+ * Seeds: the weighted least-squares line without the x errors (closed form), which the x errors only perturb.
+ * At least three points, so that a degree of freedom is left, and two distinct p1 values, so that a slope exists.
+ * @param name Unique among live functions (the TF1 registers itself under it).
+ */
+PocLineFit FitP0VsP1(const std::vector<OddPlusConstantFitResult>& sliceFits, const std::string& name) {
+    PocLineFit out;
+
+    // Step 1: the points, their x extent, and the sums of the closed-form seeds
+    TGraphAsymmErrors points;
+    double sw = 0., swx = 0., swy = 0., swxx = 0., swxy = 0.;
+    double xLo = 1e300, xHi = -1e300;
+    for (const OddPlusConstantFitResult& fit : sliceFits) {
+        if (!fit.valid || !(fit.p0Hesse > 0.)) continue;
+        const int iPoint = points.GetN();
+        points.SetPoint(iPoint, fit.p1, fit.p0);
+        points.SetPointError(iPoint, fit.p1Low, fit.p1High, fit.p0Hesse, fit.p0Hesse);
+        const double weight = 1. / (fit.p0Hesse * fit.p0Hesse);
+        sw   += weight;
+        swx  += weight * fit.p1;
+        swy  += weight * fit.p0;
+        swxx += weight * fit.p1 * fit.p1;
+        swxy += weight * fit.p1 * fit.p0;
+        xLo = std::min(xLo, fit.p1 - fit.p1Low);
+        xHi = std::max(xHi, fit.p1 + fit.p1High);
+    }
+    const double det = sw * swxx - swx * swx; // Zero when every point has the same p1
+    if (points.GetN() < 3 || !(det > 0.)) return out; // The caller warns: it knows the sample's name
+
+    // Step 2: the fit. Its range covers every point and its x error, so that no point falls outside it.
+    TF1 line(name.c_str(), "[0]+[1]*x", xLo - 1., xHi + 1.);
+    line.SetParNames("C_0", "C_1");
+    line.SetParameters((swxx * swy - swx * swxy) / det, (sw * swxy - swx * swy) / det);
+    // "S" returns the result; "Q" quiet; "N0" stores and draws nothing (the canvases draw the line from the numbers)
+    const TFitResultPtr result = points.Fit(&line, "S Q N0");
+    if (!result.Get()) return out;
+    out.chi2  = result->Chi2();
+    out.ndf   = result->Ndf();
+    out.valid = result->IsValid() && (out.ndf > 0);
+    out.c0      = result->Parameter(0);
+    out.c0Error = result->ParError(0);
+    out.c1      = result->Parameter(1);
+    out.c1Error = result->ParError(1);
+    out.cov01   = result->CovMatrix(0, 1);
+    return out;
+}
+
+/**
+ * @brief One canvas per sample: the sine fits' p0 against their p1, one point per eta_Proxy slice, written to dirPath as
+ *        Canvas_p0VsP1_<sample>.
+ *
+ * What it is for. An efficiency that depends on phi_AEE through the daughters' transverse opening (the DCA cut acts on
+ * the cowboy/sailor geometry, which goes as sin(theta*_z) sin(phi_AEE)) adds to R(phi_AEE) a sin^2(phi_AEE) term whose
+ * amplitude follows the sine's own. The constant part of sin^2 lands in p0, so that leak makes p0 proportional to p1
+ * slice by slice, and the points of such a sample fall on a straight line through the origin. An offset common to all
+ * slices (a genuine ring, or anything else that does not know about p1) shifts that line vertically. The line need not
+ * be exactly straight: the leak's slope depends on the slice's daughter kinematics, which change slowly with eta_Proxy.
+ * The line p0 = C_0 + C_1 p1 fitted to the sample (FitP0VsP1) is drawn over the points with its +/-1 sigma band, and its
+ * coefficients and chi2/ndf in a box (see the README, "The opening-angle leak into p0").
+ *
+ * Each point: x = p1 with its Minos errors, y = p0 with its Hesse error (the error every p0 is condensed with, as on
+ * Canvas_p0VsEta). Converged fits only. Colour and marker follow the slice's eta, as on the Overlay/ canvases
+ * (EtaSliceColor: blue below zero and red above, deeper further out; open markers below zero, filled above, a diamond
+ * for the central slice), so an antisymmetric p1 shows up as the two hues on opposite sides of x = 0. A colour bar in
+ * the right margin maps the colours back to eta.
+ *
+ * @param dirPath Where the canvases go (created if missing).
+ * @param head    Start of every canvas title (cell and system).
+ * @param lines   One per system (FitP0VsP1); an invalid one draws the points alone.
+ * @param etaName The slicing variable in TLatex, for the key and the colour bar.
+ */
+void DrawStoryP0VsP1(TDirectory* fileRoot, const std::string& dirPath, const std::string& head,
+                     const std::vector<PocSlice>& slices, const std::vector<PocSystemSlices>& systems,
+                     const PocSliceFitTable& fits, const std::vector<PocLineFit>& lines, const std::string& etaName) {
+    if (slices.empty() || !fileRoot) return;
+    // The colour depth runs over the whole sliced range, as on the Overlay/ canvases
+    const double etaMax = std::max(std::abs(slices.front().lo), std::abs(slices.back().hi));
+    // Layout: title and a one-row key in the top margin, so neither can sit on a point; the colour bar and its labels
+    // in a wide right margin
+    const double kLeft = 0.14, kRight = 0.15, kBottom = 0.12, kTop = 0.17;
+    const double kBarLeft = 1. - kRight + 0.02, kBarRight = 1. - kRight + 0.045; // NDC
+    for (size_t iSys = 0; iSys < systems.size() && iSys < fits.size(); ++iSys) {
+        const std::string& label = systems[iSys].cfg.legendLabel;
+        const std::string name = "Canvas_p0VsP1_" + CanvasSafe(label);
+
+        // Step 1: the converged slices, and a frame that holds them with their errors. Starting the extremes at zero
+        // keeps the origin in frame, so both zero lines are always drawn and a line through the origin can be judged.
+        std::vector<size_t> used;
+        double xLo = 0., xHi = 0., yLo = 0., yHi = 0.;
+        for (size_t iSlice = 0; iSlice < slices.size() && iSlice < fits[iSys].size(); ++iSlice) {
+            const OddPlusConstantFitResult& fit = fits[iSys][iSlice];
+            if (!fit.valid) continue;
+            used.push_back(iSlice);
+            xLo = std::min(xLo, fit.p1 - fit.p1Low);
+            xHi = std::max(xHi, fit.p1 + fit.p1High);
+            yLo = std::min(yLo, fit.p0 - fit.p0Hesse);
+            yHi = std::max(yHi, fit.p0 + fit.p0Hesse);
+        }
+        if (used.empty()) {
+            CountSkip("StreamlinedStory, " + name, "no converged sine fit", dirPath);
+            continue;
+        }
+        // A tenth of the span on every side; a fixed small span if a coordinate is degenerate (all zero)
+        const double xPad = (xHi - xLo > 1e-12) ? 0.1 * (xHi - xLo) : 0.05;
+        const double xMin = xLo - xPad, xMax = xHi + xPad;
+        // The fitted line and its band stay inside the frame: they are drawn as plain primitives, which ROOT clips at
+        // the pad and not at the frame. The band's upper edge is convex in x and its lower edge concave, so both reach
+        // their extremes at the ends of the x range, and checking the two ends is enough.
+        const bool withLine = iSys < lines.size() && lines[iSys].valid;
+        const PocLineFit noLine;
+        const PocLineFit& line = withLine ? lines[iSys] : noLine;
+        const auto lineAt = [&](double x) { return line.c0 + line.c1 * x; };
+        const auto bandAt = [&](double x) {
+            return std::sqrt(std::max(0., line.c0Error * line.c0Error + x * x * line.c1Error * line.c1Error +
+                                              2. * x * line.cov01));
+        };
+        if (withLine)
+            for (double xEnd : {xMin, xMax}) {
+                yLo = std::min(yLo, lineAt(xEnd) - bandAt(xEnd));
+                yHi = std::max(yHi, lineAt(xEnd) + bandAt(xEnd));
+            }
+        const double yPad = (yHi - yLo > 1e-12) ? 0.1 * (yHi - yLo) : 0.05;
+        // With a line, room at the top of the frame for its box, so the box never sits on a point
+        const double boxRoom = withLine ? 0.35 * (yHi - yLo + 2. * yPad) : 0.;
+        const double yMin = yLo - yPad, yMax = yHi + yPad + boxRoom;
+
+        // Step 2: the canvas, its frame (owned by the canvas) and the two zero lines. 900 px wide, so the frame keeps
+        // about the width it would have at 800 px without the colour bar.
+        TCanvas* canvas = new TCanvas(name.c_str(), (head + ", " + label + ": sine p0 vs p1").c_str(), 900, 650);
+        canvas->SetMargin(kLeft, kRight, kBottom, kTop);
+        canvas->SetGridx();
+        canvas->SetGridy();
+        TH1F* frame = canvas->DrawFrame(xMin, yMin, xMax, yMax);
+        // No histogram title: it would be placed by the reader's gStyle. The centred TLatex below is stored as is.
+        frame->SetTitle(";p_{1} (sine amplitude);p_{0} (sine offset)");
+        frame->GetXaxis()->SetTitleSize(0.045);
+        frame->GetYaxis()->SetTitleSize(0.045);
+        frame->GetYaxis()->SetTitleOffset(0.8);
+        for (int axis = 0; axis < 2; ++axis) {
+            TLine* zero = axis ? new TLine(0., yMin, 0., yMax) : new TLine(xMin, 0., xMax, 0.);
+            zero->SetLineStyle(2);
+            zero->SetLineWidth(2);
+            zero->SetBit(kCanDelete); // Deleted with the canvas
+            zero->Draw();
+        }
+        // The fitted line under the points: its +/-1 sigma band (from the full covariance, so it is narrowest near the
+        // weighted mean of p1) as a hatched polygon, upper edge left to right and lower edge back, then the line itself
+        if (withLine) {
+            const int kBandSteps = 50;
+            TGraph* band = new TGraph(2 * (kBandSteps + 1));
+            for (int iStep = 0; iStep <= kBandSteps; ++iStep) {
+                const double x = xMin + (xMax - xMin) * iStep / kBandSteps;
+                band->SetPoint(iStep, x, lineAt(x) + bandAt(x));
+                band->SetPoint(2 * kBandSteps + 1 - iStep, x, lineAt(x) - bandAt(x));
+            }
+            band->SetFillColor(kGray + 1);
+            band->SetFillStyle(3004);
+            band->SetLineWidth(0);
+            band->SetBit(kCanDelete);
+            band->Draw("F");
+            TLine* fitted = new TLine(xMin, lineAt(xMin), xMax, lineAt(xMax));
+            fitted->SetLineColor(kGray + 2);
+            fitted->SetLineWidth(2);
+            fitted->SetBit(kCanDelete);
+            fitted->Draw();
+        }
+
+        // Step 3: the points, one graph each, since every slice has its own colour and marker
+        for (size_t iSlice : used) {
+            const OddPlusConstantFitResult& fit = fits[iSys][iSlice];
+            const double centre = 0.5 * (slices[iSlice].lo + slices[iSlice].hi);
+            TGraphAsymmErrors* point = new TGraphAsymmErrors(1);
+            point->SetName(Form("%s_slice%zu", name.c_str(), iSlice));
+            point->SetPoint(0, fit.p1, fit.p0);
+            point->SetPointError(0, fit.p1Low, fit.p1High, fit.p0Hesse, fit.p0Hesse);
+            const int color = EtaSliceColor(centre, etaMax);
+            point->SetMarkerColor(color);
+            point->SetLineColor(color);
+            point->SetMarkerStyle((std::abs(centre) < 1e-9) ? 33 : (centre < 0. ? 24 : 20));
+            point->SetMarkerSize(1.3);
+            point->SetLineWidth(2);
+            point->SetBit(kCanDelete);
+            point->Draw("P");
+        }
+
+        // Step 4: the title in two centred lines (the sample, then the cell in smaller type: on one line they overflow
+        // the canvas), and the marker key in one row under it. The key's entries have no object behind them: each draws
+        // with its own marker attributes, so nothing else needs owning. Its colours are the deepest shades and the
+        // central slice's own, which is EtaSliceColor's lightest red (eta = 0 counts as non-negative there).
+        const double xMid = 0.5 * (kLeft + 1. - kRight);
+        TLatex* title = new TLatex(xMid, 0.950, (label + ": sine p_{0} vs p_{1}").c_str());
+        TLatex* subtitle = new TLatex(xMid, 0.910, (head + ", one point per " + etaName + " bin").c_str());
+        title->SetTextSize(0.036);
+        subtitle->SetTextSize(0.026);
+        for (TLatex* text : {title, subtitle}) {
+            text->SetNDC();
+            text->SetTextAlign(21);
+            text->SetBit(kCanDelete);
+            text->Draw();
+        }
+        TLegend* key = new TLegend(kLeft, 1. - kTop + 0.005, 1. - kRight, 0.880);
+        key->SetNColumns(3);
+        key->SetBorderSize(0);
+        key->SetFillStyle(0);
+        key->SetTextSize(0.028);
+        const std::pair<std::string, int> shapes[3] = {{etaName + " < 0", 24}, {etaName + " > 0", 20}, {"central bin", 33}};
+        const int shades[3] = {EtaSliceColor(-etaMax, etaMax), EtaSliceColor(etaMax, etaMax), EtaSliceColor(0., etaMax)};
+        for (int i = 0; i < 3; ++i) {
+            TLegendEntry* entry = key->AddEntry(static_cast<TObject*>(nullptr), shapes[i].first.c_str(), "p");
+            entry->SetMarkerStyle(shapes[i].second);
+            entry->SetMarkerColor(shades[i]);
+            entry->SetMarkerSize(1.3);
+        }
+        key->SetBit(kCanDelete);
+        key->Draw();
+        // The line's numbers, in the room left for them at the top of the frame. The PDG-scaled errors only when they
+        // differ; each built apart, as nesting Form() would reuse its one buffer.
+        if (withLine) {
+            TPaveText* lineBox = new TPaveText(kLeft + 0.015, 1. - kTop - 0.135, kLeft + 0.47, 1. - kTop - 0.015, "NDC");
+            lineBox->SetFillColor(kWhite);
+            lineBox->SetFillStyle(1001); // Opaque, so the grid does not run through the numbers
+            lineBox->SetBorderSize(1);
+            lineBox->SetTextSize(0.026);
+            lineBox->SetTextAlign(12);
+            const double scale = line.PdgScale();
+            const std::string c0Pdg = (scale > 1.) ? std::string(Form(" (PDG #pm %.1e)", scale * line.c0Error)) : "";
+            const std::string c1Pdg = (scale > 1.) ? std::string(Form(" (PDG #pm %.1e)", scale * line.c1Error)) : "";
+            lineBox->AddText("p_{0} = C_{0} + C_{1} p_{1}, errors on both axes");
+            lineBox->AddText(Form("C_{0} = %.3e #pm %.1e%s", line.c0, line.c0Error, c0Pdg.c_str()));
+            lineBox->AddText(Form("C_{1} = %.3e #pm %.1e%s", line.c1, line.c1Error, c1Pdg.c_str()));
+            lineBox->AddText(Form("#chi^{2}/ndf = %.1f/%d", line.chi2, line.ndf));
+            lineBox->SetBit(kCanDelete);
+            lineBox->Draw();
+        }
+
+        // Step 5: the colour bar, in the right margin. Not a TPaletteAxis: that needs a 2D histogram drawn with COLZ and
+        // a palette, which gStyle does not store with the canvas (see DrawMapCanvas), while these colours are a fixed
+        // discrete set. The bar is drawn in the frame's own user coordinates instead, which ROOT maps onto the area
+        // inside the margins: a margin position in NDC converts linearly through the frame's x range, and the bar spans
+        // the frame's height exactly. Plain boxes and an axis then reopen the same anywhere.
+        const double xPerNdc = (xMax - xMin) / (1. - kLeft - kRight);
+        const double xBarLo = xMin + (kBarLeft - kLeft) * xPerNdc, xBarHi = xMin + (kBarRight - kLeft) * xPerNdc;
+        const auto yOfEta = [&](double eta) { return yMin + (eta + etaMax) / (2. * etaMax) * (yMax - yMin); };
+        // The bands are found by sampling EtaSliceColor itself, so the bar follows it if its shades ever change: a run
+        // of samples with one colour becomes one box. 400 samples put every band edge at a quarter of etaMax exactly on
+        // a sample boundary.
+        const int kBarSamples = 400;
+        const double etaStep = 2. * etaMax / kBarSamples;
+        int runStart = 0;
+        for (int iSample = 1; iSample <= kBarSamples; ++iSample) {
+            const int runColor = EtaSliceColor(-etaMax + (runStart + 0.5) * etaStep, etaMax);
+            if (iSample < kBarSamples && EtaSliceColor(-etaMax + (iSample + 0.5) * etaStep, etaMax) == runColor) continue;
+            TBox* band = new TBox(xBarLo, yOfEta(-etaMax + runStart * etaStep), xBarHi, yOfEta(-etaMax + iSample * etaStep));
+            band->SetFillColor(runColor);
+            band->SetLineWidth(0);
+            band->SetBit(kCanDelete);
+            band->Draw();
+            runStart = iSample;
+        }
+        TBox* outline = new TBox(xBarLo, yMin, xBarHi, yMax);
+        outline->SetFillStyle(0); // Hollow: only the border is painted
+        outline->SetLineColor(kBlack);
+        outline->SetBit(kCanDelete);
+        outline->Draw();
+        // The eta scale on the bar's right edge: ticks into the bar, labels to the right ("+L", as TPaletteAxis
+        // draws its own). The bands are etaMax/4 wide, eight in all: four labelled divisions with two secondaries
+        // each (204), not optimised ("N"), put a tick on every band edge and a label on every other one.
+        TGaxis* etaAxis = new TGaxis(xBarHi, yMin, xBarHi, yMax, -etaMax, etaMax, 204, "+LN");
+        etaAxis->SetLabelFont(42);
+        etaAxis->SetLabelSize(0.030);
+        etaAxis->SetTickSize(0.02);
+        etaAxis->SetBit(kCanDelete);
+        etaAxis->Draw();
+        TLatex* barTitle = new TLatex(0.5 * (kBarLeft + kBarRight), 1. - kTop + 0.02, etaName.c_str());
+        barTitle->SetNDC();
+        barTitle->SetTextAlign(21);
+        barTitle->SetTextSize(0.032);
+        barTitle->SetBit(kCanDelete);
+        barTitle->Draw();
+
+        // Step 6: write, then free the canvas and everything it owns
+        EnsureDir(fileRoot, dirPath)->cd();
+        canvas->Write();
+        delete canvas;
+    }
+}
+
+/**
+ * @brief Plots 3, 4 and 5 of the story (see the block comment): the sine p0 of every sample, condensed over the
+ *        eta_Proxy bins; the in-peak Data - Mix. Jet difference of p0, formed bin by bin and then condensed; and each
+ *        sample's line p0 = C_0 + C_1 p1 over the same bins.
+ *
+ * Plot 4 subtracts before condensing: the eta dependence that p0 keeps, much the same in the data and in its mixed
+ * events, cancels bin by bin, so the constant fitted to the differences has a far smaller chi2/ndf than the levels'
+ * (and so a far smaller PDG scaling). The differences take the two fits' errors in quadrature, as every Delta p0
+ * (PocP0Difference: the mixed events share the data's Lambdas, with per-candidate correlations ~1e-3).
+ *
+ * Two fit groups, each led by its in-peak data (the reference of the Delta p0 canvases in SineFitQA/<System>/): OO and
+ * pp, each with its data, its mixed events and its resampled mixed events, in both mass regions, fitted once. Every
+ * bin of the acceptance is a slice (PocEtaSlices), so the fits use all the statistics. The slices come from the OO
+ * data's all-candidates map, as in AEE/RingVsPhiAEE/, so every sample of both groups is sliced alike.
+ * The fits are drawn twice: SineFitQA/<System>/ without the resampled mixed events, which would crowd every parameter
+ * canvas, and SineFitQA/<System>/With<N>Resamples/ with everything (no PerSlice/ there: it would repeat the first).
+ * Each view's P0VsP1/ holds p0 against p1 for each of its own samples (DrawStoryP0VsP1), so every sample appears once.
+ * @param writePerSlice SineFitQA/<System>/PerSlice/, one canvas per shown slice.
+ */
+void DrawStorySineP0(FileCache& cache, TDirectory* fileRoot, const PocCell (&cells)[2], const StoryStyles& ss,
+                     const StoryMassKey& key, bool writePerSlice) {
+    const PocCell& cell = cells[0];
+    TProfile2D* ref = PocFetchAeeEtaMap(cache, cell.dataFile, cell.proxy);
+    if (!ref) return; // Counted by the fetch
+    const std::vector<PocSlice> slices = PocEtaSlices(ref, cell.head + " story eta slices");
+    if (slices.empty()) { // Warned by PocEtaSlices
+        delete ref;
+        return;
+    }
+    const std::string phiName = "#phi_{#Lambda}-#phi_{p}^{*}";
+    const std::string etaName = "#eta_{" + cell.proxy + "}";
+    const std::string yTitle  = "<" + cell.ringSym + ">";
+    // The condensed p0 of each sample, [column][region: 0 InPeak, 1 OutOfPeak][twin]: the data columns serve both twins
+    const PocConstantFit* p0[4][2][2] = {};
+    PocSliceFitSummary summaries[2][2]; // [group][view: 0 without the resampled mixed events, 1 with]: owns what p0 points to
+    const PocConstantFit* deltaP0[2][2] = {}; // [group][twin]: the condensed in-peak Data - Mix. Jet, from the same summaries
+    const PocConstantFit* deltaInOut[2] = {}; // [group]: the data's InPeak - OutOfPeak, bin by bin then condensed (plot 4_1)
+    PocLineFit p0Lines[4][2][2];              // [column][region][twin], as p0: each sample's p0 = C_0 + C_1 p1 (invalid: none)
+    const std::string fullView = "With" + ResampleCountOf(MIXED_RESAMPLES_TAG) + "Resamples";
+    for (int g = 0; g < 2; ++g) { // 0 OO, 1 pp
+        const int dataCol = 2 * g, mixCol = 2 * g + 1;
+        const std::string& dataFile    = g ? cell.ppFile : cell.dataFile;
+        const std::string& mixedFile   = g ? cell.ppMixedFile : cell.mixedFile;
+        const std::string& resampFile  = g ? cells[1].ppMixedFile : cells[1].mixedFile;
+        // The samples, the in-peak data first, each with the (column, region, twin) its p0 goes back to
+        struct StorySample { int column; bool inPeak, resampled; const std::string& file; };
+        const StorySample plan[6] = {{dataCol, true, false, dataFile},    {dataCol, false, false, dataFile},
+                                     {mixCol, true, false, mixedFile},    {mixCol, false, false, mixedFile},
+                                     {mixCol, true, true, resampFile},    {mixCol, false, true, resampFile}};
+        std::vector<PocFitSample> samples;
+        for (const StorySample& s : plan) {
+            VariationConfig cfg = StoryLook(ss, s.column, s.inPeak, s.resampled);
+            cfg.legendLabel = StoryLabel(ss, s.column, s.resampled) + (s.inPeak ? " InPeak" : " OutOfPeak");
+            samples.push_back({cfg, s.file, s.inPeak ? kPocRegionPeak : kPocRegionSideband});
+        }
+        std::vector<TH1*> owned;
+        const std::vector<PocSystemSlices> systems = PocSliceSamples(cache, ref, slices, samples, cell.proxy, cell.dirPath, owned);
+        if (!systems.empty()) {
+            const PocSliceFitTable fits = PocFitSlices(systems, slices.size(), kSineModel, "Eta");
+            // The line p0 = C_0 + C_1 p1 of every sample, for plot 5 and the P0VsP1/ canvases
+            std::vector<PocLineFit> lineFits;
+            for (size_t s = 0; s < systems.size(); ++s) {
+                lineFits.push_back(FitP0VsP1(fits[s], Form("lineP0VsP1_%d_%zu", g, s)));
+                if (!lineFits.back().valid)
+                    CountSkip("StreamlinedStory, p0 vs p1 line of " + systems[s].cfg.legendLabel,
+                              "fewer than three converged slices, a single p1, or no convergence", cell.dirPath);
+            }
+            // The main view: every sample but the resampled mixed events (told apart by label, unique by construction;
+            // a sample whose map is absent is not among the systems at all)
+            std::set<std::string> resampledLabels;
+            for (size_t i = 0; i < samples.size(); ++i)
+                if (plan[i].resampled) resampledLabels.insert(samples[i].cfg.legendLabel);
+            std::vector<PocSystemSlices> mainSystems, resampledSystems;
+            PocSliceFitTable mainFits, resampledFits;
+            std::vector<PocLineFit> mainLines, resampledLines;
+            for (size_t s = 0; s < systems.size(); ++s) {
+                const bool isResampled = resampledLabels.count(systems[s].cfg.legendLabel) > 0;
+                (isResampled ? resampledSystems : mainSystems).push_back(systems[s]);
+                (isResampled ? resampledFits : mainFits).push_back(fits[s]);
+                (isResampled ? resampledLines : mainLines).push_back(lineFits[s]);
+            }
+            // Each sample's line back to its (column, region, twin), as its p0 is below
+            for (size_t s = 0; s < systems.size(); ++s)
+                for (size_t i = 0; i < samples.size(); ++i) {
+                    if (samples[i].cfg.legendLabel != systems[s].cfg.legendLabel) continue;
+                    for (int twin = 0; twin < 2; ++twin)
+                        if (plan[i].column % 2 == 0 || plan[i].resampled == (twin == 1))
+                            p0Lines[plan[i].column][plan[i].inPeak ? 0 : 1][twin] = lineFits[s];
+                }
+            const std::string qaDir = cell.dirPath + "/SineFitQA/" + STORY_SYSTEM[g];
+            const std::string qaHead = cell.head + ", " + STORY_SYSTEM[g];
+            summaries[g][0] = DrawPocSliceFits(fileRoot, qaDir, qaHead, "Eta", slices, mainSystems, mainFits, kSineModel, phiName,
+                                               etaName, yTitle, false, writePerSlice);
+            if (mainSystems.size() < systems.size()) // Otherwise the full view would only repeat the main one
+                summaries[g][1] = DrawPocSliceFits(fileRoot, qaDir + "/" + fullView, qaHead + ", with the resampled mixing",
+                                                   "Eta", slices, systems, fits, kSineModel, phiName, etaName, yTitle, false,
+                                                   false);
+            // p0 against p1, one canvas per sample: the main view's samples in P0VsP1/, the resampled mixed events'
+            // in the full view's (each sample once, so the full view does not repeat the main one's)
+            DrawStoryP0VsP1(fileRoot, qaDir + "/P0VsP1", qaHead, slices, mainSystems, mainFits, mainLines, etaName);
+            DrawStoryP0VsP1(fileRoot, qaDir + "/" + fullView + "/P0VsP1", qaHead, slices, resampledSystems, resampledFits,
+                            resampledLines, etaName);
+        }
+        for (TH1* h : owned) delete h;
+        for (size_t i = 0; i < samples.size(); ++i) {
+            // Each sample's constant from the view it is drawn in (the same fits, so the same value in both)
+            const PocCondensed* found = PocFindCondensed(summaries[g][plan[i].resampled ? 1 : 0].p0, samples[i].cfg.legendLabel);
+            if (!found) continue; // Not fitted: its file or map is absent (counted), or no slice converged
+            for (int twin = 0; twin < 2; ++twin)
+                if (plan[i].column % 2 == 0 || plan[i].resampled == (twin == 1))
+                    p0[plan[i].column][plan[i].inPeak ? 0 : 1][twin] = &found->plain;
+        }
+        // In-peak Data - Mix. Jet (plan[2]), and against the resampled mixed events in their view (plan[4])
+        for (int twin = 0; twin < 2; ++twin) {
+            const std::string diffLabel = samples[0].cfg.legendLabel + " - " + samples[twin ? 4 : 2].cfg.legendLabel;
+            if (const PocCondensed* found = PocFindCondensed(summaries[g][twin].p0Diff, diffLabel)) deltaP0[g][twin] = &found->plain;
+        }
+        // The data's InPeak - OutOfPeak (plan[1] is the data's OutOfPeak), from the main view: it holds both data samples
+        if (const PocCondensed* found = PocFindCondensed(summaries[g][0].p0Diff,
+                                                         samples[0].cfg.legendLabel + " - " + samples[1].cfg.legendLabel))
+            deltaInOut[g] = &found->plain;
+    }
+    delete ref;
+
+    const std::string model = "per " + etaName + " bin: " + yTitle + " = p_{0} + p_{1} sin[p_{2} (" + phiName + ")]";
+    for (int twin = 0; twin < 2; ++twin) {
+        const bool resampled = (twin == 1);
+        StoryColumns plain, pdg, redChi2;
+        for (int col = 0; col < 4; ++col)
+            for (int region = 0; region < 2; ++region) {
+                const PocConstantFit* f = p0[col][region][twin];
+                if (!f || !f->valid) continue;
+                ValErr* plainRow = region ? plain.out : plain.in; // The region's slots on each canvas
+                ValErr* pdgRow   = region ? pdg.out : pdg.in;
+                ValErr* chi2Row  = region ? redChi2.out : redChi2.in;
+                plainRow[col] = {f->value, f->error};
+                pdgRow[col]   = {f->value, f->ScaledError()};
+                if (f->ndf > 0) chi2Row[col] = {f->chi2 / f->ndf, 0.}; // No error bar: it is a fit quality
+            }
+        const std::string suffix = resampled ? StoryTwinSuffix() : "";
+        if (resampled && !plain.AnyMixed()) {
+            CountSkip("StreamlinedStory, Canvas_3_SineP0R" + suffix, "no resampled mixed events", cell.dirPath);
+            continue;
+        }
+        const std::string what = StorySamplesText(cell.proxy);
+        PocPanel plainPanel = StoryRegionsPanel(ss, key, plain, resampled, what + ": sine p_{0}", "p_{0}");
+        plainPanel.note = model;
+        DrawPocPanels({plainPanel}, "Canvas_3_SineP0R" + suffix, cell.head + ": sine p_{0} of every sample", fileRoot, cell.dirPath,
+                      false, false);
+        PocPanel pdgPanel = StoryRegionsPanel(ss, key, pdg, resampled, what + ": sine p_{0}, PDG errors", "p_{0}");
+        pdgPanel.note = model + "\nPDG-error: #sigma #times #sqrt{#chi^{2}/ndf} where #chi^{2}/ndf > 1";
+        PocPanel qualityPanel = StoryRegionsPanel(ss, key, redChi2, resampled, what + ": #chi^{2}/ndf of the constants", "#chi^{2}/ndf");
+        qualityPanel.zeroLine = false;
+        DrawPocPanels({pdgPanel, qualityPanel}, "Canvas_3_SineP0R_PDG" + suffix,
+                      cell.head + ": sine p_{0} of every sample, PDG errors", fileRoot, cell.dirPath, false, false);
+        // InPeak - OutOfPeak of the condensed p0, per column, as plots 1 and 2 do with their means: the difference of
+        // the two levels (disjoint candidates, so quadrature is exact). Plot 4_1 has the data's difference formed bin by
+        // bin instead: the two weigh the bins differently (equal when the regions' errors are proportional bin by bin),
+        // and only that one has a chi2/ndf, which says whether the two regions share their eta dependence.
+        PocPanel inOutPanel = StoryInMinusOutPanel(ss, plain, resampled, what + ": sine p_{0}, InPeak - OutOfPeak", "#Deltap_{0}");
+        inOutPanel.note = model;
+        DrawPocPanels({inOutPanel}, "Canvas_3_SineP0R_InMinusOut" + suffix,
+                      cell.head + ": sine p_{0}, InPeak - OutOfPeak", fileRoot, cell.dirPath, false, false);
+        PocPanel inOutPdgPanel = StoryInMinusOutPanel(ss, pdg, resampled, what + ": sine p_{0}, InPeak - OutOfPeak, PDG errors",
+                                                      "#Deltap_{0}");
+        inOutPdgPanel.note = model + "\nPDG-error: #sigma #times #sqrt{#chi^{2}/ndf} where #chi^{2}/ndf > 1, per region";
+        DrawPocPanels({inOutPdgPanel}, "Canvas_3_SineP0R_InMinusOut_PDG" + suffix,
+                      cell.head + ": sine p_{0}, InPeak - OutOfPeak, PDG errors", fileRoot, cell.dirPath, false, false);
+
+        // Plot 4: Delta p0 bin by bin, then the constant, for both systems
+        ValErr deltaPlain[2] = {kPocMissing, kPocMissing}, deltaPdg[2] = {kPocMissing, kPocMissing};
+        ValErr deltaChi2[2] = {kPocMissing, kPocMissing};
+        for (int g = 0; g < 2; ++g) {
+            const PocConstantFit* f = deltaP0[g][twin];
+            if (!f || !f->valid) continue;
+            deltaPlain[g] = {f->value, f->error};
+            deltaPdg[g]   = {f->value, f->ScaledError()};
+            if (f->ndf > 0) deltaChi2[g] = {f->chi2 / f->ndf, 0.};
+        }
+        const std::string deltaNote = "#Deltap_{0} = p_{0}(Data) - p_{0}(" + STORY_MIXED_LABEL + ") in each " + etaName + " bin\n" +
+                                      "both in " + key.peak;
+        PocPanel deltaPanel = StoryDeltaPanel(ss, deltaPlain, resampled, what + ": sine #Deltap_{0}, InPeak", "#Deltap_{0}");
+        deltaPanel.note = deltaNote;
+        DrawPocPanels({deltaPanel}, "Canvas_4_SineDeltaP0R" + suffix, cell.head + ": sine #Deltap_{0}, Data - " + STORY_MIXED_LABEL,
+                      fileRoot, cell.dirPath, false, false);
+        PocPanel deltaPdgPanel = StoryDeltaPanel(ss, deltaPdg, resampled, what + ": sine #Deltap_{0}, PDG errors", "#Deltap_{0}");
+        deltaPdgPanel.note = deltaNote + "\nPDG-error: #sigma #times #sqrt{#chi^{2}/ndf} where #chi^{2}/ndf > 1";
+        PocPanel deltaQualityPanel = StoryDeltaPanel(ss, deltaChi2, resampled, what + ": #chi^{2}/ndf of the constants",
+                                                     "#chi^{2}/ndf");
+        deltaQualityPanel.zeroLine = false;
+        DrawPocPanels({deltaPdgPanel, deltaQualityPanel}, "Canvas_4_SineDeltaP0R_PDG" + suffix,
+                      cell.head + ": sine #Deltap_{0}, Data - " + STORY_MIXED_LABEL + ", PDG errors", fileRoot, cell.dirPath,
+                      false, false);
+
+        // Plot 4_1: plot 4's two columns, each followed by its system's data InPeak - OutOfPeak, also bin by bin. The data
+        // column is the same in both twins.
+        ValErr pairPlain[4], pairPdg[4], pairChi2[4];
+        std::fill_n(pairPlain, 4, kPocMissing);
+        std::fill_n(pairPdg, 4, kPocMissing);
+        std::fill_n(pairChi2, 4, kPocMissing);
+        for (int g = 0; g < 2; ++g)
+            for (int k = 0; k < 2; ++k) {
+                const PocConstantFit* f = k ? deltaInOut[g] : deltaP0[g][twin];
+                if (!f || !f->valid) continue;
+                pairPlain[2 * g + k] = {f->value, f->error};
+                pairPdg[2 * g + k]   = {f->value, f->ScaledError()};
+                if (f->ndf > 0) pairChi2[2 * g + k] = {f->chi2 / f->ndf, 0.};
+            }
+        const std::string pairNote = "#Deltap_{0} in each " + etaName + " bin: Data - " + STORY_MIXED_LABEL + " both in " + key.peak +
+                                     "\nInPeak - OutOfPeak: " + key.peak + " minus " + key.sideband;
+        PocPanel pairPanel = StoryDeltaInOutPanel(ss, pairPlain, resampled, what + ": sine #Deltap_{0}", "#Deltap_{0}");
+        pairPanel.note = pairNote;
+        DrawPocPanels({pairPanel}, "Canvas_4_1_SineDeltaP0R" + suffix,
+                      cell.head + ": sine #Deltap_{0}, Data - " + STORY_MIXED_LABEL + " and InPeak - OutOfPeak", fileRoot,
+                      cell.dirPath, false, false);
+        PocPanel pairPdgPanel = StoryDeltaInOutPanel(ss, pairPdg, resampled, what + ": sine #Deltap_{0}, PDG errors", "#Deltap_{0}");
+        pairPdgPanel.note = pairNote + "\nPDG-error: #sigma #times #sqrt{#chi^{2}/ndf} where #chi^{2}/ndf > 1";
+        PocPanel pairQualityPanel = StoryDeltaInOutPanel(ss, pairChi2, resampled, what + ": #chi^{2}/ndf of the constants",
+                                                         "#chi^{2}/ndf");
+        pairQualityPanel.zeroLine = false;
+        DrawPocPanels({pairPdgPanel, pairQualityPanel}, "Canvas_4_1_SineDeltaP0R_PDG" + suffix,
+                      cell.head + ": sine #Deltap_{0}, Data - " + STORY_MIXED_LABEL + " and InPeak - OutOfPeak, PDG errors",
+                      fileRoot, cell.dirPath, false, false);
+
+        // Plot 5: each sample's line p0 = C_0 + C_1 p1 over the eta_Proxy bins. C_0 is p0 where the sine vanishes, and
+        // C_1 the slope of the leak. Both panels on one canvas, so a level is read next to the leak it was freed of.
+        StoryColumns c0Plain, c1Plain, c0Pdg, c1Pdg, lineChi2;
+        for (int col = 0; col < 4; ++col)
+            for (int region = 0; region < 2; ++region) {
+                const PocLineFit& lineFit = p0Lines[col][region][twin];
+                if (!lineFit.valid) continue;
+                const double scale = lineFit.PdgScale();
+                (region ? c0Plain.out : c0Plain.in)[col] = {lineFit.c0, lineFit.c0Error};
+                (region ? c1Plain.out : c1Plain.in)[col] = {lineFit.c1, lineFit.c1Error};
+                (region ? c0Pdg.out : c0Pdg.in)[col]     = {lineFit.c0, scale * lineFit.c0Error};
+                (region ? c1Pdg.out : c1Pdg.in)[col]     = {lineFit.c1, scale * lineFit.c1Error};
+                (region ? lineChi2.out : lineChi2.in)[col] = {lineFit.chi2 / lineFit.ndf, 0.}; // valid implies ndf > 0
+            }
+        const std::string lineNote = "per sample: p_{0} = C_{0} + C_{1} p_{1} over the " + etaName + " bins";
+        PocPanel c0Panel = StoryRegionsPanel(ss, key, c0Plain, resampled, what + ": C_{0}, p_{0} at zero sine", "C_{0}");
+        c0Panel.note = lineNote;
+        PocPanel c1Panel = StoryRegionsPanel(ss, key, c1Plain, resampled, what + ": C_{1}, slope of p_{0} in p_{1}", "C_{1}");
+        DrawPocPanels({c0Panel, c1Panel}, "Canvas_5_SineInterceptR" + suffix,
+                      cell.head + ": sine p_{0} = C_{0} + C_{1} p_{1} of every sample", fileRoot, cell.dirPath, false, false);
+        PocPanel c0PdgPanel = StoryRegionsPanel(ss, key, c0Pdg, resampled, what + ": C_{0}, PDG errors", "C_{0}");
+        c0PdgPanel.note = lineNote + "\nPDG-error: #sigma #times #sqrt{#chi^{2}/ndf} where #chi^{2}/ndf > 1";
+        PocPanel c1PdgPanel = StoryRegionsPanel(ss, key, c1Pdg, resampled, what + ": C_{1}, PDG errors", "C_{1}");
+        PocPanel lineQualityPanel = StoryRegionsPanel(ss, key, lineChi2, resampled, what + ": #chi^{2}/ndf of the lines",
+                                                      "#chi^{2}/ndf");
+        lineQualityPanel.zeroLine = false;
+        DrawPocPanels({c0PdgPanel, c1PdgPanel, lineQualityPanel}, "Canvas_5_SineInterceptR_PDG" + suffix,
+                      cell.head + ": sine p_{0} = C_{0} + C_{1} p_{1} of every sample, PDG errors", fileRoot, cell.dirPath,
+                      false, false);
+    }
+}
+
+/**
+ * @brief Writes ProofOfConcept/StreamlinedStory/ (see the block comment above): for every selection, species and proxy,
+ *        plot 1 where the full ring's centrality-selected data file exists, plot 2 where R_z's does, and plot 3 with
+ *        plot 1. The PerSlice/ canvases of plot 3 follow gPocPerBinNominalOnly, as the AEE mosaics do.
+ * @param families Full-ring families; R_z is the same family with its tag after the family suffix.
+ */
+void DrawStreamlinedStory(FileCache& cache, TDirectory* fileRoot, const std::string& consumerDir, const std::string& ppRefDir,
+                          const std::vector<FamilyConfig>& families, const StoryStyles& ss) {
+    const LongitudinalRing* ringZ = nullptr;
+    for (const auto& lr : LONGITUDINAL_RINGS)
+        if (lr.name == STORY_LONG_RING) ringZ = &lr;
+    if (!ringZ) WarnSkip("StreamlinedStory, plot 2", STORY_LONG_RING + " is not in LONGITUDINAL_RINGS: no R_z plots");
+    for (const auto& sel : POC_SELECTIONS)
+        for (const auto& fam : families)
+            for (const auto& proxy : PROXIES) {
+                const std::string dirPath = "ProofOfConcept/StreamlinedStory/" + sel.folder + "/" + fam.familyName + "/" + proxy;
+                // The single-borrow and resampled files of one ring definition; false (counted once) when its data were not run
+                auto makeCells = [&](const LongitudinalRing* lr, PocCell (&cells)[2]) {
+                    cells[0] = PocMakeCell(consumerDir, ppRefDir, sel, fam, lr);
+                    cells[1] = PocMakeCell(consumerDir, ppRefDir, sel, fam, lr, MIXED_RESAMPLES_TAG);
+                    if (gSystem->AccessPathName(cells[0].dataFile.c_str())) {
+                        CountSkip("StreamlinedStory", "data file not run", dirPath + (lr ? " (" + lr->name + ")" : ""));
+                        return false;
+                    }
+                    for (PocCell& c : cells) {
+                        c.proxy = proxy;
+                        c.head = fam.familyName + ", " + proxy + ", " + sel.folder;
+                        c.dirPath = dirPath;
+                    }
+                    return true;
+                };
+                PocCell full[2], longitudinal[2];
+                const bool hasFull = makeCells(nullptr, full);
+                const bool hasLong = ringZ && makeCells(ringZ, longitudinal);
+                if (!hasFull && !hasLong) continue;
+                // The keys name the mass windows from the OO data's own edges. They describe pp only if pp ran with the
+                // same windows, which is warned about otherwise
+                const PocCell& keyCell = hasFull ? full[0] : longitudinal[0];
+                StoryMassKey key, ppKey;
+                if (ss.massWindowSigma > 0.) { // Without a sigma the default names stand, which the run banner states once
+                    if (!StoryMassKeyOf(cache, keyCell.dataFile, proxy, ss.massWindowSigma, key))
+                        CountSkip("StreamlinedStory keys", "no mass-region edges: the windows are called InPeak and OutOfPeak", dirPath);
+                    else if (StoryMassKeyOf(cache, keyCell.ppFile, proxy, ss.massWindowSigma, ppKey) &&
+                             (ppKey.peak != key.peak || ppKey.sideband != key.sideband))
+                        WarnSkip("StreamlinedStory keys", "pp ran with other mass windows than OO: the keys name OO's", dirPath);
+                }
+                // Creation order is browsing order: plots 1, 2 and 3
+                if (hasFull) DrawStoryIntegrated(cache, fileRoot, full, "1_IntegratedR", ss, key);
+                if (hasLong) DrawStoryIntegrated(cache, fileRoot, longitudinal, "2_Integrated" + ringZ->shortName, ss, key);
+                if (hasFull) {
+                    const bool isNominal = (&sel == &POC_SELECTIONS.front()) && proxy == POC_NOMINAL_PROXY;
+                    DrawStorySineP0(cache, fileRoot, full, ss, key, !gPocPerBinNominalOnly || isNominal);
+                }
+            }
+}
+
 // ---------------------------------------------------------
 // Main Macro
 // ---------------------------------------------------------
@@ -6977,13 +7950,16 @@ void DrawProofOfConcept(FileCache& cache, TDirectory* fileRoot, const std::strin
  *                     this, so turning it on enables it only for the profiles flagged in the table.
  * @param sigExtractDir Directory holding the signalExtractionRing_*.root files. Empty disables every
  *                     signal-extracted block.
+ * @param massWindowSigma The sigma (GeV/c^2) of the consumer's mass windows, run_all_wagons.sh's SIGMA: it only names
+ *                     the windows in StreamlinedStory/'s keys. 0 (or absent) leaves them InPeak and OutOfPeak.
  */
 void auxiliarySummaryPlots(const std::string& consumerDir,
                            const std::string& mcRefDir = "",
                            const std::string& ppRefDir = "",
                            const std::string& toyModelPath = "",
                            bool doIndividualComparisons = false,
-                           const std::string& sigExtractDir = "") {
+                           const std::string& sigExtractDir = "",
+                           double massWindowSigma = 0.) {
     // Every fit of this macro goes through Minuit2, silenced. The old TMinuit prints MINOS and IMPROVE banners ("NEW
     // MINIMUM FOUND. GO BACK TO MINIMIZATION STEP.") whatever the "Q" option says. Strategy 2 buys the more careful
     // Hessian that the curved p1/p2 valley of the constant-plus-odd fits needs (see OddPlusConstantFitter).
@@ -10158,6 +11134,39 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         pocStyles.dataInRef.isData = true;
         pocStyles.ppIn = PocRelabel(ppConfig, ppConfig.legendLabel + " (MB) InPeak");
         DrawProofOfConcept(cache, fOut, consumerDir, ppRefDir, fullFamilies, pocStyles);
+
+        // StreamlinedStory: the same files, the full ring against R_z. Each column takes its system's colour (the data's,
+        // the mixed events', pp's) and each mass region its massVariations marker, so the key reads the same in every
+        // column; the resampled mixed events keep their own sysVariations colour
+        std::cout << " -> ProofOfConcept/StreamlinedStory (integrated R and R_z, sine p0 and Delta p0)...\n";
+        // WARNING, by design and so not repeated in the log: the keys' sigma (run_all_wagons.sh's SIGMA) is one fixed
+        // value from earlier fits, the same for every Lambda whatever its daughters' pT. The windows it names are
+        // APPROXIMATE, good only for this approximate signal extraction (the README says so in its warning block).
+        // Only a missing sigma is reported: it changes what the keys say, and it is a state of this run, not a design.
+        if (!(massWindowSigma > 0.))
+            std::cout << "    No mass-window sigma given: the keys say InPeak and OutOfPeak.\n";
+        StoryStyles storyStyles;
+        const VariationConfig* columnColour[4] = {&dataConfig, &*itMixed, &ppConfig, &*itMixed};
+        for (int col = 0; col < 4; ++col) {
+            const std::string& system = STORY_SYSTEM[col / 2];
+            storyStyles.column[col] = (col % 2) ? STORY_MIXED_LABEL + " " + system : system + " " + dataConfig.legendLabel;
+            storyStyles.in[col]  = PocMethodStyle(*columnColour[col], massVariations[0].markerStyle);
+            storyStyles.out[col] = PocMethodStyle(*columnColour[col], massVariations[1].markerStyle);
+            storyStyles.in[col].legendLabel  = storyStyles.column[col] + " InPeak";
+            storyStyles.out[col].legendLabel = storyStyles.column[col] + " OutOfPeak";
+        }
+        const auto itResampled = std::find_if(sysVariations.begin(), sysVariations.end(), [](const VariationConfig& v) {
+            return v.suffix == POC_MIXED_TAG + MIXED_RESAMPLES_TAG;
+        });
+        if (itResampled == sysVariations.end())
+            std::cerr << "  [Warning] StreamlinedStory: no " << POC_MIXED_TAG + MIXED_RESAMPLES_TAG
+                      << " variation to take a look from; its resampled mixed events are drawn in the single-borrow colour\n";
+        const VariationConfig& resampledColour = (itResampled != sysVariations.end()) ? *itResampled : *itMixed;
+        storyStyles.resampledIn  = PocMethodStyle(resampledColour, massVariations[0].markerStyle);
+        storyStyles.resampledOut = PocMethodStyle(resampledColour, massVariations[1].markerStyle);
+        storyStyles.resampledTag = " (" + ResampleCountOf(MIXED_RESAMPLES_TAG) + " resamp.)";
+        storyStyles.massWindowSigma = massWindowSigma;
+        DrawStreamlinedStory(cache, fOut, consumerDir, ppRefDir, fullFamilies, storyStyles);
     }
 
     cache.CloseAll(); // Release every input file before closing the output
@@ -10174,9 +11183,11 @@ int main(int argc, char** argv) {
     if (argc < 2) { // Check is argc < 2 because this is the bare minimum. Everything after consumerDir is optional
         std::cerr << "Usage: " << argv[0]
                   << " <consumerDir> [mcRefDir] [ppRefDir] [toyModelPath]"
-                     " [doIndividualComparisons] [sigExtractDir]\n"
+                     " [doIndividualComparisons] [sigExtractDir] [massWindowSigma]\n"
                      "  sigExtractDir defaults to <consumerDir>/../results_SigExtract;"
                      " pass \"none\" to skip the signal-extraction plots.\n"
+                     "  massWindowSigma (GeV/c^2) names the consumer's mass windows in the story's keys"
+                     " (run_all_wagons.sh passes its SIGMA); absent, they are InPeak and OutOfPeak.\n"
                      "  Longitudinal-ring outputs (_useRingZ, _useRingZT) in <consumerDir> are detected by name and"
                      " summarised as <family>_RingZ and <family>_RingZT.\n";
         return 1;
@@ -10198,8 +11209,18 @@ int main(int argc, char** argv) {
         doIndividual = (flag == "1" || flag == "true" || flag == "yes" || flag == "on");
     }
 
+    // The sigma of the consumer's mass windows (run_all_wagons.sh's SIGMA), for the story's keys only. Anything that
+    // is not a positive number leaves it unknown, which the run banner states
+    double massWindowSigma = 0.;
+    if (argc > 7) {
+        char* end = nullptr;
+        const double parsed = std::strtod(argv[7], &end);
+        if (end != argv[7] && *end == '\0' && parsed > 0.) massWindowSigma = parsed;
+        else std::cerr << "  [Warning] massWindowSigma \"" << argv[7] << "\" is not a positive number: ignored\n";
+    }
+
     auxiliarySummaryPlots(consumerDir, mcRefDir, ppRefDir, toyModelPath, doIndividual,
-                          sigExtractDir);
+                          sigExtractDir, massWindowSigma);
     return 0;
 }
 #endif

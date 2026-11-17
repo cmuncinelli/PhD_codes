@@ -125,6 +125,10 @@ AUX_DO_INDIVIDUAL_COMPARISONS=0
 # TOY_MODEL_PATH="/home/users/cicerodm/RingPol/HelicityToyModel/9_RealisticAlice/alice_std/helicity_alice_std.root"
 
 # Signal extraction configs:
+# SIGMA is one fixed width from earlier fits, for APPROXIMATE mass windows only: it is not the resolution of any
+# particular pT interval of the daughters. It must match the consumer's LambdaMassSigma, the unit its CheapSigExtract
+# windows are set in (PeakWindowNSigma, SidebandInnerNSigma, SidebandOuterNSigma); auxiliarySummaryPlots receives it
+# (Step 6) only to name those windows in its StreamlinedStory keys.
 LAMBDA_MASS=1.1156830
 SIGMA=0.0017127606
 # SIGEXTRACT_OPTS=(--bkgMethod=window)
@@ -149,13 +153,14 @@ SIGMA=0.0017127606
 # )
 # Wider, growing towards the center of the interval -- This SIGMA parameter of mine doesn't really fit the "Gaussian" peak: it seems to small!
 # (I fit with a single Gaussian, not a double Gaussian yet)
+# --> These control ONLY the signal extraction! They do not control the intervals on the derived data consumer's output!
 SIGEXTRACT_OPTS=(
   --bkgMethod=window
   --signalMassMin=$(bc -l <<< "$LAMBDA_MASS - 2.3*$SIGMA")
   --signalMassMax=$(bc -l <<< "$LAMBDA_MASS + 2.3*$SIGMA")
   --leftSidebandMin=$(bc -l <<< "$LAMBDA_MASS - 7.5*$SIGMA")
-  --leftSidebandMax=$(bc -l <<< "$LAMBDA_MASS - 5.2*$SIGMA")
-  --rightSidebandMin=$(bc -l <<< "$LAMBDA_MASS + 5.2*$SIGMA")
+  --leftSidebandMax=$(bc -l <<< "$LAMBDA_MASS - 5.0*$SIGMA")
+  --rightSidebandMin=$(bc -l <<< "$LAMBDA_MASS + 5.0*$SIGMA")
   --rightSidebandMax=$(bc -l <<< "$LAMBDA_MASS + 7.5*$SIGMA")
 )
 
@@ -789,9 +794,11 @@ for LINE in "${WAGON_LINES[@]}"; do
     echo "  -> SKIPPED (no ConsumerResults files to aggregate)"
     record_skip "${DATASET_NAME}/${WAGON_SHORTNAME} | ALL_CONFIGS | auxiliarySummaryPlots"
   else
-    # Forwarding the consumer results directory, the MC and pp references, the Toy Model path and the
-    # one-vs-one switch. sigExtractDir is left to its default, <workDir>/results_SigExtract.
-    AUX_ARGS=("${WORK_DIR}/results_consumer" "${MC_REF_DIR}" "${PP_REF_DIR}" "${TOY_MODEL_PATH}" "${AUX_DO_INDIVIDUAL_COMPARISONS}")
+    # Forwarding the consumer results directory, the MC and pp references, the Toy Model path, the one-vs-one switch,
+    # sigExtractDir (spelled out only because SIGMA comes after it: it is the macro's own default,
+    # <workDir>/results_SigExtract) and SIGMA, which names the consumer's mass windows in the summary's keys.
+    AUX_ARGS=("${WORK_DIR}/results_consumer" "${MC_REF_DIR}" "${PP_REF_DIR}" "${TOY_MODEL_PATH}" "${AUX_DO_INDIVIDUAL_COMPARISONS}"
+              "${WORK_DIR}/results_SigExtract" "${SIGMA}")
     if [ $DEBUG_BUILD -eq 1 ]; then
       ## Earlier debug tests - Trying to catch a problem with RelabelRingDirectory()//TCollection::GarbageCollect//TList::Clear//TPad::Close (the destructor caller):
       # MALLOC_PERTURB_=204 "$AUXILIARY_PLOTS_EXE" "${WORK_DIR}/results_consumer" "${MC_REF_DIR}" "${PP_REF_DIR}" "${TOY_MODEL_PATH}" "${AUX_DO_INDIVIDUAL_COMPARISONS}" > "$AUX_LOG" 2>&1 < /dev/null
