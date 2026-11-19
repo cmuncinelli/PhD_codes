@@ -15,8 +15,9 @@ canvases.
 2. [The post-processing chain](#the-post-processing-chain)
 3. [Conventions](#conventions)
 4. [The longitudinal ring, $R_z$ (`useRingZ`)](#the-longitudinal-ring-r_z-useringz)
-5. [Macro reference](#macro-reference)
-6. [Appendix -- AO2D bit forensics in detail](#appendix----ao2d-bit-forensics-in-detail)
+5. [Event mixing and resampling (`nProxyResamples`)](#event-mixing-and-resampling-nproxyresamples)
+6. [Macro reference](#macro-reference)
+7. [Appendix -- AO2D bit forensics in detail](#appendix----ao2d-bit-forensics-in-detail)
 
 ---
 
@@ -38,7 +39,7 @@ The C++ macros live at the top level of this folder. All but one are driven by
 | `extractDeltaErrors.cxx` | Delta-method uncertainties on $\langle R\rangle$, preserving the numerator--denominator covariance |
 | `makeCumulativeDCAdauProfile.cxx` | Robustness of $\langle R\rangle$ against tightening DCA cuts (the AEE probe) |
 | `auxiliaryPerConfigPlots.cxx` | Per-config derivative plots: polarization vector fields, ring-observable 2D maps |
-| `auxiliarySummaryPlots.cxx` | Cross-config aggregation: systematics, MC and toy-model overlays |
+| `auxiliarySummaryPlots.cxx` | Cross-config aggregation: systematics, MC and toy-model overlays, the corrections, and the proof of concept against the sideband, mixed-event and pp controls |
 | `zvtxBitForensics.cxx` | Bit-level and integrity QA of the raw derived AO2Ds, before any O2 abstraction |
 | `signalExtractionRingTest.cxx` | Old development version of the signal extraction code |
 | `mergeAODDerived.sh` | Merges AOD derived files prior to local analysis (this isn't really needed in any code. Just an early-version convenience) |
@@ -85,7 +86,7 @@ Every per-config macro takes the same two arguments, in essence:
 
 The output directory is explicit, not inferred from the input path, and is created recursively if absent. The output filename is derived from the input basename by substituting the prefix, e.g. `ConsumerResults_BothHyperons.root` becomes `ErrorPropagation_BothHyperons.root`.
 
-The two per-wagon macros differ: `auxiliarySummaryPlots.exe` takes `<consumerDir> [mcRefDir] [ppRefDir] [toyModelPath] [doIndividualComparisons] [sigExtractDir]`, and `zvtxBitForensics.exe` takes a manifest and an output file (see its [appendix](#appendix----ao2d-bit-forensics-in-detail)).
+The two per-wagon macros differ: `auxiliarySummaryPlots.exe` takes `<consumerDir> [mcRefDir] [ppRefDir] [toyModelPath] [doIndividualComparisons] [sigExtractDir] [massWindowSigma]`, and `zvtxBitForensics.exe` takes a manifest and an output file (see its [appendix](#appendix----ao2d-bit-forensics-in-detail)).
 
 ## The consumer layout
 
@@ -133,6 +134,49 @@ its new one.
 **No name carries a species either.** The species is chosen by the configuration (BothHyperons,
 JustLambda and JustAntiLambda files), so every object holds whichever species its file carries, and
 species comparisons are read across files.
+
+### Ring reference direction and jet-free events
+
+The ring observable is built around a reference axis $\hat t$,
+
+$$\mathcal{R} = \frac{3}{\alpha}\,\hat p^{*}_{D}\cdot\hat n, \qquad \hat n = \frac{\hat t\times\vec p_\Lambda}{|\hat t\times\vec p_\Lambda|}.$$
+
+By default $\hat t$ is the direction of each jet proxy (`LeadJet`, `SubJet`, `LeadP`). The configurable `ringDefinitionSwitches.ringRefDirection` replaces it with a single axis per collision:
+
+| Value | Name | Reference $\hat t$ |
+|---|---|---|
+| 0 | `kJetProxy` | direction of each proxy (default) |
+| 1 | `kEventPlane` | event-plane direction (not implemented: the derived data carry no event-plane angle yet) |
+| 2 | `kFixedX` | the lab $\hat x$ axis |
+
+`kFixedX` keeps the full 3D ring. Only $\hat t$ changes, so $\hat n \perp \vec p_\Lambda$ still holds and the boost properties of $\mathcal{R}$ are preserved. It is not a component projection like $\mathcal{R}_z$ (`useRingZ`). We use it to test whether the signal depends on the jet direction.
+
+**Implementation.** The reference is the same for every proxy, so the ring is computed once per V0 and copied into the three proxy folders. The proxies then only classify the event: their $p_T$, $\eta$ and validity still drive the selections, the $\eta$ splits and the proxy-$p_T$ axes.
+
+- Quantities tied to the reference follow it: $\Delta\varphi = \varphi_\Lambda - \varphi_{\text{ref}}$ (with $\varphi_{\text{ref}} = 0$, the Lambda azimuth itself), $\Delta\theta$, and the RingKernel $\hat t_z$ (identically zero, so the kernel collapses onto one $\hat t_z$ bin).
+- Quantities tied to the jet stay with the jet: the PrimeJet coordinate system, $\eta_\Lambda - \eta_{\text{Jet}}$, the ProxyZ diagnostics and KinematicsQA.
+
+**Restrictions** (fatal in `init()`):
+
+- no `fakePolSwitches` proxy distortion with a collision-level reference, since there is no proxy direction to distort;
+- `nProxyResamples > 1` requires a proxy distortion, since a deterministic reference (plain jets, `kFixedX`) would refill the same values in every pass.
+
+#### Jet-free events: `useNoJetEventsOnly`
+
+Available only with a collision-level reference (`ringRefDirection != 0`). Each proxy folder then holds the events **without** that proxy, each with its own threshold:
+
+| Folder | Kept events |
+|---|---|
+| `LeadJet/` | no jet, or leading jet with $p_T \le$ `minLeadJetPt` |
+| `SubJet/` | no subleading jet, or one with $p_T \le$ `minSubJetPt` (a hard leading jet may still be present though) |
+| `LeadP/` | no leading particle, or one with $p_T \le$ `minLeadPPt` |
+
+This gives granular control over what "no jet" means: a FastJet jet-$p_T$ threshold or a plain leading-particle cut. The table producer does not skim, so each class contains every collision with V0s and no proxy above threshold (FastJet and the leading particle are independent there).
+
+- The class is the complement of the $p_T$ gate alone. With `doAnalysisLevelCutsJets` on, a proxy above threshold but outside the $|\eta|$ acceptance belongs to neither class.
+- Sub-threshold proxies keep their kinematics, so the proxy-$p_T$ profiles (e.g. `pRingVsProxyPt`) continue the jet sample below threshold. Events with no table entry carry $p_T = \eta = \varphi = -999$ and land in the underflow.
+- Since $\eta = -999 < 0$, entry-less events fill the negative side of every proxy-$\eta$ split, and their PrimeJet coordinate systems are meaningless.
+- Outputs are tagged `_NoJetEvents`, matched downstream by exact `_`-separated token. Folder names are unchanged, so the tag is the only marker of this mode.
 
 ## Reporting: failures versus skips
 
@@ -288,6 +332,77 @@ For the full ring the cross moment is the data-driven second moment of the corre
 - **Toy Model.** Its overlay is a full-ring prediction, so it is dropped for $R_z$ files.
 - **Titles.** Relabelled downstream from $\langle R\rangle$ to $\langle R_z\rangle$, only for $R_z$ files.
 - **Every macro reads the mode from the file names**, so `run_all_wagons.sh` needs no change: the per-config macros see one file at a time, and the summary picks up any `_useRingZ` and `_useRingZT` outputs in the wagon as extra families (`<Family>_RingZ/`, `<Family>_RingZT/`). See [its section](#auxiliarysummaryplotscxx).
+
+---
+
+# Event mixing and resampling (`nProxyResamples`)
+
+> Like the longitudinal-ring section above, this one documents consumer code (`lambdaJetPolarizationIonsDerived`, in O2Physics), not a macro of this folder. It lives here until those details find a better README.
+
+## What a mixed event is
+
+With `doMixedEventProxies`, every proxy of a collision (`LeadJet`, `SubJet`, `LeadP`) is replaced by the same proxy of another collision, and the ring is then filled exactly as for data. The borrowed proxy is adopted **wholesale**: its $p_{\rm T}$, $\eta$ and $\varphi$ all come from the source (`applyProxyDistortion`, through the `borrowedPhysicalProxy` flag), so every fill works unchanged for data and mixed events alike. Its $p_{\rm T}$ is never rescaled with the target's direction, as an earlier version did through $|\vec p|\sin\theta_{\rm mixed}$: that put an $\eta$-dependent acceptance into the baseline, which is exactly what the baseline exists to isolate.
+
+The $\Lambda$s, their decay kinematics and the acceptance and efficiency acting on them stay the target's own. Only the proxy direction changes, so any physical correlation between the proxy and the $\Lambda$ is lost while the acceptance fake survives. That is what makes the mixed events the $R_{\rm fake}$ of the corrections. Whether they also remove part of the true ring is a separate question (`13 - Event mixing validity under the hydro ansatz`), measured by the overlaps $\langle\cos\zeta\rangle=\langle\hat n_{\rm own}\cdot\hat n_{\rm mix}\rangle$ and $\langle\sin\zeta\rangle$ in `EventMixingQA/RingOverlap/<Proxy>/` (integrated, and vs proxy $p_{\rm T}$, centrality and $z_{\rm vtx}$).
+
+## Pools and binning
+
+Collisions are paired within a dataframe, in bins of `axisPVz`, `axisJetPt` (the proxy $p_{\rm T}$) and `axisCentrality` (one `BinningPolicyBase<3>`, overflows ignored). There are three independent mixings, one per proxy, since a collision may have a leading particle and no subleading jet, and only collisions with a valid proxy are pooled. The pairing is done by hand (`buildMixingLut`): the collisions of each bin are listed in index order, and each is paired with the next `mixedEventWindowSize` collisions of its own bin. That reproduces the strictly-upper block combinations of the O2 policy exactly, in $O(MW)$ rather than $O(M^2)$ time, with $M$ the pooled collisions and $W$ the window. `mixingIdxGapSize > 0` additionally rejects partners within that many rows (a continuous-readout cannibalisation test, off by default).
+
+Both sides of every pair feed each other's reservoir, so a collision borrows from earlier collisions as well as later ones: the sliding window has no forward-only bias, and each target sees at most $W$ candidates ahead and as many behind. A collision offered as its own source is fatal, although the pairing should already make that impossible.
+
+Because the pools are binned on these axes, a borrowed proxy always lies in its target's own proxy-$p_{\rm T}$ and centrality bin. The differential corrections rely on this: they are booked on the same two axes, so each of their bins holds the same $\Lambda$s in data and in its mixed events.
+
+## The reservoir: distinct sources, without replacement
+
+The pools are built once, before the resampling loop. With $K$ = `nProxyResamples`, each target keeps $K$ **distinct** sources, drawn uniformly among its candidates by reservoir sampling with $K$ slots (Algorithm R): the $n$-th candidate offered fills slot $n$ while $n\le K$, and afterwards replaces a uniformly drawn slot with probability $K/n$. Every $K$-subset of the candidates is then equally likely. Pass $r$ of the resampling loop borrows from slot $r$.
+
+**Sources are never repeated within a target.** A repeated source adds no new proxy direction, so it would only shrink the error bars. The draw is made even while the reservoir is filling, so $K=1$ is the old single-slot rule, draw for draw (the generator is seeded from `std::random_device`, so this cannot be checked bit by bit across runs).
+
+**Short pools.** A target with $n<K$ candidates stores $n$ sources, and its passes $r\ge n$ borrow nothing for that proxy. Its $\Lambda$s then enter $n$ times instead of $K$, so in the resampled output a collision weighs $\min(n,K)$, while in the single-borrow output every target with a candidate weighs one. Collisions in sparse mixing bins, which are typically those with a hard proxy, are therefore underweighted. Cycling the sources (pass $r$ reading slot $r \bmod n$) would keep every weight at $K$ but repeat sources, which the rule above forbids. `CollLoopOutcome/<Proxy>/hMixedEventDistinctSources` measures how many targets are affected.
+
+> **TODO.** Decide how short pools should be weighted. Until then, read the resampled outputs together with `hMixedEventDistinctSources`.
+
+**Memory.** The pools store source slots (`int32_t`, $-1$ for none), not copies of the borrowed proxy: each borrow is rebuilt on read from the source collision's own caches. That is $4$ B per entry instead of $32$, which matters because $K$ multiplies it: about $120$ MB for $10^6$ collisions, $K=10$ and three proxies, against about $1$ GB for full copies. The pools are allocated only when mixing.
+
+**Fatal configurations** (besides the rule of [the consumer layout](#the-consumer-layout) that `nProxyResamples > 1` needs a variable proxy distortion):
+
+- `nProxyResamples > 1` with `forcePreviousJet`: the previous jet does not change between passes, so every pass would refill the same values.
+- `nProxyResamples > 2 * mixedEventWindowSize` with `doMixedEventProxies`: no target can have that many distinct sources, so the extra passes would always be empty.
+
+## What resampling does to the error bars
+
+The resampled mixed events are a QA of the fake estimate, not a procedure the analysis relies on. They show what the fake looks like once the jet-sampling noise is averaged down, at the price of filling every $\Lambda$ up to $K$ times. Objects that do not depend on the proxy (the V0-only QA) gain nothing from the extra passes, and are never used for conclusions in these outputs.
+
+The error bars come out smaller than in the single-borrow sample, partly for real and partly because the profile treats the $K$ entries of one $\Lambda$ as independent. How much of each is set by geometry. Write one mixed-event entry as $f=c\,\hat p^{*}\!\cdot\hat n$, with $c$ the ring prefactor, and let $\vec\mu=E[\hat n\,|\,\Lambda]$ be the mean ring normal of one $\Lambda$ over its possible mixed proxies. For a decay direction close to isotropic (any polarization is a small correction here) and independent borrows, the variance of $f$ splits into a part common to the $K$ entries of one $\Lambda$ and a part that changes from borrow to borrow:
+
+$$A=\frac{c^2}{3}\,|\vec\mu|^2\quad(\Lambda\text{-common}),\qquad C=\frac{c^2}{3}\,\bigl(1-|\vec\mu|^2\bigr)\quad(\text{jet sampling}),\qquad A+C=\frac{c^2}{3}.$$
+
+The mean over the $K$ entries of one $\Lambda$ has variance $A+C/K$, while the profile assumes $(A+C)/K$. Over $N$ $\Lambda$s, therefore,
+
+$$\frac{\sigma^2_{\rm reported}}{\sigma^2_{\rm true}}=\frac{A+C}{K A+C}=\frac{1}{1+(K-1)\,\langle|\vec\mu|^2\rangle}.$$
+
+Mixing decorrelates the proxy from the $\Lambda$, so $|\vec\mu|$ is only the residual, acceptance-driven anisotropy of the borrowed directions: the very fake the mixed events measure, and small. For $\langle|\vec\mu|^2\rangle=0.01$ at $K=10$ the reported error is about $4\%$ too small, not $\sqrt{10}$ times too small.
+
+The Data $-$ MixedEv errors stay in quadrature, as everywhere. The mixed events reuse the data's $\Lambda$s, so this over-covers, which is the accepted convention.
+
+**Measuring $\langle|\vec\mu|^2\rangle$.** `IntegratedCuts/<Proxy>/pRingVsResamplingPass` (booked only for $K>1$, also with `forceRandJet` and `forceDatalikeJet`) holds the all-$\Lambda$ ring resolved by pass. The $K$ pass means share their $\Lambda$s, so the common part cancels in their scatter: their sample variance $s^2_{\rm pass}$ estimates $C/N$, while each bin's own squared error $\sigma^2_{\rm pass}$ estimates $(A+C)/N$. Hence
+
+$$\langle|\vec\mu|^2\rangle\simeq1-\frac{s^2_{\rm pass}}{\sigma^2_{\rm pass}}.$$
+
+With $K=10$ the scatter has nine degrees of freedom, so one profile pins $s^2_{\rm pass}$ down only to about $50\%$. The estimate is meant to say whether the correction is negligible, not to apply it.
+
+## QA
+
+| Object (in `EventMixingQA/`) | Filled | Reads |
+|---|---|---|
+| `<Proxy>/hMixedEventWindowNeighbours`, `IndexQA/<Proxy>/hMixedEventDeltaIndexEligible` | while pairing | the forward-window occupancy and the index distance of every eligible pair |
+| `CollLoopOutcome/<Proxy>/hMixedEventCandidates`, `h2dMixedCandidatesVsPt` | once per collision (pass 0) | candidates offered to each target, whose zero bin is the miss rate seen from the pool |
+| `CollLoopOutcome/<Proxy>/hMixedEventDistinctSources` | once per collision, $K>1$ only | sources stored per target, whose mass below $K$ is the short-pool fraction |
+| `CollLoopOutcome/<Proxy>/`, `SourceTargetDeltas/`, `IdentityChecks/`, `RingOverlap/` | every pass | each pass is a genuine borrow, so the miss rate grows by exactly the short-pool fraction |
+| `IndexQA/<Proxy>/hMixedEventDeltaIndexSelected`, `SourceUsage/<Proxy>/` | every stored entry | a source appears at most once among a target's entries, so the usage counts distinct targets |
+
+**On a resampled output**, check that the resampled $\langle R\rangle$ agrees with the single-borrow one within its error (the two estimate the same fake), that `DistinctSources` sits at $K$ for nearly every target, and that $1-s^2_{\rm pass}/\sigma^2_{\rm pass}$ is consistent with a small number.
 
 ---
 
@@ -1480,7 +1595,7 @@ The CheapSigExtract counterpart of the headline check, with the same columns, th
 
 The peak and sideband canvases also show $\langle R_z\rangle/\langle n_z^2\rangle$ of that region, from the `Ring/<Proxy>/KappaEff/*VsMassRegion` profiles. The ring, $n_z^2$ and their product (`pRingTimesDenVsMassRegion`) come from the same candidates, so the ratio keeps its covariance with the ratio-of-means formula above. Consumer outputs that predate `pRingTimesDenVsMassRegion` leave the ratio as a gap, never replaced by a covariance-free approximation. The in $-$ out of a ratio is not drawn.
 
-**Which "out of peak".** Both `p2dRingCutsV0MassPeak` (Y bin 1) and the `*VsMassRegion` profiles are filled from the same two consumer flags. `v0InMassPeak` selects $|m-m_\Lambda|\le$ `PeakWindowNSigma`$\,\sigma$, and `v0InMassWindow` selects the two side bands between `SidebandInnerNSigma` and `SidebandOuterNSigma`, whose total width the consumer forces to equal the peak's (a mismatch is fatal at init). "Out of peak" is therefore always the equal-width sideband, never everything outside the peak, and both objects see the same populations. `FetchIntegratedByMassPeak` reads the "All $\Lambda$" bin of `p2dRingCutsV0MassPeak`, which the consumer fills next to the `Ring/` fill list, so the in $-$ out canvases and the corrections see the same candidates too.
+**Which "out of peak".** Both `p2dRingCutsV0MassPeak` (Y bin 1) and the `*VsMassRegion` profiles are filled from the same two consumer flags. `v0InMassPeak` selects $|m-m_\Lambda|\le$ `PeakWindowNSigma`$\,\sigma$, and `v0InMassWindow` selects the two side bands between `SidebandInnerNSigma` and `SidebandOuterNSigma`, symmetric about the peak but no longer forced to its width. "Out of peak" is therefore always that pair of sidebands, never everything outside the peak, and both objects see the same populations. Wherever the sideband stands for the background under the peak, it is scaled by the width ratio (see [Limits of the cheap estimator](#cheapsigextract-three-cases-and-the-order-of-the-subtractions)). `FetchIntegratedByMassPeak` reads the "All $\Lambda$" bin of `p2dRingCutsV0MassPeak`, which the consumer fills next to the `Ring/` fill list, so the in $-$ out canvases and the corrections see the same candidates too.
 
 #### `Corrections/` -- $\kappa$ and the corrected ring
 
@@ -1504,7 +1619,7 @@ One routine computes it (`CorrectRing`), and only its inputs change between fold
 | `CheapSigExtract/OffPeakQA/` | sideband only (**QA**) | `KappaEff/*VsMassRegion`, sideband bin | the sideband's own, exact |
 | `CheapSigExtract/SidebandSubtracted/` | signal, without a fit | `KappaEff/*VsMassRegion`, peak $-$ sideband sums | from the subtracted sums, exact |
 
-**The pairs.** Four in-wagon pairs, in this order: Data against `_MixedEventProxies` ("Data - MixedEv"), the AN-cuts pair, and the same two against the resampled mixed events, `_MixedEventProxies_10resamples` and `_MixedEventProxies_analysisCuts_10resamples` ("Data - MixedEv,10Resamp."). The tag lives in one constant, `MIXED_RESAMPLES_TAG`, and the "10" of every label is parsed from it, so the labels cannot drift from the file names. The resampled pairs subtract the same data from a fake with less jet-sampling noise (see the event-mixing section). Each MC or pp reference joins against its own `_MixedEventProxies` run when that exists. Its signal extraction is looked for where the pipeline puts it, `<base>/../results_SigExtract`. When that is absent, the reference simply has no signal-extracted column. Several pairs share a data sample, and $\kappa$ belongs to the data sample, so each `Canvas_Kappa_<Proxy>` has one column per data sample, not per pair.
+**The pairs.** Four in-wagon pairs, in this order: Data against `_MixedEventProxies` ("Data - MixedEv"), the AN-cuts pair, and the same two against the resampled mixed events, `_MixedEventProxies_10resamples` and `_MixedEventProxies_analysisCuts_10resamples` ("Data - MixedEv,10Resamp."). The tag lives in one constant, `MIXED_RESAMPLES_TAG`, and the "10" of every label is parsed from it, so the labels cannot drift from the file names. The resampled pairs subtract the same data from a fake with less jet-sampling noise (see [Event mixing and resampling](#event-mixing-and-resampling-nproxyresamples)). Each MC or pp reference joins against its own `_MixedEventProxies` run when that exists. Its signal extraction is looked for where the pipeline puts it, `<base>/../results_SigExtract`. When that is absent, the reference simply has no signal-extracted column. Several pairs share a data sample, and $\kappa$ belongs to the data sample, so each `Canvas_Kappa_<Proxy>` has one column per data sample, not per pair.
 
 **$\alpha$ is the family's own**, from the same decay constants as the consumer ($\alpha_\Lambda=0.749$, $\alpha_{\bar\Lambda}=-0.758$). `BothHyperons` mixes the two while the exact term is per species. It uses the mean of the two $\alpha^2$, which is within 1.2% of either, on a term that is itself a $\sim10\%$ correction, so the choice moves $P$ by $\lesssim0.2\%$.
 
@@ -1524,7 +1639,9 @@ The two QA folders are **QA only, never a result**: their $P$ and their $\kappa$
 
 **The order of the subtractions.** For each sample separately (data $d$ and its mixed events $f$) and for each moment $y\in\{R,\ uv,\ w\}$, the sideband is subtracted **at the level of sums**, never of means:
 
-$$\langle y\rangle_S=\frac{\sum_Py-\sum_By}{N_P-N_B}.$$
+$$\langle y\rangle_S=\frac{\sum_Py-s\sum_By}{N_P-s\,N_B},\qquad s=\frac{w_P}{w_B},$$
+
+with $w_P$ the width of the peak window and $w_B$ the total width of the two sidebands (below).
 
 $\kappa_S$ and $P$ are then formed from these subtracted moments. $\kappa_S=3\langle uv\rangle_S/\langle w\rangle_S$ is therefore a dedicated $\kappa$ of the peak-minus-sideband population: neither the all-candidate $\kappa$ nor the peak's. No separate "$\kappa$ of the peak $-$ off-peak histograms" is needed, because this is exactly that object, built from the same moments.
 
@@ -1538,7 +1655,7 @@ The other order, correcting each region first and subtracting afterwards, also w
 
 $$P_S=\frac{U_PP_P-U_BP_B}{U_P-U_B},$$
 
-which reduces identically to the formula above. Weighting the two regions by their counts instead, $(N_PP_P-N_BP_B)/(N_P-N_B)$, is biased whenever $\langle uv\rangle_P\neq\langle uv\rangle_B$, which is the general case (see `Canvas_KappaByRegion_<Proxy>`). The relation above would be a natural closure test between the three folders, but it holds exactly only when data and mixed events have the same candidates in each region. A target that finds no mixing partner breaks it, and so do the empty resampling passes, so as a printed check it would raise false alarms. It is not implemented.
+which reduces identically to the formula above (with $U_B$ and $N_B$ scaled by $s$). Weighting the two regions by their counts instead, $(N_PP_P-N_BP_B)/(N_P-N_B)$, is biased whenever $\langle uv\rangle_P\neq\langle uv\rangle_B$, which is the general case (see `Canvas_KappaByRegion_<Proxy>`). The relation above would be a natural closure test between the three folders, but it holds exactly only when data and mixed events have the same candidates in each region. A target that finds no mixing partner breaks it, and so do the empty resampling passes, so as a printed check it would raise false alarms. It is not implemented.
 
 **The difference of means is not a signal estimate.** The corrections never use $\langle R\rangle_P-\langle R\rangle_B$. That difference is the `_InMinusOut_` canvas of `RingVsLongitudinal_CheapSigExtract/`, and it measures the background's lever arm. With $f=S/N_P$ the purity of the peak,
 
@@ -1546,25 +1663,35 @@ $$\langle R\rangle_P=f\,\langle R\rangle_S+(1-f)\,\langle R\rangle_B\quad\Longri
 
 and the signal mean is the in-peak mean pushed along that lever arm,
 
-$$\langle y\rangle_S=\langle y\rangle_P+\frac{N_B}{N_P-N_B}\bigl(\langle y\rangle_P-\langle y\rangle_B\bigr)=\langle y\rangle_P+\frac{B}{S}\,(\text{in}-\text{out}).$$
+$$\langle y\rangle_S=\langle y\rangle_P+\frac{s\,N_B}{N_P-s\,N_B}\bigl(\langle y\rangle_P-\langle y\rangle_B\bigr)=\langle y\rangle_P+\frac{B}{S}\,(\text{in}-\text{out}).$$
 
 When $B/S$ is small, the sideband-subtracted mean and the in-peak mean agree even if in $-$ out is large.
 
-**The error bars are larger, as they should be.** The two regions are disjoint and each count is treated as Poisson, so with $A=\sum_P-\sum_B$, $D=N_P-N_B$ and $r=A/D$,
+**The error bars are larger, as they should be.** The two regions are disjoint and each count is treated as Poisson, so with $A=\sum_P-s\sum_B$, $D=N_P-s\,N_B$ and $r=A/D$,
 
-$$\mathrm{Var}(\langle y\rangle_S)=\frac{\mathrm{Var}(A)-2r\,\mathrm{Cov}(A,D)+r^2\,\mathrm{Var}(D)}{D^2},\quad \mathrm{Var}(A)=\textstyle\sum_Py^2+\sum_By^2,\ \mathrm{Var}(D)=N_P+N_B,\ \mathrm{Cov}(A,D)=\sum_Py+\sum_By .$$
+$$\mathrm{Var}(\langle y\rangle_S)=\frac{\mathrm{Var}(A)-2r\,\mathrm{Cov}(A,D)+r^2\,\mathrm{Var}(D)}{D^2},\quad \mathrm{Var}(A)=\textstyle\sum_Py^2+s^2\sum_By^2,\ \mathrm{Var}(D)=N_P+s^2N_B,\ \mathrm{Cov}(A,D)=\sum_Py+s^2\sum_By .$$
 
-With no background this is the standard error of $\langle y\rangle_P$, and for $y\equiv1$ it gives exactly 1 with no error, so the full ring's $\langle w\rangle_S$ needs no special case. A Monte Carlo check (Poisson signal and background, sideband of equal population) confirmed both the mean and the error. Neglecting differences between the means, the error is about $\sigma_y\sqrt{S+2B}/S$, against $\sigma_y/\sqrt{S+B}$ in the peak alone. With $b=B/S$ under the peak, the ratio is
+With no background this is the standard error of $\langle y\rangle_P$, and for $y\equiv1$ it gives exactly 1 with no error, so the full ring's $\langle w\rangle_S$ needs no special case. A Monte Carlo check (Poisson signal and background, sideband of equal population) confirmed both the mean and the error. The sideband holds $B/s$ background candidates, so, neglecting differences between the means, the error is about $\sigma_y\sqrt{S+(1+s)B}/S$, against $\sigma_y/\sqrt{S+B}$ in the peak alone. With $b=B/S$ under the peak, the ratio is
 
-$$\frac{\sigma_{\rm sideband\text{-}subtracted}}{\sigma_{\rm in\ peak}}\simeq\sqrt{(1+2b)(1+b)},$$
+$$\frac{\sigma_{\rm sideband\text{-}subtracted}}{\sigma_{\rm in\ peak}}\simeq\sqrt{\bigl(1+(1+s)\,b\bigr)(1+b)},$$
 
-about 1.15 at $b=0.1$. That is the honest cost of removing the background, whatever estimator is used.
+about 1.15 at $b=0.1$ for equal widths, and 1.12 for a sideband twice as wide. That is the honest cost of removing the background, whatever estimator is used.
 
 **The sideband-subtracted $\kappa$ keeps its covariance.** $\kappa_S=3A_{uv}/A_w$ with $A_y=\sum_Py-\sum_By$, since $N_P-N_B$ cancels in the ratio. Its first-order variance (`CheapSignalRatio`) needs only the cross sums $\sum uvw$ of each region, which `pKappaNumTimesDenVsMassRegion` holds:
 
-$$\mathrm{Var}(\rho)=\frac{\mathrm{Var}(A_a)-2\rho\,\mathrm{Cov}(A_a,A_b)+\rho^2\,\mathrm{Var}(A_b)}{A_b^2},\quad \rho=\frac{A_a}{A_b},\quad \mathrm{Var}(A_y)=\textstyle\sum_Py^2+\sum_By^2,\quad \mathrm{Cov}(A_a,A_b)=\sum_Pab+\sum_Bab .$$
+$$\mathrm{Var}(\rho)=\frac{\mathrm{Var}(A_a)-2\rho\,\mathrm{Cov}(A_a,A_b)+\rho^2\,\mathrm{Var}(A_b)}{A_b^2},\quad \rho=\frac{A_a}{A_b},\quad \mathrm{Var}(A_y)=\textstyle\sum_Py^2+s^2\sum_By^2,\quad \mathrm{Cov}(A_a,A_b)=\sum_Pab+s^2\sum_Bab .$$
 
-**Limits of the cheap estimator.** The consumer enforces equal total widths, so for a background whose density and $\langle y\rangle_B$ are both linear in mass, the sideband holds exactly the background under the peak. What it misses is the curvature of their product, a linear density times a linear $\langle y\rangle_B$. Separate left and right sidebands would recover it, and are the natural extension.
+**Limits of the cheap estimator.** The two sidebands sit symmetrically about the peak, so for a background whose density and $\langle y\rangle_B$ are both linear in mass, $s$ times the sideband is exactly the background under the peak, whatever the two widths. What it misses is the curvature of their product, a linear density times a linear $\langle y\rangle_B$. Separate left and right sidebands would recover it, and are the natural extension.
+
+**The sideband width.** The consumer used to force $w_B=w_P$, which made $s=1$ implicit. It no longer does, and $s$ is read from the edges of the consumer's five-bin mass-region axis (`SidebandScaleOf`), once per file and proxy, so no window is re-typed in the macro. An output without that axis (it is booked behind `doFakePolDiagnosticsQA`) falls back to $s=1$, with a warning. Widening the sideband **inwards** is what the windows are now tuned for, and it pays three times:
+
+- **statistics:** the subtraction variance is $s^2N_B$, halved for a sideband twice as wide;
+- **curvature:** for a quadratic background the count bias goes as $\langle t^2\rangle_B-\langle t^2\rangle_P$ (with $t=m-\mu$), which drops from $41\sigma^2$ for $[5.5,7.5]\,\sigma$ to $30\sigma^2$ for $[3.5,7.5]\,\sigma$, against a $\pm2\sigma$ peak;
+- **composition:** the background's fake depends on mass through the decay kinematics, so a closer sideband carries a fake closer to the one under the peak.
+
+The price is signal leaking into the sideband. The consumer's $\sigma$ is one fixed value, while the true width grows with $p_{\rm T}$, and jet $\Lambda$s are hard. At an inner edge of $3.5$ nominal $\sigma$, a high-$p_{\rm T}$ peak may be only about $2$ true $\sigma$ away, and a few percent of the signal then sits in the sideband, carrying its ring into the "no-ring" control.
+
+> **TODO.** Check the leakage against the fitted $\sigma(p_{\rm T})$ of `signalExtractionRing` and the flatness of $\langle R\rangle$ across the sideband in `ProofOfConcept/.../VsMass/`, and move the inner edge out (e.g. $4.5\sigma$, $s=2/3$) if it is marginal.
 
 **$\kappa$ per region.** `Canvas_KappaByRegion_<Proxy>` shows the raw $\kappa_{\rm eff}$ and $\kappa_z$ of the peak and of the sideband for every data sample, each with the ratio-of-means error. Where the two disagree, the background does not share the signal's response. That is why `SidebandSubtracted/` divides by the signal $\kappa$, and `InPeakQA/` and `OffPeakQA/` each by their own region's.
 
@@ -1579,6 +1706,248 @@ They are first order, with the full derivative of the exact inversion.
 ##### Species combination
 
 Each corrections folder also holds `SpeciesCombination/`, with $\tfrac12(P_\Lambda+P_{\bar\Lambda})$ and $\tfrac12(P_\Lambda-P_{\bar\Lambda})$ per proxy and pair, for every ring definition. A topological fake has the same unitless acceptance moment for both species, so it changes sign with $\alpha$, while a vorticity ring does not. The average therefore suppresses such fakes, to $0.6\%$ given $\lvert\alpha_\Lambda\rvert\neq\lvert\alpha_{\bar\Lambda}\rvert$, and the half-difference contains them with no vorticity signal (`LongitudinalRing.tex`, Prop. 6.2). Charge-driven fakes and a polarization from the magnetic field do not cancel; they land in the half-difference. The two species are disjoint samples, so their errors add in quadrature.
+
+### `ProofOfConcept/` -- the mass peak against three controls
+
+The simplest question the analysis can ask: is there more ring in the $\Lambda$ mass peak than in the three places where none should be?
+
+- the **sideband** of the same data: combinatorial background, same events, same acceptance;
+- the **mixed events** of the same $\Lambda$s (`_MixedEventProxies`, single borrow): the proxy comes from another event, so the acceptance fake survives and any jet-correlated ring does not;
+- **pp minimum bias**, where no medium ring is expected.
+
+The data and mixed-event files are the centrality-selected ones (`POC_CENTRALITY_TAG`, currently `_maxCent50`), and pp is minimum bias, so its files carry no centrality tag. Every selection in `POC_SELECTIONS` (`Default/`, `AnalysisCuts/`), family, ring definition and proxy gets its own cell:
+
+```
+ProofOfConcept/<Selection>/<Family>[_<RingDefinition>]/
+    <Proxy>/Canvas_Summary*_<Proxy>                           the summaries (below)
+    <Proxy>/VsMass/, Integrated/, VsCentrality/, VsProxyPt/   values, differences, P
+    <Proxy>/AEE/RingVsMass/                                   <R>(m) per (phi_AEE, eta_Proxy) cell, the systems overlaid
+    <Proxy>/AEE/RingVsPhiAEE/, <Proxy>/EtaFits/               the fits (below), pp's own group in PpOwnBaselines/
+    PurityCorrected/, SymmetrizationQA/, PpBaselineQA/        the summaries' QA, the three proxies side by side
+    Redux/
+ProofOfConcept/<Selection>/Masters/SpeciesVsRing/, SpeciesCombinationQA/
+ProofOfConcept/Masters/DefaultVsAnalysisCuts/
+ProofOfConcept/StreamlinedStory/                              the analysis in five plots (below)
+ProofOfConcept/EQD/<Species>/<Proxy>/                         the qualifying-exam set (below)
+```
+
+`Integrated/Canvas_Values` and its `Canvas_Subtracted` and `Canvas_KappaCorrected` are the **money plot**: Data InPeak against the three controls, and nothing else. The same names with `_Full` carry every sample and pairing.
+
+#### One dilution for every estimate
+
+Every estimate is formed on the peak's candidates: Data InPeak minus a control $X$, converted with the data's own in-peak response,
+
+$$P=\frac{R_P-R_X}{3\langle uv\rangle_P-k\,R_PR_X},$$
+
+the [Corrections/](#corrections----kappa-and-the-corrected-ring) formula. If the background carries no ring, this reads $f_S\,P_S$ (up to $\kappa_S/\kappa_P$), with $f_S=(N_P-s\,N_B)/N_P$ the bin-counting purity of the peak. All entries of a canvas are then diluted by the **same** $f_S$, so they compare like for like. This is why the money plot's sideband entry is InPeak $-$ OutOfPeak and not the sideband-subtracted Signal $-$ Sideband: the latter removes the background, and would sit on another scale than its neighbours.
+
+The purity is divided out only in `PurityCorrected/`, where every entry estimates $P_S$. For the sideband the division and the subtraction agree exactly in $R$ units,
+
+$$\frac{R_P-R_B}{f_S}=R_S-R_B,\qquad\text{since}\qquad N_PR_P=s\,N_BR_B+f_SN_PR_S ,$$
+
+so the sideband-subtracted entry (integrated values) and the divided one (fits) differ only by the response in the conversion.
+
+#### Errors
+
+- **Disjoint candidates** (InPeak against OutOfPeak, OO against pp): quadrature is exact.
+- **The same $\Lambda$s** (data against its mixed events): the per-candidate correlation is $\langle\hat n\cdot\hat n'\rangle=\langle\cos\zeta\rangle$, measured at $10^{-3}$ to $10^{-4}$, so quadrature, as in `Corrections/`.
+- **Signal $-$ Sideband**: $R_S$ is built from the sideband sums, so $\mathrm{Cov}(R_S,R_B)=-s\,\sigma_B^2/(N_P-s\,N_B)$ is propagated. Being negative, it widens the error that quadrature would understate.
+- **AnalysisCuts against Default**: subsets of the same samples, so Barlow's $\sqrt{|\sigma_A^2-\sigma_D^2|}$ (masters only).
+
+The estimates of one cell share almost all their $\Lambda$s, so their mutual agreement is tighter than their error bars suggest. Reading it as a $\chi^2$ test would overstate the consistency.
+
+#### The fits: why an odd function plus a constant
+
+The acceptance fakes are odd: the AEE fake in $\varphi_\Lambda-\varphi_p^*$, and its imprint on $\eta_{\rm Proxy}$ for an acceptance symmetric in $\eta$. A ring is expected to be even in both. Each profile is therefore fitted with
+
+$$R(x)=p_0+p_1\,g(p_2x),\qquad g=\tanh\ \text{for}\ R(\eta_{\rm Proxy}),\qquad g=\sin\ \text{for}\ R(\varphi_{\rm AEE}),$$
+
+and $p_0$ carries the even part. On an axis symmetric about zero the odd function integrates to zero against a constant, so $p_0$ stays close to the profile's weighted mean and hardly correlates with $p_1$ and $p_2$. That is why every $p_0$ and $\Delta p_0$ uses the symmetric (Hesse) error: it describes $p_0$ well, and a symmetric error is what the averages below can weight with. The fits come in three forms:
+
+| Folder | Profile | Model |
+|---|---|---|
+| `EtaFits/Integrated/` | $R(\eta_{\rm Proxy})$ over every $\varphi_{\rm AEE}$ | $\tanh$ |
+| `AEE/RingVsPhiAEE/` | $R(\varphi_{\rm AEE})$ in $\eta_{\rm Proxy}$ slices | $\sin$ |
+| `EtaFits/VsPhiAEE/` | $R(\eta_{\rm Proxy})$ in 8 $\varphi_{\rm AEE}$ slices | $\tanh$ |
+
+Two degeneracies decide the configuration. The models are exactly invariant under $(p_1,p_2)\to(-p_1,-p_2)$: the $\tanh$ is fitted free and then canonicalised onto $p_2>0$, which puts the sign in $p_1$. The sine is worse, since on $N$ bins over a full period $\sin(p_2x)$ at $p_2=N\pm1$ coincides with $\mp\sin x$ at every bin centre, and a free frequency lands on those aliases. Its $p_2$ is bounded to $[0,2]$, far from them, which also leaves the sign to $p_1$. For small $p_2x$ both degenerate to $p_1p_2x$, so only the product is constrained and the $(p_1,p_2)$ contour is a long curved valley. MINOS maps it, and its asymmetry is itself the sign that the two have not separated. $p_2$ is drawn only where $|p_1|\geq2\sigma$.
+
+**Every fit is on one mass region of one file**, from the consumer's `...VsMassRegion` bookings, so a $\Delta p_0$ has the same dilution as the InPeak differences. The fitted samples come in two groups, the reference first (every $\Delta p_0$ is reference minus sample):
+
+| Group | Samples | Written to |
+|---|---|---|
+| OO | Data InPeak, Data OutOfPeak, MixEv InPeak, pp InPeak | the folders above |
+| pp | pp InPeak, pp OutOfPeak, pp MixEv InPeak | `PpOwnBaselines/` (not the fits in $\varphi_{\rm AEE}$ slices) |
+
+**The $\eta_{\rm Proxy}$ slices are single bins of the fine axis**, never merged ones, so no slice straddles the acceptance edge. The edge is found from the occupancy of the data's all-candidates map: the outermost filled bin of each side holds the edge and is dropped, and the narrower side sets both. Every bin from there to the centre is a slice, mirrored, plus a centre slice $[-w,w]$: the fits and their condensed values use the whole acceptance ($|\eta|<0.5$ for the jets, `maxLeadJetEta`; $|\eta|<0.9$ for the leading particle). Only `POC_ETA_SLICES_PER_SIDE` (five) of them per side, evenly spaced, and the centre slice are drawn on their own (`Overlay/`, `PerSlice/`), which keeps those canvases readable; the parameter canvases show every slice. The all-candidates map only decides the edges. The fitted values always come from each sample's own region map. One set of slices must serve every sample, because $\Delta p_0$ is formed slice by slice and the symmetrization pairs a slice with its mirror, and the all-candidates occupancy is the most robust estimate of the edge.
+
+**Condensing.** Each $p_0$, $\Delta p_0$ and $p_1$ series is reduced to one number, the inverse-variance weighted mean, in closed form. When the slices scatter more than their errors allow, the error is scaled by $\sqrt{\chi^2/{\rm ndf}}$ (the PDG prescription), and every canvas showing such a value says "PDG-error". On the parameter canvases each constant is drawn with its $\pm1\sigma$ band hatched in its series' colour and, where the scaling widens it, the PDG band behind it in solid, the palest shade of the same colour (`PaleTint`); the numbers sit on one power of ten. `SymmetrizationQA/` repeats it on the pair averages $\tfrac12[y(+x)+y(-x)]$, which cancel any part odd in the sliced axis exactly, whatever the statistics of the two sides. The pair half-differences show that odd part.
+
+For the sine fits the odd part of $p_1$ **is** the amplitude: $R(\varphi_{\rm AEE})$ turns over with the sign of $\eta_{\rm Proxy}$, so a plain average of $p_1$ cancels, and $\tfrac12[p_1(+\eta)-p_1(-\eta)]$ is the amplitude as seen at positive $\eta$, the same convention as the $\tanh$ amplitude.
+
+> **TODO.** The $\Delta p_0$ are converted with the integrated in-peak $3\langle uv\rangle$, while a fit weights its candidates per bin, by inverse variance. A proper $P_R$ needs the response moments vs $\varphi_{\rm AEE}$, $\eta_{\rm Proxy}$ and the mass region, applied slice by slice.
+
+#### What the summaries show
+
+At the root of each `<Selection>/<Family>/<Proxy>/` folder. Their QA folders (`SymmetrizationQA/`, `PurityCorrected/`, `PpBaselineQA/`) stay one level up, in `<Selection>/<Family>/`, with the three proxies side by side, which keeps the tree shallow:
+
+- **`Canvas_SummaryR` and `Canvas_SummaryP`**: the four levels (Data InPeak, Data OutOfPeak, MixEv InPeak, pp InPeak), then, per baseline (sideband, MixEv, pp), the InPeak difference and one column holding its three $\Delta p_0$ side by side, told apart by marker.
+- **`Canvas_SummaryP1` and `Canvas_SummaryP1OverResponse`**: the odd amplitudes of every fitted sample, raw and over each sample's own $3\langle uv\rangle$. The second is a heuristic for whether the larger $p_1$ of the mixed events is a response effect, since mixing changes the $\Lambda$-proxy geometry, but a fake need not scale with the response.
+- **`PpBaselineQA/`**: why pp cannot replace the mixed events as the fake baseline. The departure of the cheap pp estimate from the mixed-event one splits exactly,
+
+$$(R_P-R_{\rm pp})-(R_P-R_{\rm mix})=(R_{\rm mix}-R_{\rm mix,pp})-(R_{\rm pp}-R_{\rm mix,pp}),$$
+
+into the fake mismatch between the two systems and pp's own residual over its mixed events.
+
+**`Redux/`** is the reduced set for presentation: OO on the left and pp on the right, **on one shared $y$ range**, each with its InPeak, OutOfPeak and own MixEv InPeak. It has the integrated values and their estimates, and the fitted $p_0$ and $\Delta p_0$ from two fits only, the sine in $\eta$ slices and the integrated $\tanh$, with `PurityCorrected/` and `SymmetrizationQA/` as above.
+
+**The masters** set the cells against each other, in $P$ only, since $R$ units are not comparable across ring definitions. Each sits in a `Masters/` folder at the lowest level that holds every cell it compares: next to the family folders for the per-selection ones (they span families, so no single family folder can hold them), and at the top of `ProofOfConcept/` for the selections compared. `<Selection>/Masters/SpeciesVsRing/` puts the species on the axis and the ring definitions as series: a true aligned ring agrees across species (independent samples) and across definitions (same $\Lambda$s, very different fakes). `<Selection>/Masters/SpeciesCombinationQA/` shows $\tfrac12(P_\Lambda\pm P_{\bar\Lambda})$, as in `Corrections/`. `Masters/DefaultVsAnalysisCuts/` sets the selections side by side, with their Barlow differences.
+
+#### `StreamlinedStory/` -- the analysis in five plots
+
+The proof of concept above shows everything. This folder tells the story in five plots, for every selection, species and proxy:
+
+```
+ProofOfConcept/StreamlinedStory/<Selection>/<Species>/<Proxy>/
+    Canvas_1_IntegratedR[_InMinusOut][_10Resamples]    the full ring: integrated <R> of the four samples
+    Canvas_2_IntegratedRz[_InMinusOut][_10Resamples]   the same for R_z
+    Canvas_3_SineP0R[_InMinusOut][_PDG][_10Resamples]  the sine p0 of the full ring
+    Canvas_4_SineDeltaP0R[_PDG][_10Resamples]          its in-peak Data - Mix. Jet, subtracted bin by bin
+    Canvas_4_1_SineDeltaP0R[_PDG][_10Resamples]        the same, each system followed by its data InPeak - OutOfPeak
+    Canvas_5_SineInterceptR[_PDG][_10Resamples]        each sample's line p0 = C_0 + C_1 p1: its intercept and slope
+    SineFitQA/<System>/                                the fits behind plot 3, without the resampled mixed events
+    SineFitQA/<System>/P0VsP1/                         p0 against p1, one canvas per sample (the leak test)
+    SineFitQA/<System>/With10Resamples/                the same fits with them, for QA (no PerSlice/)
+    SineFitQA/<System>/With10Resamples/P0VsP1/         p0 against p1 of the resampled mixed events
+    SineFitQA_Clean/<System>/                          the main fits again for presentation, p0 called R_0 (below)
+```
+
+Each plot sets the full ring against $R_z$, or fits it, so the folder is keyed by species rather than by family and ring definition, and the names are numbered so they list in story order. Every canvas has four columns split by dashed lines -- OO Data, Mix. Jet OO, pp Data, Mix. Jet pp -- each holding its InPeak and OutOfPeak value side by side (filled and open markers). There are no value/sigma strips, and the pad titles are centred.
+
+The key names the two windows by their mass, "$m_{V0}\in m_\Lambda\pm2\sigma$" and "$m_{V0}\in m_\Lambda\pm[3.5\sigma,7.5\sigma]$". The edges are read from the OO data's own file (`LoadMassRegionEdges`, with a warning if pp ran with other windows). The output does not keep the unit they were set in, so $\sigma$ comes from `run_all_wagons.sh`, whose `SIGMA` is passed as the macro's seventh argument (`massWindowSigma`); it must match the consumer's `LambdaMassSigma`. Without it, or without the edges, the key falls back to InPeak and OutOfPeak. These are the consumer's own windows (`PeakWindowNSigma`, `SidebandInnerNSigma`, `SidebandOuterNSigma`), from which it builds both its region flags and the five-bin axis the edges are read from. They are not the windows `run_all_wagons.sh` passes to `signalExtractionRing` (`SIGEXTRACT_OPTS`), which serve `SignalExtraction/` and `AEE_SignalExtracted/` and may differ.
+
+> **These windows are approximate, by design.** $\sigma$ is **one fixed number** taken from earlier fits of the integrated peak. It is not the mass resolution of the $\Lambda$s in any given window: the resolution depends on the daughters' momenta (and on $\varphi_{\rm AEE}$), and a hard $\Lambda$'s peak can be much wider than $\sigma$. "$\pm2\sigma$" therefore does **not** mean a fixed fraction of the signal, and the sideband is not guaranteed to be free of signal tails at every $p_{\rm T}$. The windows exist only to give the cheap, fit-free signal extraction of this folder and of `CheapSigExtract/` an approximate peak and an approximate background. Nothing sensitive to the line shape should be built on them. This block and a comment in the macro are the only places that say so: neither the log nor the canvases repeat it, since it holds for every run by design. The log speaks only when no $\sigma$ was passed, and then the keys fall back to InPeak and OutOfPeak.
+
+- **Plots 1 and 2** are the means of each mass region, from the same `KappaEff/*VsMassRegion` moments as `Corrections/`. `_InMinusOut` is their difference per column, in plain quadrature (disjoint candidates).
+- **Plot 3** fits $p_0+p_1\sin(p_2\varphi_{\rm AEE})$ in every $\eta_{\rm Proxy}$ bin of the acceptance (`PocEtaSlices`, as in `AEE/RingVsPhiAEE/`), and condenses $p_0$ over the bins into the inverse-variance mean (`PocFitConstant`). The plain canvas carries that mean's error. `_PDG` scales it by $\sqrt{\chi^2/{\rm ndf}}$ where that exceeds one, and shows each constant's $\chi^2/{\rm ndf}$ beside it. `_InMinusOut` is the difference of each column's two constants, in quadrature (disjoint candidates), with plain or PDG-scaled errors as for the constants themselves. The sine is not fitted for $R_z$: $\langle R_z\rangle$ is kinematically flat in $\varphi_{\rm AEE}$ (see [What is expected to vanish](#what-is-expected-to-vanish-and-what-is-not)), so $p_1\approx0$ leaves $p_2$ unconstrained.
+- **The `_10Resamples` twins** swap the mixed columns for the resampled mixed events (`MIXED_RESAMPLES_TAG`, last in the file name): centrality-selected in OO, minimum bias in pp. A twin without resampled files is skipped and counted.
+- **Plot 4** is the in-peak Data $-$ Mix. Jet difference of the same $p_0$, one column per system. The difference is formed **in each $\eta_{\rm Proxy}$ bin** and only then condensed. The $\eta$ dependence that $p_0$ keeps is much the same in the data and in its mixed events, so it cancels bin by bin, and the constant fitted to the differences has a far smaller $\chi^2/{\rm ndf}$ (and a far smaller PDG scaling) than the levels of plot 3. The two fits' errors are combined in quadrature, as for every $\Delta p_0$. `_PDG` is as for plot 3.
+- **Plot 4_1** follows each of plot 4's columns with its system's data InPeak $-$ OutOfPeak, also formed bin by bin and then condensed (disjoint candidates, so quadrature is exact). Plot 3's `_InMinusOut` subtracts the two condensed levels instead. The two weigh the bins differently, and coincide when the two regions' errors are proportional bin by bin. Only the bin-by-bin difference has a $\chi^2/{\rm ndf}$, which says whether the two regions share their $\eta$ dependence (the leak, above all).
+- **Plot 5** fits, for each sample, the line $p_0=C_0+C_1\,p_1$ through its bins (the points of `P0VsP1/`), with the errors of both coordinates ([below](#the-line-through-the-points)). $C_0$, the $p_0$ where the sine vanishes, stands beside $C_1$, the slope of the leak, on the layout of plot 3. `_PDG` scales both errors by the line's $\sqrt{\chi^2/{\rm ndf}}$ where that exceeds one, and shows the $\chi^2/{\rm ndf}$ in a third panel.
+- **The fits behind plots 3 to 5** are made once per system (OO and pp) and drawn twice: `SineFitQA/<System>/` leaves the resampled mixed events out, since they crowd every parameter canvas, and `With10Resamples/` below it has everything, for QA. Its `PerSlice/` holds the shown slices only and follows `gPocPerBinNominalOnly`, as the AEE mosaics do.
+- **`P0VsP1/`** plots, for each sample of its view, the sine $p_0$ of every $\eta_{\rm Proxy}$ bin against its $p_1$ ($p_1$ with its Minos errors, $p_0$ with the Hesse error it is condensed with; converged fits only). The points take the `Overlay/` canvases' colours: blue below $\eta=0$ and red above, deeper further out, open and filled markers, a diamond for the central bin, with a colour bar in the right margin mapping them back to $\eta_{\rm Proxy}$. It is the direct test of the opening-angle leak ([below](#the-opening-angle-leak-into-p_0)): a leak puts the points on a line through the origin, and an offset common to all bins shifts that line. The line of plot 5 is drawn over the points with its $\pm1\sigma$ band, and its coefficients and $\chi^2/{\rm ndf}$ in a box.
+- **`SineFitQA_Clean/<System>/`** redraws the main view's fits for presentation, one mass region per canvas and $p_0$ called $R_0$. `PerSlice/` (the shown slices, following `gPocPerBinNominalOnly`) has Data and Mix. Jet of one region with their sine curves, labelled by sample alone, and the model in a box; `Canvas_R0VsEta_{InPeak,OutOfPeak}` the $R_0$ of every bin, nothing fitted; `Canvas_DeltaR0VsEta` plot 4's in-peak differences bin by bin, with their constant; `Canvas_DeltaR0` the system's two condensed $\Delta R_0$, InPeak $-$ OutOfPeak (plot 4_1) and Data $-$ Mix. Jet (plot 4), PDG-scaled. A system's own canvases name its own mass windows.
+- The files are built by `PocMakeCell`, as for the rest of `ProofOfConcept/`.
+
+"OO", "pp" and "Mix. Jet" are story constants (`STORY_SYSTEM`, `STORY_MIXED_LABEL`); the rest of the macro still says "MixedEv Jet".
+
+##### What can be compared, and what needs $\kappa$
+
+Everything here is in $R$ units, and each canvas is a null test **within its own ring definition**: is the data's mass peak different from the three places where no ring should be? A response factor rescales the signal of every column alike, so it changes neither the sign nor the significance of such a difference, and none is needed to read a canvas.
+
+One is needed to compare magnitudes **across** canvases. Each estimator responds to a true ring $\vec P=P_R\,\hat n$ with its own factor (see [Corrections/](#corrections----kappa-and-the-corrected-ring)):
+
+| Estimator | Response to $P_R$ | Ideal detector |
+|---|---|---|
+| $\langle R\rangle$ | $3\langle u^2\rangle-k\,R_dR_f$ | $1$ |
+| $\langle R_z\rangle$ | $3\langle uv\rangle=\kappa_z\langle n_z^2\rangle$ | $\langle n_z^2\rangle$, about $0.45$ near-side |
+| sine $p_0$ of $R$ | $c$ (below) | $c<1$ |
+
+The same ring therefore gives an $\langle R_z\rangle$ about half as large as $\langle R\rangle$, while their fakes are unrelated (the full ring's is huge, $R_z$'s nearly zero), so a level does not compare across definitions in either direction. $R_z/\langle n_z^2\rangle$ is the $\kappa_z=1$ approximation of the proper conversion $R_z/3\langle uv\rangle$. Both moments are in `KappaEff/`, so where a conversion is made it should be the full one. It belongs on differences (Data $-$ Mix. Jet), where the inversion is defined: dividing a level by its own sample's response rescales its fake as well, and the mixed events' $\langle n_z^2\rangle$ is not the data's, since their jets are borrowed.
+
+##### What the sine $p_0$ measures
+
+For an isotropic decay, fixing the decay azimuth $\varphi^*$ pulls $\hat p^*$ towards $\hat e(\varphi^*)=(\cos\varphi^*,\sin\varphi^*,0)$: with $\cos\theta^*$ uniform, $E[\hat p^*\,|\,\varphi^*]=\tfrac{\pi}{4}\,\hat e(\varphi^*)$, so
+
+$$E[R\,|\,\varphi^*]=\frac{3\pi}{4\alpha}\,\hat n_T\cdot\hat e(\varphi^*),$$
+
+with $\hat n_T$ the transverse part of $\hat n$. For a $\Lambda$ at mid-rapidity, $\hat n_T\perp\vec p_\Lambda$ with the sign of $\eta_{\rm Jet}$, and $\varphi^*=\varphi_\Lambda-\varphi_{\rm AEE}$, so $E[R\,|\,\varphi_{\rm AEE}]\propto\mp\sin\varphi_{\rm AEE}$. The sine of $R(\varphi_{\rm AEE})$ is kinematic: odd in $\eta_{\rm Jet}$, flipping with $\alpha$ (the identity behind the $\Lambda/\bar\Lambda$ flip), and of order one in amplitude. Nothing in it is instrumental. The fake comes from the efficiency: cowboy and sailor pairs (the sign of $\sin\varphi_{\rm AEE}$ for $B>0$) are not reconstructed alike, so the $\varphi_{\rm AEE}$ population is not uniform, and the mean of $R$ picks up that order-one modulation, weighted by it.
+
+The sine $p_0$ is therefore, as far as the model holds, the unweighted mean of the bin means of $R(\varphi_{\rm AEE})$: the odd sine decouples from the constant over a symmetric axis. It is the mean the sample would have with a uniform $\varphi_{\rm AEE}$ population, and it is blind to any efficiency that depends on $\varphi_{\rm AEE}$ alone within a slice, up to the efficiency's variation inside a bin. The price is part of the signal. A transverse $\vec P$ makes the $\varphi^*$ distribution anisotropic too, and flattening it removes the part of the ring that rides on the kinematic modulation. To first order in $P_R$ this is the $k\,R_dR_f$ term of the inversion, bin by bin, so the response is
+
+$$c=\overline{\,3\langle u^2\rangle_b-k\,\bar R_b^{\,2}\,},$$
+
+with $\bar R_b$ the bin means of $R(\varphi_{\rm AEE})$ (of the data or of the mixed events: the ring is a small correction to them), averaged over the bins and then over the slices. For the full ring and an ideal detector, $3\langle u^2\rangle_b$ averages to one over $\varphi_{\rm AEE}$ (without conditioning, $\langle(\hat p^*\cdot\hat n)^2\rangle=1/3$) and $\bar R_b=p_1\sin\varphi_{\rm AEE}$, so in each slice
+
+$$c=1-\frac{\alpha^2}{6}\,p_1^2,$$
+
+even in $\eta_{\rm Jet}$: one at the centre, smallest at the edges. A true ring is therefore **not flat** in $\varphi_{\rm AEE}$. Besides its constant, it carries a $\cos2\varphi_{\rm AEE}$ term, which the sine fit leaves out without bias, since it is orthogonal to both the constant and the sine over the full period. Toys (isotropic decays, independent jets, 32 bins in $\varphi_{\rm AEE}$) confirm it:
+
+- With jets in $|\eta|<0.6$ and $P_R=0.2$: $c\simeq0.88$ over 10 or 30 slices, and 0.91 over 2, whose coarser bins dilute $p_1$. Both match the bin-level formula to $0.002$.
+- With jets in $|\eta|<0.5$ and $P_R=0.1$: $c$ runs from 0.81 in the outer slices to 1.00 in the central ones, matching $1-\alpha^2p_1^2/6$ to three decimals. The $\cos2\varphi_{\rm AEE}$ term is $-7\%$ to $-14\%$ of $P_R$.
+
+Both are far from $\langle n_z^2\rangle+(1-3\pi^2/32)\langle n_T^2\rangle\simeq0.60$, the value if every candidate were conditioned on separately. The second term needs only the profiles already fitted; the first needs the response vs $\varphi_{\rm AEE}$ and $\eta_{\rm Proxy}$, the TODO above.
+
+##### The opening-angle leak into $p_0$
+
+$p_0$ is blind to an efficiency that depends on $\varphi_{\rm AEE}$ alone, but not to one that also depends on the decay orientation, since that reweights $\hat p^*$ inside a bin. The cowboy/sailor geometry is such a case. Its sign is that of $(\vec p_T^{\,p}\times\vec p_T^{\,\pi})_z\propto P_T\,p^*\sin\theta^*_z\sin\varphi_{\rm AEE}$, so a cut on the daughters' transverse opening (the DCA cuts, above all) acts on $s=\sin\theta^*_z\sin\varphi_{\rm AEE}$, not on $\varphi_{\rm AEE}$ alone. To first order, $\varepsilon\propto1+a\,s$. With $\cos\theta^*_z$ uniform, $\langle\sin\theta^*_z\rangle=\pi/4$ and $\langle\sin^2\theta^*_z\rangle=2/3$, so the conditional mean of $\hat p^*_T$ grows by a factor $1+\tfrac{4a}{\pi}\left(\tfrac23-\tfrac{\pi^2}{16}\right)\sin\varphi_{\rm AEE}$ and
+
+$$R(\varphi_{\rm AEE})\simeq p_1\sin\varphi_{\rm AEE}+\frac{4a}{\pi}\Big(\frac23-\frac{\pi^2}{16}\Big)\,p_1\sin^2\varphi_{\rm AEE}.$$
+
+The constant part of $\sin^2$ is the leak, and the rest is a $\cos2\varphi_{\rm AEE}$ term of the same size and opposite sign:
+
+$$\delta p_0=\frac{2a}{\pi}\Big(\frac23-\frac{\pi^2}{16}\Big)\,p_1\simeq0.032\,a\,p_1,\qquad R\supset-\,\delta p_0\cos2\varphi_{\rm AEE}.$$
+
+A toy with $\varepsilon\propto1+a\,s$ finds $p_0/p_1=0.017$ against the predicted $0.016$, while an efficiency in $\varphi_{\rm AEE}$ alone leaves $p_0$ at zero.
+
+What follows from it:
+
+- **$p_0\propto p_1$ bin by bin**, so the points on `P0VsP1/` lie on a line through the origin. The slope can drift slowly with $\eta_{\rm Proxy}$, because $a$ depends on the daughters' kinematics.
+- **$\delta p_0$ is odd in $\eta_{\rm Jet}$**, as $p_1$ is, wherever $a$ is even (an $M_z$-symmetric setup, below). Pair symmetrization removes it exactly, and the condensed mean cancels it as far as the two sides weigh alike.
+- **No leak in $R_z$**: $\langle\cos\theta^*_z\sin\theta^*_z\rangle=0$, so $p^*_z$ is not reweighted, and $R_z$'s $p_0(\eta)$ stays flat.
+- **$\Lambda$ against $\bar\Lambda$**: $p_1$ flips with $\alpha$, and so does $a$, because the charges swap cowboy and sailor at fixed geometry. $\delta p_0$ keeps its sign, so it survives the species average. On `P0VsP1/`, the $\bar\Lambda$ points move to the other side of $p_1=0$ at the same height, and the slope changes sign.
+- **Field polarity** (a prediction): reversing $\vec B$ swaps cowboy and sailor, so $a$ flips while $p_1$ does not, and $\delta p_0$ flips. A true ring keeps its sign under both reversals (under $\Lambda\to\bar\Lambda$ because $R$ carries $1/\alpha$). The species comparison therefore cannot tell the leak from a ring, and the polarity split can.
+- **Data against mixed events**: they share the $\Lambda$s, hence $a$. As far as they also share $p_1$, the leak cancels bin by bin in plot 4, and with it the $\chi^2/{\rm ndf}$ it causes. `P0VsP1/` shows directly whether the two slopes agree.
+
+##### The line through the points
+
+Plot 5 fits $p_0=C_0+C_1\,p_1$ to each sample's bins, with $\sigma_{y,i}$ the Hesse error of $p_0$ and $\sigma_{x,i}$ the Minos error of $p_1$. With Gaussian errors on both coordinates, orthogonal-distance regression minimises
+
+$$\sum_i\left[\frac{(x_i-u_i)^2}{\sigma_{x,i}^2}+\frac{(y_i-C_0-C_1u_i)^2}{\sigma_{y,i}^2}\right]$$
+
+over the line and the unknown true abscissae $u_i$. The sum is quadratic in each $u_i$, and minimising over them leaves exactly
+
+$$\chi^2=\sum_i\frac{(y_i-C_0-C_1x_i)^2}{\sigma_{y,i}^2+C_1^2\,\sigma_{x,i}^2}.$$
+
+This is the effective-variance $\chi^2$ that ROOT's graph fit uses whenever a graph has $x$ errors. For a straight line it **is** orthogonal-distance regression, not an approximation to it (it approximates it only for a curved function, which it linearises at each $x_i$). Its minimum keeps $n-2$ degrees of freedom, so $\chi^2/{\rm ndf}$ still tests the model and sets the PDG scale. ROOT projects the $x$ interval through the function, which for a line uses the mean of the two Minos errors. The $p_0$-$p_1$ covariance within each sine fit is neglected: the constant and the odd sine are nearly orthogonal over the symmetric $\varphi_{\rm AEE}$ axis.
+
+What $C_0$ adds to plot 3 is set by the normal equations of the fit. With weights $w_i$, $C_0=\bar y_w-C_1\,\bar x_w$. Since $p_1$ is odd in $\eta_{\rm Jet}$, $\bar x_w=0$ whenever the weights are symmetric between $\pm\eta$, and then $C_0$ equals plot 3's inverse-variance mean, with the same error. The leak is odd too, so that mean is already free of it **by symmetry**. The line frees $C_0$ of it **by construction**, which still holds where the symmetry fails (an offset $z_{\rm vtx}$ or an A/C difference makes $\bar x_w\neq0$). It also gives $\chi^2/{\rm ndf}$ without the odd trend that inflates plot 3's, and the slope $C_1=\kappa a$ as a measurement in its own right. A toy with $a=0.5$ over eight slices gives the same value and error both ways, with $\chi^2/{\rm ndf}$ going from $409.5/7$ for the constant to $6.3/6$ for the line.
+
+If the points curve, the model may only be extended by odd functions of $p_1$ (a $C_3\,p_1^3$ term, say). Anything even in $p_1$, such as $p_1^2$ or $|p_1|$, is even in $\eta_{\rm Jet}$, and nothing could tell it apart from a ring.
+
+##### The pair symmetrization, precisely
+
+`SymmetrizationQA/` averages each slice with its mirror, $\tfrac12[y(+\eta)+y(-\eta)]$, with equal weights whatever the statistics of the two sides. That average is the even part of $y(\eta)$, identically: nothing is reweighted, and the odd part is removed exactly. Whether the odd part is the whole fake is a separate statement. Under $M_z$ ($\vec B$ is axial and normal to that mirror, so it survives it), a true ring is even in $\eta_{\rm Jet}$ for a symmetric collision system and parity-conserving production, while a fake is odd **only if the whole setup is $M_z$-symmetric**: the detector, the $z_{\rm vtx}$ distribution and the populations inside each slice. An A/C difference or an offset $z_{\rm vtx}$ gives the fake an even part, which the average keeps and only a control removes (the mixed events, as far as they reproduce it). It can also give a true ring an odd part, through an $M_z$-asymmetric response, which the average then removes along with the fake. So an odd trend in $p_0(\eta)$ is always detector-made, but the symmetrised $p_0$ is fake-free only as far as $M_z$ holds. The half-differences show the odd part; the even part of the fake shows only against the mixed events.
+
+#### `EQD/` -- the qualifying-exam set
+
+```
+ProofOfConcept/EQD/<Species>/<Proxy>/
+    Canvas_1_IntegratedR_OO               <R> of OO Data and Mix. Jet OO, InPeak and OutOfPeak
+    Canvas_2_IntegratedR_pp               the same for pp
+    Canvas_3_SummaryRCorrected_OO         the three estimates, OO
+    Canvas_4_SummaryRCorrected_OOAndPp    the same frame, with pp beside OO
+    PurityCorrectedQA/                    plot 4 over each system's peak purity (QA only)
+```
+
+The set shown at the qualifying exam (Exame de Qualificacao de Doutorado): the Default selection's full ring, for every species and proxy. No number in it is new. Every value is the story's own, from the same single-borrow files (`DrawStoryIntegrated`, `DrawStorySineP0`), so the two folders cannot disagree.
+
+- **Plots 1 and 2** are plot 1 of the story, one system each. Zero is not forced into the frame, which zooms onto the points: for the full ring it is no reference anyway, since every level carries the acceptance fake. pp's windows are named after pp's own edges, which match OO's unless the run warned otherwise.
+- **Plots 3 and 4** set three estimates side by side, each system against its own baselines, over the value/sigma strip. Nothing is ever subtracted across systems.
+
+| Column | Estimate | Error |
+|---|---|---|
+| Data: InPeak $-$ OutOfPeak | $\langle R\rangle_P-\langle R\rangle_B$ of the data, integrated | quadrature, exact (disjoint regions) |
+| InPeak: Data $-$ Mix. Jet | in-peak $\langle R\rangle$ of the data minus that of its mixed events, integrated | quadrature, over-covers (the same $\Lambda$s) |
+| Sine fits, InPeak: Data $-$ Mix. Jet | plot 4's $\Delta R_0$: in-peak, bin by bin, then condensed | PDG-scaled |
+
+The y axis reads $\langle R\rangle_{\rm Corrected}$: the baseline-subtracted ring, in $R$ units. **Nothing is corrected for purity or for the response.** The three columns of one system still compare, because all three are formed on the peak's candidates, so one $f_S$ dilutes them alike ([One dilution for every estimate](#one-dilution-for-every-estimate)). Their responses are close but not equal: the integrated differences respond with $3\langle u^2\rangle_P-k\,R_dR_f$, the sine offset with $c$, which for an ideal detector is $1-\tfrac{\alpha^2}{6}p_1^2$ per slice ([What the sine $p_0$ measures](#what-the-sine-p_0-measures)), and which the toys put between $0.8$ and $1.0$. "The same scale" therefore holds to about 10-20%. Across systems neither holds, since OO's and pp's purities and responses differ: a column of plot 4 compares each system with its own baselines, never OO's height with pp's.
+
+**The build-up.** Plot 4 is plot 3 with pp added, two steps of one slide, so OO's points must not move between them. Horizontally they do not: `DrawPocPanels` keeps a value's slot even when it is empty, so plot 3 passes pp as missing and OO sits at the left slot of every column in both. Vertically they would, since both ranges (values and pulls) follow what is drawn, so `PocPanel::frameVals` holds values that enter the ranges without being drawn, and plot 3 gets pp's there. A key at the top left tells the systems apart by a plain circle, filled for OO and open for pp. Its height would move the frame too, so plot 3 lists OO alone but keeps the room of both rows (`PocPanelLook::keyRows`). The looks are the story's colours, one per estimate (the data's black, the mixed events' red, pp's azure), each with its own marker shape, filled for OO and open for pp.
+
+**Sized for slides.** The four main canvases take half the default left margin, and plots 3 and 4 also larger column labels, y title and pad title, with the note at the bottom right (room is kept for it under the points, as for the boxes at the top). These are a `PocPanelLook` of their own; every other canvas keeps the defaults.
+
+**`PurityCorrectedQA/`** divides plot 4 by each system's bin-counting purity, $f_S=(N_P-s\,N_B)/N_P$ (`PocPurityPeak`), both values in the note. For the first column the division is exactly the sideband subtraction, $(R_P-R_B)/f_S=R_S-R_B$. The error adds the relative errors in quadrature, ignoring the counts that $f_S$ shares with the means. It brings OO and pp closer to one scale (the responses still differ), for reading magnitudes, not for showing.
 
 ### Output layout
 
@@ -1596,7 +1965,8 @@ Per family ($\Lambda$, $\bar\Lambda$, both), in this order:
 | `ProxyPt/`, `PVz/`, `QA_Mult/`, `OtherAngDepndncs/`, `BruteForce/` | the rest | yes |
 
 Outside any family, at the top level: `RingVsLongitudinal/`, `RingVsLongitudinal_CheapSigExtract/`,
-`Corrections/` and `CrossFamily_Integrated/` (with `SigExtracted/` inside).
+`Corrections/`, `CrossFamily_Integrated/` (with `SigExtracted/` inside) and `ProofOfConcept/` (see
+[its section](#proofofconcept----the-mass-peak-against-three-controls)).
 
 Every family reads its own files, which carry one species, so the species of every canvas is the
 family's: `Lambda/HEE/Canvas_HEE` is the $\Lambda$ one, `BothHyperons/HEE/Canvas_HEE` the all-V0s

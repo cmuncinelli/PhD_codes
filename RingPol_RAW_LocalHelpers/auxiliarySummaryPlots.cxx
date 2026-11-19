@@ -27,16 +27,21 @@
 #include <cmath>
 #include <algorithm>
 #include <utility>   // std::swap, used when canonicalising the tanh fit parameter signs
+#include <cstdlib>   // std::strtod, for the mass-window sigma argument
 
 #include "TFile.h"
 #include "TProfile.h"
 #include "TProfile2D.h"
+#include "TProfile3D.h" // ProofOfConcept AEE mosaics: <R> vs (phi_AEE, eta_Proxy, mass)
 #include "TCanvas.h"
 #include "TPad.h"
 #include "TBox.h"
+#include "TGaxis.h"   // The eta colour bar of the p0-vs-p1 canvases
 #include "TLegend.h"
 #include "TF1.h"
 #include "TFitResult.h"
+#include "Math/MinimizerOptions.h" // Every fit through a silent Minuit2 (see the main function)
+#include "TError.h"                // gErrorIgnoreLevel: Minuit2's Info messages muted around each fit
 #include "TPaveText.h"
 #include "TPaveStats.h"
 #include "TGraphAsymmErrors.h"
@@ -54,6 +59,7 @@
 #include "TClass.h"
 #include "TGraph.h"
 #include "TText.h"
+#include "TLatex.h" // Pad titles of the ProofOfConcept panels
 #include "TLegendEntry.h"
 #include "TObjString.h"
 #include "THashList.h"
@@ -126,7 +132,7 @@ struct ProfileConfig {
     // has no counterpart for this observable, and the toy is then skipped for it rather than guessed at.
     std::string toyProfile = "";
 
-    // Fit R(eta) = p0 * tanh(p1 * eta) to this observable, once per variation, plus the cross-variation
+    // Fit R(eta) = p0 + p1 * tanh(p2 * eta) to this observable, once per variation, plus the cross-variation
     // parameter summaries. Only meaningful for the fine-binned eta profiles: the coarse ones do not have
     // enough points across the turn-over for the two parameters to separate.
     bool doTanhFit = false;
@@ -746,6 +752,24 @@ struct ProfileBundle {
     VariationConfig config;
 };
 
+/// @brief A constant level drawn across a comparison canvas: a value with no x dependence on that axis (e.g. the pp
+///        minimum-bias value on a centrality axis, where pp has no class of its own to bin into).
+/// @note Always drawn dotted, whatever config.lineStyle says, so it never reads as a measured curve.
+struct HorizontalRef {
+    double y;
+    VariationConfig config; // Colour and legend label
+};
+
+/// @brief An x interval shaded across the full height of a comparison canvas's upper pad (e.g. the mass peak window).
+/// @note  Hatched rather than transparent, as in signalExtractionRing: transparency renders solid on X11 without
+///        OpenGL and would hide the points. An empty label keeps the band out of the legend (one entry for a pair of
+///        sidebands, say).
+struct ShadedBand {
+    double lo, hi;
+    int color, fillStyle;
+    std::string label;
+};
+
 /**
  * @brief What to show in the lower pad of a comparison canvas, underneath the overlay.
  *
@@ -1095,6 +1119,14 @@ void StylePointGraph(TGraphAsymmErrors* g, const VariationConfig& cfg) {
  *                     both the drawing and the legend (it is identically zero by construction, so its
  *                     marker carries no information), zero is forced inside the y-range, and a dashed
  *                     reference line is drawn there instead.
+ * @param horizontalRefs Constant levels drawn dotted across the upper pad, each with a legend entry, and kept
+ *                     inside the y-range (see HorizontalRef). Empty by default.
+ * @param curves       Functions drawn over the upper pad's points (fit results), styled and owned by the caller.
+ *                     Empty by default. They follow the points, so they do not enter the y-range.
+ * @param bands        x intervals hatched across the upper pad, under the points (see ShadedBand). Empty by default.
+ * @param note         A boxed line of text at the top right of the upper pad (a fitted model, say). Empty by default.
+ *                     When set, the points keep the part of the frame below the legend and the box, so neither can
+ *                     sit on a point; without it the range is the 5% margin it has always been.
  */
 void DrawComparisonCanvas(const std::vector<ProfileBundle>& inputBundles,
                           const std::string& canvasName,
@@ -1105,7 +1137,11 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& inputBundles,
                           const std::string& customYTitle = "",
                           LowerPadMode lowerPad = kNoLowerPad,
                           bool categorical = false,
-                          bool isDifference = false) {
+                          bool isDifference = false,
+                          const std::vector<HorizontalRef>& horizontalRefs = {},
+                          const std::vector<TF1*>& curves = {},
+                          const std::vector<ShadedBand>& bands = {},
+                          const std::string& note = "") {
     
     if (inputBundles.empty() || !outDir) return;
 
@@ -1157,6 +1193,11 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& inputBundles,
                 if (val + err > globalMax) globalMax = val + err;
             }
         }
+    }
+    // The constant levels must stay in frame too
+    for (const auto& ref : horizontalRefs) {
+        if (ref.y < globalMin) globalMin = ref.y;
+        if (ref.y > globalMax) globalMax = ref.y;
     }
 
     // Apply 5% margin (with a fallback if the curve is perfectly flat)
@@ -1219,11 +1260,30 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& inputBundles,
     }
 
     // Adjust legend coordinates based on how many items we have, to keep it tidy
-    double legBottom = 0.88 - (bundles.size() * 0.04);
+    size_t nLabelledBands = 0;
+    for (const auto& band : bands) nLabelledBands += band.label.empty() ? 0 : 1;
+    double legBottom = 0.88 - ((bundles.size() + horizontalRefs.size() + nLabelledBands) * 0.04);
     TLegend* leg = new TLegend(0.15, legBottom, 0.45, 0.88); // eyeballed some sizes! Verify this later on!
     leg->SetBorderSize(0);
     leg->SetFillStyle(0);
     leg->SetTextSize(0.035);
+
+    // The note, at the top right beside the legend. The points then keep the part of the frame below whichever of the
+    // two reaches lower (2% clear of it): the range grows upwards rather than letting either box sit on a point.
+    TPaveText* noteBox = nullptr; // Owned here, deleted after the canvas is written
+    if (!note.empty()) {
+        const double kNoteBottom = 0.88 - 0.055; // One line of text
+        noteBox = new TPaveText(0.48, kNoteBottom, 0.88, 0.88, "NDC");
+        noteBox->SetFillColor(kWhite);
+        noteBox->SetFillStyle(1001); // Opaque, so the grid does not run through it
+        noteBox->SetBorderSize(1);
+        noteBox->SetTextSize(0.032);
+        noteBox->AddText(note.c_str());
+        TPad* framePad = useLowerPad ? padUpper : c;
+        const double frameBottom = framePad->GetBottomMargin(), frameTop = 1. - framePad->GetTopMargin();
+        const double freeFraction = (std::min(legBottom, kNoteBottom) - 0.02 - frameBottom) / (frameTop - frameBottom);
+        yMax = yMin + (yMax - yMin) / std::max(0.3, freeFraction);
+    }
 
     // Determine the Axes titles
     std::string xTitle = customXTitle.empty() ? profConfig.xAxisTitle : customXTitle;
@@ -1252,11 +1312,27 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& inputBundles,
         frame->GetXaxis()->SetLabelSize(0.0); // Tick numbers would collide with the lower pad's own
     }
 
+    // 3b. Shaded x intervals, under everything that follows, clipped to the frame
+    std::vector<TBox*> bandBoxes; // Owned here, deleted after the canvas is written
+    for (const auto& band : bands) {
+        const double lo = std::max(band.lo, xMin), hi = std::min(band.hi, xMax);
+        if (!(hi > lo)) continue;
+        TBox* box = new TBox(lo, yMin, hi, yMax);
+        box->SetFillColor(band.color);
+        box->SetFillStyle(band.fillStyle);
+        box->SetLineWidth(0);
+        box->Draw("SAME");
+        bandBoxes.push_back(box);
+    }
+
     // 4. Build one zero-x-width point graph per curve, horizontally offset from its siblings.
     //    See MakeOffsetPointGraph for why these replaced the superposed histograms.
     //    A single-curve canvas gets no offset: there is nothing to separate it from.
+    //    Nor does a canvas carrying fitted functions: the fits are made on the profiles, at the true bin centres, so
+    //    an offset point would sit beside the curve it was fitted with, by up to kOverlaySpreadFrac/2 of a bin, and
+    //    read as a misfit that is not there. Markers and colours tell the series apart instead.
     const int nCurves = static_cast<int>(bundles.size());
-    const double spread = (nCurves > 1) ? kOverlaySpreadFrac : 0.0;
+    const double spread = (nCurves > 1 && curves.empty()) ? kOverlaySpreadFrac : 0.0;
 
     std::vector<TGraphAsymmErrors*> upperGraphs(nCurves, nullptr);
     TGraphAsymmErrors* dataGraph = nullptr;
@@ -1282,6 +1358,8 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& inputBundles,
         if (upperGraphs[i] && !bundles[i].config.isData) upperGraphs[i]->Draw("P SAME");
     }
     if (hasData && dataGraph) dataGraph->Draw("P SAME");
+    for (TF1* f : curves)
+        if (f) f->Draw("SAME"); // Over the points they were fitted to
 
     // Dashed reference at zero, replacing the flat data curve that difference plots used to carry
     TLine* zeroRef = nullptr;
@@ -1293,7 +1371,26 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& inputBundles,
         zeroRef->Draw("SAME");
     }
 
+    // Constant levels, dotted across the full x range, after the curves in the legend
+    std::vector<TLine*> refLines; // Owned here, deleted after the canvas is written
+    for (const auto& ref : horizontalRefs) {
+        TLine* l = new TLine(xMin, ref.y, xMax, ref.y);
+        l->SetLineColor(ref.config.color);
+        l->SetLineStyle(3); // Dotted: a level, not a measured curve
+        l->SetLineWidth(4);
+        l->Draw("SAME");
+        leg->AddEntry(l, ref.config.legendLabel.c_str(), "l");
+        refLines.push_back(l);
+    }
+    for (size_t b = 0; b < bands.size() && b < bandBoxes.size(); ++b)
+        if (!bands[b].label.empty()) leg->AddEntry(bandBoxes[b], bands[b].label.c_str(), "f");
+
     leg->Draw();
+    if (noteBox) noteBox->Draw();
+    if (!bandBoxes.empty()) { // The hatching is a filled shape: put the frame and ticks back on top
+        if (useLowerPad) padUpper->RedrawAxis();
+        else c->RedrawAxis();
+    }
 
     // 5b. Lower pad: every variation compared against the data
     std::vector<TH1*> lowerToDelete;
@@ -1434,69 +1531,193 @@ void DrawComparisonCanvas(const std::vector<ProfileBundle>& inputBundles,
     delete ownedUpperFrame; // nullptr unless categorical, and deleting nullptr is fine
     delete lowerFrameOwned;
     delete leg;
-    delete c; 
+    delete noteBox; // nullptr without a note
+    delete c;
+    for (auto l : refLines) delete l;
+    for (auto b : bandBoxes) delete b;
 }
 
 // ---------------------------------------------------------
-// Helper 3.5: tanh fit of the eta dependence
+// Helper 3.5: constant-plus-odd fits (tanh of the eta dependence, sine of the AEE angle)
 // ---------------------------------------------------------
 
-/// @brief Outcome of one R(eta) = p0*tanh(p1*eta) fit. Errors are magnitudes, already "sign-canonicalised".
-struct TanhFitResult {
-    bool   valid = false; // Fit converged with a usable covariance and at least one degree of freedom
+/// @brief The odd functions of the models below, as evaluated in C++ (the seeding projection).
+double PocOddTanh(double x) { return std::tanh(x); }
+double PocOddSin(double x) { return std::sin(x); }
+
+/**
+ * @brief A model f(x) = p0 + p1 g(p2 x) with g odd: a constant plus an odd function of a scaled x.
+ *
+ * Every such model is exactly invariant under (p1, p2) -> (-p1, -p2), p0 untouched, which is what lets one fitter
+ * serve them all (see OddPlusConstantFitter). The odd function, the starting scale and the range allowed to p2 differ.
+ */
+struct OddPlusConstantModel {
+    std::string name;          // "tanh", "sine": canvas titles and log messages
+    std::string oddFunction;   // As written in a TF1 formula: "TMath::TanH", "TMath::Sin"
+    double (*odd)(double);     // The same function in C++, for the seeding projection
+    double p1Seed, p2Seed;     // Fallback amplitude (when the projection cannot be formed) and starting scale
+    double p2Min, p2Max;       // Range allowed to p2; p2Max <= p2Min leaves it free (then canonicalised onto p2 > 0)
+};
+// R(eta_Proxy): p2 free, its seed from the orders of magnitude of the Toy Model fits.
+const OddPlusConstantModel kTanhModel = {"tanh", "TMath::TanH", &PocOddTanh, 1.0e-2, 0.5, 0., 0.};
+// R(phi_AEE): p2 confined to [0, 2]. On N bins over a full period, sin(p2 x) with p2 = N +/- 1 coincides with -/+sin(x)
+// at every bin centre, so a free frequency lands on such aliases (IMPROVE, which goes looking for other minima, did so
+// routinely). Keeping p2 positive also puts the whole sign of the modulation in p1, which may then be negative.
+const OddPlusConstantModel kSineModel = {"sine", "TMath::Sin", &PocOddSin, 1.0e-2, 1.0, 0., 2.};
+
+/// @brief The TF1 formula of a model, with named parameters, so a fit box shows "p0", "p1" and "p2".
+std::string FormulaOf(const OddPlusConstantModel& model) {
+    return "[p0]+[p1]*" + model.oddFunction + "([p2]*x)";
+}
+
+/// @brief Outcome of one constant-plus-odd fit. Errors are magnitudes, already "sign-canonicalised".
+struct OddPlusConstantFitResult {
+    bool   hasParameters = false; // The minimiser returned parameters at all (drawable, even when not converged)
+    bool   valid = false;         // Fit converged with a usable covariance and at least one degree of freedom
+    int    status = -1;           // The fit status, for the log when it did not converge
     double entries = 0.0;
     double chi2 = 0.0;
     int    ndf = 0;
-    double p0 = 0.0, p0Low = 0.0, p0High = 0.0;
-    double p1 = 0.0, p1Low = 0.0, p1High = 0.0;
+    double p0 = 0.0, p0Low = 0.0, p0High = 0.0; // Offset: the x-even part of R
+    double p0Hesse = 0.0;                        // Symmetric (parabolic) error of p0: the weight of every Delta p0 average
+    double p1 = 0.0, p1Low = 0.0, p1High = 0.0; // Amplitude of the x-odd part (signed)
+    double p2 = 0.0, p2Low = 0.0, p2High = 0.0; // Scale of the x-odd part (slope for tanh, frequency for sine), > 0
 };
 
 /**
- * @brief Fits p0*tanh(p1*eta) to one profile, draws the annotated canvas, and returns the parameters.
+ * @brief Fits p0 + p1 g(p2 x) to one profile and returns the parameters; with an output directory, also writes the
+ *        annotated canvas.
  *
  * Fit configuration, and why:
- *  - Unconstrained, then canonicalised. The tanh equation is exactly invariant under (p0,p1) -> (-p0,-p1), so
- *    leaving both free gives two equivalent minima and makes convergence and errors ill-defined. Hard
- *    limits would fix that but introduce their own pathologies (Minos behaves badly against a boundary,
- *    and a limit at p1 >= 0 is hit whenever the distribution is flat). Fitting free and then flipping
- *    both signs when p1 < 0 removes the redundancy exactly, costs nothing numerically, and leaves p0
- *    carrying the sign of the slope.
- *    Note the asymmetric errors swap sides under that flip, which is handled below.
+ *  - The offset p0 carries the x-even part of R and the odd function the x-odd one. On an axis symmetric about zero
+ *    the two are nearly orthogonal (an odd function integrates to zero against a constant), so p0 is close to the
+ *    plain mean of the profile and hardly correlated with p1 and p2: adding it does not reopen the valley below.
+ *    It starts at that (error-weighted) mean.
  *
- *  - Minos ("E"), which is worth its cost here specifically. For small p1*eta the model degenerates to
- *    p0*p1*eta, so only the PRODUCT is constrained and the p0/p1 contour becomes a long curved valley.
+ *  - p1 starts at the weighted least-squares projection of the data onto g(p2Seed x), mean removed. That gives it
+ *    the data's sign and size, so the minimiser starts in the right half of the (p1, p2) plane instead of having to
+ *    cross p1 = 0, which is where it used to fall into the wrong minimum.
+ *
+ *  - p2 free (tanh): unconstrained, then canonicalised. The model is exactly invariant under (p1,p2) -> (-p1,-p2), so
+ *    leaving both free gives two equivalent minima. Hard limits would fix that but introduce their own pathologies
+ *    (Minos behaves badly against a boundary, and a limit at p2 >= 0 is hit whenever the distribution is flat).
+ *    Fitting free and then flipping both signs when p2 < 0 removes the redundancy exactly, and leaves p1 carrying the
+ *    sign of the slope. The asymmetric errors swap sides under that flip, which is handled below.
+ *    p2 bounded (sine): see kSineModel. The bound is far from the fundamental, so Minos never meets it in practice.
+ *
+ *  - Minos ("E"), which is worth its cost here specifically. For small p2*x both odd functions degenerate to
+ *    p1*p2*x, so only the PRODUCT is constrained and the p1/p2 contour becomes a long curved valley.
  *    Parabolic (Hesse) errors describe that valley badly, which is exactly the regime the data sits in at
  *    current statistics. Minos maps the real contour instead, and the resulting asymmetry is itself the
- *    diagnostic that the two parameters have not separated.
+ *    diagnostic that the two parameters have not separated. Where p1 is consistent with zero, p2 is not
+ *    constrained at all: its error is then formally valid but uninformative.
  *
- *  - "M" (improve) to re-search after convergence, for the same valley reason, and "S" to get the full
- *    result object back rather than just a status code.
+ *  - No "M" (IMPROVE): it forces the old TMinuit, whose MINOS and IMPROVE print their "NEW MINIMUM FOUND" banners
+ *    whatever "Q" says, and which hunted the sine aliases. The valley is handled instead by the seeding above and by
+ *    Minuit2 at strategy 2 (set once in the main function), whose more careful Hessian is what IMPROVE was standing in
+ *    for. "S" returns the full result object, and "N0" keeps the fit from attaching or drawing anything: the annotated
+ *    canvas attaches the function itself (see the comment at the fit call), and OddPlusConstantCurve draws a result
+ *    on any other canvas.
  *
  * @param prof       Profile to fit. Empty bins carry zero error and are skipped by the chi2 method.
- * @param canvasName Name of the canvas written into outDir.
- * @return The fit outcome. A non-converged fit still reports chi2/ndf and entries, with valid = false.
+ * @param canvasName Name of the canvas written into outDir (and of the fit function).
+ * @param outDir     Where the annotated canvas goes; nullptr fits only.
+ * @return The fit outcome. A non-converged fit still reports its parameters (hasParameters), chi2/ndf, entries and
+ *         status, with valid = false.
  * @note Bins are means with SEM errors, so a chi2 fit with those errors is the correct method here.
  *       A likelihood option would be wrong: these are not Poisson counts.
  */
-TanhFitResult FitTanhProfile(TProfile* prof,
-                             const ProfileConfig& profConfig,
-                             const VariationConfig& varConfig,
-                             const std::string& canvasName,
-                             TDirectory* outDir) {
-    TanhFitResult out;
-    if (!prof || !outDir) return out;
+OddPlusConstantFitResult OddPlusConstantFitter(TProfile* prof,
+                                               const OddPlusConstantModel& model,
+                                               const ProfileConfig& profConfig,
+                                               const VariationConfig& varConfig,
+                                               const std::string& canvasName,
+                                               TDirectory* outDir) {
+    OddPlusConstantFitResult out;
+    if (!prof) return out;
 
     out.entries = prof->GetEntries();
 
     const double xLo = prof->GetXaxis()->GetXmin();
     const double xHi = prof->GetXaxis()->GetXmax();
 
-    // Named parameters, so the fit box shows "p0" and "p1" rather than "p0" style indices
-    TF1* fTanh = new TF1((canvasName + "_fn").c_str(), "[p0]*TMath::TanH([p1]*x)", xLo, xHi);
-    fTanh->SetParameters(1.0e-2, 0.5); // Orders of magnitude taken from the Toy Model fits
-    fTanh->SetLineColor(varConfig.color);
-    fTanh->SetLineWidth(2);
-    fTanh->SetNpx(500);
+    // Seeds: the weighted mean for p0, then the weighted projection of what is left onto g(p2Seed x) for p1
+    double sw = 0., swy = 0.;
+    for (int i = 1; i <= prof->GetNbinsX(); ++i) {
+        const double e = prof->GetBinError(i);
+        if (prof->GetBinEntries(i) <= 0. || e <= 0.) continue; // The bins the chi2 fit uses
+        sw  += 1. / (e * e);
+        swy += prof->GetBinContent(i) / (e * e);
+    }
+    const double p0Seed = (sw > 0.) ? swy / sw : prof->GetMean(2);
+    double num = 0., den = 0.;
+    for (int i = 1; i <= prof->GetNbinsX(); ++i) {
+        const double e = prof->GetBinError(i);
+        if (prof->GetBinEntries(i) <= 0. || e <= 0.) continue;
+        const double g = model.odd(model.p2Seed * prof->GetXaxis()->GetBinCenter(i));
+        num += (prof->GetBinContent(i) - p0Seed) * g / (e * e);
+        den += g * g / (e * e);
+    }
+    const double p1Seed = (den > 0.) ? num / den : model.p1Seed;
+
+    TF1* fModel = new TF1((canvasName + "_fn").c_str(), FormulaOf(model).c_str(), xLo, xHi);
+    fModel->SetParameters(p0Seed, p1Seed, model.p2Seed);
+    if (model.p2Max > model.p2Min) fModel->SetParLimits(2, model.p2Min, model.p2Max);
+    fModel->SetLineColor(varConfig.color);
+    fModel->SetLineWidth(2);
+    fModel->SetNpx(500);
+
+    // Collects the numbers of a finished fit, canonicalised onto p2 > 0
+    auto collect = [&](const TFitResultPtr& res) {
+        if (!res.Get()) return;
+        out.hasParameters = true;
+        out.status = res->Status();
+        out.chi2 = res->Chi2();
+        out.ndf  = res->Ndf();
+        out.valid = res->IsValid() && (out.ndf > 0);
+        out.p0 = res->Parameter(0);
+        out.p1 = res->Parameter(1);
+        out.p2 = res->Parameter(2);
+        // Minos gives asymmetric errors; fall back to the parabolic one where it did not run.
+        // std::abs guards against the Minuit sign convention for the lower side.
+        out.p0Low  = res->HasMinosError(0) ? std::abs(res->LowerError(0)) : res->ParError(0);
+        out.p0High = res->HasMinosError(0) ? std::abs(res->UpperError(0)) : res->ParError(0);
+        out.p0Hesse = res->ParError(0); // p0 is nearly orthogonal to p1 and p2, so the parabolic error describes it well
+        out.p1Low  = res->HasMinosError(1) ? std::abs(res->LowerError(1)) : res->ParError(1);
+        out.p1High = res->HasMinosError(1) ? std::abs(res->UpperError(1)) : res->ParError(1);
+        out.p2Low  = res->HasMinosError(2) ? std::abs(res->LowerError(2)) : res->ParError(2);
+        out.p2High = res->HasMinosError(2) ? std::abs(res->UpperError(2)) : res->ParError(2);
+        // Flipping a parameter's sign mirrors its error interval, so the low and high sides swap; the magnitudes
+        // are unchanged. The offset p0 is not part of the symmetry. (Never triggers for a model with p2 >= 0 bounds.)
+        if (out.p2 < 0.0) {
+            out.p1 = -out.p1;
+            out.p2 = -out.p2;
+            std::swap(out.p1Low, out.p1High);
+            std::swap(out.p2Low, out.p2High);
+        }
+    };
+    // Always "N0": the fit never attaches anything to the profile nor draws. When Minuit2's MINOS finds a new minimum
+    // it re-runs, and letting the fit attach its own copy of the function could then leave the profile's function list
+    // with a shared entry: harmless in memory, but a double delete once the canvas is read back from the file (the
+    // relabel pass of the longitudinal families crashed on exactly these canvases). The canvas below attaches the
+    // function itself, once, and detaches it again before returning.
+    // Minuit2 reports a MINOS re-run as an Info message ("Run again Minos ... a new Minimum has been found"), which "Q"
+    // does not cover: Info is muted for the fit call alone, and warnings and errors still come through.
+    const Int_t previousIgnoreLevel = gErrorIgnoreLevel;
+    gErrorIgnoreLevel = std::max(previousIgnoreLevel, static_cast<Int_t>(kWarning));
+    // Two stages: MIGRAD and HESSE first, then MINOS from that minimum. MINOS started away from the minimum tends to find
+    // a lower one and re-run, and ROOT then refuses to update the stored result ("Error in <ROOT::Math::FitResult::Update>:
+    // Configuration has changed"), leaving errors that belong to a stale state. Starting at the minimum avoids most of it.
+    TFitResultPtr pre = prof->Fit(fModel, "QSN0", "", xLo, xHi);
+    if (pre.Get() && pre->IsValid()) fModel->SetParameters(pre->Parameter(0), pre->Parameter(1), pre->Parameter(2));
+    TFitResultPtr res = prof->Fit(fModel, "QSEN0", "", xLo, xHi);
+    gErrorIgnoreLevel = previousIgnoreLevel;
+    collect(res);
+
+    if (!outDir) { // Fit only: the parameters are the whole result
+        delete fModel;
+        return out;
+    }
 
     // gStyle must be set BEFORE anything is painted: the stats box is built at paint time and reads
     // these values then. Setting them after Draw (as this did) had no effect at all.
@@ -1505,7 +1726,22 @@ TanhFitResult FitTanhProfile(TProfile* prof,
     gStyle->SetOptStat(10);
     gStyle->SetOptFit(111);
 
-    TFitResultPtr res = prof->Fit(fTanh, "QSEM", "", xLo, xHi);
+    // The canvas draws a COPY of the profile, owned by the canvas, whose only function is a copy of the fitted one: the
+    // written canvas is then a self-contained object graph, and the caller's profile is never touched. Drawing the
+    // caller's profile itself left objects shared between the canvas and the rest of the macro: the stats box that
+    // painting hangs on the profile, the function attached and detached around the write, and whatever earlier canvases
+    // had left on it. Read back by the longitudinal relabel pass, such a canvas could be freed twice (the crash in
+    // TPad::Close under RelabelRingDirectory), and only sometimes, as a use-after-free goes.
+    static int copyCounter = 0; // Unique names: the copies are never looked up, but ROOT lists them by name
+    TProfile* shown = static_cast<TProfile*>(prof->Clone(Form("%s_prof%d", canvasName.c_str(), copyCounter++)));
+    shown->SetDirectory(nullptr);
+    shown->GetListOfFunctions()->Delete(); // The copy's copies of anything the caller's profile carried
+    TF1* fShown = static_cast<TF1*>(fModel->Clone(Form("%s_fit%d", canvasName.c_str(), copyCounter++)));
+    // The stats box reads the fit from the profile's first function: values, errors, chi2 and ndf, all set from the
+    // result (raw, as Minuit returned them: the canonicalised ones are in the returned struct)
+    if (res.Get()) fShown->SetFitResult(*res);
+    shown->GetListOfFunctions()->Add(fShown); // Owned by the copy, and deleted with it
+    shown->SetBit(kCanDelete);                // The copy is the canvas's
 
     TCanvas* c = new TCanvas(canvasName.c_str(), canvasName.c_str(), 800, 600);
     c->SetLeftMargin(0.12);
@@ -1513,14 +1749,14 @@ TanhFitResult FitTanhProfile(TProfile* prof,
     c->SetGridx();
     c->SetGridy();
 
-    prof->SetStats(1);
-    prof->SetLineColor(varConfig.color);
-    prof->SetMarkerColor(varConfig.color);
-    prof->SetMarkerStyle(varConfig.markerStyle);
-    prof->SetLineWidth(varConfig.isData ? 3 : 1);
-    prof->GetXaxis()->SetTitle(profConfig.xAxisTitle.c_str());
-    prof->GetYaxis()->SetTitle(profConfig.yAxisTitle.c_str());
-    prof->Draw("PE");
+    shown->SetStats(1);
+    shown->SetLineColor(varConfig.color);
+    shown->SetMarkerColor(varConfig.color);
+    shown->SetMarkerStyle(varConfig.markerStyle);
+    shown->SetLineWidth(varConfig.isData ? 3 : 1);
+    shown->GetXaxis()->SetTitle(profConfig.xAxisTitle.c_str());
+    shown->GetYaxis()->SetTitle(profConfig.yAxisTitle.c_str());
+    shown->Draw("PE");
 
     // Force a paint pass so the TPaveStats actually gets built. TCanvas::Write() does NOT paint, so
     // without this the canvas was stored with no stats object at all, and ROOT rebuilt a default one
@@ -1530,14 +1766,14 @@ TanhFitResult FitTanhProfile(TProfile* prof,
 
     // Having got hold of the object, set the options ON IT rather than only on gStyle. Those settings
     // are then serialised with the canvas and survive independently of the reader's global style.
-    TPaveStats* stats = dynamic_cast<TPaveStats*>(prof->FindObject("stats"));
+    TPaveStats* stats = dynamic_cast<TPaveStats*>(shown->FindObject("stats"));
     if (stats) {
         stats->SetOptStat(10);
         stats->SetOptFit(111);
-        // Upper LEFT corner: the tanh rises to the right, so the top-left is the empty part of the pad
+        // Upper LEFT corner: a rising tanh leaves the top-left empty (for a sine it is at least out of the extrema)
         stats->SetX1NDC(0.14);
         stats->SetX2NDC(0.46);
-        stats->SetY1NDC(0.72);
+        stats->SetY1NDC(0.69); // One line taller than the two-parameter box: entries, chi2/ndf, p0, p1, p2
         stats->SetY2NDC(0.90);
         stats->SetFillColor(kWhite);
         stats->SetFillStyle(1001); // Opaque, so the grid does not run through the numbers
@@ -1546,12 +1782,13 @@ TanhFitResult FitTanhProfile(TProfile* prof,
     }
 
     // Function definition, sitting immediately below the stat box
-    TPaveText* fnLabel = new TPaveText(0.14, 0.645, 0.46, 0.712, "NDC");
+    TPaveText* fnLabel = new TPaveText(0.14, 0.615, 0.46, 0.682, "NDC");
     fnLabel->SetFillColor(kWhite);
     fnLabel->SetFillStyle(1001); // Opaque white, as requested: transparent was unreadable over the grid
     fnLabel->SetBorderSize(1);
     fnLabel->SetTextSize(0.028);
-    fnLabel->AddText(("f(" + profConfig.xAxisTitle + ")=[p0]*TMath::TanH([p1]*x)").c_str());
+    fnLabel->AddText(("f(" + profConfig.xAxisTitle + ")=" + FormulaOf(model)).c_str());
+    fnLabel->SetBit(kCanDelete); // The canvas's, as the copy is
     fnLabel->Draw();
 
     // Second pass, so the repositioned stats box and the new label are part of what gets written
@@ -1561,36 +1798,22 @@ TanhFitResult FitTanhProfile(TProfile* prof,
     outDir->cd();
     c->Write();
 
-    // Collect the numbers before things get out of scope:
-    if (res.Get()) {
-        out.chi2 = res->Chi2();
-        out.ndf  = res->Ndf();
-        out.valid = res->IsValid() && (out.ndf > 0);
-
-        out.p0 = res->Parameter(0);
-        out.p1 = res->Parameter(1);
-
-        // Minos gives asymmetric errors; fall back to the parabolic one where it did not run.
-        // std::abs guards against the Minuit sign convention for the lower side.
-        out.p0Low  = res->HasMinosError(0) ? std::abs(res->LowerError(0)) : res->ParError(0);
-        out.p0High = res->HasMinosError(0) ? std::abs(res->UpperError(0)) : res->ParError(0);
-        out.p1Low  = res->HasMinosError(1) ? std::abs(res->LowerError(1)) : res->ParError(1);
-        out.p1High = res->HasMinosError(1) ? std::abs(res->UpperError(1)) : res->ParError(1);
-
-        // Canonicalise onto p1 > 0. Flipping a parameter's sign mirrors its error interval, so the
-        // low and high sides swap; the magnitudes themselves are unchanged.
-        if (out.p1 < 0.0) {
-            out.p0 = -out.p0;
-            out.p1 = -out.p1;
-            std::swap(out.p0Low, out.p0High);
-            std::swap(out.p1Low, out.p1High);
-        }
-    }
-
-    delete fnLabel;
-    delete c;
-    delete fTanh;
+    delete c;      // Frees the copy (with its function and stats box) and the label
+    delete fModel; // Never attached to anything
     return out;
+}
+
+/// @brief A fitted curve, for drawing over a profile (caller owns it). Dashed when the fit did not converge, so an
+///        unconverged result can still be seen next to the converged ones without being mistaken for one.
+TF1* OddPlusConstantCurve(const OddPlusConstantModel& model, const OddPlusConstantFitResult& fit,
+                          const std::string& name, double xLo, double xHi, int color) {
+    TF1* f = new TF1(name.c_str(), FormulaOf(model).c_str(), xLo, xHi);
+    f->SetParameters(fit.p0, fit.p1, fit.p2);
+    f->SetLineColor(color);
+    f->SetLineStyle(fit.valid ? 1 : 2);
+    f->SetLineWidth(2);
+    f->SetNpx(500);
+    return f;
 }
 
 /// @brief One variation's value on a cross-variation summary axis.
@@ -2364,6 +2587,11 @@ int EtaSliceColor(double etaCentre, double etaMax)
  * The palette travels with the canvas in a TExec: gStyle is not serialised, so without it a map would
  * reopen in whatever palette the reader has active. Signed quantities get a diverging palette on a
  * range symmetric about zero, so zero is the neutral colour and the sign reads from the hue.
+ *
+ * Every object enters the pad once, and the canvas owns all of them. ROOT's usual per-canvas palette
+ * idiom (map, TExec, map again with SAME) lists the map twice in the pad. Once read back from the file,
+ * where the pad owns every primitive, that is a double delete, and it crashed the longitudinal relabel
+ * pass. An empty axes-only copy takes the first draw instead.
  */
 void DrawMapCanvas(TH2* hMap, TH2* hStatus, const std::string& canvasName,
                    const std::string& canvasTitle, TDirectory* outDir,
@@ -2382,20 +2610,25 @@ void DrawMapCanvas(TH2* hMap, TH2* hStatus, const std::string& canvasName,
                 aMax = std::max(aMax, std::fabs(h->GetBinContent(ix, iy)));
         if (aMax > 0.0) { h->SetMinimum(-aMax); h->SetMaximum(aMax); }
     }
+    h->SetBit(kCanDelete); // The canvas's, like everything else drawn on it
+
+    // Axes only, drawn first: the frame must exist before the TExec, and the TExec must be painted before the map
+    TH2* hAxes = (TH2*)h->Clone((canvasName + "_axes").c_str());
+    hAxes->SetDirectory(nullptr);
+    hAxes->Reset();
+    hAxes->SetBit(kCanDelete);
 
     TCanvas* c = new TCanvas(canvasName.c_str(), canvasTitle.c_str(), 1000, 650);
     c->SetLeftMargin(0.11);
     c->SetRightMargin(0.16);
     c->SetBottomMargin(0.12);
 
-    const std::string opt = drawText ? "COLZ TEXT" : "COLZ";
     TExec* palette = new TExec("ex_palette", isSigned ? "gStyle->SetPalette(kLightTemperature);"
                                                       : "gStyle->SetPalette(kBird);");
     palette->SetBit(kCanDelete);
-    // Draw, palette, draw again: the TExec only acts on what is painted after it
-    h->Draw(opt.c_str());
+    hAxes->Draw("AXIS");
     palette->Draw();
-    h->Draw((opt + " SAME").c_str());
+    h->Draw(drawText ? "COLZ TEXT SAME" : "COLZ SAME");
 
     if (hStatus) {
         for (int ix = 1; ix <= hStatus->GetNbinsX(); ++ix) {
@@ -2414,8 +2647,7 @@ void DrawMapCanvas(TH2* hMap, TH2* hStatus, const std::string& canvasName,
 
     c->Update(); // TCanvas::Write() does not paint
     c->Write();
-    delete c;    // Before h, which the canvas still lists but does not own
-    delete h;
+    delete c;    // Frees everything drawn above: the canvas owns it all
     gStyle->SetPalette(kBird); // Leave nothing behind for the next canvas
 }
 
@@ -2827,22 +3059,23 @@ void RelabelRingObject(TObject* obj, const std::string& sfx) {
         pad->SetTitle(SwapRingText(pad->GetTitle(), sfx).c_str());
         TIter next(pad->GetListOfPrimitives());
         while (TObject* prim = next()) RelabelRingObject(prim, sfx);
-    } else if (auto* h = dynamic_cast<TH1*>(obj)) {
+        } else if (auto* h = dynamic_cast<TH1*>(obj)) {
         h->SetTitle(SwapRingText(h->GetTitle(), sfx).c_str());
         for (TAxis* ax : {h->GetXaxis(), h->GetYaxis(), h->GetZaxis()}) {
             ax->SetTitle(SwapRingText(ax->GetTitle(), sfx).c_str());
             if (THashList* labels = ax->GetLabels()) {
                 TIter nextLabel(labels);
                 while (auto* lab = static_cast<TObjString*>(nextLabel())) lab->SetString(SwapRingText(lab->GetString().Data(), sfx).c_str());
+                // The labels are keyed on their own text, so rewriting them in place leaves the hash table stale.
+                // TAxis::SetBinLabel rehashes after the same operation (ROOT-5025)
+                labels->Rehash(labels->GetSize());
             }
         }
-    } else if (auto* g = dynamic_cast<TGraph*>(obj)) {
-        g->SetTitle(SwapRingText(g->GetTitle(), sfx).c_str());
-        if (TH1* frame = g->GetHistogram()) RelabelRingObject(frame, sfx);
     } else if (auto* leg = dynamic_cast<TLegend*>(obj)) {
         TIter nextEntry(leg->GetListOfPrimitives());
         while (auto* e = static_cast<TLegendEntry*>(nextEntry())) e->SetLabel(SwapRingText(e->GetLabel(), sfx).c_str());
     } else if (auto* pave = dynamic_cast<TPaveText*>(obj)) {
+        // TODO: this loop stops at the first line that is not a TText (a TLine added with AddLine) instead of skipping it
         TIter nextLine(pave->GetListOfLines());
         while (auto* line = dynamic_cast<TText*>(nextLine())) line->SetTitle(SwapRingText(line->GetTitle(), sfx).c_str());
     } else if (auto* txt = dynamic_cast<TText*>(obj)) { // TLatex included
@@ -2851,7 +3084,7 @@ void RelabelRingObject(TObject* obj, const std::string& sfx) {
 }
 
 /**
- * @brief Relabels every canvas, histogram and graph under a directory, recursively, rewriting each in place.
+ * @brief Relabels every canvas and histogram under a directory, recursively, rewriting each in place.
  *
  * Key names are collected first: writing while iterating would add cycles to the very list being walked.
  */
@@ -2870,8 +3103,12 @@ void RelabelRingDirectory(TDirectory* dir, const std::string& sfx) {
         TClass* cls = item.second;
         if (!cls) continue;
         if (cls->InheritsFrom(TDirectory::Class())) { RelabelRingDirectory(dir->GetDirectory(name.c_str()), sfx); continue; }
-        if (!cls->InheritsFrom(TPad::Class()) && !cls->InheritsFrom(TH1::Class()) && !cls->InheritsFrom(TGraph::Class())) continue;
+        if (!cls->InheritsFrom(TPad::Class()) && !cls->InheritsFrom(TH1::Class())) continue;
         TObject* obj = dir->Get(name.c_str());
+        if (!obj) {
+            WarnSkip(name, "listed as a key but could not be read, left without the ring symbol", std::string(dir->GetPath()));
+            continue;
+        }
         RelabelRingObject(obj, sfx);
         dir->cd();
         obj->Write(name.c_str(), TObject::kOverwrite);
@@ -3013,6 +3250,52 @@ void DrawSeriesByColumn(const std::vector<std::string>& columnLabels, const std:
 }
 
 /**
+ * @brief The consumer's own mass regions: {left sideband low, high, peak low, high, right sideband low, high}, read off
+ *        the five-bin mass-region axis (left sideband, gap, peak, gap, right sideband) of
+ *        FakePolDrivers/PhiAEE/FiveBinMass/<Proxy>/p2dRingObservableVsPhiAEEVs5BinMass, so no window is re-typed here.
+ *        Shared by the sideband scale (SidebandScaleOf) and the ProofOfConcept shading.
+ */
+bool LoadMassRegionEdges(FileCache& cache, const std::string& file, const std::string& proxy, double regions[6]) {
+    TProfile2D* p = cache.FetchClone<TProfile2D>(file, TASK_DIR_IN_FILE + "FakePolDrivers/PhiAEE/FiveBinMass/" + proxy +
+                                                           "/p2dRingObservableVsPhiAEEVs5BinMass", false);
+    if (!p) return false; // Counted by FetchClone
+    const bool ok = HasMassRegionAxis(p, proxy + " mass regions");
+    if (ok) {
+        const TAxis* ax = p->GetYaxis();
+        // Bin 1 is the left sideband, 3 the peak, 5 the right sideband (see kMassRegions)
+        regions[0] = ax->GetBinLowEdge(1); regions[1] = ax->GetBinUpEdge(1);
+        regions[2] = ax->GetBinLowEdge(3); regions[3] = ax->GetBinUpEdge(3);
+        regions[4] = ax->GetBinLowEdge(5); regions[5] = ax->GetBinUpEdge(5);
+    }
+    delete p;
+    return ok;
+}
+
+/**
+ * @brief The sideband scale s = w_P / w_B: the peak window's width over the two sidebands' total width.
+ *
+ * For a background linear in mass, s N_B (and s Sum_B y) is the background under the peak whatever the two widths, as
+ * long as the sidebands sit symmetrically about it (the consumer builds them so). The consumer no longer forces equal
+ * widths, so every sideband subtraction and purity of this macro scales the sideband by s. Read once per file and
+ * proxy from the region edges; 1 (the equal-width windows of older consumers) when they are absent, with a warning.
+ */
+double SidebandScaleOf(FileCache& cache, const std::string& file, const std::string& proxy) {
+    static std::map<std::string, double> known; // Every folder reloads the same files
+    const std::string key = file + "|" + proxy;
+    const auto it = known.find(key);
+    if (it != known.end()) return it->second;
+    double e[6];
+    double s = 1.;
+    if (LoadMassRegionEdges(cache, file, proxy, e) && (e[1] - e[0]) + (e[5] - e[4]) > 0.)
+        s = (e[3] - e[2]) / ((e[1] - e[0]) + (e[5] - e[4]));
+    else
+        std::cerr << "  [Warning] " << proxy << ": no mass-region edges in " << file
+                  << ", the sideband is taken as wide as the peak window (s = 1)" << std::endl;
+    known[key] = s;
+    return s;
+}
+
+/**
  * @brief CheapSigExtract inputs of one consumer file, for one proxy: the four *VsMassRegion profiles.
  *
  * The consumer fills them from the same two flags as IntegratedCuts/<Proxy>/p2dRingCutsV0MassPeak:
@@ -3021,6 +3304,7 @@ void DrawSeriesByColumn(const std::vector<std::string>& columnLabels, const std:
 struct RegionSample {
     CandidateMoments ring[2], num[2], den[2], numDen[2];
     CandidateMoments ringDen[2]; // R w: only in consumer outputs that book it (empty, n = 0, in older ones)
+    double bkgScale = 1.;        // s = w_P / w_B, the sideband onto the background under the peak (see SidebandScaleOf)
 };
 
 /// @brief The candidate moments of one bin of a TProfile, from its mean and spread ("s" error option).
@@ -3060,34 +3344,36 @@ bool LoadRegionSample(FileCache& cache, const std::string& file, const std::stri
             delete rw;
         }
     if (!ok) return false; // Each absent object is already counted by FetchClone
-    if (!(r.ring[1].n > r.ring[0].n)) { // A peak no richer than its sideband has no signal to estimate
-        WarnSkip(proxy + " mass-region sample", "the peak holds no more candidates than the sideband", file);
+    r.bkgScale = SidebandScaleOf(cache, file, proxy);
+    if (!(r.ring[1].n > r.bkgScale * r.ring[0].n)) { // A peak no richer than its background has no signal to estimate
+        WarnSkip(proxy + " mass-region sample", "the peak holds no more candidates than the background the sideband puts under it", file);
         return false;
     }
     return true;
 }
 
 /**
- * @brief The cheap signal mean of y: <y>_S = (Sum_P y - Sum_B y) / (N_P - N_B).
+ * @brief The cheap signal mean of y: <y>_S = (Sum_P y - s Sum_B y) / (N_P - s N_B).
  *
- * Single sideband of the same total width as the peak window (the consumer enforces it), so for a background
- * whose density and <y>_B are linear in mass, the sideband holds exactly the background under the peak.
+ * The sideband scaled by s = w_P / w_B (see SidebandScaleOf; s = 1 for equal widths), so for a background whose
+ * density and <y>_B are linear in mass, s times the sideband is exactly the background under the peak.
  * A linear density times a linear <y>_B is quadratic, and that curvature is what this misses; splitting the
  * sideband into left and right would recover it (see the README).
  *
  * The two regions are disjoint, so they are independent. Treating each count as Poisson (a compound sum):
- *   Var(A) = N_P <y^2>_P + N_B <y^2>_B,  Var(D) = N_P + N_B,  Cov(A, D) = Sum_P y + Sum_B y,
- *   Var(<y>_S) = [Var(A) - 2 r Cov(A, D) + r^2 Var(D)] / D^2,   A = Sum_P - Sum_B,  D = N_P - N_B,  r = A/D.
+ *   Var(A) = N_P <y^2>_P + s^2 N_B <y^2>_B,  Var(D) = N_P + s^2 N_B,  Cov(A, D) = Sum_P y + s^2 Sum_B y,
+ *   Var(<y>_S) = [Var(A) - 2 r Cov(A, D) + r^2 Var(D)] / D^2,   A = Sum_P - s Sum_B,  D = N_P - s N_B,  r = A/D.
  * With no background it reduces to the standard error of <y>_P; for y == 1 it is exactly 1 with no error.
  */
-std::pair<double, double> CheapSignalMean(const CandidateMoments& peak, const CandidateMoments& side) {
-    const double D = peak.n - side.n;
+std::pair<double, double> CheapSignalMean(const CandidateMoments& peak, const CandidateMoments& side, double s = 1.) {
+    const double D = peak.n - s * side.n;
     if (!(D > 0.)) return {0., -1.};
-    const double A = peak.sum - side.sum;
+    const double A = peak.sum - s * side.sum;
     const double r = A / D;
-    const double varA = peak.sum2 + side.sum2;
-    const double varD = peak.n + side.n;
-    const double cov  = peak.sum + side.sum;
+    // The sideband enters scaled by s, so its share of every (co)variance by s^2
+    const double varA = peak.sum2 + s * s * side.sum2;
+    const double varD = peak.n + s * s * side.n;
+    const double cov  = peak.sum + s * s * side.sum;
     const double var  = (varA - 2. * r * cov + r * r * varD) / (D * D);
     return {r, std::sqrt(std::max(var, 0.))};
 }
@@ -3097,8 +3383,10 @@ void AddMoments(CandidateMoments& to, const CandidateMoments& m) {
     to.n += m.n; to.sum += m.sum; to.sum2 += m.sum2;
 }
 
-/// @brief The candidate moments of one cell of a TProfile2D (global bin), from its mean and spread ("s" error option).
-CandidateMoments CellMoments(TProfile2D* p, int globalBin) {
+/// @brief The candidate moments of one cell of a TProfile2D or TProfile3D (global bin), from its mean and spread
+///        ("s" error option).
+template <typename P>
+CandidateMoments CellMoments(P* p, int globalBin) {
     CandidateMoments m;
     const double n = p->GetBinEntries(globalBin);
     if (n <= 0.) return m;
@@ -3170,6 +3458,8 @@ bool LoadDifferentialSample(FileCache& cache, const std::string& file, const std
                     r.ring[i] = m[0]; r.num[i] = m[1]; r.den[i] = m[2]; r.numDen[i] = m[3]; r.ringDen[i] = m[4];
                 }
             }
+        const double s = SidebandScaleOf(cache, file, proxy); // The same windows in every x bin
+        for (auto& r : d.region) r.bkgScale = s;
         static std::set<std::string> checked; // Every folder reloads the same files: check each one once
         RingSample integrated;
         if (checked.insert(file + "|" + proxy + "|" + var).second && LoadRingSample(cache, file, proxy, integrated) &&
@@ -3182,10 +3472,11 @@ bool LoadDifferentialSample(FileCache& cache, const std::string& file, const std
 }
 
 /**
- * @brief The cheap signal ratio <a>_S/<b>_S = A_a/A_b, with A_y = Sum_P y - Sum_B y (the N_P - N_B cancels).
+ * @brief The cheap signal ratio <a>_S/<b>_S = A_a/A_b, with A_y = Sum_P y - s Sum_B y (the N_P - s N_B cancels).
  *
- * Same compound-Poisson treatment as CheapSignalMean, with the a-b covariance from Sum ab of each region:
- *   Var(A_y) = Sum_P y^2 + Sum_B y^2,   Cov(A_a, A_b) = Sum_P ab + Sum_B ab,
+ * Same compound-Poisson treatment as CheapSignalMean (same sideband scale s), with the a-b covariance from Sum ab of
+ * each region:
+ *   Var(A_y) = Sum_P y^2 + s^2 Sum_B y^2,   Cov(A_a, A_b) = Sum_P ab + s^2 Sum_B ab,
  *   Var(rho) = [Var(A_a) - 2 rho Cov(A_a, A_b) + rho^2 Var(A_b)] / A_b^2,   rho = A_a/A_b.
  * This is exact to first order, so kappa_S = 3 rho(u v, w) no longer needs its two errors in quadrature.
  *
@@ -3193,13 +3484,14 @@ bool LoadDifferentialSample(FileCache& cache, const std::string& file, const std
  */
 std::pair<double, double> CheapSignalRatio(const CandidateMoments& aPeak, const CandidateMoments& aSide,
                                            const CandidateMoments& bPeak, const CandidateMoments& bSide,
-                                           const CandidateMoments& abPeak, const CandidateMoments& abSide) {
-    const double Ab = bPeak.sum - bSide.sum;
+                                           const CandidateMoments& abPeak, const CandidateMoments& abSide, double s = 1.) {
+    const double Ab = bPeak.sum - s * bSide.sum;
     if (!(Ab > 0.) || abPeak.n <= 0.) return {0., -1.};
-    const double rho  = (aPeak.sum - aSide.sum) / Ab;
-    const double varA = aPeak.sum2 + aSide.sum2;
-    const double varB = bPeak.sum2 + bSide.sum2;
-    const double cov  = abPeak.sum + abSide.sum;
+    const double rho  = (aPeak.sum - s * aSide.sum) / Ab;
+    // The sideband scaled by s, as in CheapSignalMean
+    const double varA = aPeak.sum2 + s * s * aSide.sum2;
+    const double varB = bPeak.sum2 + s * s * bSide.sum2;
+    const double cov  = abPeak.sum + s * s * abSide.sum;
     const double var  = (varA - 2. * rho * cov + rho * rho * varB) / (Ab * Ab);
     return {rho, std::sqrt(std::max(var, 0.))};
 }
@@ -3469,15 +3761,16 @@ RingSample RegionAsSample(const RegionSample& r, int region) {
 }
 
 /**
- * @brief The sideband-subtracted inputs: every moment as Sum_P - Sum_B, then the usual correction.
+ * @brief The sideband-subtracted inputs: every moment as Sum_P - s Sum_B (s = r.bkgScale), then the usual correction.
  *
  * kappa_S = 3 <u v>_S/<w>_S is a ratio of two subtracted sums, with the exact covariance of CheapSignalRatio.
  */
 bool InputsOfSidebandSubtracted(const RegionSample& r, CorrectionInputs& in) {
-    if (!(r.ring[1].n > r.ring[0].n)) return false; // A peak no richer than its sideband has no signal to estimate
-    const auto ring = CheapSignalMean(r.ring[1], r.ring[0]);
-    const auto u    = CheapSignalMean(r.num[1], r.num[0]);
-    const auto k    = CheapSignalRatio(r.num[1], r.num[0], r.den[1], r.den[0], r.numDen[1], r.numDen[0]);
+    const double s = r.bkgScale;
+    if (!(r.ring[1].n > s * r.ring[0].n)) return false; // A peak no richer than its background has no signal to estimate
+    const auto ring = CheapSignalMean(r.ring[1], r.ring[0], s);
+    const auto u    = CheapSignalMean(r.num[1], r.num[0], s);
+    const auto k    = CheapSignalRatio(r.num[1], r.num[0], r.den[1], r.den[0], r.numDen[1], r.numDen[0], s);
     if (ring.second < 0. || u.second < 0. || k.second < 0.) return false;
     in.ring  = ring;
     in.uvx3  = {3. * u.first, 3. * u.second};
@@ -3486,16 +3779,19 @@ bool InputsOfSidebandSubtracted(const RegionSample& r, CorrectionInputs& in) {
 }
 
 /// @brief P = (R_d - R_f) / (D0 - k R_d R_f), with its first-order error.
+/// @param covDF Cov(R_d, R_f). Zero (the default) for separate consumer runs; ProofOfConcept/ passes it for the
+///              sideband as the fake, where R_d (the sideband-subtracted signal) and R_f (the sideband) share candidates.
 std::pair<double, double> CorrectRing(const std::pair<double, double>& rd, const std::pair<double, double>& rf,
-                                      const std::pair<double, double>& d0, double k) {
+                                      const std::pair<double, double>& d0, double k, double covDF = 0.) {
     const double den = d0.first - k * rd.first * rf.first;
     if (!(den > 0.)) return {0., -1.};
     const double p   = (rd.first - rf.first) / den;
     const double dRd = 1. / den + p * k * rf.first / den;  // dP/dR_d
     const double dRf = -1. / den + p * k * rd.first / den; // dP/dR_f
     const double dD0 = -p / den;                           // dP/dD0
-    return {p, std::sqrt(dRd * dRd * rd.second * rd.second + dRf * dRf * rf.second * rf.second +
-                         dD0 * dD0 * d0.second * d0.second)};
+    const double var = dRd * dRd * rd.second * rd.second + dRf * dRf * rf.second * rf.second +
+                       2. * dRd * dRf * covDF + dD0 * dD0 * d0.second * d0.second;
+    return {p, std::sqrt(std::max(var, 0.))};
 }
 
 /// @brief Tag of the resampled mixed-event wagons (nProxyResamples in the consumer), after the usual mixed-event suffix.
@@ -3517,14 +3813,14 @@ std::vector<FakePairing> MakeFakePairings(const std::string& consumerDir, const 
     // Styles: black for the single borrow, the resampled mixed events' dark grey and diamond; AN-Cuts dashed and open
     std::vector<FakePairing> pairings = {
         {consumerDir, sigExtractDir, "", "_MixedEventProxies", "Data", "Data - MixedEv",
-         {"", "Data - MixedEv", kBlack, 1, 20, true}},
+         {"", "Data - MixedEv", kRed, 1, 20, true}},
         {consumerDir, sigExtractDir, "_analysisCuts", "_MixedEventProxies_analysisCuts", "Data (AN-Cuts)", "AN-Cuts: Data - MixedEv",
-         {"", "AN-Cuts: Data - MixedEv", kBlack, 2, 24, false}},
+         {"", "AN-Cuts: Data - MixedEv", kRed, 2, 24, false}},
         // Same data, same Lambdas, each now against several distinct mixed jets: the fake with less jet-sampling noise
         {consumerDir, sigExtractDir, "", "_MixedEventProxies" + MIXED_RESAMPLES_TAG, "Data", "Data - MixedEv" + resampled,
-         {"", "Data - MixedEv" + resampled, kGray + 3, 1, 33, false}},
+         {"", "Data - MixedEv" + resampled, kRed + 1, 1, 33, false}},
         {consumerDir, sigExtractDir, "_analysisCuts", "_MixedEventProxies_analysisCuts" + MIXED_RESAMPLES_TAG, "Data (AN-Cuts)",
-         "AN-Cuts: Data - MixedEv" + resampled, {"", "AN-Cuts: Data - MixedEv" + resampled, kGray + 3, 2, 27, false}}};
+         "AN-Cuts: Data - MixedEv" + resampled, {"", "AN-Cuts: Data - MixedEv" + resampled, kRed + 1, 2, 27, false}}};
     for (const auto& ext : externals)
         if (!ext.basePath.empty() && ext.kind == ExternalRef::kConsumerDir) {
             VariationConfig style = ext.config;
@@ -3981,6 +4277,4075 @@ void DrawDifferentialRingVsLongitudinal(FileCache& cache, TDirectory* fileRoot, 
             }
 }
 
+// ===============================
+// ProofOfConcept: the centrality-selected data against its three controls (sideband, mixed events, pp minimum bias)
+// ===============================
+// Layout: ProofOfConcept/<Selection>/<Family>[_<RingDefinition>]/<Proxy>/{VsMass, Integrated, VsCentrality, VsProxyPt},
+// each folder holding Canvas_Values, Canvas_Subtracted and Canvas_KappaCorrected:
+//   Values         <R> of every sample (data, its mass regions, the mixed events and their regions, pp)
+//   Subtracted     Data - Control, with the error each pairing actually needs (see the helpers below)
+//   KappaCorrected P = (R_d - R_f)/(3<u v> - k R_d R_f), the Corrections/ formula, only where its hypothesis holds:
+//                  Data - MixedEv (the designed estimator), Signal - Sideband (sideband as the fake), and
+//                  P(Data) - P(pp), each system corrected with its OWN mixed events. Data - OutOfPeak is left out:
+//                  "Data" mixes signal and background over the whole mass range, so dividing it by kappa means nothing.
+// VsMass carries no mass-region columns (a mass region of a mass axis is just a constant), so only the mixed events and pp.
+// Every sample is read only where its file exists; anything absent is a gap, counted in the skip log.
+
+/// @brief Centrality tag of the ProofOfConcept data and mixed-event files. The pp references are minimum bias, so
+///        their files carry no centrality tag.
+const std::string POC_CENTRALITY_TAG = "_maxCent50";
+
+/// @brief The data's centrality range for titles, read from POC_CENTRALITY_TAG ("_maxCent50" --> "0-50%").
+std::string PocCentralityLabel() {
+    const size_t first = POC_CENTRALITY_TAG.find_first_of("0123456789");
+    if (first == std::string::npos) return POC_CENTRALITY_TAG.substr(1); // No number: the tag itself
+    return "0-" + POC_CENTRALITY_TAG.substr(first, POC_CENTRALITY_TAG.find_first_not_of("0123456789", first) - first) + "%";
+}
+
+/// @brief Single-borrow mixed events. The tag sits right after the family and ring tags, before the selection tag.
+const std::string POC_MIXED_TAG = "_MixedEventProxies";
+
+/// @brief One event selection: its output folder and its file tag (between the mixing tag and the centrality tag).
+struct PocSelection { std::string folder, tag; };
+const std::vector<PocSelection> POC_SELECTIONS = {{"Default", ""}, {"AnalysisCuts", "_analysisCuts"}};
+
+/// @brief (value, error). A negative error marks a missing value: never drawn, never parked at zero.
+using ValErr = std::pair<double, double>;
+const ValErr kPocMissing = {0., -1.};
+
+/// @brief <y> with its standard error, or missing below two candidates.
+ValErr PocMean(const CandidateMoments& m) {
+    return (m.n >= 2.) ? MeanOf(m) : kPocMissing;
+}
+
+/// @brief a - b for independent samples (disjoint candidates, or separate consumer runs): errors in quadrature.
+/// @note  Data - MixedEv also goes through here, although the mixed events reuse the data's Lambdas: quadrature
+///        over-covers there, as accepted throughout the macro.
+ValErr PocDiff(const ValErr& a, const ValErr& b) {
+    if (a.second < 0. || b.second < 0.) return kPocMissing;
+    return {a.first - b.first, std::hypot(a.second, b.second)};
+}
+
+/**
+ * @brief <y>_all - <y>_sub when sub is a SUBSET of all (Data - OutOfPeak: the sideband candidates are among Data's).
+ *
+ * Linearising both means in the compound-Poisson model of CheapSignalMean gives Cov(<y>_all, <y>_sub) = s_sub^2/N_all,
+ * with s^2 the per-candidate variance of each set, so
+ *   Var(<y>_all - <y>_sub) = s_all^2/N_all + s_sub^2/N_sub - 2 s_sub^2/N_all.
+ * Quadrature would overstate it: the shared candidates cancel in the difference.
+ */
+ValErr PocMeanMinusSubsetMean(const CandidateMoments& all, const CandidateMoments& sub) {
+    if (all.n < 2. || sub.n < 2. || all.n < sub.n) return kPocMissing; // A subset can never hold more candidates
+    const double sAll = std::max(all.Var(), 0.);
+    const double sSub = std::max(sub.Var(), 0.);
+    const double var  = sAll / all.n + sSub / sub.n - 2. * sSub / all.n;
+    return {all.Mean() - sub.Mean(), std::sqrt(std::max(var, 0.))};
+}
+
+/// @brief P of a sample against a fake sample of the same Lambdas (Data - MixedEv): the Corrections/ inputs and formula.
+ValErr PocCorrected(const RingSample& data, const RingSample& fake, double k) {
+    CorrectionInputs in;
+    if (!InputsOfSample(data, in) || fake.ring.n < 2.) return kPocMissing;
+    return CorrectRing(in.ring, MeanOf(fake.ring), in.uvx3, k);
+}
+
+/**
+ * @brief The sideband as the fake: P = (R_S - R_B)/(3<u v>_S - k R_S R_B), with R_S and 3<u v>_S sideband-subtracted
+ *        (InputsOfSidebandSubtracted) and R_B the sideband mean.
+ *
+ * Valid only if background candidates carry the signal's per-candidate fake and no ring. The MixedEv InPeak - OutOfPeak
+ * column of the Subtracted canvases tests the first part: the mixed events carry no ring, so any difference there is
+ * a difference in the fake between the two regions.
+ * R_S is built from the sideband sums, so R_S and R_B are correlated. Linearising both (compound Poisson, as in
+ * CheapSignalMean) gives Cov(R_S, R_B) = -s sigma_B^2/(N_P - s N_B), with s the sideband scale (SidebandScaleOf) and
+ * sigma_B the sideband's spread. Being negative, it widens the error of R_S - R_B, which
+ * quadrature would understate. The covariance of 3<u v>_S with R_B is not propagated: it only enters through dP/dD0.
+ */
+ValErr PocSignalMinusSideband(const RegionSample& r, double k) {
+    CorrectionInputs in;
+    if (!InputsOfSidebandSubtracted(r, in) || r.ring[0].n < 2.) return kPocMissing; // Also guarantees N_P > s N_B
+    const double covSB = -r.bkgScale * std::max(r.ring[0].Var(), 0.) / (r.ring[1].n - r.bkgScale * r.ring[0].n);
+    return CorrectRing(in.ring, MeanOf(r.ring[0]), in.uvx3, k, covSB);
+}
+
+/**
+ * @brief Per-mass-bin candidate moments of one proxy: the ring and the four KappaEff profiles vs mass.
+ *
+ * Mass bin i holds the same candidates in all five profiles (one fill list, one mass axis), so each bin is a RingSample
+ * of its own and the Corrections/ formula applies bin by bin. Mass flows are left out: they are not on the axis drawn.
+ */
+struct MassBinnedSample {
+    std::vector<double> edges;    // Mass bin edges, nBins + 1
+    std::string xTitle;
+    std::vector<RingSample> bins; // One per mass bin
+};
+
+/// @brief Loads one file's MassBinnedSample; a file whose five profiles disagree on the binning is refused.
+bool LoadMassBinnedSample(FileCache& cache, const std::string& file, const std::string& proxy, MassBinnedSample& s) {
+    if (!cache.Open(file, false)) return false; // Absent config: only counted
+    // Every proxy folder holds the same object names, so the proxy only picks the folder
+    const std::string base = TASK_DIR_IN_FILE + RING_DIR_IN_FILE + proxy + "/";
+    const std::string kap  = base + "KappaEff/";
+    TProfile* p[5] = {cache.FetchClone<TProfile>(file, base + "MassDependence/pRingObservableMass", false),
+                      cache.FetchClone<TProfile>(file, kap + "pKappaNumVsMass", false),
+                      cache.FetchClone<TProfile>(file, kap + "pKappaDenVsMass", false),
+                      cache.FetchClone<TProfile>(file, kap + "pKappaNumTimesDenVsMass", false),
+                      cache.FetchClone<TProfile>(file, kap + "pRingTimesDenVsMass", false)};
+    bool ok = p[0] && p[1] && p[2] && p[3] && p[4]; // Each absent object is already counted by FetchClone
+    if (ok) {
+        // The five must share one binning, edge by edge, or bin i would not be the same candidates in all of them
+        const TAxis* ax = p[0]->GetXaxis();
+        const int nb = ax->GetNbins();
+        for (int k = 1; k < 5 && ok; ++k) {
+            const TAxis* axk = p[k]->GetXaxis();
+            ok = (axk->GetNbins() == nb);
+            for (int ib = 1; ok && ib <= nb + 1; ++ib) ok = (axk->GetBinLowEdge(ib) == ax->GetBinLowEdge(ib)); // NOLINT: same booking, so bit-identical
+        }
+        if (!ok) WarnSkip(proxy + " mass-binned sample", "ring and KappaEff profiles have different mass binnings", file);
+    }
+    if (ok) {
+        const TAxis* ax = p[0]->GetXaxis();
+        const int nb = ax->GetNbins();
+        s.xTitle = ax->GetTitle();
+        s.edges.clear();
+        for (int ib = 1; ib <= nb + 1; ++ib) s.edges.push_back(ax->GetBinLowEdge(ib));
+        s.bins.assign(nb, RingSample{});
+        for (int ib = 1; ib <= nb; ++ib) {
+            RingSample& r = s.bins[ib - 1];
+            r.ring = BinMoments(p[0], ib); r.num = BinMoments(p[1], ib); r.den = BinMoments(p[2], ib);
+            r.numDen = BinMoments(p[3], ib); r.ringDen = BinMoments(p[4], ib);
+        }
+    }
+    for (TProfile* q : p) delete q;
+    return ok;
+}
+
+/// @brief One (selection, family, ring definition, proxy) cell of ProofOfConcept/: its files, its formula and its labels.
+struct PocCell {
+    std::string dataFile, mixedFile, ppFile, ppMixedFile; // Empty pp paths: no pp reference requested
+    std::string proxy;
+    double k = 0.;       // alpha^2/3 for the full ring, 0 for the longitudinal rings (see CorrectRing)
+    std::string ringSym; // "R", "R_{z}", ...: the y titles
+    std::string head;    // Title head, "<Family>, <Proxy>, <Selection> (<centrality tag>)"
+    std::string dirPath; // ProofOfConcept/<Selection>/<Family>/<Proxy>
+};
+
+/**
+ * @brief The files, formula and ring symbol of one (selection, family, ring definition) cell; the caller sets the proxy,
+ *        the title head and the folder. Shared by ProofOfConcept/ and StreamlinedStory/, so both read the same files.
+ *
+ * Files: <consumerDir>/ConsumerResults_<family><ringTag>[_MixedEventProxies]<selectionTag><centralityTag><resampleTag>.root,
+ * and the pp references <ppRefDir>/ConsumerResults_<family><ringTag>[_MixedEventProxies]<selectionTag><resampleTag>.root
+ * (minimum bias), as the consumer configs are named.
+ * @param resampleTag Only on the two mixed-event files: "" (single borrow) or MIXED_RESAMPLES_TAG.
+ */
+PocCell PocMakeCell(const std::string& consumerDir, const std::string& ppRefDir, const PocSelection& sel,
+                    const FamilyConfig& fam, const LongitudinalRing* lr, const std::string& resampleTag = "") {
+    const std::string stem = "/ConsumerResults_" + fam.dataSuffix + (lr ? lr->fileTag : std::string());
+    PocCell cell;
+    cell.dataFile  = consumerDir + stem + sel.tag + POC_CENTRALITY_TAG + ".root";
+    cell.mixedFile = consumerDir + stem + POC_MIXED_TAG + sel.tag + POC_CENTRALITY_TAG + resampleTag + ".root";
+    if (!ppRefDir.empty()) { // Empty pp paths: no pp reference requested
+        cell.ppFile      = ppRefDir + stem + sel.tag + ".root";
+        cell.ppMixedFile = ppRefDir + stem + POC_MIXED_TAG + sel.tag + resampleTag + ".root";
+    }
+    // Exact inversion for the full ring (k = alpha^2/3), linear for the longitudinal rings (k = 0)
+    cell.k       = lr ? 0. : fam.alphaSq / 3.;
+    cell.ringSym = "R" + (lr ? lr->symbolSuffix : std::string());
+    return cell;
+}
+
+/// @brief Every look of ProofOfConcept/, taken from the macro's own configs in the main function. dataInRef is the
+///        money plot's reference (Data InPeak, emphasised as the data), ppIn the pp mass peak.
+struct PocStyles { VariationConfig data, dataIn, dataOut, mixed, mixedIn, mixedOut, pp, dataInRef, ppIn; };
+
+/// @brief A copy of a style under another legend label, never flagged as data (the Subtracted and KappaCorrected curves).
+VariationConfig PocRelabel(const VariationConfig& cfg, const std::string& label) {
+    VariationConfig out = cfg;
+    out.legendLabel = label;
+    out.isData = false;
+    return out;
+}
+
+/// @brief One categorical canvas, one bin per column in that column's style. A missing value leaves its bin empty.
+void DrawPocCategorical(const std::vector<std::string>& labels, const std::vector<VariationConfig>& cfgs,
+                        const std::vector<ValErr>& vals, const std::string& canvasName, const std::string& title,
+                        TDirectory* fileRoot, const std::string& dirPath, const std::string& yTitle, bool isSubtracted) {
+    const int n = static_cast<int>(labels.size());
+    std::vector<ProfileBundle> bundles;
+    for (int i = 0; i < n; ++i) {
+        if (vals[i].second < 0.) continue;
+        bundles.push_back({MakeCategoricalPoint(canvasName + "_pt" + std::to_string(i), i, n, vals[i].first, vals[i].second), cfgs[i]});
+    }
+    if (bundles.empty()) {
+        CountSkip("ProofOfConcept, " + canvasName, "no column with a value", dirPath);
+        return;
+    }
+    DrawIntegratedCanvas(bundles, labels, canvasName, title, EnsureDir(fileRoot, dirPath), yTitle, isSubtracted, false, true);
+    for (auto& b : bundles) delete b.profile;
+}
+
+/**
+ * @brief Integrated/: the money plot (Canvas_Values, Canvas_Subtracted, Canvas_KappaCorrected) and the full set of
+ *        plots 2-4 (the same names with _Full).
+ *
+ * The money plot sets the data's mass peak against the three places a ring should not be: the combinatorial background
+ * (the sideband), and the mass peaks of the mixed events and of pp. Its differences are all from Data InPeak:
+ *   InPeak - OutOfPeak         disjoint regions: quadrature is exact
+ *   InPeak: Data - MixedEv     same Lambdas, per-candidate correlation <cos zeta> ~ 1e-3: quadrature (see the slice fits)
+ *   InPeak: Data - pp          separate systems: quadrature is exact
+ * Its KappaEff panel: Data InPeak - OutOfPeak, InPeak Data - MixedEv, and the cheap pp subtraction InPeak Data - pp,
+ * all three with the data's in-peak response: what subtracting each baseline would give. All of them keep the
+ * background under the peak, so they read f_P P rather than P (if the background carries no ring), and compare as
+ * apples to apples. The sideband-subtracted Signal - Sideband is drawn only in Summary/PurityCorrected/.
+ */
+void DrawPocIntegrated(FileCache& cache, TDirectory* fileRoot, const PocCell& cell, const PocStyles& st) {
+    RingSample dAll, mAll, pAll, pmAll;
+    RegionSample dReg, mReg, pReg;
+    if (!LoadRingSample(cache, cell.dataFile, cell.proxy, dAll)) return; // Counted or warned by the loader
+    const bool hDR = LoadRegionSample(cache, cell.dataFile, cell.proxy, dReg);
+    const bool hM  = LoadRingSample(cache, cell.mixedFile, cell.proxy, mAll);
+    const bool hMR = LoadRegionSample(cache, cell.mixedFile, cell.proxy, mReg);
+    const bool hP  = !cell.ppFile.empty() && LoadRingSample(cache, cell.ppFile, cell.proxy, pAll);
+    const bool hPM = !cell.ppMixedFile.empty() && LoadRingSample(cache, cell.ppMixedFile, cell.proxy, pmAll);
+    const bool hPR  = !cell.ppFile.empty() && LoadRegionSample(cache, cell.ppFile, cell.proxy, pReg);
+
+    // Every sample's <R>: InPeak is region index 1, OutOfPeak (the sideband) index 0
+    const ValErr data = PocMean(dAll.ring);
+    const ValErr dIn  = hDR ? PocMean(dReg.ring[1]) : kPocMissing;
+    const ValErr dOut = hDR ? PocMean(dReg.ring[0]) : kPocMissing;
+    const ValErr mix  = hM ? PocMean(mAll.ring) : kPocMissing;
+    const ValErr mIn  = hMR ? PocMean(mReg.ring[1]) : kPocMissing;
+    const ValErr mOut = hMR ? PocMean(mReg.ring[0]) : kPocMissing;
+    const ValErr pp   = hP ? PocMean(pAll.ring) : kPocMissing;
+    const ValErr ppIn = hPR ? PocMean(pReg.ring[1]) : kPocMissing;
+
+    const std::string dirPath = cell.dirPath + "/Integrated";
+    const std::string sym = "<" + cell.ringSym + ">";
+
+    // ---- The money plot: the mass peak against where no ring should be ----
+    // Every KappaEff entry keeps the in-peak candidates as they are (the data's in-peak response, the background left in),
+    // so all three read the same diluted f_P P: an apples-to-apples comparison. The sideband-subtracted estimate, which
+    // removes the background, is drawn only in Summary/PurityCorrected/ (see PocBuildSummary).
+    const ValErr pInOut = hDR ? PocCorrected(RegionAsSample(dReg, 1), RegionAsSample(dReg, 0), cell.k) : kPocMissing;
+    const ValErr pInMix = (hDR && hMR) ? PocCorrected(RegionAsSample(dReg, 1), RegionAsSample(mReg, 1), cell.k) : kPocMissing;
+    // The cheap pp subtraction: (R_in,data - R_in,pp) with the data's in-peak response, what subtracting pp would give
+    const ValErr pInPpCheap = (hDR && hPR) ? PocCorrected(RegionAsSample(dReg, 1), RegionAsSample(pReg, 1), cell.k) : kPocMissing;
+    DrawPocCategorical({st.dataInRef.legendLabel, st.dataOut.legendLabel, st.mixedIn.legendLabel, st.ppIn.legendLabel},
+                       {st.dataInRef, st.dataOut, st.mixedIn, st.ppIn}, {dIn, dOut, mIn, ppIn},
+                       "Canvas_Values", cell.head + ": integrated " + sym + ", mass peak against the controls", fileRoot, dirPath,
+                       "Integrated " + sym, false);
+    DrawPocCategorical({"InPeak - OutOfPeak", "InPeak: Data - " + st.mixed.legendLabel, "InPeak: Data - " + st.pp.legendLabel},
+                       {st.dataOut, st.mixedIn, st.ppIn}, {PocDiff(dIn, dOut), PocDiff(dIn, mIn), PocDiff(dIn, ppIn)},
+                       "Canvas_Subtracted", cell.head + ": Data InPeak minus each control", fileRoot, dirPath, "#Delta" + sym, true);
+    DrawPocCategorical({"Data: InPeak - OutOfPeak", "InPeak: Data - " + st.mixed.legendLabel, "InPeak: Data - " + st.pp.legendLabel + " (cheap)"},
+                       {st.dataOut, st.mixedIn, st.ppIn}, {pInOut, pInMix, pInPpCheap},
+                       "Canvas_KappaCorrected", cell.head + ": #kappa_{eff}-corrected (InPeak ones: background not removed)",
+                       fileRoot, dirPath, "P_{R}", true);
+
+    // ---- The full set ----
+    // (2) Values
+    DrawPocCategorical({st.data.legendLabel, st.dataIn.legendLabel, st.dataOut.legendLabel, st.mixed.legendLabel,
+                        st.mixedIn.legendLabel, st.mixedOut.legendLabel, st.pp.legendLabel},
+                       {st.data, st.dataIn, st.dataOut, st.mixed, st.mixedIn, st.mixedOut, st.pp},
+                       {data, dIn, dOut, mix, mIn, mOut, pp},
+                       "Canvas_Values_Full", cell.head + ": integrated " + sym, fileRoot, dirPath, "Integrated " + sym, false);
+
+    // (3) Data - Control, each with the error its pairing needs
+    const ValErr dMinusOut   = hDR ? PocMeanMinusSubsetMean(dAll.ring, dReg.ring[0]) : kPocMissing; // Subset: shared candidates cancel
+    const ValErr dInMinusOut = PocDiff(dIn, dOut);   // Disjoint regions: quadrature is exact
+    const ValErr dMinusMix   = PocDiff(data, mix);   // Same Lambdas: quadrature over-covers (accepted)
+    const ValErr dMinusPp    = PocDiff(data, pp);    // Separate systems: quadrature is exact
+    const ValErr mInMinusOut = PocDiff(mIn, mOut);   // No ring in mixed events: the fake's own region dependence
+    DrawPocCategorical({"Data - OutOfPeak", "Data: InPeak - OutOfPeak", "Data - " + st.mixed.legendLabel,
+                        "Data - " + st.pp.legendLabel, st.mixed.legendLabel + ": InPeak - OutOfPeak"},
+                       {st.dataOut, st.dataIn, st.mixed, st.pp, st.mixedIn},
+                       {dMinusOut, dInMinusOut, dMinusMix, dMinusPp, mInMinusOut},
+                       "Canvas_Subtracted_Full", cell.head + ": integrated differences", fileRoot, dirPath, "#Delta" + sym, true);
+
+    // (4) KappaEff-corrected ring density: the three pairings where the inversion's hypothesis holds
+    const ValErr pMix  = hM ? PocCorrected(dAll, mAll, cell.k) : kPocMissing;
+    const ValErr pPp   = (hP && hPM) ? PocCorrected(pAll, pmAll, cell.k) : kPocMissing;
+    const ValErr pDMinusPp = PocDiff(pMix, pPp); // Separate systems, each corrected with its own mixed events
+    // The sideband entry is the diluted InPeak - OutOfPeak here too: the sideband-subtracted one lives in PurityCorrected/
+    DrawPocCategorical({"Data - " + st.mixed.legendLabel, "Data: InPeak - OutOfPeak", "P(Data) - P(pp)"},
+                       {st.mixed, st.dataOut, st.pp}, {pMix, pInOut, pDMinusPp},
+                       "Canvas_KappaCorrected_Full", cell.head + ": #kappa_{eff}-corrected ring density", fileRoot, dirPath,
+                       "P_{R}", true);
+
+    printf("    [ProofOfConcept %s] P: Data - MixedEv = %+.3e +/- %.1e, Data InPeak - OutOfPeak = %+.3e +/- %.1e, "
+           "P(Data) - P(pp) = %+.3e +/- %.1e\n", cell.head.c_str(), pMix.first, pMix.second, pInOut.first, pInOut.second,
+           pDMinusPp.first, pDMinusPp.second);
+}
+
+/// @brief VsMass/: plots 1 (values), 5A (Data - Control) and 5B (KappaEff-corrected, bin by bin) of the proof of concept.
+///        Every canvas carries the consumer's mass regions hatched underneath, as the AEE mosaics do: the peak window
+///        red, the two sidebands blue, from the data file's own mass-region axis.
+/// @note  Under ring alignment, and with the mixed events removing the background's fake, 5B should follow f_S(m) P:
+///        the shape of the mass peak, and zero in the sidebands.
+void DrawPocVsMass(FileCache& cache, TDirectory* fileRoot, const PocCell& cell, const PocStyles& st) {
+    MassBinnedSample d, m, p, pm;
+    if (!LoadMassBinnedSample(cache, cell.dataFile, cell.proxy, d)) return; // Counted or warned by the loader
+    // A control is used only on the data's own mass binning: never subtracted across different bins
+    auto loadMatching = [&](const std::string& file, MassBinnedSample& s, const std::string& what) {
+        if (file.empty() || !LoadMassBinnedSample(cache, file, cell.proxy, s)) return false;
+        if (s.edges == d.edges) return true;
+        WarnSkip(what + ", " + cell.proxy + " vs mass", "mass binning differs from the data's", cell.dirPath);
+        return false;
+    };
+    const bool hM  = loadMatching(cell.mixedFile, m, "MixedEv");
+    const bool hP  = loadMatching(cell.ppFile, p, "pp");
+    const bool hPM = hP && loadMatching(cell.ppMixedFile, pm, "pp MixedEv");
+
+    std::vector<TH1*> owned;
+    auto newHist = [&]() { TH1D* h = MakeVsXHist("hPocMass", d.edges); owned.push_back(h); return h; };
+    TH1D* hData = newHist();
+    TH1D* hMix  = hM ? newHist() : nullptr;
+    TH1D* hPp   = hP ? newHist() : nullptr;
+    TH1D* hDMinusMix = hM ? newHist() : nullptr;
+    TH1D* hDMinusPp  = hP ? newHist() : nullptr;
+    TH1D* hPMix      = hM ? newHist() : nullptr;
+    TH1D* hPDMinusPp = (hM && hP && hPM) ? newHist() : nullptr;
+
+    for (size_t i = 0; i < d.bins.size(); ++i) {
+        const int bin = static_cast<int>(i) + 1;
+        const ValErr dv = PocMean(d.bins[i].ring);
+        SetVsXPoint(hData, bin, dv);
+        if (hM) {
+            const ValErr mv = PocMean(m.bins[i].ring);
+            SetVsXPoint(hMix, bin, mv);
+            SetVsXPoint(hDMinusMix, bin, PocDiff(dv, mv));
+            SetVsXPoint(hPMix, bin, PocCorrected(d.bins[i], m.bins[i], cell.k));
+        }
+        if (hP) {
+            const ValErr pv = PocMean(p.bins[i].ring);
+            SetVsXPoint(hPp, bin, pv);
+            SetVsXPoint(hDMinusPp, bin, PocDiff(dv, pv));
+        }
+        if (hPDMinusPp) // Each system corrected with its own mixed events, then subtracted
+            SetVsXPoint(hPDMinusPp, bin, PocDiff(PocCorrected(d.bins[i], m.bins[i], cell.k), PocCorrected(p.bins[i], pm.bins[i], cell.k)));
+    }
+
+    TDirectory* dir = EnsureDir(fileRoot, cell.dirPath + "/VsMass");
+    const ProfileConfig pc{}; // Every title is passed explicitly
+    const std::string sym = "<" + cell.ringSym + ">";
+
+    // The mass regions, as in the mosaics (absent without the consumer's FakePolDrivers: the canvases are then unshaded)
+    std::vector<ShadedBand> bands;
+    double regions[6];
+    if (LoadMassRegionEdges(cache, cell.dataFile, cell.proxy, regions)) {
+        bands.push_back({regions[2], regions[3], kRed + 1, 3345, "InPeak (peak window)"}); // Changed from 3005 to a coarser hatching scheme (better visualization)
+        bands.push_back({regions[0], regions[1], kBlue + 1, 3354, "OutOfPeak (sidebands)"}); // Changed from 3004 to a coarser hatching
+        bands.push_back({regions[4], regions[5], kBlue + 1, 3354, ""}); // One legend entry for both sidebands
+    }
+
+    // (1) Values
+    std::vector<ProfileBundle> vb = {{hData, st.data}};
+    if (hMix) vb.push_back({hMix, st.mixed});
+    if (hPp)  vb.push_back({hPp, st.pp});
+    DrawComparisonCanvas(vb, "Canvas_Values", cell.head + ": " + sym + " vs mass", dir, pc, d.xTitle, sym,
+                         kNoLowerPad, false, false, {}, {}, bands);
+
+    // (5A) Data - Control, bin by bin
+    std::vector<ProfileBundle> sb;
+    if (hDMinusMix) sb.push_back({hDMinusMix, PocRelabel(st.mixed, "Data - " + st.mixed.legendLabel)});
+    if (hDMinusPp)  sb.push_back({hDMinusPp, PocRelabel(st.pp, "Data - " + st.pp.legendLabel)});
+    if (sb.empty()) CountSkip("ProofOfConcept, VsMass differences", "no control on the data's mass binning", cell.dirPath);
+    DrawComparisonCanvas(sb, "Canvas_Subtracted", cell.head + ": " + sym + " differences vs mass", dir, pc, d.xTitle,
+                         "#Delta" + sym, kNoLowerPad, false, true, {}, {}, bands);
+
+    // (5B) KappaEff-corrected ring density, bin by bin (zero kept in frame: P should vanish in the sidebands)
+    std::vector<ProfileBundle> kb;
+    if (hPMix)      kb.push_back({hPMix, PocRelabel(st.mixed, "Data - " + st.mixed.legendLabel)});
+    if (hPDMinusPp) kb.push_back({hPDMinusPp, PocRelabel(st.pp, "P(Data) - P(pp)")});
+    DrawComparisonCanvas(kb, "Canvas_KappaCorrected", cell.head + ": #kappa_{eff}-corrected ring density vs mass", dir, pc,
+                         d.xTitle, "P_{R}", kNoLowerPad, false, true, {}, {}, bands);
+
+    for (TH1* h : owned) delete h;
+}
+
+/**
+ * @brief Vs<var>/ (var "Centrality" or "ProxyPt"): plots 6 and 7 of the proof of concept, the three canvases of
+ *        Integrated/ per x bin, from the consumer's KappaEff/Differential/ profiles.
+ *
+ * The mixed events share the data's binning (the consumer bins on the event mixing axes), and a control on a different
+ * binning is refused. pp's centrality is a multiplicity class of another system, so on the centrality axis pp enters
+ * as its integrated minimum-bias value: a dotted level on Canvas_Values, and the constant subtracted on the others.
+ */
+void DrawPocDifferential(FileCache& cache, TDirectory* fileRoot, const PocCell& cell, const PocStyles& st, const std::string& var) {
+    DifferentialSample d, m, p, pm;
+    if (!LoadDifferentialSample(cache, cell.dataFile, cell.proxy, var, d)) return; // Counted by the loader
+    auto loadMatching = [&](const std::string& file, DifferentialSample& s, const std::string& what) {
+        if (file.empty() || !LoadDifferentialSample(cache, file, cell.proxy, var, s)) return false;
+        if (s.edges == d.edges) return true;
+        WarnSkip(what + ", " + cell.proxy + " vs " + var, "binning differs from the data's", cell.dirPath);
+        return false;
+    };
+    const bool hM = loadMatching(cell.mixedFile, m, "MixedEv");
+
+    // pp: bin by bin vs proxy pT, its minimum-bias level vs centrality
+    const bool ppIsLevel = (var == "Centrality");
+    bool hP = false, hPM = false;
+    RingSample pAll, pmAll;
+    if (ppIsLevel) {
+        hP  = !cell.ppFile.empty() && LoadRingSample(cache, cell.ppFile, cell.proxy, pAll);
+        hPM = hP && !cell.ppMixedFile.empty() && LoadRingSample(cache, cell.ppMixedFile, cell.proxy, pmAll);
+    } else {
+        hP  = loadMatching(cell.ppFile, p, "pp");
+        hPM = hP && loadMatching(cell.ppMixedFile, pm, "pp MixedEv");
+    }
+    const ValErr ppLevel  = (ppIsLevel && hP) ? PocMean(pAll.ring) : kPocMissing;
+    const ValErr pPpLevel = (ppIsLevel && hP && hPM) ? PocCorrected(pAll, pmAll, cell.k) : kPocMissing;
+    // The same two levels in pp's own mass peak, for the money plot
+    RegionSample pReg;
+    const bool hPR  = ppIsLevel && hP && LoadRegionSample(cache, cell.ppFile, cell.proxy, pReg);
+    const ValErr ppInLevel  = hPR ? PocMean(pReg.ring[1]) : kPocMissing;
+    const std::string ppDiffLabel = ppIsLevel ? st.pp.legendLabel + ", integrated" : st.pp.legendLabel;
+
+    std::vector<TH1*> owned;
+    auto newHist = [&]() { TH1D* h = MakeVsXHist("hPocVs" + var, d.edges); owned.push_back(h); return h; };
+    // Values
+    TH1D* hData = newHist();
+    TH1D* hDIn  = newHist();
+    TH1D* hDOut = newHist();
+    TH1D* hMix  = hM ? newHist() : nullptr;
+    TH1D* hMIn  = hM ? newHist() : nullptr;
+    TH1D* hMOut = hM ? newHist() : nullptr;
+    TH1D* hPp   = (hP && !ppIsLevel) ? newHist() : nullptr;
+    // Data - Control
+    TH1D* hDMinusOut   = newHist();
+    TH1D* hDInMinusOut = newHist();
+    TH1D* hDMinusMix   = hM ? newHist() : nullptr;
+    TH1D* hDMinusPp    = hP ? newHist() : nullptr;
+    TH1D* hMInMinusOut = hM ? newHist() : nullptr;
+    // KappaEff-corrected
+    TH1D* hPMix      = hM ? newHist() : nullptr;
+    TH1D* hPInOut    = newHist(); // Data InPeak - OutOfPeak with the in-peak response: diluted, as the in-peak controls
+    TH1D* hPDMinusPp = (hM && hP && hPM) ? newHist() : nullptr;
+    // The money plot (Data InPeak against the controls; hDIn, hDOut, hMIn, hDInMinusOut and hPInOut are shared with the above)
+    TH1D* hPpIn          = (hP && !ppIsLevel) ? newHist() : nullptr;
+    TH1D* hInMinusMixIn  = hM ? newHist() : nullptr;
+    TH1D* hInMinusPpIn   = hP ? newHist() : nullptr;
+    TH1D* hPInMix        = hM ? newHist() : nullptr;
+    TH1D* hPInPpCheap    = (hP && (!ppIsLevel || hPR)) ? newHist() : nullptr; // Cheap pp subtraction, the data's response
+
+    for (size_t i = 0; i < d.all.size(); ++i) {
+        const int bin = static_cast<int>(i) + 1;
+        const RingSample& da = d.all[i];
+        const RegionSample& dr = d.region[i];
+        const ValErr dv = PocMean(da.ring), dIn = PocMean(dr.ring[1]), dOut = PocMean(dr.ring[0]);
+        SetVsXPoint(hData, bin, dv);
+        SetVsXPoint(hDIn, bin, dIn);
+        SetVsXPoint(hDOut, bin, dOut);
+        SetVsXPoint(hDMinusOut, bin, PocMeanMinusSubsetMean(da.ring, dr.ring[0]));
+        SetVsXPoint(hDInMinusOut, bin, PocDiff(dIn, dOut));
+        SetVsXPoint(hPInOut, bin, PocCorrected(RegionAsSample(dr, 1), RegionAsSample(dr, 0), cell.k));
+
+        ValErr pMix = kPocMissing, pInMix = kPocMissing;
+        if (hM) {
+            const ValErr mv = PocMean(m.all[i].ring), mIn = PocMean(m.region[i].ring[1]), mOut = PocMean(m.region[i].ring[0]);
+            SetVsXPoint(hInMinusMixIn, bin, PocDiff(dIn, mIn));
+            pInMix = PocCorrected(RegionAsSample(dr, 1), RegionAsSample(m.region[i], 1), cell.k);
+            SetVsXPoint(hPInMix, bin, pInMix);
+            SetVsXPoint(hMix, bin, mv);
+            SetVsXPoint(hMIn, bin, mIn);
+            SetVsXPoint(hMOut, bin, mOut);
+            SetVsXPoint(hDMinusMix, bin, PocDiff(dv, mv));
+            SetVsXPoint(hMInMinusOut, bin, PocDiff(mIn, mOut));
+            pMix = PocCorrected(da, m.all[i], cell.k);
+            SetVsXPoint(hPMix, bin, pMix);
+        }
+        if (hP) {
+            const ValErr pv = ppIsLevel ? ppLevel : PocMean(p.all[i].ring);
+            SetVsXPoint(hPp, bin, pv); // No-op on the centrality axis, where hPp is null
+            SetVsXPoint(hDMinusPp, bin, PocDiff(dv, pv));
+        }
+        if (hPDMinusPp)
+            SetVsXPoint(hPDMinusPp, bin, PocDiff(pMix, ppIsLevel ? pPpLevel : PocCorrected(p.all[i], pm.all[i], cell.k)));
+        if (hP) {
+            const ValErr ppIn = ppIsLevel ? ppInLevel : PocMean(p.region[i].ring[1]);
+            SetVsXPoint(hPpIn, bin, ppIn); // No-op on the centrality axis, where hPpIn is null
+            SetVsXPoint(hInMinusPpIn, bin, PocDiff(dIn, ppIn));
+        }
+        if (hPInPpCheap) // (R_in,data - R_in,pp) / the data's in-peak response: pp's peak per bin, or its integrated peak
+            SetVsXPoint(hPInPpCheap, bin,
+                        PocCorrected(RegionAsSample(dr, 1), ppIsLevel ? RegionAsSample(pReg, 1) : RegionAsSample(p.region[i], 1), cell.k));
+    }
+
+    TDirectory* dir = EnsureDir(fileRoot, cell.dirPath + "/Vs" + var);
+    const ProfileConfig pc{}; // Every title is passed explicitly
+    const std::string sym = "<" + cell.ringSym + ">";
+
+    // ---- The money plot (see DrawPocIntegrated), with pp's peak as a dotted level on the centrality axis ----
+    std::vector<ProfileBundle> mvb = {{hDIn, st.dataInRef}, {hDOut, st.dataOut}};
+    if (hM) mvb.push_back({hMIn, st.mixedIn});
+    if (hPpIn) mvb.push_back({hPpIn, st.ppIn});
+    std::vector<HorizontalRef> mrefs;
+    if (ppInLevel.second >= 0.) mrefs.push_back({ppInLevel.first, PocRelabel(st.ppIn, st.ppIn.legendLabel + ", integrated")});
+    DrawComparisonCanvas(mvb, "Canvas_Values", cell.head + ": " + sym + " vs " + var + ", mass peak against the controls", dir, pc,
+                         d.xTitle, sym, kNoLowerPad, false, false, mrefs);
+    const std::string ppInLabel = ppIsLevel ? st.pp.legendLabel + ", integrated" : st.pp.legendLabel;
+    std::vector<ProfileBundle> msb = {{hDInMinusOut, PocRelabel(st.dataOut, "InPeak - OutOfPeak")}};
+    if (hM) msb.push_back({hInMinusMixIn, PocRelabel(st.mixedIn, "InPeak: Data - " + st.mixed.legendLabel)});
+    if (hP) msb.push_back({hInMinusPpIn, PocRelabel(st.ppIn, "InPeak: Data - " + ppInLabel)});
+    DrawComparisonCanvas(msb, "Canvas_Subtracted", cell.head + ": Data InPeak minus each control vs " + var, dir, pc, d.xTitle,
+                         "#Delta" + sym, kNoLowerPad, false, true);
+    // Every entry diluted the same way (see DrawPocIntegrated): the sideband-subtracted one lives in PurityCorrected/
+    std::vector<ProfileBundle> mkb = {{hPInOut, PocRelabel(st.dataOut, "Data: InPeak - OutOfPeak")}};
+    if (hM) mkb.push_back({hPInMix, PocRelabel(st.mixedIn, "InPeak: Data - " + st.mixed.legendLabel)});
+    if (hPInPpCheap) mkb.push_back({hPInPpCheap, PocRelabel(st.ppIn, "InPeak: Data - " + ppInLabel + " (cheap)")});
+    DrawComparisonCanvas(mkb, "Canvas_KappaCorrected", cell.head + ": #kappa_{eff}-corrected vs " + var + " (InPeak ones: background not removed)",
+                         dir, pc, d.xTitle, "P_{R}", kNoLowerPad, false, true);
+
+    // ---- The full set ----
+    // (6/7) Values, with pp as a dotted level on the centrality axis
+    std::vector<ProfileBundle> vb = {{hData, st.data}, {hDIn, st.dataIn}, {hDOut, st.dataOut}};
+    if (hM) { vb.push_back({hMix, st.mixed}); vb.push_back({hMIn, st.mixedIn}); vb.push_back({hMOut, st.mixedOut}); }
+    if (hPp) vb.push_back({hPp, st.pp});
+    std::vector<HorizontalRef> refs;
+    if (ppLevel.second >= 0.) refs.push_back({ppLevel.first, PocRelabel(st.pp, st.pp.legendLabel + ", integrated")});
+    DrawComparisonCanvas(vb, "Canvas_Values_Full", cell.head + ": " + sym + " vs " + var, dir, pc, d.xTitle, sym,
+                         kNoLowerPad, false, false, refs);
+
+    // Data - Control
+    std::vector<ProfileBundle> sb = {{hDMinusOut, PocRelabel(st.dataOut, "Data - OutOfPeak")},
+                                     {hDInMinusOut, PocRelabel(st.dataIn, "Data: InPeak - OutOfPeak")}};
+    if (hM) sb.push_back({hDMinusMix, PocRelabel(st.mixed, "Data - " + st.mixed.legendLabel)});
+    if (hP) sb.push_back({hDMinusPp, PocRelabel(st.pp, "Data - " + ppDiffLabel)});
+    if (hM) sb.push_back({hMInMinusOut, PocRelabel(st.mixedIn, st.mixed.legendLabel + ": InPeak - OutOfPeak")});
+    DrawComparisonCanvas(sb, "Canvas_Subtracted_Full", cell.head + ": " + sym + " differences vs " + var, dir, pc, d.xTitle,
+                         "#Delta" + sym, kNoLowerPad, false, true);
+
+    // KappaEff-corrected ring density
+    std::vector<ProfileBundle> kb;
+    if (hM) kb.push_back({hPMix, PocRelabel(st.mixed, "Data - " + st.mixed.legendLabel)});
+    kb.push_back({hPInOut, PocRelabel(st.dataOut, "Data: InPeak - OutOfPeak")});
+    if (hPDMinusPp) kb.push_back({hPDMinusPp, PocRelabel(st.pp, ppIsLevel ? "P(Data) - P(pp, integrated)" : "P(Data) - P(pp)")});
+    DrawComparisonCanvas(kb, "Canvas_KappaCorrected_Full", cell.head + ": #kappa_{eff}-corrected ring density vs " + var, dir, pc,
+                         d.xTitle, "P_{R}", kNoLowerPad, false, true);
+
+    for (TH1* h : owned) delete h;
+}
+
+// -------------------------------------------------------------------------------------------------
+// ProofOfConcept AEE mosaics: <R> vs mass per (phi_AEE, eta_Proxy) cell, the three systems overlaid
+// -------------------------------------------------------------------------------------------------
+// AEE/RingVsMass/EtaBinXX/Canvas_Mosaic holds one pad per other phi_AEE bin of that eta_Proxy bin, and PerPhiBin/ one
+// full canvas per phi_AEE bin, every one of them. The EtaBinXX numbering follows signalExtractionRing, which slices the same consumer profile.
+
+/// @brief Per-bin canvases under every mosaic (the default), or only for the nominal cell (Default selection, full
+///        ring, POC_NOMINAL_PROXY) when set: they are ~32 canvases per eta_Proxy bin, the bulk of ProofOfConcept/.
+bool gPocPerBinNominalOnly = false;
+const std::string POC_NOMINAL_PROXY = "LeadJet";
+
+/// @brief The bin edges of an axis, nBins + 1 of them.
+std::vector<double> PocEdgesOf(const TAxis* ax) {
+    std::vector<double> e;
+    for (int i = 1; i <= ax->GetNbins() + 1; ++i) e.push_back(ax->GetBinLowEdge(i));
+    return e;
+}
+
+/// @brief The candidate moments of every (phi_AEE, eta_Proxy, mass) cell of one file's
+///        FakePolDrivers/PhiAEE/<Proxy>/p3dRingObservableVsPhiAEEVsProxyEtaVsMass (flows left out: never drawn).
+struct PocAeeCube {
+    std::vector<double> phiEdges, etaEdges, massEdges;
+    std::string massTitle;
+    int nPhi = 0, nEta = 0, nMass = 0;
+    std::vector<CandidateMoments> cells; // [(iPhi * nEta + iEta) * nMass + iMass], zero-based
+    const CandidateMoments& At(int iPhi, int iEta, int iMass) const {
+        return cells[(static_cast<size_t>(iPhi) * nEta + iEta) * nMass + iMass];
+    }
+    bool SameBinning(const PocAeeCube& o) const {
+        return phiEdges == o.phiEdges && etaEdges == o.etaEdges && massEdges == o.massEdges;
+    }
+};
+
+bool LoadPocAeeCube(FileCache& cache, const std::string& file, const std::string& proxy, PocAeeCube& c) {
+    if (!cache.Open(file, false)) return false; // Absent config: only counted
+    // Booked behind the consumer's doFakePolDiagnosticsQA, hence optional
+    TProfile3D* p = cache.FetchClone<TProfile3D>(file, TASK_DIR_IN_FILE + "FakePolDrivers/PhiAEE/" + proxy +
+                                                           "/p3dRingObservableVsPhiAEEVsProxyEtaVsMass", false);
+    if (!p) return false; // Counted by FetchClone
+    c.phiEdges  = PocEdgesOf(p->GetXaxis());
+    c.etaEdges  = PocEdgesOf(p->GetYaxis());
+    c.massEdges = PocEdgesOf(p->GetZaxis());
+    c.massTitle = p->GetZaxis()->GetTitle();
+    c.nPhi = p->GetNbinsX(); c.nEta = p->GetNbinsY(); c.nMass = p->GetNbinsZ();
+    c.cells.assign(static_cast<size_t>(c.nPhi) * c.nEta * c.nMass, CandidateMoments{});
+    for (int ix = 1; ix <= c.nPhi; ++ix)
+        for (int iy = 1; iy <= c.nEta; ++iy)
+            for (int iz = 1; iz <= c.nMass; ++iz)
+                c.cells[(static_cast<size_t>(ix - 1) * c.nEta + (iy - 1)) * c.nMass + (iz - 1)] = CellMoments(p, p->GetBin(ix, iy, iz));
+    delete p;
+    return true;
+}
+
+/**
+ * @brief Draws <R> vs mass of every system into the current pad: frame, shaded mass regions, zero line, then the points.
+ *
+ * Shared by the mosaic pads and the per-bin canvases, so the two always look alike. Everything drawn here is created
+ * with kCanDelete, so the pad owns it and the caller deletes only its canvas; the curves themselves stay the caller's.
+ * Hatched rather than transparent shading, as in signalExtractionRing (transparency renders solid on X11 without OpenGL).
+ *
+ * @param regions Mass regions as in LoadMassRegionEdges, or nullptr for no shading.
+ * @param compact Mosaic pad: smaller markers, larger axis labels, the legend only where withLegend says.
+ */
+void DrawPocMassPad(const std::vector<ProfileBundle>& curves, const double* regions, const std::string& title,
+                    const std::string& xTitle, const std::string& yTitle, bool withLegend, bool compact) {
+    double xLo = 1e300, xHi = -1e300, yLo = 1e300, yHi = -1e300;
+    for (const auto& b : curves) {
+        xLo = std::min(xLo, b.profile->GetXaxis()->GetXmin());
+        xHi = std::max(xHi, b.profile->GetXaxis()->GetXmax());
+        for (int i = 1; i <= b.profile->GetNbinsX(); ++i) {
+            const double v = b.profile->GetBinContent(i), e = b.profile->GetBinError(i);
+            if (std::abs(v) < 1e-12 && e < 1e-12) continue; // Unset bin (see SetVsXPoint)
+            yLo = std::min(yLo, v - e);
+            yHi = std::max(yHi, v + e);
+        }
+    }
+    if (!(yHi > yLo)) { // Nothing measured in this cell: keep the pad, say why
+        TPaveText* pt = new TPaveText(0.05, 0.35, 0.95, 0.65, "NDC");
+        pt->SetBorderSize(0);
+        pt->SetFillStyle(0);
+        pt->AddText(title.c_str());
+        pt->AddText("no entries");
+        pt->SetBit(kCanDelete);
+        pt->Draw();
+        return;
+    }
+    const double margin = std::max(0.08 * (yHi - yLo), 1e-6);
+    TH1F* frame = gPad->DrawFrame(xLo, yLo - margin, xHi, yHi + margin); // Owned by the pad
+    frame->SetTitle((title + ";" + xTitle + ";" + yTitle).c_str());
+    const double labelSize = compact ? 0.06 : 0.04;
+    frame->GetXaxis()->SetLabelSize(labelSize);
+    frame->GetYaxis()->SetLabelSize(labelSize);
+    frame->GetXaxis()->SetTitleSize(labelSize);
+    frame->GetYaxis()->SetTitleSize(labelSize);
+    frame->GetXaxis()->SetNdivisions(compact ? 504 : 510);
+    frame->GetYaxis()->SetNdivisions(505);
+
+    auto shade = [&](double a, double b, int color, int style) {
+        if (!(b > a)) return;
+        TBox* box = new TBox(a, yLo - margin, b, yHi + margin);
+        box->SetFillColor(color);
+        box->SetFillStyle(style);
+        box->SetLineWidth(0);
+        box->SetBit(kCanDelete);
+        box->Draw();
+    };
+    if (regions) {
+        shade(regions[0], regions[1], kBlue + 1, 3354); // Sidebands, hatched blue
+        shade(regions[4], regions[5], kBlue + 1, 3354);
+        shade(regions[2], regions[3], kRed + 1, 3345);  // Peak window, hatched red
+    }
+    if (yLo - margin < 0. && yHi + margin > 0.) { // R is signed: zero is the reference
+        TLine* zero = new TLine(xLo, 0., xHi, 0.);
+        zero->SetLineStyle(2);
+        zero->SetBit(kCanDelete);
+        zero->Draw();
+    }
+
+    TLegend* leg = nullptr;
+    if (withLegend) {
+        leg = compact ? new TLegend(0.55, 0.70, 0.97, 0.90) : new TLegend(0.60, 0.75, 0.88, 0.88);
+        leg->SetBorderSize(0);
+        leg->SetFillStyle(0);
+        leg->SetTextSize(compact ? 0.06 : 0.035);
+        leg->SetBit(kCanDelete);
+    }
+    const int n = static_cast<int>(curves.size());
+    for (int i = 0; i < n; ++i) {
+        // No sideways offset: the mass bins are fine enough, and an offset would misplace points against the shading
+        TGraphAsymmErrors* g = MakeOffsetPointGraph(curves[i].profile, i, n, 0.0, Form("gPocMass%d", i));
+        if (!g) continue;
+        StylePointGraph(g, curves[i].config);
+        if (compact) g->SetMarkerSize(0.5);
+        g->SetBit(kCanDelete);
+        g->Draw("P");
+        if (leg) leg->AddEntry(g, curves[i].config.legendLabel.c_str(), "pe");
+    }
+    if (leg) leg->Draw();
+    gPad->RedrawAxis(); // The hatching is filled: put the frame back on top
+}
+
+/**
+ * @brief AEE/RingVsMass/: <R> vs mass of Data, MixedEv and pp in every (phi_AEE, eta_Proxy) cell of the consumer's
+ *        p3d, one folder per eta_Proxy bin with its mosaic and, when writePerBin, one canvas per phi_AEE bin.
+ *
+ * A system is drawn only on the data's binning (all three axes); the peak and sideband windows are shaded from the
+ * data file's own mass-region axis.
+ */
+void DrawPocAeeMassMosaics(FileCache& cache, TDirectory* fileRoot, const PocCell& cell, const PocStyles& st, bool writePerBin) {
+    PocAeeCube d, m, p;
+    if (!LoadPocAeeCube(cache, cell.dataFile, cell.proxy, d)) return; // Counted by the loader
+    auto loadMatching = [&](const std::string& file, PocAeeCube& c, const std::string& what) {
+        if (file.empty() || !LoadPocAeeCube(cache, file, cell.proxy, c)) return false;
+        if (c.SameBinning(d)) return true;
+        WarnSkip(what + ", " + cell.proxy + " AEE cube", "binning differs from the data's", cell.dirPath);
+        return false;
+    };
+    const bool hM = loadMatching(cell.mixedFile, m, "MixedEv");
+    const bool hP = loadMatching(cell.ppFile, p, "pp");
+    double regions[6];
+    const bool hasRegions = LoadMassRegionEdges(cache, cell.dataFile, cell.proxy, regions);
+
+    const std::string yTitle  = "<" + cell.ringSym + ">";
+    const std::string phiName = "#phi_{#Lambda}-#phi_{p}^{*}";
+    // The mosaic shows every other phi_AEE bin (0, 2, 4, ...), which halves it and still spans the whole axis; every
+    // bin keeps its full canvas in PerPhiBin/. Wider than tall: each pad is a spectrum, read left to right (the
+    // extraction mosaics' layout)
+    const int mosaicStride = 2;
+    const int nShown = (d.nPhi + mosaicStride - 1) / mosaicStride;
+    const int nCols = std::max(1, static_cast<int>(std::ceil(std::sqrt(2.0 * nShown))));
+    const int nRows = (nShown + nCols - 1) / nCols;
+
+    for (int iEta = 0; iEta < d.nEta; ++iEta) {
+        // One curve per system and phi_AEE bin, over the data's mass binning
+        std::vector<std::vector<ProfileBundle>> perPhi(d.nPhi);
+        std::vector<TH1*> owned;
+        bool anyData = false; // Whether any data cell of this eta_Proxy bin holds a value
+        auto curveOf = [&](const PocAeeCube& c, int iPhi, bool isData) {
+            TH1D* h = MakeVsXHist("hPocAeeMass", d.massEdges);
+            owned.push_back(h);
+            for (int iz = 0; iz < d.nMass; ++iz) {
+                const ValErr v = PocMean(c.At(iPhi, iEta, iz));
+                SetVsXPoint(h, iz + 1, v);
+                if (isData && v.second >= 0.) anyData = true;
+            }
+            return h;
+        };
+        for (int iPhi = 0; iPhi < d.nPhi; ++iPhi) {
+            perPhi[iPhi].push_back({curveOf(d, iPhi, true), st.data});
+            if (hM) perPhi[iPhi].push_back({curveOf(m, iPhi, false), st.mixed});
+            if (hP) perPhi[iPhi].push_back({curveOf(p, iPhi, false), st.pp});
+        }
+        const std::string etaFolder = Form("EtaBin%02d", iEta);
+        if (!anyData) {
+            CountSkip("ProofOfConcept, AEE mosaics", "eta_Proxy bin without data entries", cell.dirPath + "/" + etaFolder);
+            for (TH1* h : owned) delete h;
+            continue;
+        }
+        TDirectory* etaDir = EnsureDir(fileRoot, cell.dirPath + "/AEE/RingVsMass/" + etaFolder);
+        const std::string etaLabel = Form("#eta_{%s} in [%+.2f, %+.2f)", cell.proxy.c_str(), d.etaEdges[iEta], d.etaEdges[iEta + 1]);
+        auto phiLabel = [&](int iPhi) {
+            return std::string(Form("%s in [%+.2f, %+.2f)", phiName.c_str(), d.phiEdges[iPhi], d.phiEdges[iPhi + 1]));
+        };
+
+        // The mosaic: every other phi_AEE bin of this eta_Proxy bin at once, the legend in the first pad
+        TCanvas* c = new TCanvas("Canvas_Mosaic", (cell.head + ", " + etaLabel + ": " + yTitle + " vs mass, every other " +
+                                                  phiName + " bin (blue: sidebands, red: peak window)").c_str(),
+                                 260 * nCols, 210 * nRows);
+        c->Divide(nCols, nRows, 0.001, 0.001);
+        for (int k = 0; k < nShown; ++k) {
+            const int iPhi = k * mosaicStride;
+            c->cd(k + 1);
+            gPad->SetMargin(0.16, 0.03, 0.14, 0.10);
+            DrawPocMassPad(perPhi[iPhi], hasRegions ? regions : nullptr, phiLabel(iPhi), "", "", k == 0, true);
+        }
+        c->Update(); // TCanvas::Write() does not paint: without this the pads are stored unpainted
+        etaDir->cd();
+        c->Write();
+        delete c; // Deletes what the pads own (kCanDelete); the curves are deleted below
+
+        // The drill-down: one full canvas per phi_AEE bin
+        if (writePerBin) {
+            TDirectory* perDir = EnsureDir(etaDir, "PerPhiBin");
+            for (int iPhi = 0; iPhi < d.nPhi; ++iPhi) {
+                TCanvas* cb = new TCanvas(Form("Canvas_PhiAEEBin%02d", iPhi), (cell.head + ", " + etaLabel).c_str(), 800, 600);
+                cb->SetMargin(0.12, 0.04, 0.12, 0.08);
+                DrawPocMassPad(perPhi[iPhi], hasRegions ? regions : nullptr, cell.head + ", " + etaLabel + ", " + phiLabel(iPhi),
+                               d.massTitle, yTitle, true, false);
+                cb->Update();
+                perDir->cd();
+                cb->Write();
+                delete cb;
+            }
+        }
+        for (TH1* h : owned) delete h;
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// ProofOfConcept slice fits: constant-plus-odd fits per slice, the fitted samples side by side
+// -------------------------------------------------------------------------------------------------
+// AEE/RingVsPhiAEE/  R(phi_AEE) in eta_Proxy slices, sine fits (p0 + p1 sin(p2 x)), parameters vs eta_Proxy
+// EtaFits/Integrated R(eta_Proxy) over every phi_AEE, tanh fits (p0 + p1 tanh(p2 x)), one point per sample
+// EtaFits/VsPhiAEE/  R(eta_Proxy) in phi_AEE slices, tanh fits, parameters vs phi_AEE
+// Every fit is on one mass region of one file (PocFitGroup), from the consumer's ...VsMassRegion bookings: the OO group
+// (Data InPeak, the reference, then Data OutOfPeak, MixEv InPeak and pp InPeak) at the folders above, and pp's own group
+// (pp InPeak, pp OutOfPeak, pp MixEv InPeak) in their PpOwnBaselines/ subfolders (not for the tanh fits in phi_AEE
+// slices). The fitted candidates are those of the peak window or the sideband alone, so every Delta p0 is diluted by
+// the peak's purity, as the InPeak differences are.
+// Parameter differences (Reference - Control) are drawn for p0 only: p0 is close to the plain mean of the profile and
+// decouples from the odd part, while p2 is unconstrained wherever p1 is consistent with zero.
+// Errors of a difference: the samples are disjoint (pp, the sideband) or share Lambdas whose per-candidate R are nearly
+// uncorrelated (MixedEv: the correlation is <n.n'> = <cos zeta>, measured at 1e-3 to 1e-4), so the two fits are treated
+// as independent. Every p0 and Delta p0 carries the symmetric (Hesse) error of p0: p0 hardly correlates with p1 and p2,
+// so its Minos sides are nearly equal, and a symmetric error is what the constant fits below can weight with.
+// Condensing: each p0, Delta p0 and p1 series gets a constant fitted across the slices (the inverse-variance weighted
+// mean, in closed form, see PocFitConstant); p1 with the mean of its two Minos sides. SymmetrizationQA/ repeats it on
+// the pair averages (slice and mirror slice), which cancel any part odd in the sliced axis exactly, whatever the
+// statistics of the two sides; the pair half-differences show that odd part, with a constant fitted too. For the sine
+// fits the odd part of p1 is the physics: R(phi_AEE) turns over with the sign of eta_Proxy, so p1 averages away and
+// 1/2 [p1(+eta) - p1(-eta)] is the amplitude (as it is at positive eta).
+
+/// @brief The markers of the fit methods, shared by every canvas that sets them side by side (summaries and Redux):
+///        filled square (sine in eta slices), filled triangle (integrated tanh), open triangle (tanh in phi slices).
+const int POC_MARKER_SINE = 21, POC_MARKER_TANH = 22, POC_MARKER_TANH_PHI = 26;
+
+/// @brief A copy of a style with another marker, never flagged as data: one fit method of a sample.
+VariationConfig PocMethodStyle(const VariationConfig& base, int marker) {
+    VariationConfig c = PocRelabel(base, base.legendLabel);
+    c.markerStyle = marker;
+    return c;
+}
+
+/// @brief pp's sideband and pp's mixed events' peak: the pp colour with the data's OutOfPeak marker, and the mixed
+///        events' InPeak look (Redux/ and pp's own fit group).
+VariationConfig PocPpOutStyle(const PocStyles& st) {
+    VariationConfig c = PocRelabel(st.ppIn, st.pp.legendLabel + " OutOfPeak");
+    c.markerStyle = st.dataOut.markerStyle;
+    return c;
+}
+VariationConfig PocPpMixedInStyle(const PocStyles& st) { return PocRelabel(st.mixedIn, "pp " + st.mixedIn.legendLabel); }
+
+/// @brief Bins of the consumer's two-bin mass-region axis ("mass region (1 sideband, 2 peak)"); the candidates of
+///        neither region sit in its underflow.
+const int kPocRegionSideband = 1, kPocRegionPeak = 2;
+
+/// @brief One fitted sample: the candidates of one mass region of one file (an empty file: not configured).
+struct PocFitSample {
+    VariationConfig cfg;
+    std::string file;
+    int regionBin = kPocRegionPeak;
+};
+
+/// @brief The number of fit groups, and the subfolder each one writes to (see the block comment above).
+const int kPocFitGroups = 2;
+const std::string POC_FIT_GROUP_DIR[kPocFitGroups] = {"", "/PpOwnBaselines"};
+/// @brief The most samples in a group (the OO one), for the fixed-size result arrays.
+const int kPocMaxGroupSamples = 4;
+
+/**
+ * @brief The samples of one fit group, the reference first: every Delta p0 is Reference - Sample.
+ *   Group 0 (OO): Data InPeak, Data OutOfPeak, MixEv InPeak, pp InPeak (the cheap pp baseline)
+ *   Group 1 (pp): pp InPeak, pp OutOfPeak, pp MixEv InPeak (pp against its own baselines)
+ * The positions are fixed, so results indexed by them line up across cells (a missing sample leaves its slot empty).
+ */
+std::vector<PocFitSample> PocFitGroup(const PocCell& cell, const PocStyles& st, int group) {
+    if (group == 0)
+        return {{st.dataInRef, cell.dataFile, kPocRegionPeak}, {st.dataOut, cell.dataFile, kPocRegionSideband},
+                {st.mixedIn, cell.mixedFile, kPocRegionPeak}, {st.ppIn, cell.ppFile, kPocRegionPeak}};
+    VariationConfig ppRef = st.ppIn;
+    ppRef.isData = true; // Emphasised as the reference of its group
+    return {{ppRef, cell.ppFile, kPocRegionPeak}, {PocPpOutStyle(st), cell.ppFile, kPocRegionSideband},
+            {PocPpMixedInStyle(st), cell.ppMixedFile, kPocRegionPeak}};
+}
+
+/// @brief Number of phi_AEE slices of the EtaFits/VsPhiAEE/ tanh fits: enough statistics per R(eta_Proxy) for p1 and
+///        p2 to separate. The consumer's phi_AEE bins are merged in equal groups, so it must divide their number.
+const int POC_PHI_AEE_SLICES = 8;
+
+/// @brief One slice: a range of bins of the sliced axis, its edges and its label.
+struct PocSlice {
+    int first = 0, last = 0; // Bins of the sliced axis, inclusive
+    double lo = 0., hi = 0.;
+    std::string label;
+    bool shown = true;       // Drawn on its own (Overlay/, PerSlice/); every slice is fitted and condensed either way
+};
+
+/// @brief The same slices of one system: one profile per slice (nullptr where absent or empty).
+struct PocSystemSlices {
+    VariationConfig cfg;
+    std::vector<TProfile*> profiles;
+};
+
+/// @brief One point of a parameter-vs-slice series, with asymmetric errors.
+struct PocAsymPoint { double x, width, y, eLow, eHigh; };
+struct PocAsymSeries { VariationConfig cfg; std::vector<PocAsymPoint> points; };
+
+/// @brief The x range over which a profile actually has entries (its first to last filled bin), for drawing a fitted
+///        curve only where it was constrained. False for an empty profile.
+bool PocOccupiedRange(const TProfile* prof, double& lo, double& hi) {
+    int first = 0, last = 0;
+    for (int i = 1; i <= prof->GetNbinsX(); ++i)
+        if (prof->GetBinEntries(i) > 0.) { if (!first) first = i; last = i; }
+    if (!first) return false;
+    lo = prof->GetXaxis()->GetBinLowEdge(first);
+    hi = prof->GetXaxis()->GetBinUpEdge(last);
+    return true;
+}
+
+/// @brief p2 is drawn only where p1 is at least 2 sigma from zero (the error on the side of zero): elsewhere p2 is
+///        unconstrained, and its formally valid error carries no information.
+bool PocScaleIsConstrained(const OddPlusConstantFitResult& f) {
+    const double errTowardZero = (f.p1 > 0.) ? f.p1Low : f.p1High;
+    return std::abs(f.p1) >= 2. * errTowardZero;
+}
+
+/// @brief p0 of a minus p0 of b, with the symmetric (Hesse) errors in quadrature (see the block comment above).
+ValErr PocP0Difference(const OddPlusConstantFitResult& a, const OddPlusConstantFitResult& b) {
+    return {a.p0 - b.p0, std::hypot(a.p0Hesse, b.p0Hesse)};
+}
+
+/**
+ * @brief A constant fitted to values with symmetric errors: the inverse-variance weighted mean, in closed form.
+ *   value = Sum w_i y_i / Sum w_i,  error = 1/sqrt(Sum w_i),  chi2 = Sum w_i (y_i - value)^2,  w_i = 1/sigma_i^2.
+ * The fit is linear, so no minimiser is involved. ScaledError() applies the PDG prescription: when chi2/ndf > 1, the
+ * error is scaled by sqrt(chi2/ndf), covering a spread larger than the errors allow.
+ */
+struct PocConstantFit {
+    bool valid = false;
+    double value = 0., error = 0., chi2 = 0.;
+    int ndf = 0;
+    double ScaledError() const { return (ndf > 0 && chi2 > ndf) ? error * std::sqrt(chi2 / ndf) : error; }
+};
+
+PocConstantFit PocFitConstant(const std::vector<ValErr>& vals) {
+    PocConstantFit out;
+    double sw = 0., swy = 0.;
+    int n = 0;
+    for (const auto& v : vals) {
+        if (v.second <= 0.) continue; // Missing values (negative error) and zero-error points carry no weight
+        sw  += 1. / (v.second * v.second);
+        swy += v.first / (v.second * v.second);
+        ++n;
+    }
+    if (n == 0) return out;
+    out.valid = true;
+    out.value = swy / sw;
+    out.error = 1. / std::sqrt(sw);
+    for (const auto& v : vals)
+        if (v.second > 0.) out.chi2 += (v.first - out.value) * (v.first - out.value) / (v.second * v.second);
+    out.ndf = n - 1;
+    return out;
+}
+
+/**
+ * @brief A value and its errors printed on one power of ten, "(1.23 #pm 0.45) #times 10^{-3}" for 1.234e-3 +/- 4.5e-4:
+ *        the reference error to two significant figures, and every number to its decimal place. Powers from 10^-1 to
+ *        10^2 stay plain decimals, which read better than a factor of ten.
+ */
+struct PocNumberText {
+    int exponent = 0, decimals = 3; // A zero error keeps three decimals
+    PocNumberText(double value, double error) {
+        const double largest = std::max(std::abs(value), std::abs(error));
+        const int power = (largest > 0.) ? static_cast<int>(std::floor(std::log10(largest))) : 0;
+        exponent = (power >= -1 && power <= 2) ? 0 : power;
+        const double errorMantissa = std::abs(error) * std::pow(10., -exponent);
+        if (errorMantissa > 0.) decimals = std::min(6, std::max(0, 1 - static_cast<int>(std::floor(std::log10(errorMantissa)))));
+    }
+    /// One number, on the shared power and to the shared decimals
+    std::string Of(double x) const { return Form("%.*f", decimals, x * std::pow(10., -exponent)); }
+    /// The shared power of ten, " #times 10^{n}", or nothing for plain decimals
+    std::string Power() const { return exponent ? std::string(Form(" #times 10^{%d}", exponent)) : std::string(); }
+};
+
+/**
+ * @brief The palest shade of a colour's family on ROOT's colour wheel (kRed + 2 --> kRed - 10, kAzure + 2 --> kAzure - 9),
+ *        for a band drawn behind points of that colour. Black and the greys (which have no such family) give kGray, about
+ *        as pale. Fixed indices, as everywhere in this macro: the canvases do not store new TColor indices consistently,
+ *        which rules out a computed tint.
+ */
+int PaleTint(int color) {
+    // The primaries have the shades base - 10 to base + 4, the secondaries base - 9 to base + 10; the first is the palest
+    const int primaries[] = {kRed, kGreen, kBlue, kYellow, kMagenta, kCyan};
+    const int secondaries[] = {kOrange, kSpring, kTeal, kAzure, kViolet, kPink};
+    for (int base : primaries)
+        if (color >= base - 10 && color <= base + 4) return base - 10;
+    for (int base : secondaries)
+        if (color >= base - 9 && color <= base + 10) return base - 9;
+    return kGray;
+}
+
+/// @brief The mirror of each slice (the slice whose edges are its own, negated), or -1: slices built symmetric about
+///        zero pair as k <-> nSlices - 1 - k, and a centre slice is its own mirror.
+std::vector<int> PocMirrorOf(const std::vector<PocSlice>& slices) {
+    const int n = static_cast<int>(slices.size());
+    std::vector<int> mirror(n, -1);
+    for (int k = 0; k < n; ++k) {
+        const int m = n - 1 - k;
+        if (std::abs(slices[k].lo + slices[m].hi) < 1e-6 && std::abs(slices[k].hi + slices[m].lo) < 1e-6) mirror[k] = m;
+    }
+    return mirror;
+}
+
+/**
+ * @brief Pair averages and pair half-differences of per-slice values, at the positive slice of each pair (|x|).
+ * The average 1/2 [y(+x) + y(-x)] cancels any part odd in x exactly; the half-difference 1/2 [y(+x) - y(-x)] is that
+ * odd part. Errors: 1/2 hypot of the two (disjoint slices, independent). A centre slice (its own mirror) enters the
+ * averages as it is, and has no half-difference. A pair with either side missing is left out of both.
+ */
+void PocSymmetrize(const std::vector<PocSlice>& slices, const std::vector<int>& mirror, const std::vector<ValErr>& perSlice,
+                   std::vector<PocAsymPoint>& average, std::vector<PocAsymPoint>& halfDifference,
+                   std::vector<ValErr>& averageValues) {
+    for (size_t k = 0; k < slices.size(); ++k) {
+        const int m = mirror[k];
+        const double centre = 0.5 * (slices[k].lo + slices[k].hi), width = slices[k].hi - slices[k].lo;
+        if (m < 0 || centre < -1e-9) continue; // Each pair once, at its positive slice (the centre slice has centre 0)
+        const ValErr& yp = perSlice[k];
+        const ValErr& ym = perSlice[m];
+        if (yp.second < 0. || ym.second < 0.) continue;
+        if (static_cast<int>(k) == m) { // Centre slice: its own mirror
+            average.push_back({std::abs(centre), width, yp.first, yp.second, yp.second});
+            averageValues.push_back(yp);
+            continue;
+        }
+        const double err = 0.5 * std::hypot(yp.second, ym.second);
+        average.push_back({centre, width, 0.5 * (yp.first + ym.first), err, err});
+        averageValues.push_back({0.5 * (yp.first + ym.first), err});
+        halfDifference.push_back({centre, width, 0.5 * (yp.first - ym.first), err, err});
+    }
+}
+
+/// @brief One series' condensed value, plain (every slice) and pair-symmetrised (SymmetrizationQA/), and the constant
+///        of its pair half-differences (its odd part in the sliced axis).
+struct PocCondensed {
+    std::string label;
+    PocConstantFit plain, symmetrized;
+    PocConstantFit oddPart = {};
+};
+
+/// @brief What DrawPocSliceFits condenses: p0 and p1 per system (the reference first) and Delta p0 per control
+///        (Reference - systems[1..]).
+struct PocSliceFitSummary {
+    std::vector<PocCondensed> p0, p0Diff, p1;
+};
+
+/**
+ * @brief Several series of asymmetric-error points over a numeric x axis, each nudged sideways within its slice
+ *        (the overlay canvases' zero-x-width convention), written to dir.
+ * @param fits  Optional, one per series (an invalid one skips its series): the fitted constant drawn as a line with a
+ *              hatched +/-1 sigma band in the series' colour and, where the PDG scaling widens it, the scaled band as a
+ *              solid pale tint of that colour behind it (PaleTint). The numbers go in a box, on one power of ten
+ *              (PocNumberText): a single fitted series gets its value, chi2/ndf and, where scaled, the PDG-scaled error on
+ *              three lines, with no label (its legend entry says what it is); several get one line each, by label.
+ * The points keep the part of the frame below the legend and the box (2% clear of the lower of the two), so neither can
+ * sit on a point.
+ */
+void DrawPocAsymSeries(const std::vector<PocAsymSeries>& series, double xLo, double xHi, const std::string& name,
+                       const std::string& title, TDirectory* fileRoot, const std::string& dirPath, const std::string& xTitle,
+                       const std::string& yTitle, bool zeroLine, const std::vector<PocConstantFit>& fits = {}) {
+    double yLo = 1e300, yHi = -1e300;
+    for (const auto& s : series)
+        for (const auto& pt : s.points) {
+            yLo = std::min(yLo, pt.y - pt.eLow);
+            yHi = std::max(yHi, pt.y + pt.eHigh);
+        }
+    for (const auto& f : fits) // The bands stay in frame too
+        if (f.valid) {
+            yLo = std::min(yLo, f.value - f.ScaledError());
+            yHi = std::max(yHi, f.value + f.ScaledError());
+        }
+    if (!(yHi >= yLo)) {
+        CountSkip("ProofOfConcept, " + name, "no converged fit to draw", dirPath);
+        return;
+    }
+    double margin = 0.1 * (yHi - yLo);
+    if (margin < 1e-12) margin = (std::abs(yHi) > 1e-12) ? 0.1 * std::abs(yHi) : 0.05;
+    double yMin = yLo - margin, yMax = yHi + margin;
+    if (zeroLine) { yMin = std::min(yMin, -margin); yMax = std::max(yMax, margin); }
+
+    // The box's lines, worked out first: their number sets its height, and with the legend's the headroom
+    const size_t nFitted = std::min(fits.size(), series.size());
+    std::vector<size_t> fitted; // The series with a valid fit
+    for (size_t i = 0; i < nFitted; ++i)
+        if (fits[i].valid) fitted.push_back(i);
+    std::vector<std::pair<std::string, int>> boxLines; // (text, colour)
+    for (size_t i : fitted) {
+        const PocConstantFit& f = fits[i];
+        const PocNumberText num(f.value, f.error);
+        const bool scaled = f.ScaledError() > f.error;
+        const std::string open = num.exponent ? "(" : "", close = num.exponent ? ")" + num.Power() : "";
+        const std::string chi2 = (f.ndf > 0) ? std::string(Form("#chi^{2}/ndf = %.1f/%d = %.2f", f.chi2, f.ndf, f.chi2 / f.ndf))
+                                             : std::string(Form("#chi^{2} = %.1f, no degree of freedom", f.chi2));
+        const int color = series[i].cfg.color;
+        if (fitted.size() == 1) { // One series: three short lines, the quantity named by the y title
+            boxLines.push_back({yTitle + " = " + open + num.Of(f.value) + " #pm " + num.Of(f.error) + close, color});
+            boxLines.push_back({chi2, color});
+            if (scaled) boxLines.push_back({"PDG-scaled error: #pm " + num.Of(f.ScaledError()) + num.Power(), color});
+        } else {                  // Several: one line each, told apart by label (and colour)
+            const std::string pdg = scaled ? ", PDG #pm " + num.Of(f.ScaledError()) : "";
+            boxLines.push_back({series[i].cfg.legendLabel + ": " + open + num.Of(f.value) + " #pm " + num.Of(f.error) + pdg +
+                                    close + ", " + chi2, color});
+        }
+    }
+    int nDrawn = 0; // Legend entries
+    for (const auto& s : series) nDrawn += s.points.empty() ? 0 : 1;
+    const double kLegendTop = 0.88, kBoxTop = 0.90, kLine = 0.05;
+    const double legendBottom = kLegendTop - kLine * nDrawn, boxBottom = kBoxTop - 0.01 - kLine * boxLines.size();
+    // Headroom: the frame spans NDC [0.12, 0.92] (the margins below), and the points keep what lies under the boxes
+    const double kFrameBottom = 0.12, kFrameTop = 0.92;
+    double lowest = kFrameTop;
+    if (nDrawn > 0) lowest = std::min(lowest, legendBottom);
+    if (!boxLines.empty()) lowest = std::min(lowest, boxBottom);
+    yMax = yMin + (yMax - yMin) / std::max(0.3, (lowest - 0.02 - kFrameBottom) / (kFrameTop - kFrameBottom));
+
+    TCanvas* c = new TCanvas(name.c_str(), title.c_str(), 800, 600);
+    c->SetMargin(0.12, 0.04, kFrameBottom, 1. - kFrameTop);
+    c->SetGridx();
+    c->SetGridy();
+    TH1F* frame = c->DrawFrame(xLo, yMin, xHi, yMax); // Owned by the canvas
+    frame->SetTitle((title + ";" + xTitle + ";" + yTitle).c_str());
+    frame->GetXaxis()->SetTitleSize(0.045);
+    frame->GetYaxis()->SetTitleSize(0.045);
+    std::vector<TObject*> fitObjects; // Owned here, deleted after the canvas is written
+    // The PDG-scaled bands first, solid, so every hatched band and line drawn after them stays visible; the grid they
+    // cover goes back on top of them (and under everything else)
+    bool anyScaled = false;
+    for (size_t i : fitted) {
+        const PocConstantFit& f = fits[i];
+        if (!(f.ScaledError() > f.error)) continue;
+        TBox* pdgBand = new TBox(xLo, f.value - f.ScaledError(), xHi, f.value + f.ScaledError());
+        pdgBand->SetFillColor(PaleTint(series[i].cfg.color));
+        pdgBand->SetFillStyle(1001);
+        pdgBand->SetLineWidth(0);
+        pdgBand->Draw();
+        fitObjects.push_back(pdgBand);
+        anyScaled = true;
+    }
+    if (anyScaled) c->RedrawAxis("g");
+    TLine* zero = nullptr;
+    if (zeroLine) {
+        zero = new TLine(xLo, 0., xHi, 0.);
+        zero->SetLineStyle(2);
+        zero->SetLineWidth(2);
+        zero->Draw();
+    }
+    // The fitted constants: a hatched +/-1 sigma band and a line per series, under the points
+    for (size_t i : fitted) {
+        const PocConstantFit& f = fits[i];
+        TBox* band = new TBox(xLo, f.value - f.error, xHi, f.value + f.error);
+        band->SetFillColor(series[i].cfg.color);
+        band->SetFillStyle(3004 + static_cast<int>(i % 2)); // Alternating hatch directions keep two bands apart
+        band->SetLineWidth(0);
+        band->Draw();
+        TLine* line = new TLine(xLo, f.value, xHi, f.value);
+        line->SetLineColor(series[i].cfg.color);
+        line->SetLineWidth(2);
+        line->Draw();
+        fitObjects.push_back(band);
+        fitObjects.push_back(line);
+    }
+    TPaveText* fitBox = nullptr;
+    if (!boxLines.empty()) {
+        fitBox = new TPaveText(0.50, boxBottom, 0.96, kBoxTop, "NDC");
+        fitBox->SetFillColor(kWhite);
+        fitBox->SetFillStyle(1001); // Opaque, so the grid does not run through the numbers
+        fitBox->SetBorderSize(1);
+        fitBox->SetTextSize(0.026);
+        fitBox->SetTextAlign(12);
+        for (const auto& line : boxLines) fitBox->AddText(line.first.c_str())->SetTextColor(line.second);
+    }
+    TLegend* leg = new TLegend(0.15, legendBottom, 0.50, kLegendTop);
+    leg->SetBorderSize(0);
+    leg->SetFillStyle(0);
+    leg->SetTextSize(0.035);
+    std::vector<TGraphAsymmErrors*> graphs;
+    const int n = static_cast<int>(series.size());
+    for (int i = 0; i < n; ++i) {
+        if (series[i].points.empty()) continue;
+        // The same sideways offset as MakeOffsetPointGraph, as a fraction of each slice's own width
+        const double frac = (n > 1) ? (i - 0.5 * (n - 1)) * kOverlaySpreadFrac / (n - 1) : 0.;
+        TGraphAsymmErrors* g = new TGraphAsymmErrors(static_cast<int>(series[i].points.size()));
+        for (size_t k = 0; k < series[i].points.size(); ++k) {
+            const auto& pt = series[i].points[k];
+            g->SetPoint(static_cast<int>(k), pt.x + frac * pt.width, pt.y);
+            g->SetPointError(static_cast<int>(k), 0., 0., pt.eLow, pt.eHigh);
+        }
+        StylePointGraph(g, series[i].cfg);
+        g->Draw("P SAME");
+        leg->AddEntry(g, series[i].cfg.legendLabel.c_str(), "pe");
+        graphs.push_back(g);
+    }
+    leg->Draw();
+    if (fitBox) fitBox->Draw();
+    EnsureDir(fileRoot, dirPath)->cd();
+    c->Write();
+    delete c;
+    for (auto* g : graphs) delete g;
+    for (auto* o : fitObjects) delete o;
+    delete fitBox;
+    delete leg;
+    delete zero;
+}
+
+
+/// @brief One fit result per (system, slice), indexed [system][slice].
+using PocSliceFitTable = std::vector<std::vector<OddPlusConstantFitResult>>;
+
+/// @brief Fits every slice of every system with one model (fit only, nothing drawn). A system without that slice keeps
+///        an invalid result. Kept apart from the drawing so one set of fits can be drawn in several views.
+PocSliceFitTable PocFitSlices(const std::vector<PocSystemSlices>& systems, size_t nSlices, const OddPlusConstantModel& model,
+                              const std::string& stem) {
+    const ProfileConfig pc{};
+    PocSliceFitTable fits(systems.size(), std::vector<OddPlusConstantFitResult>(nSlices));
+    for (size_t s = 0; s < systems.size(); ++s)
+        for (size_t k = 0; k < nSlices; ++k)
+            if (TProfile* prof = systems[s].profiles[k]) // No output directory; the name only has to be unique among live functions
+                fits[s][k] = OddPlusConstantFitter(prof, model, pc, systems[s].cfg,
+                                                   Form("fitPoc_%s_%zu_%zu", stem.c_str(), s, k), nullptr);
+    return fits;
+}
+
+/**
+ * @brief Draws the fits of every slice of every system (PocFitSlices) and writes: PerSlice/Canvas_<stem>SliceXX (the
+ *        systems with their fitted curves, for the shown slices, if writePerSlice), Canvas_{p0,p1,p2,RedChi2}Vs<stem>
+ *        (one series per system, every slice) and Canvas_p0DiffVs<stem> (Reference - each control), the p0 and Delta p0
+ *        canvases with a constant fitted per series. SymmetrizationQA/ holds the same two on the pair averages
+ *        (Canvas_*_Symmetrized, constant fitted over |x|) and their odd parts (Canvas_*_OddPart, p1's included, constant
+ *        fitted). systems[0] is the reference of the differences.
+ * @return The condensed p0 and p1 of every system and Delta p0 of every control, plain, symmetrised and odd part
+ *         (empty fits where a series has no value), always over every slice.
+ *
+ * @param fits              [system][slice], aligned with systems.
+ * @param fitXTitle         x title of the fitted profiles (the axis within a slice).
+ * @param sliceXTitle       x title of the parameter canvases (the sliced axis).
+ * @param curveOnOccupied   Draw each curve only over its profile's filled bins (tanh in eta_Proxy, where the acceptance
+ *                          is narrower than the axis); otherwise over the whole axis (sine in phi_AEE).
+ * @param writePerSlice     Write PerSlice/ at all (one canvas per shown slice, the bulk of the output).
+ */
+PocSliceFitSummary DrawPocSliceFits(TDirectory* fileRoot, const std::string& dirPath, const std::string& head, const std::string& stem,
+                      const std::vector<PocSlice>& slices, const std::vector<PocSystemSlices>& systems,
+                      const PocSliceFitTable& fits, const OddPlusConstantModel& model, const std::string& fitXTitle,
+                      const std::string& sliceXTitle, const std::string& yTitle, bool curveOnOccupied,
+                      bool writePerSlice = true) {
+    const size_t nS = slices.size(), nSys = systems.size();
+    const ProfileConfig pc{}; // Titles are passed explicitly
+
+    for (size_t k = 0; k < nS && writePerSlice; ++k) {
+        if (!slices[k].shown) continue; // Fitted, and condensed below, but not drawn on its own
+        std::vector<ProfileBundle> bundles;
+        std::vector<TF1*> curves;
+        for (size_t s = 0; s < nSys; ++s) {
+            TProfile* prof = systems[s].profiles[k];
+            if (!prof) continue;
+            const auto& f = fits[s][k];
+            VariationConfig cfg = systems[s].cfg;
+            if (f.valid)
+                cfg.legendLabel += Form(": p_{0}=%.2e, p_{1}=%.2e, p_{2}=%.3g", f.p0, f.p1, f.p2);
+            else if (f.hasParameters) // Drawn dashed, and left out of the parameter canvases
+                cfg.legendLabel += Form(": not converged (status %d)", f.status);
+            else
+                cfg.legendLabel += ": fit failed";
+            bundles.push_back({prof, cfg});
+            double lo = prof->GetXaxis()->GetXmin(), hi = prof->GetXaxis()->GetXmax();
+            if (f.hasParameters && (!curveOnOccupied || PocOccupiedRange(prof, lo, hi)))
+                curves.push_back(OddPlusConstantCurve(model, f, Form("fPoc_%s_%zu_%zu", stem.c_str(), s, k), lo, hi, cfg.color));
+        }
+        if (bundles.empty()) continue;
+        DrawComparisonCanvas(bundles, Form("Canvas_%sSlice%02zu", stem.c_str(), k),
+                             head + ", " + slices[k].label + ": " + model.name + " fits", EnsureDir(fileRoot, dirPath + "/PerSlice"),
+                             pc, fitXTitle, yTitle, kNoLowerPad, false, false, {}, curves);
+        for (TF1* f : curves) delete f;
+    }
+
+    // Parameters vs the sliced axis, one series per system (converged fits only)
+    const double xLo = slices.front().lo, xHi = slices.back().hi;
+    std::vector<PocAsymSeries> p0(nSys), p1(nSys), p2(nSys), chi2(nSys);
+    // p0 of each system and Delta p0 of each control, per slice, with the symmetric error (missing where not converged)
+    std::vector<std::vector<ValErr>> p0Vals(nSys, std::vector<ValErr>(nS, kPocMissing));
+    // p1 likewise, with the mean of its two Minos sides as the symmetric error the constant fits weight with
+    std::vector<std::vector<ValErr>> p1Vals(nSys, std::vector<ValErr>(nS, kPocMissing));
+    std::vector<std::vector<ValErr>> diffVals;
+    std::vector<VariationConfig> diffCfgs;
+    for (size_t s = 0; s < nSys; ++s) {
+        for (auto* v : {&p0, &p1, &p2, &chi2}) (*v)[s].cfg = PocRelabel(systems[s].cfg, systems[s].cfg.legendLabel);
+        for (size_t k = 0; k < nS; ++k) {
+            const auto& f = fits[s][k];
+            const double x = 0.5 * (slices[k].lo + slices[k].hi), w = slices[k].hi - slices[k].lo;
+            if (f.ndf > 0) chi2[s].points.push_back({x, w, f.chi2 / f.ndf, 0., 0.}); // Kept for failed fits: the quickest tell
+            if (!f.valid) continue;
+            p0Vals[s][k] = {f.p0, f.p0Hesse};
+            p1Vals[s][k] = {f.p1, 0.5 * (f.p1Low + f.p1High)};
+            p0[s].points.push_back({x, w, f.p0, f.p0Hesse, f.p0Hesse});
+            p1[s].points.push_back({x, w, f.p1, f.p1Low, f.p1High});
+            if (PocScaleIsConstrained(f)) p2[s].points.push_back({x, w, f.p2, f.p2Low, f.p2High});
+        }
+        if (s == 0) continue; // Data - Data is zero by construction
+        std::vector<ValErr> d(nS, kPocMissing);
+        for (size_t k = 0; k < nS; ++k)
+            if (fits[0][k].valid && fits[s][k].valid) d[k] = PocP0Difference(fits[0][k], fits[s][k]);
+        diffVals.push_back(d);
+        diffCfgs.push_back(PocRelabel(systems[s].cfg, systems[0].cfg.legendLabel + " - " + systems[s].cfg.legendLabel));
+    }
+
+    // Plain: every slice, one constant per series
+    PocSliceFitSummary summary;
+    std::vector<PocConstantFit> p0Fits, diffFits;
+    std::vector<PocAsymSeries> p0Diff;
+    for (size_t s = 0; s < nSys; ++s) {
+        p0Fits.push_back(PocFitConstant(p0Vals[s]));
+        summary.p0.push_back({systems[s].cfg.legendLabel, p0Fits.back(), {}});
+        summary.p1.push_back({systems[s].cfg.legendLabel, PocFitConstant(p1Vals[s]), {}});
+    }
+    for (size_t c = 0; c < diffVals.size(); ++c) {
+        PocAsymSeries series{diffCfgs[c], {}};
+        for (size_t k = 0; k < nS; ++k)
+            if (diffVals[c][k].second >= 0.)
+                series.points.push_back({0.5 * (slices[k].lo + slices[k].hi), slices[k].hi - slices[k].lo, diffVals[c][k].first,
+                                         diffVals[c][k].second, diffVals[c][k].second});
+        p0Diff.push_back(series);
+        diffFits.push_back(PocFitConstant(diffVals[c]));
+        summary.p0Diff.push_back({diffCfgs[c].legendLabel, diffFits.back(), {}});
+    }
+    const std::string fitName = head + ", " + model.name + " fits";
+    DrawPocAsymSeries(p0, xLo, xHi, "Canvas_p0Vs" + stem, fitName + ": p0 (offset), constant fitted per series", fileRoot,
+                      dirPath, sliceXTitle, "p0", true, p0Fits);
+    DrawPocAsymSeries(p1, xLo, xHi, "Canvas_p1Vs" + stem, fitName + ": p1 (amplitude)", fileRoot, dirPath, sliceXTitle, "p1", true);
+    DrawPocAsymSeries(p2, xLo, xHi, "Canvas_p2Vs" + stem, fitName + ": p2 (scale; only where |p1| #geq 2#sigma)", fileRoot,
+                      dirPath, sliceXTitle, "p2", false);
+    DrawPocAsymSeries(chi2, xLo, xHi, "Canvas_RedChi2Vs" + stem, fitName + ": #chi^{2}/ndf", fileRoot, dirPath, sliceXTitle,
+                      "#chi^{2}/ndf", false);
+    if (!p0Diff.empty())
+        DrawPocAsymSeries(p0Diff, xLo, xHi, "Canvas_p0DiffVs" + stem, fitName + ": #Deltap0 (Reference - Control), constant fitted",
+                          fileRoot, dirPath, sliceXTitle, "#Deltap0", true, diffFits);
+
+    // SymmetrizationQA: the same on the pair averages, over |x|, and the odd parts they cancel
+    const std::vector<int> mirror = PocMirrorOf(slices);
+    bool anyPair = false;
+    for (int m : mirror) anyPair = anyPair || m >= 0;
+    if (!anyPair) {
+        WarnSkip(head + ", " + stem + " slices", "no slice has a mirror slice: nothing to symmetrise", dirPath);
+        return summary;
+    }
+    const std::string symDir = dirPath + "/SymmetrizationQA";
+    const std::string absTitle = "|" + sliceXTitle + "|";
+    double absHi = 0.;
+    for (const auto& sl : slices) absHi = std::max(absHi, std::max(std::abs(sl.lo), std::abs(sl.hi)));
+    auto symmetrizeSeries = [&](const std::vector<ValErr>& perSlice, const VariationConfig& cfg, PocAsymSeries& avg,
+                                PocAsymSeries& odd, PocConstantFit& fit, PocConstantFit& oddFit) {
+        std::vector<ValErr> avgVals;
+        avg = {cfg, {}};
+        odd = {cfg, {}};
+        PocSymmetrize(slices, mirror, perSlice, avg.points, odd.points, avgVals);
+        fit = PocFitConstant(avgVals);
+        std::vector<ValErr> oddVals; // The half-differences carry symmetric errors (see PocSymmetrize)
+        for (const auto& pt : odd.points) oddVals.push_back({pt.y, pt.eLow});
+        oddFit = PocFitConstant(oddVals);
+    };
+    std::vector<PocAsymSeries> p0Avg(nSys), p0Odd(nSys), diffAvg(diffVals.size()), diffOdd(diffVals.size());
+    std::vector<PocAsymSeries> p1Avg(nSys), p1Odd(nSys);
+    std::vector<PocConstantFit> p0AvgFits(nSys), diffAvgFits(diffVals.size()), p1AvgFits(nSys);
+    std::vector<PocConstantFit> p0OddFits(nSys), diffOddFits(diffVals.size()), p1OddFits(nSys);
+    for (size_t s = 0; s < nSys; ++s) {
+        symmetrizeSeries(p0Vals[s], p0[s].cfg, p0Avg[s], p0Odd[s], p0AvgFits[s], p0OddFits[s]);
+        summary.p0[s].symmetrized = p0AvgFits[s];
+        summary.p0[s].oddPart = p0OddFits[s];
+        symmetrizeSeries(p1Vals[s], p1[s].cfg, p1Avg[s], p1Odd[s], p1AvgFits[s], p1OddFits[s]);
+        summary.p1[s].symmetrized = p1AvgFits[s];
+        summary.p1[s].oddPart = p1OddFits[s];
+    }
+    for (size_t c = 0; c < diffVals.size(); ++c) {
+        symmetrizeSeries(diffVals[c], diffCfgs[c], diffAvg[c], diffOdd[c], diffAvgFits[c], diffOddFits[c]);
+        summary.p0Diff[c].symmetrized = diffAvgFits[c];
+        summary.p0Diff[c].oddPart = diffOddFits[c];
+    }
+    DrawPocAsymSeries(p0Avg, 0., absHi, "Canvas_p0Vs" + stem + "_Symmetrized",
+                      fitName + ": p0, pair averages #frac{1}{2}[p0(+x) + p0(-x)], constant fitted", fileRoot, symDir, absTitle,
+                      "p0", true, p0AvgFits);
+    DrawPocAsymSeries(p0Odd, 0., absHi, "Canvas_p0Vs" + stem + "_OddPart",
+                      fitName + ": p0, pair half-differences #frac{1}{2}[p0(+x) - p0(-x)] (the odd part), constant fitted",
+                      fileRoot, symDir, absTitle, "p0 odd part", true, p0OddFits);
+    // p1's odd part: the amplitude of the sine fits, whose modulation turns over with the sign of eta_Proxy
+    DrawPocAsymSeries(p1Odd, 0., absHi, "Canvas_p1Vs" + stem + "_OddPart",
+                      fitName + ": p1, pair half-differences #frac{1}{2}[p1(+x) - p1(-x)] (the odd part), constant fitted",
+                      fileRoot, symDir, absTitle, "p1 odd part", true, p1OddFits);
+    if (!diffVals.empty()) {
+        DrawPocAsymSeries(diffAvg, 0., absHi, "Canvas_p0DiffVs" + stem + "_Symmetrized",
+                          fitName + ": #Deltap0, pair averages, constant fitted", fileRoot, symDir, absTitle, "#Deltap0", true,
+                          diffAvgFits);
+        DrawPocAsymSeries(diffOdd, 0., absHi, "Canvas_p0DiffVs" + stem + "_OddPart",
+                          fitName + ": #Deltap0, pair half-differences (the odd part), constant fitted", fileRoot, symDir,
+                          absTitle, "#Deltap0 odd part", true, diffOddFits);
+    }
+    return summary;
+}
+
+/// @brief One file's <R> vs (phi_AEE, eta_Proxy) map, FakePolDrivers/PhiAEE/<Proxy>/p2dRingObservableVsPhiAEEVsProxyEta.
+TProfile2D* PocFetchAeeEtaMap(FileCache& cache, const std::string& file, const std::string& proxy) {
+    if (file.empty() || !cache.Open(file, false)) return nullptr; // Absent config: only counted
+    return cache.FetchClone<TProfile2D>(file, TASK_DIR_IN_FILE + "FakePolDrivers/PhiAEE/" + proxy +
+                                                  "/p2dRingObservableVsPhiAEEVsProxyEta", false);
+}
+
+/**
+ * @brief One mass region of a file's <R> vs (phi_AEE, eta_Proxy) map, from
+ *        FakePolDrivers/PhiAEE/<Proxy>/p3dRingObservableVsPhiAEEVsProxyEtaVsMassRegion (z: the two-bin region axis).
+ * The projection is ROOT's own (TProfile3D::Project3DProfile, restricted to the region bin by the z range), so entries,
+ * sums and errors stay those of a profile. "yx" keeps phi_AEE on x and eta_Proxy on y, as in the all-candidates map;
+ * callers check the binning against that map, which also catches a swapped projection.
+ */
+TProfile2D* PocFetchAeeEtaMapRegion(FileCache& cache, const std::string& file, const std::string& proxy, int regionBin) {
+    if (file.empty() || !cache.Open(file, false)) return nullptr; // Absent config: only counted
+    TProfile3D* cube = cache.FetchClone<TProfile3D>(file, TASK_DIR_IN_FILE + "FakePolDrivers/PhiAEE/" + proxy +
+                                                              "/p3dRingObservableVsPhiAEEVsProxyEtaVsMassRegion", false);
+    if (!cube) return nullptr; // Counted by FetchClone
+    cube->GetZaxis()->SetRange(regionBin, regionBin);
+    TProfile2D* map = cube->Project3DProfile("yx");
+    // Detached and renamed at once: a projection finding its name in gDirectory would reuse that object
+    static int counter = 0;
+    map->SetDirectory(nullptr);
+    map->SetName(Form("pPocAeeRegionMap_%d", counter++));
+    delete cube;
+    return map;
+}
+
+/// @brief One mass region of a file's R(eta_Proxy), from Ring/<Proxy>/EtaDependence/
+///        p2dRingObservableProxyEtaHighEtaResVsMassRegion (y: the two-bin region axis). Not booked for SubJet.
+TProfile* PocFetchEtaProfileRegion(FileCache& cache, const std::string& file, const std::string& proxy, int regionBin) {
+    if (file.empty() || !cache.Open(file, false)) return nullptr; // Absent config: only counted
+    TProfile2D* p2 = cache.FetchClone<TProfile2D>(file, TASK_DIR_IN_FILE + RING_DIR_IN_FILE + proxy +
+                                                            "/EtaDependence/p2dRingObservableProxyEtaHighEtaResVsMassRegion", false);
+    if (!p2) return nullptr; // Counted by FetchClone
+    static int counter = 0; // ProfileX attaches to gDirectory under its name: unique names, detached at once
+    TProfile* prof = p2->ProfileX(Form("pPocEtaRegion_%d", counter++), regionBin, regionBin);
+    prof->SetDirectory(nullptr);
+    delete p2;
+    return prof;
+}
+
+/// @brief True when two maps share both axes edge by edge (a control is never sliced on another binning).
+bool PocSameMapBinning(const TProfile2D* a, const TProfile2D* b) {
+    return PocEdgesOf(a->GetXaxis()) == PocEdgesOf(b->GetXaxis()) && PocEdgesOf(a->GetYaxis()) == PocEdgesOf(b->GetYaxis());
+}
+
+/// @brief Single eta_Proxy bins per side drawn on their own (Overlay/ and PerSlice/ of AEE/RingVsPhiAEE/ and of
+///        StreamlinedStory/SineFitQA/): enough to see the fits at a glance and still read every canvas. Every bin of
+///        the acceptance is fitted and condensed whatever this says; it only decides what is drawn slice by slice.
+const int POC_ETA_SLICES_PER_SIDE = 5;
+
+/**
+ * @brief The eta_Proxy slices of AEE/RingVsPhiAEE/ and StreamlinedStory/: single bins of the fine axis, never merged
+ *        ones, so no slice straddles the acceptance edge or rebins across it.
+ *
+ * - The centre slice merges the two bins around zero, [-w, w].
+ * - Each remaining bin of the acceptance is a slice of its own, mirrored (bin b and nBins + 1 - b), so the slices pair
+ *   up at +/- eta. The fits and their condensed values use them all.
+ * - The range comes from the data's occupancy, so jets and the leading particle each get theirs: the outermost filled
+ *   bin of each side is dropped (it holds the acceptance edge, which falls inside it), and the narrower side sets both.
+ * - shownPerSide of them per side, evenly spaced from the outside in, and the centre slice are marked shown: the ones
+ *   drawn on their own (0: all of them).
+ * Needs an axis symmetric about zero with zero on a bin edge; anything else is refused with a warning.
+ */
+std::vector<PocSlice> PocEtaSlices(const TProfile2D* data, const std::string& what, int shownPerSide = POC_ETA_SLICES_PER_SIDE) {
+    std::vector<PocSlice> out;
+    const TAxis* ax = data->GetYaxis();
+    const int nb = ax->GetNbins();
+    if (nb % 2 != 0 || std::abs(ax->GetXmin() + ax->GetXmax()) > 1e-6 || std::abs(ax->GetBinUpEdge(nb / 2)) > 1e-6) {
+        WarnSkip(what, "eta_Proxy axis not symmetric about zero with zero on a bin edge: no slices");
+        return out;
+    }
+    auto mirror = [nb](int b) { return nb + 1 - b; };
+    auto entriesOf = [&](int iy) { // Every phi_AEE bin of this eta_Proxy bin, flows included
+        double n = 0.;
+        for (int ix = 0; ix <= data->GetNbinsX() + 1; ++ix) n += data->GetBinEntries(data->GetBin(ix, iy));
+        return n;
+    };
+    int firstNeg = 0, lastPos = 0;
+    for (int iy = 1; iy <= nb / 2 && !firstNeg; ++iy) if (entriesOf(iy) > 0.) firstNeg = iy;
+    for (int iy = nb; iy > nb / 2 && !lastPos; --iy) if (entriesOf(iy) > 0.) lastPos = iy;
+    if (!firstNeg || !lastPos) {
+        WarnSkip(what, "no entries on one side of eta_Proxy = 0: no slices");
+        return out;
+    }
+    const int start = std::max(firstNeg, mirror(lastPos)) + 1; // The narrower side, its edge bin dropped
+    const int stop  = nb / 2 - 1;                              // Short of the centre slice (bins nb/2 and nb/2 + 1)
+    const int nAvail = stop - start + 1;
+    // The shown bins of the negative side (their mirrors follow): evenly spaced from the outside in
+    std::set<int> shownBins;
+    if (nAvail > 0) {
+        const int nPick = (shownPerSide > 0) ? std::min(shownPerSide, nAvail) : nAvail;
+        const int step  = (nPick > 1) ? (nAvail - 1) / (nPick - 1) : 1;
+        for (int k = 0; k < nPick; ++k) shownBins.insert(start + k * step);
+    }
+    auto single = [&](int b, bool shown) {
+        return PocSlice{b, b, ax->GetBinLowEdge(b), ax->GetBinUpEdge(b),
+                        Form("#eta in [%+.2f, %+.2f)", ax->GetBinLowEdge(b), ax->GetBinUpEdge(b)), shown};
+    };
+    for (int b = start; b <= stop; ++b) out.push_back(single(b, shownBins.count(b) > 0)); // Ascending eta
+    out.push_back({nb / 2, nb / 2 + 1, ax->GetBinLowEdge(nb / 2), ax->GetBinUpEdge(nb / 2 + 1),
+                   Form("#eta in [%+.2f, %+.2f)", ax->GetBinLowEdge(nb / 2), ax->GetBinUpEdge(nb / 2 + 1)), true});
+    for (int b = stop; b >= start; --b) out.push_back(single(mirror(b), shownBins.count(b) > 0));
+    return out;
+}
+
+/**
+ * @brief R(phi_AEE) in every eta_Proxy slice, for each sample, from the sample's own region map: one profile per slice,
+ *        nullptr where the slice is empty. Shared by AEE/RingVsPhiAEE/ and StreamlinedStory/.
+ *
+ * Each region map must share ref's binning edge by edge (it is refused with a warning otherwise), so every sample is
+ * sliced alike. Without the reference (the first sample) nothing is returned, since every difference needs it; any other
+ * missing sample is left out. The profiles are added to owned, for the caller to delete.
+ */
+std::vector<PocSystemSlices> PocSliceSamples(FileCache& cache, const TProfile2D* ref, const std::vector<PocSlice>& slices,
+                                             const std::vector<PocFitSample>& samples, const std::string& proxy,
+                                             const std::string& place, std::vector<TH1*>& owned) {
+    std::vector<PocSystemSlices> systems;
+    for (size_t i = 0; i < samples.size(); ++i) {
+        const PocFitSample& smp = samples[i];
+        TProfile2D* map = PocFetchAeeEtaMapRegion(cache, smp.file, proxy, smp.regionBin);
+        if (map && !PocSameMapBinning(ref, map)) {
+            WarnSkip(smp.cfg.legendLabel + ", " + proxy + " AEE vs eta map", "binning differs from the data's", place);
+            delete map;
+            map = nullptr;
+        }
+        if (!map) {
+            if (i == 0) break; // No reference: no differences, so nothing of this group is drawn
+            continue;
+        }
+        PocSystemSlices sys{smp.cfg, {}};
+        for (const auto& sl : slices) {
+            static int counter = 0; // ProfileX attaches to gDirectory under its name: unique names, detached at once
+            TProfile* pr = map->ProfileX(Form("pPocAeeSlice_%d", counter++), sl.first, sl.last);
+            pr->SetDirectory(nullptr);
+            owned.push_back(pr);
+            sys.profiles.push_back(pr->GetEntries() > 0. ? pr : nullptr);
+        }
+        delete map; // The slices are profiles of their own
+        systems.push_back(sys);
+    }
+    return systems;
+}
+
+/// @brief The sine fits of DrawPocAeeVsPhi, condensed per fit group (empty where the group has no reference sample).
+struct PocSineFits {
+    PocSliceFitSummary group[kPocFitGroups];
+};
+
+/**
+ * @brief AEE/RingVsPhiAEE/: R(phi_AEE) of every fitted sample (PocFitGroup) in the eta_Proxy slices of PocEtaSlices,
+ *        the shown ones overlaid per sample (Overlay/Canvas_<Sample>), then sine-fitted in every slice with the
+ *        parameters vs eta_Proxy (DrawPocSliceFits). pp's own group goes to PpOwnBaselines/.
+ *
+ * The slices come from the data's all-candidates map, so every sample, region and group is sliced alike; each region
+ * map must share its binning edge by edge. A group whose reference has no map is skipped (its differences need it).
+ * @return The condensed p0, p1 and Delta p0 of each group's sine fits, for the summaries and Redux/.
+ */
+PocSineFits DrawPocAeeVsPhi(FileCache& cache, TDirectory* fileRoot, const PocCell& cell, const PocStyles& st) {
+    PocSineFits out;
+    TProfile2D* ref = PocFetchAeeEtaMap(cache, cell.dataFile, cell.proxy);
+    if (!ref) return out; // Counted by the fetch
+    const std::vector<PocSlice> slices = PocEtaSlices(ref, cell.head + " AEE eta slices");
+    const std::string phiName = "#phi_{#Lambda}-#phi_{p}^{*}";
+    const std::string yTitle  = "<" + cell.ringSym + ">";
+    // Colour by eta, open markers below zero and filled above (EtaSliceColor's convention)
+    const double etaMax = slices.empty() ? 0. : std::max(std::abs(slices.front().lo), std::abs(slices.back().hi));
+    for (int g = 0; g < kPocFitGroups && !slices.empty(); ++g) {
+        const std::vector<PocFitSample> samples = PocFitGroup(cell, st, g);
+        const std::string dirPath = cell.dirPath + "/AEE/RingVsPhiAEE" + POC_FIT_GROUP_DIR[g];
+        std::vector<TH1*> owned;
+        const std::vector<PocSystemSlices> systems = PocSliceSamples(cache, ref, slices, samples, cell.proxy, cell.dirPath, owned);
+        // Overlay/: the shown slices of one sample on one canvas
+        for (const PocSystemSlices& sys : systems) {
+            std::vector<ProfileBundle> overlay;
+            for (size_t k = 0; k < slices.size(); ++k) {
+                if (!slices[k].shown || !sys.profiles[k]) continue; // Every slice is fitted; a few are drawn
+                const double centre = 0.5 * (slices[k].lo + slices[k].hi);
+                VariationConfig vc{"", slices[k].label, EtaSliceColor(centre, etaMax), 1,
+                                   (std::abs(centre) < 1e-9) ? 33 : (centre < 0. ? 24 : 20), false};
+                overlay.push_back({sys.profiles[k], vc});
+            }
+            if (!overlay.empty())
+                DrawComparisonCanvas(overlay, "Canvas_" + CanvasSafe(sys.cfg.legendLabel),
+                                     cell.head + ", " + sys.cfg.legendLabel + ": " + yTitle + " vs " + phiName + " in #eta_{" +
+                                         cell.proxy + "} slices",
+                                     EnsureDir(fileRoot, dirPath + "/Overlay"), ProfileConfig{}, phiName, yTitle);
+        }
+        if (!systems.empty())
+            out.group[g] = DrawPocSliceFits(fileRoot, dirPath, cell.head, "Eta", slices, systems,
+                                            PocFitSlices(systems, slices.size(), kSineModel, "Eta"), kSineModel, phiName,
+                                            "#eta_{" + cell.proxy + "}", yTitle, false);
+        for (TH1* h : owned) delete h;
+    }
+    delete ref;
+    return out;
+}
+
+/// @brief What DrawPocEtaFits hands the summaries and Redux/: the integrated tanh fit of each sample of each fit group
+///        (invalid where absent, at the sample's PocFitGroup position) and the condensed fits in phi_AEE slices (OO group).
+struct PocEtaFitResults {
+    OddPlusConstantFitResult integrated[kPocFitGroups][kPocMaxGroupSamples];
+    PocSliceFitSummary vsPhi;
+};
+
+/**
+ * @brief EtaFits/: tanh fits of R(eta_Proxy) for every fitted sample (PocFitGroup).
+ *  Integrated/ R(eta_Proxy) over every phi_AEE, one mass region (p2dRingObservableProxyEtaHighEtaResVsMassRegion): one
+ *              annotated canvas per sample (PerSystem/), the group on one overlay, and categorical summaries of p0, p1,
+ *              p2, chi2/ndf and the p0 differences. pp's own group in PpOwnBaselines/.
+ *  VsPhiAEE/   R(eta_Proxy) in POC_PHI_AEE_SLICES phi_AEE slices of the region maps, fitted per slice
+ *              (DrawPocSliceFits), the OO group only.
+ * Every control must share the reference's binning; a group without its reference is skipped.
+ */
+PocEtaFitResults DrawPocEtaFits(FileCache& cache, TDirectory* fileRoot, const PocCell& cell, const PocStyles& st) {
+    PocEtaFitResults results;
+    const std::string yTitle = "<" + cell.ringSym + ">";
+    const std::string etaName = "#eta_{" + cell.proxy + "}";
+
+    // ---- Integrated ----
+    for (int g = 0; g < kPocFitGroups; ++g) {
+        const std::vector<PocFitSample> samples = PocFitGroup(cell, st, g);
+        const int nSmp = static_cast<int>(samples.size());
+        std::vector<TProfile*> profs(nSmp, nullptr);
+        for (int s = 0; s < nSmp; ++s) profs[s] = PocFetchEtaProfileRegion(cache, samples[s].file, cell.proxy, samples[s].regionBin);
+        if (profs[0]) {
+            for (int s = 1; s < nSmp; ++s)
+                if (profs[s] && PocEdgesOf(profs[s]->GetXaxis()) != PocEdgesOf(profs[0]->GetXaxis())) {
+                    WarnSkip(samples[s].cfg.legendLabel + ", " + cell.proxy + " R(eta_Proxy)", "binning differs from the reference's",
+                             cell.dirPath);
+                    delete profs[s];
+                    profs[s] = nullptr;
+                }
+            const std::string dirPath = cell.dirPath + "/EtaFits/Integrated" + POC_FIT_GROUP_DIR[g];
+            ProfileConfig pc{};
+            pc.xAxisTitle = etaName;
+            pc.yAxisTitle = yTitle;
+            std::vector<ProfileBundle> bundles;
+            std::vector<TF1*> curves;
+            std::vector<std::string> labels, okLabels, scaleLabels, diffLabels;
+            std::vector<FitSummaryPoint> chi2Pts, p0Pts, p1Pts, p2Pts, diffPts;
+            for (int s = 0; s < nSmp; ++s) {
+                const VariationConfig& cfg = samples[s].cfg;
+                if (!profs[s] || profs[s]->GetEntries() < 1.) continue;
+                OddPlusConstantFitResult& f = results.integrated[g][s];
+                f = OddPlusConstantFitter(profs[s], kTanhModel, pc, cfg, "Canvas_TanhFit_" + CanvasSafe(cfg.legendLabel),
+                                          EnsureDir(fileRoot, dirPath + "/PerSystem"));
+                bundles.push_back({profs[s], cfg});
+                double lo = 0., hi = 0.;
+                // Drawn whenever the fit returned parameters, as on its PerSystem canvas; dashed if it did not converge
+                if (f.hasParameters && PocOccupiedRange(profs[s], lo, hi))
+                    curves.push_back(OddPlusConstantCurve(kTanhModel, f, Form("fPocEtaInt_%d_%d", g, s), lo, hi, cfg.color));
+                if (!f.valid && f.hasParameters) bundles.back().config.legendLabel += Form(" (not converged, status %d)", f.status);
+                labels.push_back(cfg.legendLabel);
+                chi2Pts.push_back({cfg, (f.ndf > 0) ? f.chi2 / f.ndf : 0., 0., 0.});
+                if (!f.valid) {
+                    WarnSkip(cfg.legendLabel + ", " + cell.proxy, "tanh fit did not converge (status " + std::to_string(f.status) +
+                                                                      "), drawn dashed, left out of the summaries", dirPath);
+                    continue;
+                }
+                okLabels.push_back(cfg.legendLabel);
+                p0Pts.push_back({cfg, f.p0, f.p0Hesse, f.p0Hesse}); // Symmetric, as every p0 that is compared or condensed
+                p1Pts.push_back({cfg, f.p1, f.p1Low, f.p1High});
+                if (PocScaleIsConstrained(f)) {
+                    scaleLabels.push_back(cfg.legendLabel);
+                    p2Pts.push_back({cfg, f.p2, f.p2Low, f.p2High});
+                }
+                if (s > 0 && results.integrated[g][0].valid) {
+                    const ValErr d = PocP0Difference(results.integrated[g][0], f); // Symmetric (Hesse) errors, as every Delta p0
+                    diffLabels.push_back(samples[0].cfg.legendLabel + " - " + cfg.legendLabel);
+                    diffPts.push_back({cfg, d.first, d.second, d.second});
+                }
+            }
+            if (!bundles.empty()) {
+                TDirectory* dir = EnsureDir(fileRoot, dirPath);
+                DrawComparisonCanvas(bundles, "Canvas_Overlay", cell.head + ": " + yTitle + " vs " + etaName + ", tanh fits", dir, pc,
+                                     etaName, yTitle, kNoLowerPad, false, false, {}, curves);
+                const std::string fitName = cell.head + ", tanh fits";
+                DrawFitSummaryCanvas(labels, chi2Pts, "Canvas_FitSummary_RedChi2", fitName + ": #chi^{2}/ndf", dir, "#chi^{2}/ndf");
+                DrawFitSummaryCanvas(okLabels, p0Pts, "Canvas_FitSummary_p0", fitName + ": p0 (offset)", dir, "p0");
+                DrawFitSummaryCanvas(okLabels, p1Pts, "Canvas_FitSummary_p1", fitName + ": p1 (amplitude)", dir, "p1");
+                DrawFitSummaryCanvas(scaleLabels, p2Pts, "Canvas_FitSummary_p2", fitName + ": p2 (slope scale; only where |p1| #geq 2#sigma)",
+                                     dir, "p2");
+                DrawFitSummaryCanvas(diffLabels, diffPts, "Canvas_FitSummary_p0Diff", fitName + ": #Deltap0 (Reference - Control)", dir,
+                                     "#Deltap0");
+            }
+            for (TF1* f : curves) delete f;
+        }
+        for (TProfile* p : profs) delete p;
+    }
+
+    // ---- Vs phi_AEE (the OO group) ----
+    TProfile2D* ref = PocFetchAeeEtaMap(cache, cell.dataFile, cell.proxy); // The slicing axis, as in DrawPocAeeVsPhi
+    if (!ref) return results;
+    const TAxis* phiAx = ref->GetXaxis();
+    const int nPhi = phiAx->GetNbins();
+    if (nPhi % POC_PHI_AEE_SLICES != 0) {
+        WarnSkip(cell.head + " eta fits vs phi_AEE", std::to_string(nPhi) + " phi_AEE bins do not split into " +
+                                                         std::to_string(POC_PHI_AEE_SLICES) + " equal slices");
+        delete ref;
+        return results;
+    }
+    const int merge = nPhi / POC_PHI_AEE_SLICES;
+    std::vector<PocSlice> slices;
+    for (int k = 0; k < POC_PHI_AEE_SLICES; ++k) {
+        const int a = k * merge + 1, b = (k + 1) * merge;
+        slices.push_back({a, b, phiAx->GetBinLowEdge(a), phiAx->GetBinUpEdge(b),
+                          Form("#phi_{#Lambda}-#phi_{p}^{*} in [%+.2f, %+.2f)", phiAx->GetBinLowEdge(a), phiAx->GetBinUpEdge(b))});
+    }
+    const std::vector<PocFitSample> samples = PocFitGroup(cell, st, 0);
+    std::vector<PocSystemSlices> systems;
+    std::vector<TH1*> owned;
+    for (size_t i = 0; i < samples.size(); ++i) {
+        TProfile2D* map = PocFetchAeeEtaMapRegion(cache, samples[i].file, cell.proxy, samples[i].regionBin);
+        if (map && !PocSameMapBinning(ref, map)) { // Already warned by DrawPocAeeVsPhi
+            delete map;
+            map = nullptr;
+        }
+        if (!map) {
+            if (i == 0) break; // No reference: no differences
+            continue;
+        }
+        PocSystemSlices sys{samples[i].cfg, {}};
+        for (const auto& sl : slices) {
+            static int counter = 0; // ProfileY attaches to gDirectory under its name: unique names, detached at once
+            TProfile* pr = map->ProfileY(Form("pPocEtaSlice_%d", counter++), sl.first, sl.last);
+            pr->SetDirectory(nullptr);
+            owned.push_back(pr);
+            sys.profiles.push_back(pr->GetEntries() > 0. ? pr : nullptr);
+        }
+        delete map;
+        systems.push_back(sys);
+    }
+    if (!systems.empty())
+        results.vsPhi = DrawPocSliceFits(fileRoot, cell.dirPath + "/EtaFits/VsPhiAEE", cell.head, "PhiAEE", slices, systems,
+                                         PocFitSlices(systems, slices.size(), kTanhModel, "PhiAEE"), kTanhModel, etaName,
+                                         "#phi_{#Lambda}-#phi_{p}^{*}", yTitle, true);
+    for (TH1* h : owned) delete h;
+    delete ref;
+    return results;
+}
+
+// -------------------------------------------------------------------------------------------------
+// ProofOfConcept summaries: every method on one canvas, per proxy, at the root of each <Selection>/<Family>/<Proxy>/
+// folder; their QA folders (SymmetrizationQA/, PurityCorrected/, PpBaselineQA/) stay at <Selection>/<Family>/, the
+// three proxies side by side, which keeps the tree shallow
+// -------------------------------------------------------------------------------------------------
+// Canvas_SummaryR_<Proxy>  left: the four levels (Data InPeak, Data OutOfPeak, MixedEv InPeak, pp InPeak); right: the
+//                          estimates in R units: per baseline, the InPeak difference, then one column with its three
+//                          Delta p0 fits side by side (filled square sine, filled triangle tanh, open triangle tanh in
+//                          phi_AEE slices, keyed in the pad)
+// Canvas_SummaryP_<Proxy>  the same estimates converted with the data's in-peak response, P = Delta / (3<u v> - k R_d R_f)
+// Canvas_SummaryP1_<Proxy> the odd amplitudes p1 of every fitted sample, the OO group (left) and pp's own (right) on a
+//                          shared range: sine (the odd part over the eta slices) and integrated tanh side by side
+// Canvas_SummaryP1OverResponse_<Proxy>  the same over each sample's own 3<u v>: how much of a difference in p1 between
+//                          samples the response alone accounts for (a heuristic: the fake need not scale with it)
+// Every panel has its own value/sigma strip. All the estimates are on the peak's candidates (the differences and the
+// Delta p0 fits alike), so they are all diluted by the same f_S and compare like for like. PurityCorrected/ divides
+// them by the bin-counting purity (sideband-subtracted for the sideband difference), which puts all of them on P_S.
+// SymmetrizationQA/ repeats the estimates with the pair-symmetrised Delta p0.
+// PpBaselineQA/ splits the cheap pp subtraction's departure from the mixed-event one, exactly, into the fake mismatch
+// between the two systems and pp's own residual (see PocBuildSummary).
+// Errors: InPeak differences as in Integrated/ (quadrature); condensed Delta p0 with the PDG-scaled error; conversions
+// with the response's error; the purity from Poisson counts. The estimates share almost all their Lambdas, so their
+// mutual agreement is expected at a level tighter than their error bars: it is not a chi2 test.
+
+/// @brief Sizes and placements of one panel. The defaults are every canvas's but EQD/'s, which restyles them for slides.
+struct PocPanelLook {
+    double labelSize = 0.;        // The column labels; 0: 0.035, scaled to the pad that carries them
+    double yTitleSize = 0.05;     // The value pad's y title (the strip keeps its own)
+    double titleSize = 0.048;     // The pad title
+    double leftMargin = 0.14;     // Of both pads
+    bool keyTopLeft = false;      // The marker key at the top left; false: at the top right
+    bool noteBottomRight = false; // The note at the bottom right; false: at the top left, or under a key that reaches it
+    size_t keyRows = 0;           // Room kept for the key, in rows, never fewer than its entries: the key of a build-up's
+                                  // step may grow in the next one without moving the frame
+};
+
+/// @brief One panel of a summary canvas: labelled columns, one value or more each, with a value/sigma strip under it.
+struct PocPanel {
+    std::string title, yTitle;
+    std::vector<std::string> labels; // The column labels
+    std::vector<VariationConfig> cfgs; // One per value
+    std::vector<ValErr> vals; // A negative error leaves its slot empty
+    bool zeroLine = false;
+    std::string note = "";    // Drawn in a box in the value pad when not empty, one line per '\n' (PDG errors, formulas)
+    std::vector<int> columnOf = {}; // Column of each value; empty: value i in column i, one value per column
+    std::vector<std::pair<std::string, int>> markerLegend = {}; // (text, marker style), drawn in a neutral colour; empty: none
+    bool columnSeparators = false; // Dashed lines between the columns, in place of the vertical grid (StreamlinedStory/)
+    bool fitKeyToText = false;     // Size the marker key to its longest entry (the default width suits short method names)
+    // Values that set the y and pull ranges but are never drawn: a canvas that is a step of a build-up gets the frame of
+    // the last step (EQD/), so its points do not move when the next step adds its own
+    std::vector<ValErr> frameVals = {};
+    PocPanelLook look = {};
+};
+
+/**
+ * @brief Draws panels side by side on one canvas, each a categorical value pad over its own value/sigma strip, or the
+ *        value pad alone, carrying the column labels itself (withStrip false).
+ * One single-point graph per value (no histogram, so an empty slot draws nothing). A column holding several values
+ * spreads them sideways, in the order they were given, over half the column width; every value keeps its slot even
+ * when empty, so a method sits at the same place in every column. The same offsets are used in the strip. Everything
+ * drawn is owned by the canvas (kCanDelete), so deleting the canvas frees it all.
+ * The title is drawn centred over each value pad's frame as text of its own (the frame keeps only the y title), so it
+ * always shows. The y range leaves room at the top for the note (top left) and the marker key (top right; a key sized
+ * to long entries pushes the note underneath it), or wherever the panel's look puts them (PocPanelLook: a note at the
+ * bottom right gets room at the bottom), and the strip's range follows its pulls, however large and on either side,
+ * never shorter than the 2 sigma band. Whichever pad carries the column labels has its bottom margin sized to them.
+ * @param sharedRange One y range (and one pull range) for every panel, so panels side by side compare by eye (Redux/).
+ * @param withStrip   The value/sigma strips; StreamlinedStory/ leaves them out.
+ */
+void DrawPocPanels(const std::vector<PocPanel>& panels, const std::string& name, const std::string& title,
+                   TDirectory* fileRoot, const std::string& dirPath, bool sharedRange = false, bool withStrip = true) {
+    bool anyValue = false;
+    for (const auto& pn : panels)
+        for (const auto& v : pn.vals) anyValue = anyValue || v.second >= 0.;
+    if (!anyValue) {
+        CountSkip("ProofOfConcept, " + name, "no value in any panel", dirPath);
+        return;
+    }
+    const int nP = static_cast<int>(panels.size());
+    // The value pad's frame spans NDC [its bottom margin, 1 - kUpTop]; the note hangs from kNoteTop and the key from kKeyTop
+    const double kUpTop = 0.10, kUpBottom = 0.02, kNoteTop = 0.88, kKeyTop = 0.89;
+    const double kNoteLine = 0.040, kKeyLine = 0.055;
+    const double kRight = 0.03;                                                // Right margin of both pads (the left: look)
+    const int kPanelWidthPx = 900, kCanvasHeightPx = withStrip ? 750 : 600;   // One panel's width, the canvas height
+    // The column labels sit on the strip, scaled so their apparent size matches the value pad's text, or on the value pad
+    const double kLowerFraction = withStrip ? 0.32 : 0.;
+    const double textScale = withStrip ? (1.0 - kLowerFraction) / kLowerFraction : 1.;
+    auto labelSizeOf = [&](const PocPanel& pn) { return (pn.look.labelSize > 0.) ? pn.look.labelSize : 0.035 * textScale; };
+    auto noteLinesOf = [](const std::string& note) {
+        std::vector<std::string> lines;
+        size_t from = 0;
+        while (!note.empty() && from <= note.size()) {
+            const size_t to = note.find('\n', from);
+            lines.push_back(note.substr(from, to == std::string::npos ? std::string::npos : to - from));
+            if (to == std::string::npos) break;
+            from = to + 1;
+        }
+        return lines;
+    };
+    // Printed length of a TLatex label, roughly: a #command prints as about one glyph, braces and scripts as none
+    auto printedLength = [](const std::string& t) {
+        int n = 0;
+        bool inCommand = false;
+        for (char ch : t) {
+            if (ch == '#') { inCommand = true; ++n; continue; }
+            if (inCommand && std::isalpha(static_cast<unsigned char>(ch))) continue;
+            inCommand = false;
+            if (ch == '{' || ch == '}' || ch == '_' || ch == '^') continue;
+            ++n;
+        }
+        return n;
+    };
+    auto longestOf = [&](const PocPanel& pn) {
+        int longest = 0;
+        for (const auto& l : pn.labels) longest = std::max(longest, printedLength(l));
+        return longest;
+    };
+    // Labels are tilted (LabelsOption("u"), 20 degrees) once the axis gets busy: past three columns on a strip, and on a
+    // value pad alone only when the longest label (about half an em per character) would overrun its column
+    auto isTilted = [&](const PocPanel& pn) {
+        if (withStrip) return pn.labels.size() > 3;
+        const double columnPx = kPanelWidthPx * (1. - pn.look.leftMargin - kRight) / std::max<size_t>(pn.labels.size(), 1);
+        return 0.5 * labelSizeOf(pn) * kCanvasHeightPx * longestOf(pn) > 0.9 * columnPx;
+    };
+    // The bottom margin of the pad carrying a panel's labels: one text line for horizontal labels, the drop of the
+    // longest one for tilted labels
+    auto labelMarginOf = [&](const PocPanel& pn) {
+        const double size = labelSizeOf(pn);
+        return isTilted(pn) ? std::min(0.50, 0.05 + 0.94 * size + 0.171 * size * longestOf(pn)) : size + 0.09;
+    };
+    // The value pad's bottom margin: a sliver over the strip, or the labels' margin when it carries them
+    auto upBottomMarginOf = [&](const PocPanel& pn) { return withStrip ? kUpBottom : labelMarginOf(pn); };
+    // The boxes of a panel's value pad, in NDC. The key: at the top right (or left), 0.24 wide or as wide as its longest
+    // entry (text at about half an em per character, after the legend's 25% marker margin). The note: at the top left, or
+    // under a key that would reach it, at full width; or at the bottom right, as wide as its longest line (after the
+    // pave's 5% margins). lowest is the lowest edge of the boxes at the top, highest the highest of those at the bottom.
+    struct PanelBoxes { double keyLeft, keyRight, keyBottom, noteLeft, noteRight, noteTop, noteBottom, lowest, highest; };
+    const double kKeyText = 0.032, kNoteText = 0.030, kBoxRight = 0.96;
+    auto boxesOf = [&](const PocPanel& pn) {
+        PanelBoxes b;
+        const double boxLeft = pn.look.leftMargin + 0.02, upBottom = upBottomMarginOf(pn);
+        // Text sizes are fractions of the pad's height (its smaller side), so a character's width in NDC per unit size is:
+        const double charPerSize = 0.5 * kCanvasHeightPx * (1. - kLowerFraction) / kPanelWidthPx;
+        int longestKey = 0;
+        for (const auto& mk : pn.markerLegend) longestKey = std::max(longestKey, printedLength(mk.first));
+        const double keyWidth = pn.fitKeyToText ? kKeyText * charPerSize * longestKey / 0.75 + 0.02 : 0.24;
+        b.keyLeft = pn.look.keyTopLeft ? boxLeft : std::max(boxLeft, kBoxRight - keyWidth);
+        b.keyRight = pn.look.keyTopLeft ? std::min(kBoxRight, boxLeft + keyWidth) : kBoxRight;
+        b.keyBottom = kKeyTop - kKeyLine * pn.markerLegend.size(); // The key as drawn,
+        const size_t keyRows = std::max(pn.markerLegend.size(), pn.look.keyRows);
+        const double keyRoomBottom = kKeyTop - kKeyLine * keyRows; // and the room kept for it
+        const std::vector<std::string> noteLines = noteLinesOf(pn.note);
+        const double noteHeight = 0.012 + kNoteLine * noteLines.size();
+        if (pn.look.noteBottomRight) {
+            int longestNote = 0;
+            for (const auto& line : noteLines) longestNote = std::max(longestNote, printedLength(line));
+            b.noteRight = kBoxRight;
+            b.noteLeft = std::max(boxLeft, kBoxRight - (kNoteText * charPerSize * longestNote / 0.9 + 0.02));
+            b.noteBottom = upBottom + 0.02;
+            b.noteTop = b.noteBottom + noteHeight;
+        } else {
+            // The note's default right edge is 0.70
+            const bool stacked = !pn.markerLegend.empty() && (pn.look.keyTopLeft || b.keyLeft < 0.70 + 0.01);
+            b.noteLeft = boxLeft;
+            b.noteRight = stacked ? kBoxRight : 0.70;
+            b.noteTop = stacked ? keyRoomBottom - 0.012 : kNoteTop;
+            b.noteBottom = b.noteTop - noteHeight;
+        }
+        const bool noteAtTop = !noteLines.empty() && !pn.look.noteBottomRight;
+        b.lowest = 1. - kUpTop;
+        if (noteAtTop) b.lowest = std::min(b.lowest, b.noteBottom);
+        if (keyRows) b.lowest = std::min(b.lowest, keyRoomBottom);
+        b.highest = (!noteLines.empty() && pn.look.noteBottomRight) ? b.noteTop : upBottom;
+        return b;
+    };
+    // Each panel's value range (and zero, where it is the reference), the fractions of its frame left below the boxes at
+    // the top (free) and taken by those at the bottom (foot), and its pull range, merged when sharedRange is set
+    std::vector<double> yMinOf(nP), yMaxOf(nP), freeOf(nP), footOf(nP), pullLoOf(nP), pullHiOf(nP), upBottomOf(nP);
+    std::vector<bool> hasOf(nP, false);
+    for (int ip = 0; ip < nP; ++ip) {
+        const PocPanel& pn = panels[ip];
+        upBottomOf[ip] = upBottomMarginOf(pn);
+        double yLo = 1e300, yHi = -1e300, pLo = 1e300, pHi = -1e300;
+        for (const auto* list : {&pn.vals, &pn.frameVals}) // The drawn values, then those that only shape the frame
+            for (const auto& v : *list) {
+                if (v.second < 0.) continue;
+                hasOf[ip] = true;
+                yLo = std::min(yLo, v.first - v.second);
+                yHi = std::max(yHi, v.first + v.second);
+                if (v.second > 0.) { pLo = std::min(pLo, v.first / v.second); pHi = std::max(pHi, v.first / v.second); }
+            }
+        if (!(yHi >= yLo)) { yLo = -1.; yHi = 1.; }
+        double margin = 0.1 * (yHi - yLo);
+        if (margin < 1e-12) margin = (std::abs(yHi) > 1e-12) ? 0.1 * std::abs(yHi) : 0.05;
+        yMinOf[ip] = yLo - margin;
+        yMaxOf[ip] = yHi + margin;
+        if (pn.zeroLine) { yMinOf[ip] = std::min(yMinOf[ip], -margin); yMaxOf[ip] = std::max(yMaxOf[ip], margin); }
+        // The boxes set how much of the frame the points may use (2% clearance from them)
+        const PanelBoxes boxes = boxesOf(pn);
+        const double frameHeight = 1. - kUpTop - upBottomOf[ip];
+        freeOf[ip] = std::max(0.3, (boxes.lowest - 0.02 - upBottomOf[ip]) / frameHeight);
+        footOf[ip] = (boxes.highest > upBottomOf[ip]) ? (boxes.highest + 0.02 - upBottomOf[ip]) / frameHeight : 0.;
+        // Pulls: whatever they are, always including the +/-2 sigma band, padded on the side they extend
+        const bool anyPull = (pHi >= pLo);
+        double lo = std::min(-2.5, anyPull ? pLo : 0.), hi = std::max(2.5, anyPull ? pHi : 0.);
+        const double pad = 0.12 * (hi - lo);
+        if (anyPull && pLo < -2.5) lo -= pad;
+        if (anyPull && pHi > 2.5) hi += pad;
+        pullLoOf[ip] = lo;
+        pullHiOf[ip] = hi;
+    }
+    if (sharedRange && nP > 1) {
+        // An empty panel (no value at all) keeps its placeholder out of the shared range
+        double lo = 1e300, hi = -1e300, fr = 1., ft = 0., pLo = 1e300, pHi = -1e300;
+        for (int ip = 0; ip < nP; ++ip) {
+            if (!hasOf[ip]) continue;
+            lo = std::min(lo, yMinOf[ip]);
+            hi = std::max(hi, yMaxOf[ip]);
+            fr = std::min(fr, freeOf[ip]);
+            ft = std::max(ft, footOf[ip]);
+            pLo = std::min(pLo, pullLoOf[ip]);
+            pHi = std::max(pHi, pullHiOf[ip]);
+        }
+        for (int ip = 0; ip < nP; ++ip) {
+            yMinOf[ip] = lo; yMaxOf[ip] = hi; freeOf[ip] = fr; footOf[ip] = ft; pullLoOf[ip] = pLo; pullHiOf[ip] = pHi;
+        }
+    }
+    // Head and foot room: the points keep their range in the part of the frame between the boxes
+    for (int ip = 0; ip < nP; ++ip) {
+        const double span = (yMaxOf[ip] - yMinOf[ip]) / std::max(0.3, freeOf[ip] - footOf[ip]);
+        yMinOf[ip] -= footOf[ip] * span;
+        yMaxOf[ip] = yMinOf[ip] + span;
+    }
+
+    // Dashed lines on every inner column edge, from yLo to yHi, in the current pad
+    auto drawSeparators = [](int nColumns, double yLo, double yHi) {
+        for (int i = 1; i < nColumns; ++i) {
+            TLine* sep = new TLine(i, yLo, i, yHi);
+            sep->SetLineStyle(2);
+            sep->SetLineColor(kGray + 2);
+            sep->SetBit(kCanDelete);
+            sep->Draw();
+        }
+    };
+    TCanvas* c = new TCanvas(name.c_str(), title.c_str(), kPanelWidthPx * nP, kCanvasHeightPx);
+    for (int ip = 0; ip < nP; ++ip) {
+        const PocPanel& pn = panels[ip];
+        const int n = static_cast<int>(pn.labels.size()); // Columns
+        const int nV = static_cast<int>(pn.vals.size());  // Values
+        // Each value's x: its column's centre, offset by its slot among the values sharing that column
+        std::vector<double> xOf(nV, 0.);
+        {
+            const double kSpread = 0.5; // Fraction of the column width the slots span
+            std::vector<int> nInColumn(n, 0), slotOf(nV, 0);
+            for (int j = 0; j < nV; ++j) {
+                const int col = pn.columnOf.empty() ? j : pn.columnOf[j];
+                slotOf[j] = nInColumn[col]++;
+            }
+            for (int j = 0; j < nV; ++j) {
+                const int col = pn.columnOf.empty() ? j : pn.columnOf[j];
+                const int m = nInColumn[col];
+                const double step = (m > 1) ? kSpread / (m - 1) : 0.;
+                xOf[j] = col + 0.5 + (slotOf[j] - 0.5 * (m - 1)) * step;
+            }
+        }
+        const double x1 = static_cast<double>(ip) / nP, x2 = static_cast<double>(ip + 1) / nP;
+        const bool tilted = isTilted(pn);
+        c->cd();
+        TPad* up = new TPad(Form("%s_up%d", name.c_str(), ip), "", x1, kLowerFraction, x2, 1.0);
+        up->SetMargin(pn.look.leftMargin, kRight, upBottomOf[ip], kUpTop);
+        if (!pn.columnSeparators) up->SetGridx(); // The separators replace the vertical grid: the two would double up
+        up->SetGridy();
+        up->SetBit(kCanDelete);
+        up->Draw();
+        TPad* lo = nullptr;
+        if (withStrip) {
+            lo = new TPad(Form("%s_lo%d", name.c_str(), ip), "", x1, 0.0, x2, kLowerFraction);
+            lo->SetMargin(pn.look.leftMargin, kRight, labelMarginOf(pn), 0.02);
+            if (!pn.columnSeparators) lo->SetGridx();
+            lo->SetBit(kCanDelete);
+            lo->Draw();
+        }
+
+        // Value pad: the range found above
+        const double yMin = yMinOf[ip], yMax = yMaxOf[ip];
+
+        up->cd();
+        TH1D* frame = new TH1D(Form("%s_frame%d", name.c_str(), ip), (";;" + pn.yTitle).c_str(), n, 0, n);
+        frame->SetDirectory(nullptr);
+        frame->SetStats(0);
+        frame->SetMinimum(yMin);
+        frame->SetMaximum(yMax);
+        if (withStrip) {
+            frame->GetXaxis()->SetLabelSize(0.0); // The labels live on the strip below
+        } else {
+            for (int i = 0; i < n; ++i) frame->GetXaxis()->SetBinLabel(i + 1, pn.labels[i].c_str());
+            if (tilted) frame->GetXaxis()->LabelsOption("u");
+            frame->GetXaxis()->SetLabelSize(labelSizeOf(pn));
+        }
+        frame->GetYaxis()->SetTitleSize(pn.look.yTitleSize);
+        frame->GetYaxis()->SetLabelSize(0.04);
+        frame->SetBit(kCanDelete);
+        frame->Draw("AXIS");
+        if (pn.columnSeparators) drawSeparators(n, yMin, yMax);
+        const PanelBoxes boxes = boxesOf(pn);
+        // The title, in the top margin, centred over the frame
+        TLatex* head = new TLatex(0.5 * (pn.look.leftMargin + 1. - kRight), 1. - kUpTop + 0.025, pn.title.c_str());
+        head->SetNDC();
+        head->SetTextAlign(21);
+        head->SetTextSize(pn.look.titleSize);
+        head->SetBit(kCanDelete);
+        head->Draw();
+        if (pn.zeroLine) {
+            TLine* zero = new TLine(0., 0., n, 0.);
+            zero->SetLineStyle(2);
+            zero->SetLineWidth(2);
+            zero->SetBit(kCanDelete);
+            zero->Draw();
+        }
+        const std::vector<std::string> noteLines = noteLinesOf(pn.note);
+        if (!noteLines.empty()) {
+            TPaveText* note = new TPaveText(boxes.noteLeft, boxes.noteBottom, boxes.noteRight, boxes.noteTop, "NDC");
+            note->SetFillColor(kWhite);
+            note->SetFillStyle(1001); // Opaque, so the grid does not run through it
+            note->SetBorderSize(1);
+            note->SetTextSize(kNoteText);
+            note->SetTextAlign(12);
+            for (const auto& line : noteLines) note->AddText(line.c_str());
+            note->SetBit(kCanDelete);
+            note->Draw();
+        }
+        for (int j = 0; j < nV; ++j) {
+            if (pn.vals[j].second < 0.) continue;
+            TGraphAsymmErrors* g = new TGraphAsymmErrors(1);
+            g->SetPoint(0, xOf[j], pn.vals[j].first);
+            g->SetPointError(0, 0., 0., pn.vals[j].second, pn.vals[j].second);
+            StylePointGraph(g, pn.cfgs[j]);
+            g->SetMarkerSize(1.5);
+            g->SetBit(kCanDelete);
+            g->Draw("P");
+        }
+        // The marker key of the merged columns: the shape tells the method, the colour (in the points) the baseline
+        if (!pn.markerLegend.empty()) {
+            TLegend* key = new TLegend(boxes.keyLeft, boxes.keyBottom, boxes.keyRight, kKeyTop);
+            key->SetFillColor(kWhite);
+            key->SetFillStyle(1001);
+            key->SetBorderSize(1);
+            key->SetTextSize(kKeyText);
+            for (const auto& mk : pn.markerLegend) {
+                // A null object: the entry draws with its own marker attributes, so nothing else needs owning
+                TLegendEntry* le = key->AddEntry(static_cast<TObject*>(nullptr), mk.first.c_str(), "p");
+                le->SetMarkerStyle(mk.second);
+                le->SetMarkerColor(kGray + 2);
+                le->SetMarkerSize(1.5);
+            }
+            key->SetBit(kCanDelete);
+            key->Draw();
+        }
+        if (!withStrip) continue;
+
+        // value/sigma strip, with the column labels
+        lo->cd();
+        TH1D* lowFrame = new TH1D(Form("%s_lowframe%d", name.c_str(), ip), ";;value/#sigma", n, 0, n);
+        lowFrame->SetDirectory(nullptr);
+        lowFrame->SetStats(0);
+        for (int i = 0; i < n; ++i) lowFrame->GetXaxis()->SetBinLabel(i + 1, pn.labels[i].c_str());
+        if (tilted) lowFrame->GetXaxis()->LabelsOption("u");
+        lowFrame->GetXaxis()->SetLabelSize(labelSizeOf(pn));
+        lowFrame->GetYaxis()->SetTitleSize(0.045 * textScale);
+        lowFrame->GetYaxis()->SetLabelSize(0.035 * textScale);
+        lowFrame->GetYaxis()->SetTitleOffset(0.45);
+        lowFrame->GetYaxis()->SetNdivisions(505);
+        lowFrame->SetMinimum(pullLoOf[ip]);
+        lowFrame->SetMaximum(pullHiOf[ip]);
+        lowFrame->SetBit(kCanDelete);
+        lowFrame->Draw("AXIS");
+        // Hatched sigma bands, as on every pull panel of this macro
+        TBox* band2 = new TBox(0., -2., n, 2.);
+        band2->SetFillColor(kYellow - 3); band2->SetFillStyle(3345); band2->SetLineColor(0);
+        band2->SetBit(kCanDelete); band2->Draw();
+        TBox* band1 = new TBox(0., -1., n, 1.);
+        band1->SetFillColor(kGreen - 3); band1->SetFillStyle(3354); band1->SetLineColor(0);
+        band1->SetBit(kCanDelete); band1->Draw();
+        TLine* zeroLow = new TLine(0., 0., n, 0.);
+        zeroLow->SetLineStyle(2);
+        zeroLow->SetLineWidth(2);
+        zeroLow->SetBit(kCanDelete);
+        zeroLow->Draw();
+        if (pn.columnSeparators) drawSeparators(n, pullLoOf[ip], pullHiOf[ip]);
+        for (int j = 0; j < nV; ++j) {
+            if (pn.vals[j].second <= 0.) continue;
+            TGraphAsymmErrors* g = new TGraphAsymmErrors(1);
+            g->SetPoint(0, xOf[j], pn.vals[j].first / pn.vals[j].second); // Same offset as in the value pad
+            g->SetPointError(0, 0., 0., 0., 0.); // A pull is already in units of its own sigma
+            StylePointGraph(g, pn.cfgs[j]);
+            g->SetMarkerSize(1.5);
+            g->SetBit(kCanDelete);
+            g->Draw("P");
+        }
+        lo->RedrawAxis(); // The bands are filled: frame back on top
+    }
+    c->Update();
+    EnsureDir(fileRoot, dirPath)->cd();
+    c->Write();
+    delete c;
+}
+
+/// @brief a / b, with the two relative errors in quadrature (missing if either is, or b is not positive).
+ValErr PocDivide(const ValErr& a, const ValErr& b) {
+    if (a.second < 0. || b.second < 0. || !(b.first > 0.)) return kPocMissing;
+    const double r = a.first / b.first;
+    return {r, std::sqrt(a.second * a.second / (b.first * b.first) + r * r * b.second * b.second / (b.first * b.first))};
+}
+
+/**
+ * @brief The Corrections/ inversion for a difference already formed: P = Delta / (D0 - k R_d R_f).
+ * Used for the condensed Delta p0, where R_d and R_f (the condensed p0 of each system) only enter the small k term, so
+ * their errors are not propagated; Delta's and D0's are.
+ */
+ValErr PocCorrectDelta(const ValErr& delta, double rd, double rf, const ValErr& d0, double k) {
+    if (delta.second < 0. || d0.second < 0.) return kPocMissing;
+    const double den = d0.first - k * rd * rf;
+    if (!(den > 0.)) return kPocMissing;
+    const double p = delta.first / den;
+    return {p, std::hypot(delta.second / den, p * d0.second / den)};
+}
+
+/// @brief Bin-counting purity of the peak, f_S = (N_P - s N_B) / N_P: the sideband, scaled by s = w_P / w_B, stands for
+///        the background under the peak (linear background). Poisson errors: sigma_f = (s N_B/N_P) sqrt(1/N_B + 1/N_P).
+ValErr PocPurityPeak(const RegionSample& r) {
+    const double nP = r.ring[1].n, nB = r.ring[0].n, s = r.bkgScale;
+    if (!(nP > s * nB) || nB <= 0.) return kPocMissing;
+    return {(nP - s * nB) / nP, (s * nB / nP) * std::sqrt(1. / nB + 1. / nP)};
+}
+
+/// @brief A condensed series by its label (nullptr if absent).
+const PocCondensed* PocFindCondensed(const std::vector<PocCondensed>& v, const std::string& label) {
+    for (const auto& c : v)
+        if (c.label == label) return &c;
+    return nullptr;
+}
+
+/// @brief One estimate of a summary: its column label and style, in R units, converted (P, diluted) and purity-corrected.
+struct PocSummaryEntry {
+    std::string label;
+    VariationConfig cfg;
+    ValErr r = kPocMissing, p = kPocMissing, pPure = kPocMissing;
+    std::string tag = "";       // Folder-safe name of the estimate, for the master plots
+    std::string pureLabel = ""; // Its label where the purity-corrected entry is a different estimate (empty: the same label)
+    bool pdgError = false; // Condensed over slices, with the PDG-scaled error
+    std::string column = ""; // Summary column it shares with other estimates (empty: a column of its own, by its label)
+    std::string method = ""; // Its entry in the summary's marker key (empty: none)
+};
+
+/// @brief Everything one proxy's summaries draw, gathered once (see PocBuildSummary).
+struct PocSummaryData {
+    bool valid = false;
+    std::string proxy, head;
+    std::vector<std::string> levelLabels;
+    std::vector<VariationConfig> levelCfgs;
+    std::vector<ValErr> levels;
+    std::vector<PocSummaryEntry> entries[2]; // [0] plain Delta p0, [1] pair-symmetrised (SymmetrizationQA/)
+    // PpBaselineQA, R units (exact decomposition) and P units (each system against its own mixed events)
+    ValErr cheapMinusMixed = kPocMissing, fakeMismatch = kPocMissing, ppResidual = kPocMissing;
+    ValErr pOwnData = kPocMissing, pOwnPp = kPocMissing, responseRatio = kPocMissing;
+    // The odd amplitudes (Canvas_SummaryP1), per fit group in PocFitGroup order: the samples' looks, their p1 in R units
+    // and over their own response 3<u v>, [method] 0 sine (the odd part over the eta slices), 1 integrated tanh
+    std::vector<VariationConfig> p1Cfgs[kPocFitGroups];
+    std::vector<std::vector<ValErr>> p1[kPocFitGroups], p1OverResponse[kPocFitGroups];
+};
+
+/**
+ * @brief Gathers one proxy's summary: the four levels, and every estimate, one per baseline (sideband, MixedEv, pp)
+ *        and method (InPeak difference; Delta p0 of the sine fits, the integrated tanh fit and the tanh fits in phi_AEE
+ *        slices, all fitted on the in-peak candidates against the baseline's own region, see PocFitGroup).
+ *
+ * Every estimate is now on the peak's candidates, so all of them convert with the data's in-peak 3<u v> and divide by
+ * the peak's purity f_S. The sideband baseline's purity-corrected difference is the sideband-subtracted Signal - Sideband,
+ * and it has no Delta p0 entries here (they are in Redux/, see DrawPocRedux).
+ * Also gathers the odd amplitudes p1 of both fit groups, for Canvas_SummaryP1.
+ *
+ * The pp decomposition is exact in R units:
+ *   (R_in - R_pp) - (R_in - R_mix) = R_mix - R_pp = (R_mix - R_mix,pp) - (R_pp - R_mix,pp),
+ * i.e. the cheap pp estimate departs from the mixed-event one by the fake mismatch between the systems (their mixed
+ * events) minus pp's own residual (pp's peak beyond its mixed events). The pieces share samples, so their errors are
+ * correlated; each is in quadrature on its own.
+ */
+PocSummaryData PocBuildSummary(FileCache& cache, const PocCell& cell, const PocStyles& st, const PocSineFits& sine,
+                               const PocEtaFitResults& eta) {
+    PocSummaryData out;
+    out.proxy = cell.proxy;
+    out.head = cell.head;
+    RegionSample dReg, mReg, pReg, pmReg;
+    if (!LoadRegionSample(cache, cell.dataFile, cell.proxy, dReg)) return out; // Counted or warned by the loader
+    const bool hM  = LoadRegionSample(cache, cell.mixedFile, cell.proxy, mReg);
+    const bool hP  = !cell.ppFile.empty() && LoadRegionSample(cache, cell.ppFile, cell.proxy, pReg);
+    const bool hPM = !cell.ppMixedFile.empty() && LoadRegionSample(cache, cell.ppMixedFile, cell.proxy, pmReg);
+    out.valid = true;
+
+    const RingSample dIn = RegionAsSample(dReg, 1), dOut = RegionAsSample(dReg, 0);
+    const ValErr dInMean = PocMean(dReg.ring[1]);
+    const ValErr mInMean = hM ? PocMean(mReg.ring[1]) : kPocMissing;
+    const ValErr ppInMean = hP ? PocMean(pReg.ring[1]) : kPocMissing;
+    const ValErr pmInMean = hPM ? PocMean(pmReg.ring[1]) : kPocMissing;
+
+    // The four levels
+    out.levelLabels = {st.dataInRef.legendLabel, st.dataOut.legendLabel, st.mixedIn.legendLabel, st.ppIn.legendLabel};
+    out.levelCfgs = {st.dataInRef, st.dataOut, st.mixedIn, st.ppIn};
+    out.levels = {dInMean, PocMean(dReg.ring[0]), mInMean, ppInMean};
+
+    CorrectionInputs inPeakData;
+    const bool hInPeak = InputsOfSample(dIn, inPeakData); // The data's in-peak response: every estimate converts with it
+    const ValErr fPeak = PocPurityPeak(dReg);
+    const std::vector<PocFitSample> group = PocFitGroup(cell, st, 0); // The fitted samples, Data InPeak first
+    const std::string refLabel = group[0].cfg.legendLabel;
+
+    // A condensed Delta p0 of slice fits, against one sample of the group: R units, converted, purity-corrected
+    auto sliceEntry = [&](const PocSliceFitSummary& sum, int sample, bool sym, PocSummaryEntry& e) {
+        const std::string controlLabel = group[sample].cfg.legendLabel;
+        const PocCondensed* diff = PocFindCondensed(sum.p0Diff, refLabel + " - " + controlLabel);
+        if (!diff) return;
+        const PocConstantFit& fit = sym ? diff->symmetrized : diff->plain;
+        if (!fit.valid) return;
+        e.r = {fit.value, fit.ScaledError()}; // PDG-scaled where the slices spread more than their errors allow
+        e.pdgError = true;
+        const PocCondensed* p0d = PocFindCondensed(sum.p0, refLabel);
+        const PocCondensed* p0c = PocFindCondensed(sum.p0, controlLabel);
+        auto valueOf = [sym](const PocCondensed* pc) {
+            if (!pc) return 0.; // Only the small k term needs it
+            const PocConstantFit& f = sym ? pc->symmetrized : pc->plain;
+            return f.valid ? f.value : 0.;
+        };
+        if (hInPeak) e.p = PocCorrectDelta(e.r, valueOf(p0d), valueOf(p0c), inPeakData.uvx3, cell.k);
+        e.pPure = PocDivide(e.p, fPeak);
+    };
+    // The integrated tanh fit's Delta p0, against one sample of the group
+    auto tanhEntry = [&](int sample, PocSummaryEntry& e) {
+        const auto& f0 = eta.integrated[0][0];
+        const auto& fc = eta.integrated[0][sample];
+        if (!f0.valid || !fc.valid) return;
+        e.r = PocP0Difference(f0, fc);
+        if (hInPeak) e.p = PocCorrectDelta(e.r, f0.p0, fc.p0, inPeakData.uvx3, cell.k);
+        e.pPure = PocDivide(e.p, fPeak);
+    };
+
+    // The three baselines: the tag, the InPeak difference's label and look, and the baseline's sample in the fit group
+    // The sideband keeps its InPeak difference only: its Delta p0 fits are in Redux/, and on the summary they made the
+    // estimates panel too crowded to read
+    struct Baseline { std::string tag, diffLabel; const VariationConfig* cfg; int sample; bool withFits; };
+    const std::vector<Baseline> baselines = {{"Sideband", "Data: InPeak - OutOfPeak", &st.dataOut, 1, false},
+                                             {"MixEv", "MixEv: InPeak", &st.mixedIn, 2, true},
+                                             {"pp", "pp: InPeak (cheap)", &st.ppIn, 3, true}};
+    for (int sym = 0; sym < 2; ++sym) {
+        auto& entries = out.entries[sym];
+        for (const auto& bl : baselines) {
+            const VariationConfig& base = *bl.cfg;
+            // The InPeak difference
+            PocSummaryEntry diff{bl.diffLabel, base};
+            if (bl.sample == 1) { // The sideband: disjoint regions of one file, quadrature is exact
+                diff.tag = "Sideband";
+                diff.pureLabel = "Data: Sig. - Sideband";
+                diff.r = PocDiff(dInMean, PocMean(dReg.ring[0]));
+                diff.p = PocCorrected(dIn, dOut, cell.k);
+                diff.pPure = PocSignalMinusSideband(dReg, cell.k); // The background removed by subtraction, not by division
+            } else {
+                const bool isPp = (bl.sample == 3);
+                diff.tag = bl.tag + (isPp ? "_InPeakCheap" : "_InPeak");
+                if (isPp ? hP : hM) {
+                    const RegionSample& reg = isPp ? pReg : mReg;
+                    diff.r = PocDiff(dInMean, isPp ? ppInMean : mInMean);
+                    diff.p = PocCorrected(dIn, RegionAsSample(reg, 1), cell.k); // The data's in-peak response
+                    diff.pPure = PocDivide(diff.p, fPeak);
+                }
+            }
+            entries.push_back(diff);
+            if (!bl.withFits) continue;
+            // The three Delta p0 share one column per baseline (the masters keep them apart, by label)
+            const std::string fitColumn = bl.tag + ": #Deltap_{0} fits (InPeak)";
+            PocSummaryEntry eSine{bl.tag + ":#Deltap_{0},sine(InPeak)", PocMethodStyle(base, POC_MARKER_SINE)};
+            eSine.tag = bl.tag + "_Sine";
+            eSine.column = fitColumn;
+            eSine.method = "sine";
+            sliceEntry(sine.group[0], bl.sample, sym == 1, eSine);
+            entries.push_back(eSine);
+            PocSummaryEntry eTanh{bl.tag + ":#Deltap_{0},tanh(InPeak)", PocMethodStyle(base, POC_MARKER_TANH)};
+            eTanh.tag = bl.tag + "_Tanh";
+            eTanh.column = fitColumn;
+            eTanh.method = "tanh";
+            tanhEntry(bl.sample, eTanh);
+            entries.push_back(eTanh);
+            PocSummaryEntry eTanhPhi{bl.tag + ":#Deltap_{0} tanh,#phi Slice(InPeak)", PocMethodStyle(base, POC_MARKER_TANH_PHI)};
+            eTanhPhi.tag = bl.tag + "_TanhPhiSlices";
+            eTanhPhi.column = fitColumn;
+            eTanhPhi.method = "tanh, #phi_{AEE} slices";
+            sliceEntry(eta.vsPhi, bl.sample, sym == 1, eTanhPhi);
+            entries.push_back(eTanhPhi);
+        }
+    }
+
+    // The odd amplitudes of both groups, in R units and over each sample's own response
+    for (int g = 0; g < kPocFitGroups; ++g) {
+        const std::vector<PocFitSample> samples = PocFitGroup(cell, st, g);
+        for (size_t i = 0; i < samples.size(); ++i) {
+            const PocFitSample& smp = samples[i];
+            std::vector<ValErr> amp = {kPocMissing, kPocMissing};
+            // Sine: the odd part over the eta slices (PDG-scaled), as the modulation turns over with the sign of eta
+            if (const PocCondensed* c = PocFindCondensed(sine.group[g].p1, smp.cfg.legendLabel))
+                if (c->oddPart.valid) amp[0] = {c->oddPart.value, c->oddPart.ScaledError()};
+            // Tanh: the integrated fit's amplitude, with the mean of its two Minos sides
+            const OddPlusConstantFitResult& f = eta.integrated[g][i];
+            if (f.valid) amp[1] = {f.p1, 0.5 * (f.p1Low + f.p1High)};
+            // The sample's own response, from its region of its file
+            std::vector<ValErr> scaled = {kPocMissing, kPocMissing};
+            RegionSample reg;
+            CorrectionInputs in;
+            if (!smp.file.empty() && LoadRegionSample(cache, smp.file, cell.proxy, reg) &&
+                InputsOfSample(RegionAsSample(reg, smp.regionBin - 1), in)) // Region index: 1 peak, 0 sideband
+                for (int m = 0; m < 2; ++m) scaled[m] = PocDivide(amp[m], in.uvx3);
+            out.p1Cfgs[g].push_back(smp.cfg);
+            out.p1[g].push_back(amp);
+            out.p1OverResponse[g].push_back(scaled);
+        }
+    }
+
+    // PpBaselineQA
+    if (hM && hP) out.cheapMinusMixed = PocDiff(mInMean, ppInMean); // = (R_in - R_pp) - (R_in - R_mix), exactly
+    if (hM && hPM) out.fakeMismatch = PocDiff(mInMean, pmInMean);
+    if (hP && hPM) out.ppResidual = PocDiff(ppInMean, pmInMean);
+    if (hM) out.pOwnData = PocCorrected(dIn, RegionAsSample(mReg, 1), cell.k);
+    if (hP && hPM) out.pOwnPp = PocCorrected(RegionAsSample(pReg, 1), RegionAsSample(pmReg, 1), cell.k);
+    CorrectionInputs inPeakPp;
+    if (hP && hInPeak && InputsOfSample(RegionAsSample(pReg, 1), inPeakPp))
+        out.responseRatio = PocDivide(inPeakPp.uvx3, inPeakData.uvx3); // 3<u v> of pp's peak over the data's
+    return out;
+}
+
+/**
+ * @brief Writes the summaries of one <Selection>/<Family>/ folder: the main canvases into each proxy's own folder,
+ *        then SymmetrizationQA/, PurityCorrected/ (and its SymmetrizationQA/) and PpBaselineQA/ at the family level,
+ *        every proxy's canvases next to each other.
+ */
+void DrawPocSummaries(TDirectory* fileRoot, const std::string& rootPath, const std::vector<PocSummaryData>& data,
+                      const std::string& ringSym) {
+    const std::string sym = "<" + ringSym + ">";
+    // Pad titles carry the proxy and the data's centrality, so a pad stands on its own (on a slide, say)
+    auto padTitle = [](const PocSummaryData& d, const std::string& what) {
+        return d.proxy + ", " + PocCentralityLabel() + ": " + what;
+    };
+    auto estimatePanel = [&](const PocSummaryData& d, int which, int unit, const std::string& title) {
+        PocPanel pn;
+        pn.title = padTitle(d, title);
+        pn.yTitle = (unit == 0) ? "#Delta" + sym : (unit == 1) ? "P_{R} (diluted by f_{S})" : "P_{R}";
+        pn.zeroLine = true;
+        bool anyPdg = false;
+        for (const auto& e : d.entries[which]) {
+            // Its column: the shared one if any, else its own label (the purity-corrected one where it differs)
+            const std::string own = (unit == 2 && !e.pureLabel.empty()) ? e.pureLabel : e.label;
+            const std::string column = e.column.empty() ? own : e.column;
+            const auto it = std::find(pn.labels.begin(), pn.labels.end(), column);
+            if (it == pn.labels.end()) pn.labels.push_back(column); // First value of a new column
+            pn.columnOf.push_back(static_cast<int>(std::find(pn.labels.begin(), pn.labels.end(), column) - pn.labels.begin()));
+            pn.cfgs.push_back(e.cfg);
+            pn.vals.push_back(unit == 0 ? e.r : (unit == 1 ? e.p : e.pPure));
+            anyPdg = anyPdg || e.pdgError;
+            // One key entry per method, in the order they first appear
+            if (!e.method.empty()) {
+                bool listed = false;
+                for (const auto& mk : pn.markerLegend) listed = listed || mk.first == e.method;
+                if (!listed) pn.markerLegend.push_back({e.method, e.cfg.markerStyle});
+            }
+        }
+        // Not an obvious choice, so stated on the canvas: the scaled errors can be conservative
+        if (anyPdg) pn.note = "PDG-error: condensed #Deltap_{0} (sine, tanh in #phi slices), #sigma #times #sqrt{#chi^{2}/ndf} if > 1";
+        return pn;
+    };
+    // One fit group's odd amplitudes: a column per sample, sine and tanh side by side (scaled: over the own response)
+    auto p1Panel = [&](const PocSummaryData& d, int g, bool scaled) {
+        PocPanel pn;
+        pn.title = d.p1Cfgs[g].empty() ? "" : padTitle(d, d.p1Cfgs[g][0].legendLabel + " and its controls");
+        pn.yTitle = scaled ? "p_{1} / 3<u v>" : "p_{1}";
+        pn.zeroLine = true;
+        const auto& vals = scaled ? d.p1OverResponse[g] : d.p1[g];
+        for (size_t i = 0; i < d.p1Cfgs[g].size(); ++i) {
+            pn.labels.push_back(d.p1Cfgs[g][i].legendLabel);
+            const int markers[2] = {POC_MARKER_SINE, POC_MARKER_TANH};
+            for (int m = 0; m < 2; ++m) {
+                pn.columnOf.push_back(static_cast<int>(i));
+                pn.cfgs.push_back(PocMethodStyle(d.p1Cfgs[g][i], markers[m]));
+                pn.vals.push_back(vals[i][m]);
+            }
+        }
+        pn.markerLegend = {{"sine, odd part over #eta slices", POC_MARKER_SINE}, {"tanh, integrated", POC_MARKER_TANH}};
+        pn.note = "PDG-error: sine p_{1}, #frac{1}{2}[p_{1}(+#eta) - p_{1}(-#eta)] condensed over the slices";
+        return pn;
+    };
+    auto levelPanel = [&](const PocSummaryData& d) {
+        PocPanel pn{padTitle(d, "The four levels"), sym, d.levelLabels, d.levelCfgs, d.levels, false};
+        return pn;
+    };
+    // Main pair (in the proxy's folder), then the symmetrised one (at the family level)
+    for (int which = 0; which < 2; ++which) {
+        const std::string tag = which ? ", pair-symmetrised #Deltap_{0}" : "";
+        for (const auto& d : data) {
+            if (!d.valid) continue;
+            const std::string dir = rootPath + (which ? "/SymmetrizationQA" : "/" + d.proxy);
+            DrawPocPanels({levelPanel(d), estimatePanel(d, which, 0, "Estimates, R units" + tag)}, "Canvas_SummaryR_" + d.proxy,
+                          d.head + ": levels and estimates (R units)" + tag, fileRoot, dir);
+            DrawPocPanels({estimatePanel(d, which, 1, "Estimates, converted with the data's response" + tag)},
+                          "Canvas_SummaryP_" + d.proxy, d.head + ": estimates of P_{R}, diluted by f_{S}" + tag, fileRoot, dir);
+            if (which) continue; // No Delta p0 in the amplitudes: they are drawn once
+            DrawPocPanels({p1Panel(d, 0, false), p1Panel(d, 1, false)}, "Canvas_SummaryP1_" + d.proxy,
+                          d.head + ": odd amplitudes p_{1} of the fitted samples", fileRoot, dir, true);
+            DrawPocPanels({p1Panel(d, 0, true), p1Panel(d, 1, true)}, "Canvas_SummaryP1OverResponse_" + d.proxy,
+                          d.head + ": odd amplitudes over each sample's own 3<u v>", fileRoot, dir, true);
+        }
+    }
+    // Purity-corrected, plain then symmetrised
+    for (int which = 0; which < 2; ++which) {
+        const std::string dir = rootPath + "/PurityCorrected" + (which ? "/SymmetrizationQA" : "");
+        const std::string tag = which ? ", pair-symmetrised #Deltap_{0}" : "";
+        for (const auto& d : data) {
+            if (!d.valid) continue;
+            DrawPocPanels({estimatePanel(d, which, 2, "Estimates of P_{S}: bin-counting purity divided out" + tag)},
+                          "Canvas_SummaryP_" + d.proxy, d.head + ": estimates of P_{S} (purity-corrected)" + tag, fileRoot, dir);
+        }
+    }
+    // pp baseline QA
+    for (const auto& d : data) {
+        if (!d.valid) continue;
+        const std::string dir = rootPath + "/PpBaselineQA";
+        const std::string ratio = (d.responseRatio.second >= 0.)
+                                      ? std::string(Form(", 3<u v>_{pp}/3<u v>_{data} = %.3f #pm %.3f", d.responseRatio.first,
+                                                         d.responseRatio.second))
+                                      : "";
+        PocPanel dec{padTitle(d, "Cheap pp - MixedEv estimate = fake mismatch - pp residual"), "#Delta" + sym,
+                     {"(InPeak Data - pp) - (InPeak Data - MixedEv)", "Fake mismatch: MixedEv(data) - MixedEv(pp)",
+                      "pp residual: pp - MixedEv(pp)"},
+                     {d.levelCfgs[3], d.levelCfgs[2], d.levelCfgs[3]},
+                     {d.cheapMinusMixed, d.fakeMismatch, d.ppResidual}, true};
+        DrawPocPanels({dec}, "Canvas_PpDecomposition_" + d.proxy, d.head + ": why the cheap pp subtraction departs" + ratio,
+                      fileRoot, dir);
+        PocPanel own{padTitle(d, "Each system against its own mixed events (InPeak)"), "P_{R} (diluted by f_{S})",
+                     {"Data - MixedEv(data)", "pp - MixedEv(pp)", "Difference"},
+                     {d.levelCfgs[2], d.levelCfgs[3], d.levelCfgs[0]},
+                     {d.pOwnData, d.pOwnPp, PocDiff(d.pOwnData, d.pOwnPp)}, true};
+        DrawPocPanels({own}, "Canvas_OwnMixing_" + d.proxy, d.head + ": own-mixing corrections" + ratio, fileRoot, dir);
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// ProofOfConcept Redux: the reduced set of controls, OO against pp, at <Selection>/<Family>/Redux/
+// -------------------------------------------------------------------------------------------------
+// Two pads per canvas, the OO data (left) and pp minimum bias (right), on one shared y range so they compare by eye.
+// Each pad holds the same three samples of its system: InPeak, OutOfPeak and its own mixed events' InPeak.
+//   Canvas_IntegratedLevels_<Proxy>       the three <R>
+//   Canvas_IntegratedEstimatesR_<Proxy>   InPeak - OutOfPeak and InPeak - MixEv InPeak, R units
+//   Canvas_IntegratedEstimatesP_<Proxy>   the same converted with the system's own in-peak response, diluted by f_S
+//   Canvas_FitLevels_<Proxy>              p0 of the same three samples, from two fits side by side: sine in eta_Proxy
+//                                         slices (condensed, PDG-scaled) and the integrated tanh (Hesse)
+//   Canvas_FitEstimatesR_<Proxy>          Delta p0 of the same two pairs, both fits
+//   Canvas_FitEstimatesP_<Proxy>          the same converted with the system's own in-peak response, diluted by f_S
+//   SymmetrizationQA/                     the fit canvases with the pair-symmetrised sine p0 (the tanh is unchanged)
+//   PurityCorrected/                      the P canvases divided by the system's bin-counting purity. For the sideband
+//                                         that is Sig. - Sideband: subtracted for the integrated values, and for the fits
+//                                         the division, which is the same thing in R units (see PocBuildSummary).
+// The fits are those of pp's own group (PocFitGroup) on the right. Errors as in the summaries: disjoint regions and
+// separate runs in quadrature (exact), the same Lambdas of the mixed events in quadrature (accepted, see Integrated/).
+
+/// @brief Everything one proxy's Redux canvases draw, gathered once (see PocBuildRedux). [system] 0 OO, 1 pp; the
+///        samples are InPeak, OutOfPeak, MixEv InPeak, and the estimates InPeak - OutOfPeak, InPeak - MixEv InPeak.
+struct PocReduxData {
+    bool valid = false;
+    std::string proxy, head;
+    ValErr levels[2][3], estR[2][2], estP[2][2], estPure[2][2]; // Integrated: [system][sample or estimate]
+    // The fits, [which][system][sample or estimate][method]: which 0 plain, 1 the pair-symmetrised sine; method 0 sine,
+    // 1 tanh (the same in both flavours)
+    ValErr fitLevels[2][2][3][2], fitR[2][2][2][2], fitP[2][2][2][2], fitPure[2][2][2][2];
+    PocReduxData() { // Every value starts missing (a negative error), so an absent sample draws nothing
+        std::fill_n(&levels[0][0], 2 * 3, kPocMissing);
+        std::fill_n(&estR[0][0], 2 * 2, kPocMissing);
+        std::fill_n(&estP[0][0], 2 * 2, kPocMissing);
+        std::fill_n(&estPure[0][0], 2 * 2, kPocMissing);
+        std::fill_n(&fitLevels[0][0][0][0], 2 * 2 * 3 * 2, kPocMissing);
+        std::fill_n(&fitR[0][0][0][0], 2 * 2 * 2 * 2, kPocMissing);
+        std::fill_n(&fitP[0][0][0][0], 2 * 2 * 2 * 2, kPocMissing);
+        std::fill_n(&fitPure[0][0][0][0], 2 * 2 * 2 * 2, kPocMissing);
+    }
+};
+
+/**
+ * @brief Gathers one proxy's Redux values, for both systems (each against its own sideband and mixed events): the
+ *        integrated means and the two fits of each system's fit group (the first three samples of PocFitGroup).
+ *
+ * Every sample scales its sideband with its own windows (SidebandScaleOf), so a system is always self-consistent. The
+ * OutOfPeak levels only compare across samples run with the same windows, which is warned about when they differ.
+ */
+PocReduxData PocBuildRedux(FileCache& cache, const PocCell& cell, const PocStyles& st, const PocSineFits& sine,
+                           const PocEtaFitResults& eta) {
+    PocReduxData out;
+    out.proxy = cell.proxy;
+    out.head = cell.head;
+    double scaleOfData = -1.;
+    for (int sys = 0; sys < 2; ++sys) {
+        const std::vector<PocFitSample> samples = PocFitGroup(cell, st, sys); // [0] InPeak, [1] OutOfPeak, [2] MixEv InPeak
+        RegionSample reg, mix;
+        if (samples[0].file.empty() || !LoadRegionSample(cache, samples[0].file, cell.proxy, reg)) continue; // Counted by the loader
+        const bool hMix = !samples[2].file.empty() && LoadRegionSample(cache, samples[2].file, cell.proxy, mix);
+        if (sys == 0) { out.valid = true; scaleOfData = reg.bkgScale; }
+        // Different windows: each system stays right, but their OutOfPeak levels no longer describe the same masses
+        auto checkWindows = [&](const RegionSample& r, const std::string& file) {
+            if (scaleOfData > 0. && std::fabs(r.bkgScale - scaleOfData) > 1e-6)
+                std::cerr << "  [Warning] ProofOfConcept Redux, " << cell.proxy << ": sideband scale " << r.bkgScale << " in "
+                          << file << " against " << scaleOfData << " in the data: the samples ran with different windows" << std::endl;
+        };
+        checkWindows(reg, samples[0].file);
+        if (hMix) checkWindows(mix, samples[2].file);
+
+        // ---- Integrated ----
+        const RingSample in = RegionAsSample(reg, 1), side = RegionAsSample(reg, 0);
+        const ValErr fPeak = PocPurityPeak(reg);
+        auto& lv = out.levels[sys];
+        lv[0] = PocMean(reg.ring[1]);
+        lv[1] = PocMean(reg.ring[0]);
+        lv[2] = hMix ? PocMean(mix.ring[1]) : kPocMissing;
+        // Sideband baseline: disjoint regions, quadrature is exact; purity-corrected by subtraction, not by division
+        out.estR[sys][0] = PocDiff(lv[0], lv[1]);
+        out.estP[sys][0] = PocCorrected(in, side, cell.k); // The system's in-peak response
+        out.estPure[sys][0] = PocSignalMinusSideband(reg, cell.k);
+        // Mixed-event baseline: the same Lambdas, quadrature accepted
+        if (hMix) {
+            out.estR[sys][1] = PocDiff(lv[0], lv[2]);
+            out.estP[sys][1] = PocCorrected(in, RegionAsSample(mix, 1), cell.k);
+            out.estPure[sys][1] = PocDivide(out.estP[sys][1], fPeak);
+        }
+
+        // ---- The fits ----
+        CorrectionInputs resp;
+        const bool hResp = InputsOfSample(in, resp); // The system's in-peak response, for every conversion
+        const PocSliceFitSummary& sineSum = sine.group[sys];
+        const OddPlusConstantFitResult* tanhFits = eta.integrated[sys];
+        for (int which = 0; which < 2; ++which) {
+            // Levels: the condensed sine p0 (PDG-scaled) and the integrated tanh p0 (Hesse)
+            for (int i = 0; i < 3; ++i) {
+                if (const PocCondensed* c = PocFindCondensed(sineSum.p0, samples[i].cfg.legendLabel)) {
+                    const PocConstantFit& f = which ? c->symmetrized : c->plain;
+                    if (f.valid) out.fitLevels[which][sys][i][0] = {f.value, f.ScaledError()};
+                }
+                if (tanhFits[i].valid) out.fitLevels[which][sys][i][1] = {tanhFits[i].p0, tanhFits[i].p0Hesse};
+            }
+            // Estimates: InPeak against OutOfPeak (sample 1) and against MixEv InPeak (sample 2)
+            for (int e = 0; e < 2; ++e) {
+                const int ctrl = e + 1;
+                ValErr r[2] = {kPocMissing, kPocMissing};
+                if (const PocCondensed* c = PocFindCondensed(sineSum.p0Diff, samples[0].cfg.legendLabel + " - " +
+                                                                                 samples[ctrl].cfg.legendLabel)) {
+                    const PocConstantFit& f = which ? c->symmetrized : c->plain;
+                    if (f.valid) r[0] = {f.value, f.ScaledError()};
+                }
+                if (tanhFits[0].valid && tanhFits[ctrl].valid) r[1] = PocP0Difference(tanhFits[0], tanhFits[ctrl]);
+                for (int m = 0; m < 2; ++m) {
+                    out.fitR[which][sys][e][m] = r[m];
+                    if (!hResp) continue;
+                    // The levels of the pair only enter the small k term: a missing one counts as zero
+                    const ValErr& pd = out.fitLevels[which][sys][0][m];
+                    const ValErr& pc = out.fitLevels[which][sys][ctrl][m];
+                    out.fitP[which][sys][e][m] = PocCorrectDelta(r[m], pd.second >= 0. ? pd.first : 0.,
+                                                                 pc.second >= 0. ? pc.first : 0., resp.uvx3, cell.k);
+                    out.fitPure[which][sys][e][m] = PocDivide(out.fitP[which][sys][e][m], fPeak);
+                }
+            }
+        }
+    }
+    return out;
+}
+
+/// @brief Writes the Redux canvases of one <Selection>/<Family>/ folder, every proxy's next to each other.
+void DrawPocRedux(TDirectory* fileRoot, const std::string& rootPath, const std::vector<PocReduxData>& data,
+                  const PocStyles& st, const std::string& ringSym) {
+    const std::string sym = "<" + ringSym + ">";
+    // The two systems' looks: OO from the data's mass-region styles, pp from its own colour with the same markers.
+    // Every pad title names its system ("Data", not "OO Data": the same code runs on pp wagons), the data's centrality
+    // (pp is minimum bias), the proxy and the quantity, so a pad can go on a slide as it is
+    auto sysHead = [&](const PocReduxData& d, int sys) {
+        return sys == 0 ? st.data.legendLabel + ", " + PocCentralityLabel() + ", " + d.proxy : st.pp.legendLabel + ", " + d.proxy;
+    };
+    const std::vector<VariationConfig> levelCfgs[2] = {{st.dataIn, st.dataOut, st.mixedIn},
+                                                       {st.ppIn, PocPpOutStyle(st), PocPpMixedInStyle(st)}};
+    const std::vector<std::string> levelLabels = {"InPeak", "OutOfPeak", "MixEv InPeak"};
+    auto estimateLabels = [](int unit) {
+        return std::vector<std::string>{(unit == 2) ? "Sig. - Sideband" : "InPeak - OutOfPeak", "InPeak - MixEv InPeak"};
+    };
+    auto unitTitle = [&](int unit, const std::string& levelUnit) {
+        return (unit == 0) ? levelUnit : (unit == 1) ? std::string("P_{R} (diluted by f_{S})") : std::string("P_{R}");
+    };
+
+    // ---- Integrated: one pad per system, its three levels or its two estimates (unit 0 R, 1 P, 2 purity-corrected) ----
+    // The quantity of an estimate pad, by unit, after its stem ("Integrated #Delta<R>", "#Deltap_{0}")
+    auto estimateQuantity = [&](int unit, const std::string& stemR, const std::string& stemP) {
+        return (unit == 0) ? stemR : (unit == 1) ? stemP + " as P_{R}, diluted by f_{S}" : stemP + " as P_{S}, purity-corrected";
+    };
+    auto levelPanel = [&](const PocReduxData& d, int sys) {
+        PocPanel pn{sysHead(d, sys) + ", Integrated " + sym, sym, levelLabels, levelCfgs[sys],
+                    {d.levels[sys][0], d.levels[sys][1], d.levels[sys][2]}, false};
+        return pn;
+    };
+    auto estimatePanel = [&](const PocReduxData& d, int sys, int unit) {
+        const ValErr(&v)[2][2] = (unit == 0) ? d.estR : (unit == 1) ? d.estP : d.estPure;
+        PocPanel pn{sysHead(d, sys) + ", " + estimateQuantity(unit, "Integrated #Delta" + sym, "Integrated #Delta" + sym),
+                    unitTitle(unit, "#Delta" + sym), estimateLabels(unit),
+                    {levelCfgs[sys][1], levelCfgs[sys][2]}, {v[sys][0], v[sys][1]}, true};
+        return pn;
+    };
+
+    // ---- Fits: the same columns, sine and tanh side by side in each ----
+    const int markers[2] = {POC_MARKER_SINE, POC_MARKER_TANH};
+    const std::string pdgNote = "PDG-error: sine, condensed over the #eta slices, #sigma #times #sqrt{#chi^{2}/ndf} if > 1";
+    auto fitDecor = [&](PocPanel& pn) {
+        pn.markerLegend = {{"sine, #eta slices", POC_MARKER_SINE}, {"tanh, integrated", POC_MARKER_TANH}};
+        pn.note = pdgNote;
+    };
+    auto symSuffix = [](int which) { return which ? std::string(", pair-symmetrised sine") : std::string(); };
+    auto fitLevelPanel = [&](const PocReduxData& d, int which, int sys) {
+        PocPanel pn;
+        pn.title = sysHead(d, sys) + ", fitted p_{0}" + symSuffix(which);
+        pn.yTitle = "p_{0}";
+        pn.labels = levelLabels;
+        for (int i = 0; i < 3; ++i)
+            for (int m = 0; m < 2; ++m) {
+                pn.columnOf.push_back(i);
+                pn.cfgs.push_back(PocMethodStyle(levelCfgs[sys][i], markers[m]));
+                pn.vals.push_back(d.fitLevels[which][sys][i][m]);
+            }
+        fitDecor(pn);
+        // The two models, written out on the pad: the fitted offset is only meaningful with its model in view
+        const std::string eta = "#eta_{" + d.proxy + "}";
+        pn.note = "sine: " + sym + " = p_{0} + p_{1} sin[p_{2} (#phi_{#Lambda}-#phi_{p}^{*})], in " + eta + " slices\n" +
+                  "tanh: " + sym + " = p_{0} + p_{1} tanh(p_{2} " + eta + ")\n" + pdgNote;
+        return pn;
+    };
+    auto fitEstimatePanel = [&](const PocReduxData& d, int which, int sys, int unit) {
+        const ValErr(&v)[2][2][2] = (unit == 0) ? d.fitR[which] : (unit == 1) ? d.fitP[which] : d.fitPure[which];
+        PocPanel pn;
+        pn.title = sysHead(d, sys) + ", " + estimateQuantity(unit, "#Deltap_{0}", "#Deltap_{0}") + symSuffix(which);
+        pn.yTitle = unitTitle(unit, "#Deltap_{0}");
+        pn.labels = estimateLabels(unit);
+        pn.zeroLine = true;
+        for (int e = 0; e < 2; ++e)
+            for (int m = 0; m < 2; ++m) {
+                pn.columnOf.push_back(e);
+                pn.cfgs.push_back(PocMethodStyle(levelCfgs[sys][e + 1], markers[m]));
+                pn.vals.push_back(v[sys][e][m]);
+            }
+        fitDecor(pn);
+        return pn;
+    };
+
+    // Main folder, then SymmetrizationQA/ (the fits only), then PurityCorrected/ and its SymmetrizationQA/
+    const std::string dir = rootPath + "/Redux";
+    const std::string symTag = ", pair-symmetrised sine p_{0}";
+    for (const auto& d : data) {
+        if (!d.valid) continue;
+        DrawPocPanels({levelPanel(d, 0), levelPanel(d, 1)}, "Canvas_IntegratedLevels_" + d.proxy,
+                      d.head + ": integrated " + sym + ", OO against pp", fileRoot, dir, true);
+        DrawPocPanels({estimatePanel(d, 0, 0), estimatePanel(d, 1, 0)}, "Canvas_IntegratedEstimatesR_" + d.proxy,
+                      d.head + ": integrated estimates (R units), OO against pp", fileRoot, dir, true);
+        DrawPocPanels({estimatePanel(d, 0, 1), estimatePanel(d, 1, 1)}, "Canvas_IntegratedEstimatesP_" + d.proxy,
+                      d.head + ": integrated estimates of P_{R}, diluted by f_{S}, OO against pp", fileRoot, dir, true);
+        DrawPocPanels({fitLevelPanel(d, 0, 0), fitLevelPanel(d, 0, 1)}, "Canvas_FitLevels_" + d.proxy,
+                      d.head + ": fitted offsets p_{0}, OO against pp", fileRoot, dir, true);
+        DrawPocPanels({fitEstimatePanel(d, 0, 0, 0), fitEstimatePanel(d, 0, 1, 0)}, "Canvas_FitEstimatesR_" + d.proxy,
+                      d.head + ": #Deltap_{0} (R units), OO against pp", fileRoot, dir, true);
+        DrawPocPanels({fitEstimatePanel(d, 0, 0, 1), fitEstimatePanel(d, 0, 1, 1)}, "Canvas_FitEstimatesP_" + d.proxy,
+                      d.head + ": #Deltap_{0} as P_{R}, diluted by f_{S}, OO against pp", fileRoot, dir, true);
+    }
+    for (const auto& d : data) {
+        if (!d.valid) continue;
+        const std::string symDir = dir + "/SymmetrizationQA";
+        DrawPocPanels({fitLevelPanel(d, 1, 0), fitLevelPanel(d, 1, 1)}, "Canvas_FitLevels_" + d.proxy,
+                      d.head + ": fitted offsets p_{0}, OO against pp" + symTag, fileRoot, symDir, true);
+        DrawPocPanels({fitEstimatePanel(d, 1, 0, 0), fitEstimatePanel(d, 1, 1, 0)}, "Canvas_FitEstimatesR_" + d.proxy,
+                      d.head + ": #Deltap_{0} (R units), OO against pp" + symTag, fileRoot, symDir, true);
+        DrawPocPanels({fitEstimatePanel(d, 1, 0, 1), fitEstimatePanel(d, 1, 1, 1)}, "Canvas_FitEstimatesP_" + d.proxy,
+                      d.head + ": #Deltap_{0} as P_{R}, diluted by f_{S}, OO against pp" + symTag, fileRoot, symDir, true);
+    }
+    for (int which = 0; which < 2; ++which)
+        for (const auto& d : data) {
+            if (!d.valid) continue;
+            const std::string pureDir = dir + "/PurityCorrected" + (which ? "/SymmetrizationQA" : "");
+            if (!which)
+                DrawPocPanels({estimatePanel(d, 0, 2), estimatePanel(d, 1, 2)}, "Canvas_IntegratedEstimatesP_" + d.proxy,
+                              d.head + ": integrated estimates of P_{S} (purity-corrected), OO against pp", fileRoot, pureDir, true);
+            DrawPocPanels({fitEstimatePanel(d, which, 0, 2), fitEstimatePanel(d, which, 1, 2)}, "Canvas_FitEstimatesP_" + d.proxy,
+                          d.head + ": #Deltap_{0} as P_{S} (purity-corrected), OO against pp" + (which ? symTag : ""),
+                          fileRoot, pureDir, true);
+        }
+}
+
+// -------------------------------------------------------------------------------------------------
+// ProofOfConcept master plots: the per-cell summaries set against each other
+// -------------------------------------------------------------------------------------------------
+// Only P enters (R units are not comparable across ring definitions), in the two flavours of the summaries: diluted by
+// f_S (the main folders) and purity-corrected (PurityCorrected/), each also with the pair-symmetrised Delta p0
+// (SymmetrizationQA/). One folder per estimate, holding the three proxies' canvases side by side.
+// Each master sits in a Masters/ folder at the lowest level holding every cell it compares: next to the family folders
+// for the per-selection ones (they span families, so no single family folder can hold them), at the top for the
+// selections compared.
+//   <Sel>/Masters/SpeciesVsRing/        x: species, series: ring definitions. A true aligned ring agrees everywhere:
+//                                       across species (Lambda and AntiLambda are independent samples; Both is their
+//                                       union) and across ring definitions (same Lambdas, very different fakes).
+//   <Sel>/Masters/SpeciesCombinationQA/ x: ring definitions, series: 1/2 (Lambda + AntiLambda) and 1/2 (Lambda - AntiLambda),
+//                                       disjoint samples, so 1/2 hypot errors. Topological fakes flip with alpha.
+//   Masters/DefaultVsAnalysisCuts/      x: species x ring definition, series: the selections; and Canvas_<Proxy>_Difference,
+//                                       each selection minus the first, with Barlow's sqrt|sigma_A^2 - sigma_D^2|: the
+//                                       stricter selection's samples are subsets of the default's, so their errors are
+//                                       largely shared and quadrature would hide a genuine shift.
+
+/// @brief One <Selection>/<Family>/ folder's summaries, kept for the master plots.
+struct PocCellSummary {
+    std::string selection, species; // Selection folder; family name ("Lambda", "AntiLambda", "BothHyperons")
+    int ringIndex = 0;              // 0 the full ring, l + 1 LONGITUDINAL_RINGS[l]
+    std::vector<PocSummaryData> proxies;
+};
+
+/// @brief The ring definitions' series styles, shared with Corrections/: the full ring grey, each longitudinal one its colour.
+VariationConfig PocRingStyle(int ringIndex) {
+    if (ringIndex == 0) return {"", "Full 3D Ring", kGray + 2, 1, 24, false};
+    const int l = ringIndex - 1;
+    return {"", "R" + LONGITUDINAL_RINGS[l].symbolSuffix, LONG_RING_COLOR[l % 2], 1, LONG_RING_MARKER[l % 2], false};
+}
+
+/// @brief Several series over labelled columns (vals[series][column], a negative error leaving a gap), with a
+///        value/sigma strip: DrawOffsetSeriesCanvas, written under fileRoot/dirPath. Nothing is drawn without a value.
+void DrawPocSeriesByColumn(const std::vector<std::string>& columns, const std::vector<VariationConfig>& series,
+                           const std::vector<std::vector<ValErr>>& vals, const std::string& name, const std::string& title,
+                           TDirectory* fileRoot, const std::string& dirPath, const std::string& yTitle) {
+    bool any = false;
+    for (const auto& row : vals)
+        for (const auto& v : row) any = any || v.second >= 0.;
+    if (!any || columns.empty()) {
+        CountSkip("ProofOfConcept masters, " + name, "no value to draw", dirPath);
+        return;
+    }
+    std::vector<ProfileBundle> bundles;
+    for (size_t sIdx = 0; sIdx < series.size(); ++sIdx) {
+        TH1D* h = new TH1D(Form("%s_s%zu", name.c_str(), sIdx), "", static_cast<int>(columns.size()), 0, columns.size());
+        h->SetDirectory(nullptr);
+        for (size_t c = 0; c < columns.size(); ++c) SetVsXPoint(h, static_cast<int>(c) + 1, vals[sIdx][c]);
+        bundles.push_back({h, series[sIdx]});
+    }
+    DrawOffsetSeriesCanvas(columns, bundles, name, title, EnsureDir(fileRoot, dirPath), yTitle, 0.5, true);
+    for (auto& b : bundles) delete b.profile;
+}
+
+/// @brief One entry of a cell's summary (estimate index, proxy), in the requested flavour; missing if absent.
+ValErr PocMasterValue(const PocCellSummary* cell, const std::string& proxy, int which, bool pure, size_t estimate) {
+    if (!cell) return kPocMissing;
+    for (const auto& d : cell->proxies) {
+        if (!d.valid || d.proxy != proxy || estimate >= d.entries[which].size()) continue;
+        return pure ? d.entries[which][estimate].pPure : d.entries[which][estimate].p;
+    }
+    return kPocMissing;
+}
+
+/// @brief The estimates' tags, labels and PDG flags, from the first valid summary (every summary lists the same).
+bool PocMasterEstimates(const std::vector<PocCellSummary>& cells, std::vector<PocSummaryEntry>& estimates) {
+    for (const auto& c : cells)
+        for (const auto& d : c.proxies)
+            if (d.valid && !d.entries[0].empty()) { estimates = d.entries[0]; return true; }
+    return false;
+}
+
+/**
+ * @brief Writes the master plots of ProofOfConcept/ (see the block comment above) from every cell's summaries.
+ * @param families The families in the order of the macro's table, which sets the species order on the axes.
+ */
+void DrawPocMasters(TDirectory* fileRoot, const std::vector<PocCellSummary>& cells, const std::vector<FamilyConfig>& families) {
+    std::vector<PocSummaryEntry> estimates;
+    if (!PocMasterEstimates(cells, estimates)) return; // No summary anywhere: nothing to set against anything
+    auto find = [&](const std::string& sel, const std::string& species, int ring) -> const PocCellSummary* {
+        for (const auto& c : cells)
+            if (c.selection == sel && c.species == species && c.ringIndex == ring) return &c;
+        return nullptr;
+    };
+    const int nRings = static_cast<int>(LONGITUDINAL_RINGS.size()) + 1;
+    // The four flavours: [which] plain / pair-symmetrised Delta p0, [pure] diluted / purity-corrected
+    struct Flavour { int which; bool pure; std::string subdir, yTitle, tag; };
+    const std::vector<Flavour> flavours = {
+        {0, false, "", "P_{R} (diluted by f_{S})", ""},
+        {1, false, "/SymmetrizationQA", "P_{R} (diluted by f_{S})", ", pair-symmetrised #Deltap_{0}"},
+        {0, true, "/PurityCorrected", "P_{S}", ", purity-corrected"},
+        {1, true, "/PurityCorrected/SymmetrizationQA", "P_{S}", ", purity-corrected, pair-symmetrised #Deltap_{0}"}};
+    auto estimateTitle = [&](const PocSummaryEntry& e, const Flavour& f) {
+        const std::string label = (f.pure && !e.pureLabel.empty()) ? e.pureLabel : e.label;
+        return label + f.tag + (e.pdgError ? " [PDG-error]" : "");
+    };
+
+    for (const auto& f : flavours)
+        for (size_t est = 0; est < estimates.size(); ++est) {
+            const PocSummaryEntry& e = estimates[est];
+            for (const auto& proxy : PROXIES) {
+                // ---- Per selection: species vs ring definition, and the species combinations ----
+                for (const auto& sel : POC_SELECTIONS) {
+                    std::vector<std::string> species;
+                    std::vector<int> rings;
+                    for (const auto& fam : families) {
+                        bool any = false;
+                        for (int r = 0; r < nRings; ++r) any = any || find(sel.folder, fam.familyName, r);
+                        if (any) species.push_back(fam.familyName);
+                    }
+                    for (int r = 0; r < nRings; ++r) {
+                        bool any = false;
+                        for (const auto& sp : species) any = any || find(sel.folder, sp, r);
+                        if (any) rings.push_back(r);
+                    }
+                    if (species.empty()) continue;
+                    std::vector<VariationConfig> ringSeries;
+                    std::vector<std::vector<ValErr>> vals;
+                    for (int r : rings) {
+                        ringSeries.push_back(PocRingStyle(r));
+                        std::vector<ValErr> row;
+                        for (const auto& sp : species) row.push_back(PocMasterValue(find(sel.folder, sp, r), proxy, f.which, f.pure, est));
+                        vals.push_back(row);
+                    }
+                    DrawPocSeriesByColumn(species, ringSeries, vals, "Canvas_" + proxy,
+                                          sel.folder + ", " + proxy + ": " + estimateTitle(e, f) + ", species vs ring definition",
+                                          fileRoot, "ProofOfConcept/" + sel.folder + "/Masters/SpeciesVsRing" + f.subdir + "/" + e.tag,
+                                          f.yTitle);
+
+                    // Species combinations, where both species exist
+                    std::vector<std::string> ringLabels;
+                    std::vector<std::vector<ValErr>> comb(2);
+                    for (int r : rings) {
+                        const ValErr pl = PocMasterValue(find(sel.folder, "Lambda", r), proxy, f.which, f.pure, est);
+                        const ValErr pa = PocMasterValue(find(sel.folder, "AntiLambda", r), proxy, f.which, f.pure, est);
+                        ringLabels.push_back(PocRingStyle(r).legendLabel);
+                        if (pl.second < 0. || pa.second < 0.) { comb[0].push_back(kPocMissing); comb[1].push_back(kPocMissing); continue; }
+                        const double err = 0.5 * std::hypot(pl.second, pa.second); // Disjoint samples
+                        comb[0].push_back({0.5 * (pl.first + pa.first), err});
+                        comb[1].push_back({0.5 * (pl.first - pa.first), err});
+                    }
+                    const std::vector<VariationConfig> combSeries = {{"", "#frac{1}{2}(#Lambda + #bar{#Lambda}): topological fakes cancel", kBlack, 1, 20, false},
+                                                                     {"", "#frac{1}{2}(#Lambda - #bar{#Lambda}): topological fakes only", kRed + 1, 1, 24, false}};
+                    DrawPocSeriesByColumn(ringLabels, combSeries, comb, "Canvas_" + proxy,
+                                          sel.folder + ", " + proxy + ": " + estimateTitle(e, f) + ", species combinations",
+                                          fileRoot, "ProofOfConcept/" + sel.folder + "/Masters/SpeciesCombinationQA" + f.subdir + "/" + e.tag,
+                                          f.yTitle);
+                }
+
+                // ---- Default vs AnalysisCuts: species x ring definition, one series per selection ----
+                if (POC_SELECTIONS.size() < 2) continue;
+                std::vector<std::string> columns;
+                std::vector<std::pair<std::string, int>> keys; // (species, ring) of each column
+                for (const auto& fam : families)
+                    for (int r = 0; r < nRings; ++r) {
+                        bool inAll = true; // A column needs every selection, or there is nothing to compare
+                        for (const auto& sel : POC_SELECTIONS) inAll = inAll && find(sel.folder, fam.familyName, r);
+                        if (!inAll) continue;
+                        columns.push_back(fam.familyName + ", " + PocRingStyle(r).legendLabel);
+                        keys.push_back({fam.familyName, r});
+                    }
+                if (columns.empty()) continue;
+                std::vector<VariationConfig> selSeries;
+                std::vector<std::vector<ValErr>> vals, diffs;
+                std::vector<VariationConfig> diffSeries;
+                for (size_t si = 0; si < POC_SELECTIONS.size(); ++si) {
+                    // The first selection solid, the others in the macro's AN-Cuts look (dashed, open)
+                    selSeries.push_back({"", POC_SELECTIONS[si].folder, si == 0 ? kBlack : kGray + 2, si == 0 ? 1 : 2, si == 0 ? 20 : 24, false});
+                    std::vector<ValErr> row;
+                    for (const auto& k : keys)
+                        row.push_back(PocMasterValue(find(POC_SELECTIONS[si].folder, k.first, k.second), proxy, f.which, f.pure, est));
+                    vals.push_back(row);
+                    if (si == 0) continue;
+                    // Barlow: sqrt|sigma_A^2 - sigma_D^2| for a subset (the stricter selection) against its parent
+                    std::vector<ValErr> drow;
+                    for (size_t c = 0; c < keys.size(); ++c) {
+                        const ValErr& a = vals[si][c];
+                        const ValErr& d = vals[0][c];
+                        if (a.second < 0. || d.second < 0.) { drow.push_back(kPocMissing); continue; }
+                        drow.push_back({a.first - d.first, std::sqrt(std::abs(a.second * a.second - d.second * d.second))});
+                    }
+                    diffs.push_back(drow);
+                    diffSeries.push_back({"", POC_SELECTIONS[si].folder + " - " + POC_SELECTIONS[0].folder + " (Barlow error)",
+                                          kGray + 2, 2, 24, false});
+                }
+                const std::string dir = "ProofOfConcept/Masters/DefaultVsAnalysisCuts" + f.subdir + "/" + e.tag;
+                DrawPocSeriesByColumn(columns, selSeries, vals, "Canvas_" + proxy,
+                                      proxy + ": " + estimateTitle(e, f) + ", selections compared", fileRoot, dir, f.yTitle);
+                DrawPocSeriesByColumn(columns, diffSeries, diffs, "Canvas_" + proxy + "_Difference",
+                                      proxy + ": " + estimateTitle(e, f) + ", selection shift with Barlow's error", fileRoot, dir,
+                                      "#Delta" + f.yTitle);
+            }
+        }
+}
+
+/**
+ * @brief Writes ProofOfConcept/: for every selection, family and ring definition whose centrality-selected data file
+ *        exists, and for every proxy, the data against its three controls (see the block comment above). The files of
+ *        each cell are those of PocMakeCell, single-borrow mixing.
+ *
+ * @param families Full-ring families: each ring definition is the same family with its tag after the family suffix.
+ */
+void DrawProofOfConcept(FileCache& cache, TDirectory* fileRoot, const std::string& consumerDir, const std::string& ppRefDir,
+                        const std::vector<FamilyConfig>& families, const PocStyles& st) {
+    const std::string centralityLabel = POC_CENTRALITY_TAG.substr(1); // "maxCent50", for the titles
+    std::vector<PocCellSummary> allCells; // Every cell's summaries, for the master plots at the end
+    for (const auto& sel : POC_SELECTIONS)
+        for (const auto& fam : families)
+            for (size_t def = 0; def <= LONGITUDINAL_RINGS.size(); ++def) { // 0 is the full ring, then LONGITUDINAL_RINGS
+                const LongitudinalRing* lr = (def == 0) ? nullptr : &LONGITUDINAL_RINGS[def - 1];
+                const std::string famFolder = fam.familyName + (lr ? "_" + lr->name : "");
+                PocCell cell = PocMakeCell(consumerDir, ppRefDir, sel, fam, lr);
+                if (gSystem->AccessPathName(cell.dataFile.c_str())) { // Not run: counted once, and none of its files is read
+                    CountSkip("ProofOfConcept", "data file not run", sel.folder + "/" + famFolder);
+                    continue;
+                }
+
+                std::vector<PocSummaryData> summaries; // One per proxy, drawn after the loop so their canvases sit together
+                std::vector<PocReduxData> reduxes;     // Likewise, for Redux/
+                for (const auto& proxy : PROXIES) {
+                    cell.proxy   = proxy;
+                    cell.head    = famFolder + ", " + proxy + ", " + sel.folder + " (" + centralityLabel + ")";
+                    cell.dirPath = "ProofOfConcept/" + sel.folder + "/" + famFolder + "/" + proxy;
+                    // The nominal cell: first selection (Default), full ring, the nominal proxy
+                    const bool isNominal = (&sel == &POC_SELECTIONS.front()) && !lr && proxy == POC_NOMINAL_PROXY;
+                    // Creation order is browsing order: plots 1 and 5, then 2-4, then 6 and 7, then the AEE folders
+                    DrawPocVsMass(cache, fileRoot, cell, st);
+                    DrawPocIntegrated(cache, fileRoot, cell, st);
+                    DrawPocDifferential(cache, fileRoot, cell, st, "Centrality");
+                    DrawPocDifferential(cache, fileRoot, cell, st, "ProxyPt");
+                    DrawPocAeeMassMosaics(cache, fileRoot, cell, st, !gPocPerBinNominalOnly || isNominal);
+                    const PocSineFits sine = DrawPocAeeVsPhi(cache, fileRoot, cell, st);
+                    const PocEtaFitResults eta = DrawPocEtaFits(cache, fileRoot, cell, st);
+                    summaries.push_back(PocBuildSummary(cache, cell, st, sine, eta));
+                    reduxes.push_back(PocBuildRedux(cache, cell, st, sine, eta));
+                }
+                const std::string rootPath = "ProofOfConcept/" + sel.folder + "/" + famFolder;
+                DrawPocSummaries(fileRoot, rootPath, summaries, cell.ringSym);
+                DrawPocRedux(fileRoot, rootPath, reduxes, st, cell.ringSym);
+                allCells.push_back({sel.folder, fam.familyName, static_cast<int>(def), summaries});
+            }
+    DrawPocMasters(fileRoot, allCells, families);
+}
+
+// ===============================
+// StreamlinedStory: the analysis in five plots, for every selection, species and proxy
+// ===============================
+// Layout: ProofOfConcept/StreamlinedStory/<Selection>/<Species>/<Proxy>/. Each plot sets the full ring against R_z or
+// fits it, so the story is keyed by species rather than by family and ring definition. The canvases are numbered so
+// they list in story order, whatever the browser sorts by:
+//   Canvas_1_IntegratedR   <R> of four samples, the columns OO Data, Mix. Jet OO, pp Data and Mix. Jet pp, each with
+//                          its InPeak and OutOfPeak side by side (filled and open markers), dashed lines between columns
+//   Canvas_2_IntegratedRz  the same for R_z
+//   Canvas_3_SineP0R       the sine p0 of the full ring: p0 + p1 sin(p2 phi_AEE) fitted in every eta_Proxy bin of the
+//                          acceptance, p0 condensed over the bins (inverse-variance mean, PocFitConstant), plain error;
+//                          _PDG with the PDG-scaled errors, and each constant's chi2/ndf in a panel beside it;
+//                          _InMinusOut[_PDG] the two levels' difference per column, as for plots 1 and 2
+//   Canvas_4_SineDeltaP0R  in-peak Data - Mix. Jet of the same p0, per system (two columns): subtracted in each eta_Proxy
+//                          bin first, then condensed, so the eta dependence the two share cancels before the constant;
+//                          _PDG as for plot 3
+//   Canvas_4_1_SineDeltaP0R  plot 4's columns, each followed by its system's data InPeak - OutOfPeak, also formed
+//                          bin by bin; _PDG as for plot 4
+//   Canvas_5_SineInterceptR  each sample's line p0 = C_0 + C_1 p1 over the same bins (FitP0VsP1, errors on both axes):
+//                          C_0, the p0 at zero sine, beside C_1, the slope of the opening-angle leak; _PDG adds the
+//                          lines' chi2/ndf
+// Each has a _10Resamples twin, whose mixed columns use the resampled mixed events (MIXED_RESAMPLES_TAG, last in the file
+// name: after the centrality tag in OO, after the selection tag in pp), and plots 1 and 2 an _InMinusOut companion per
+// twin (disjoint regions of one file: quadrature is exact). The files are PocMakeCell's, as in the rest of ProofOfConcept/.
+// No value/sigma strips, and R units throughout: each plot is a null test within its own ring definition, and the scales
+// of R, R_z and the sine p0 differ (see the README, "StreamlinedStory/"). The fits behind plot 3 are in SineFitQA/<System>/,
+// without the resampled mixed events, and again with them in SineFitQA/<System>/With<N>Resamples/; each view's P0VsP1/
+// has p0 against p1 for its own samples, with the line of plot 5 drawn over them. SineFitQA_Clean/<System>/ redraws the
+// main view's fits for presentation, one mass region per canvas and p0 called R_0:
+//   PerSlice/Canvas_EtaSliceXX_{InPeak,OutOfPeak}  Data and Mix. Jet with their sine curves, the model in a box
+//   Canvas_R0VsEta_{InPeak,OutOfPeak}             R_0 per eta_Proxy bin, Data against Mix. Jet, nothing fitted
+//   Canvas_DeltaR0VsEta                           in-peak Data - Mix. Jet per bin, with the constant fitted to it
+//   Canvas_DeltaR0                                the system's two condensed Delta R_0: InPeak - OutOfPeak and in-peak
+//                                                 Data - Mix. Jet, both bin by bin (plots 4_1 and 4), PDG errors
+// The keys name the mass windows by their mass (StoryMassKeyOf); a system's own canvases name its own windows.
+
+/// @brief The two systems as the story names them: the centrality-selected heavy-ion data, and the pp reference.
+const std::string STORY_SYSTEM[2] = {"OO", "pp"};
+/// @brief The story's name for the mixed-event proxies (the rest of the macro still calls them "MixedEv Jet").
+const std::string STORY_MIXED_LABEL = "Mix. Jet";
+/// @brief The longitudinal ring of plot 2, by its LONGITUDINAL_RINGS name.
+const std::string STORY_LONG_RING = "RingZ";
+
+/// @brief The story's labels and looks, built in the main function from the macro's own configs: one colour per column
+///        (its system's), one marker per mass region (massVariations': filled InPeak, open OutOfPeak).
+///        Columns: 0 OO Data, 1 Mix. Jet OO, 2 pp Data, 3 Mix. Jet pp (the odd ones are the mixed events).
+struct StoryStyles {
+    std::string column[4];
+    VariationConfig in[4], out[4];             // Each column's InPeak and OutOfPeak
+    VariationConfig resampledIn, resampledOut; // The mixed columns of the _10Resamples twins
+    std::string resampledTag;                  // " (10 resamp.)", read from MIXED_RESAMPLES_TAG
+    // The sigma the consumer's mass windows are set in (PeakWindowNSigma, SidebandInnerNSigma, SidebandOuterNSigma):
+    // run_all_wagons.sh's SIGMA, passed on the command line, since the output keeps the edges but not their unit.
+    // A fixed value from earlier fits, for approximate windows only (see the README). 0: unknown, generic names
+    double massWindowSigma = 0.;
+    // The looks of the EQD/ summaries, [estimate][system]: a colour and a marker shape per estimate, filled for OO and
+    // open for pp (see DrawEqd)
+    VariationConfig summary[3][2];
+};
+
+/// @brief The names of the two mass regions in the story's keys (InPeak and OutOfPeak until StoryMassKeyOf finds the edges).
+struct StoryMassKey { std::string peak = "InPeak", sideband = "OutOfPeak"; };
+
+/**
+ * @brief The mass regions of one file as the story names them, from the consumer's own edges (LoadMassRegionEdges):
+ *        "m_{V0} #in m_{#Lambda} #pm 2#sigma" and "m_{V0} #in m_{#Lambda} #pm [3.5#sigma, 7.5#sigma]". The centre is
+ *        the peak window's midpoint, the distances are in sigma (StoryStyles::massWindowSigma). False, with the default
+ *        names, without a sigma or without the edges (booked behind doFakePolDiagnosticsQA; counted by the fetch).
+ */
+bool StoryMassKeyOf(FileCache& cache, const std::string& file, const std::string& proxy, double sigma, StoryMassKey& key) {
+    double e[6];
+    if (!(sigma > 0.) || file.empty() || !LoadMassRegionEdges(cache, file, proxy, e)) return false;
+    const double centre = 0.5 * (e[2] + e[3]);
+    auto nSigma = [&](double edge) { // In units of sigma, to two decimals: the configurables are short decimals
+        return Form("%g", std::round(100. * std::abs(edge - centre) / sigma) / 100.);
+    };
+    // One Form() at a time: its buffer is reused, so each result is copied before the next call
+    const std::string peak = nSigma(e[3]);
+    const std::string inner = nSigma(e[4]);
+    const std::string outer = nSigma(e[5]);
+    key.peak = "m_{V0} #in m_{#Lambda} #pm " + peak + "#sigma";
+    key.sideband = "m_{V0} #in m_{#Lambda} #pm [" + inner + "#sigma, " + outer + "#sigma]";
+    return true;
+}
+
+/// @brief One value per (column, mass region) of a story canvas; a negative error leaves its slot empty.
+struct StoryColumns {
+    ValErr in[4], out[4];
+    StoryColumns() {
+        std::fill_n(in, 4, kPocMissing);
+        std::fill_n(out, 4, kPocMissing);
+    }
+    /// True when a mixed column holds anything (a twin without resampled mixed events would only repeat the data)
+    bool AnyMixed() const { return in[1].second >= 0. || out[1].second >= 0. || in[3].second >= 0. || out[3].second >= 0.; }
+};
+
+/// @brief A column's label in one twin: the mixed columns of a _10Resamples twin say so.
+std::string StoryLabel(const StoryStyles& ss, int column, bool resampled) {
+    return ss.column[column] + ((resampled && column % 2 == 1) ? ss.resampledTag : "");
+}
+
+/// @brief A column's look in one twin: the mixed columns of a _10Resamples twin take the resampled look.
+const VariationConfig& StoryLook(const StoryStyles& ss, int column, bool inPeak, bool resampled) {
+    if (resampled && column % 2 == 1) return inPeak ? ss.resampledIn : ss.resampledOut;
+    return inPeak ? ss.in[column] : ss.out[column];
+}
+
+/// @brief The four columns (or the subset in columns) with their InPeak and OutOfPeak side by side, keyed by marker with
+///        the mass windows' names, zero kept in frame (the level of a sample without a ring).
+PocPanel StoryRegionsPanel(const StoryStyles& ss, const StoryMassKey& key, const StoryColumns& v, bool resampled,
+                           const std::string& title, const std::string& yTitle, const std::vector<int>& columns = {0, 1, 2, 3}) {
+    PocPanel pn;
+    pn.title = title;
+    pn.yTitle = yTitle;
+    pn.zeroLine = true;
+    pn.columnSeparators = true;
+    for (int col : columns) {
+        pn.labels.push_back(StoryLabel(ss, col, resampled));
+        const int panelColumn = static_cast<int>(pn.labels.size()) - 1; // The story column's place on this panel
+        for (int region = 0; region < 2; ++region) { // InPeak on the left, OutOfPeak on the right
+            pn.columnOf.push_back(panelColumn);
+            pn.cfgs.push_back(StoryLook(ss, col, region == 0, resampled));
+            pn.vals.push_back(region == 0 ? v.in[col] : v.out[col]);
+        }
+    }
+    pn.markerLegend = {{key.peak, ss.in[0].markerStyle}, {key.sideband, ss.out[0].markerStyle}};
+    pn.fitKeyToText = true; // The windows' names are longer than the default key fits
+    return pn;
+}
+
+/// @brief InPeak - OutOfPeak in each column: disjoint candidates of one file, so quadrature is exact.
+PocPanel StoryInMinusOutPanel(const StoryStyles& ss, const StoryColumns& v, bool resampled, const std::string& title,
+                              const std::string& yTitle) {
+    PocPanel pn;
+    pn.title = title;
+    pn.yTitle = yTitle;
+    pn.zeroLine = true;
+    pn.columnSeparators = true;
+    for (int col = 0; col < 4; ++col) {
+        pn.labels.push_back(StoryLabel(ss, col, resampled));
+        pn.cfgs.push_back(StoryLook(ss, col, true, resampled));
+        pn.vals.push_back(PocDiff(v.in[col], v.out[col]));
+    }
+    return pn;
+}
+
+/// @brief Data - Mix. Jet per system (both InPeak), two columns: OO, then pp. vals[0] is OO's, vals[1] pp's.
+PocPanel StoryDeltaPanel(const StoryStyles& ss, const ValErr (&vals)[2], bool resampled, const std::string& title,
+                         const std::string& yTitle) {
+    PocPanel pn;
+    pn.title = title;
+    pn.yTitle = yTitle;
+    pn.zeroLine = true;
+    pn.columnSeparators = true;
+    for (int g = 0; g < 2; ++g) { // The data column of each system against its mixed column
+        pn.labels.push_back(ss.column[2 * g] + " - " + StoryLabel(ss, 2 * g + 1, resampled));
+        pn.cfgs.push_back(ss.in[2 * g]);
+        pn.vals.push_back(vals[g]);
+    }
+    return pn;
+}
+
+/// @brief Plot 4_1's four columns, two per system (OO, then pp): in-peak Data - Mix. Jet, then the data's InPeak -
+///        OutOfPeak. vals is in that order. Both columns of a system take its data look: their labels tell them apart.
+PocPanel StoryDeltaInOutPanel(const StoryStyles& ss, const ValErr (&vals)[4], bool resampled, const std::string& title,
+                              const std::string& yTitle) {
+    PocPanel pn;
+    pn.title = title;
+    pn.yTitle = yTitle;
+    pn.zeroLine = true;
+    pn.columnSeparators = true;
+    for (int g = 0; g < 2; ++g) {
+        pn.labels.push_back(ss.column[2 * g] + " - " + StoryLabel(ss, 2 * g + 1, resampled));
+        pn.labels.push_back(ss.column[2 * g] + " InPeak - OutOfPeak");
+        for (int k = 0; k < 2; ++k) {
+            pn.cfgs.push_back(ss.in[2 * g]);
+            pn.vals.push_back(vals[2 * g + k]);
+        }
+    }
+    return pn;
+}
+
+/// @brief The suffix of the resampled twins, "_10Resamples", the count read from MIXED_RESAMPLES_TAG.
+std::string StoryTwinSuffix() { return "_" + ResampleCountOf(MIXED_RESAMPLES_TAG) + "Resamples"; }
+
+/// @brief The head of every story pad title: the proxy, OO's centrality and pp minimum bias (the resampled mixing is
+///        named in its columns' labels, which keeps the title short enough for the pad).
+std::string StorySamplesText(const std::string& proxy) {
+    return proxy + ", " + STORY_SYSTEM[0] + " " + PocCentralityLabel() + " (" + STORY_SYSTEM[1] + " MB)";
+}
+
+/// @brief One system as a pad title names it: "OO 0-50%" (the data's centrality) or "pp MB".
+std::string StorySystemText(int system) {
+    return STORY_SYSTEM[system] + (system == 0 ? " " + PocCentralityLabel() : std::string(" MB"));
+}
+
+/// @brief What EQD/ takes from plot 1 of the story (single borrow): the four columns' means and the data's peak purities.
+struct StoryIntegratedResult {
+    StoryColumns means;
+    ValErr purity[2] = {kPocMissing, kPocMissing}; // [system]: the data's bin-counting purity of the peak (PocPurityPeak)
+};
+
+/**
+ * @brief Plot 1 or 2 of the story (see the block comment): Canvas_<stem> and Canvas_<stem>_InMinusOut, then their
+ *        _10Resamples twins. cells[0] holds the single-borrow files, cells[1] the resampled ones (same data and pp).
+ *
+ * Every value is the mean of one mass region of one file, from the consumer's ...VsMassRegion moments in KappaEff/
+ * (LoadRegionSample), so the columns hold the same candidates as Corrections/ and the summaries.
+ * @return The single-borrow columns and the data's peak purities, for EQD/.
+ */
+StoryIntegratedResult DrawStoryIntegrated(FileCache& cache, TDirectory* fileRoot, const PocCell (&cells)[2], const std::string& stem,
+                                          const StoryStyles& ss, const StoryMassKey& key) {
+    StoryIntegratedResult result;
+    const std::string sym = "<" + cells[0].ringSym + ">";
+    for (int twin = 0; twin < 2; ++twin) {
+        const PocCell& cell = cells[twin];
+        const bool resampled = (twin == 1);
+        const std::string files[4] = {cell.dataFile, cell.mixedFile, cell.ppFile, cell.ppMixedFile};
+        StoryColumns v;
+        for (int col = 0; col < 4; ++col) {
+            RegionSample reg;
+            if (files[col].empty() || !LoadRegionSample(cache, files[col], cell.proxy, reg)) continue; // Counted or warned by the loader
+            v.in[col]  = PocMean(reg.ring[1]); // Region index 1 is the peak, 0 the sideband
+            v.out[col] = PocMean(reg.ring[0]);
+            if (!resampled && col % 2 == 0) result.purity[col / 2] = PocPurityPeak(reg); // The data columns
+        }
+        if (!resampled) result.means = v;
+        const std::string suffix = resampled ? StoryTwinSuffix() : "";
+        if (resampled && !v.AnyMixed()) {
+            CountSkip("StreamlinedStory, Canvas_" + stem + suffix, "no resampled mixed events", cell.dirPath);
+            continue;
+        }
+        const std::string what = StorySamplesText(cell.proxy);
+        DrawPocPanels({StoryRegionsPanel(ss, key, v, resampled, what + ": integrated " + sym, sym)}, "Canvas_" + stem + suffix,
+                      cell.head + ": integrated " + sym + " of every sample", fileRoot, cell.dirPath, false, false);
+        DrawPocPanels({StoryInMinusOutPanel(ss, v, resampled, what + ": InPeak - OutOfPeak", "#Delta" + sym)},
+                      "Canvas_" + stem + "_InMinusOut" + suffix, cell.head + ": integrated " + sym + ", InPeak - OutOfPeak",
+                      fileRoot, cell.dirPath, false, false);
+    }
+    return result;
+}
+
+/// @brief A straight line p0 = C_0 + C_1 p1 through one sample's sine fits (FitP0VsP1). Hesse errors; the PDG scale,
+///        as for PocConstantFit, applies to both coefficients.
+struct PocLineFit {
+    bool   valid = false;
+    double c0 = 0., c0Error = 0., c1 = 0., c1Error = 0., cov01 = 0.;
+    double chi2 = 0.;
+    int    ndf = 0;
+    double PdgScale() const { return (ndf > 0 && chi2 > ndf) ? std::sqrt(chi2 / ndf) : 1.; }
+};
+
+/**
+ * @brief Fits p0 = C_0 + C_1 p1 to one sample's converged sine fits, one point per eta_Proxy slice, with the errors of
+ *        both coordinates: x = p1 with its Minos errors, y = p0 with its Hesse error.
+ *
+ * Why this chi2, and why no orthogonal-distance regression (ODR). With Gaussian errors on both coordinates, ODR
+ * minimises sum_i [(x_i - u_i)^2/sx_i^2 + (y_i - C_0 - C_1 u_i)^2/sy_i^2] over the line and the unknown true abscissae
+ * u_i. For a straight line that is quadratic in each u_i, and minimising over them leaves exactly
+ *     chi2 = sum_i (y_i - C_0 - C_1 x_i)^2 / (sy_i^2 + C_1^2 sx_i^2),
+ * the "effective variance" chi2 that ROOT's graph fit uses whenever the graph has x errors. For a line it is ODR, not
+ * an approximation to it (it is one for a curved function, which it linearises at each x_i), and its minimum keeps
+ * n - 2 degrees of freedom, so chi2/ndf still tests the model and sets the PDG scale. ROOT projects the x interval
+ * through the function, ((f(x+exh) - f(x-exl))/2)^2, which for a line is C_1^2 times the mean of the two Minos errors,
+ * squared; ey is taken on the side facing the line (both sides are equal here).
+ * Neglected: the p0-p1 covariance within each sine fit, small because the constant and the odd sine are nearly
+ * orthogonal over the symmetric phi_AEE axis (see OddPlusConstantFitter).
+ *
+ * Seeds: the weighted least-squares line without the x errors (closed form), which the x errors only perturb.
+ * At least three points, so that a degree of freedom is left, and two distinct p1 values, so that a slope exists.
+ * @param name Unique among live functions (the TF1 registers itself under it).
+ */
+PocLineFit FitP0VsP1(const std::vector<OddPlusConstantFitResult>& sliceFits, const std::string& name) {
+    PocLineFit out;
+
+    // Step 1: the points, their x extent, and the sums of the closed-form seeds
+    TGraphAsymmErrors points;
+    double sw = 0., swx = 0., swy = 0., swxx = 0., swxy = 0.;
+    double xLo = 1e300, xHi = -1e300;
+    for (const OddPlusConstantFitResult& fit : sliceFits) {
+        if (!fit.valid || !(fit.p0Hesse > 0.)) continue;
+        const int iPoint = points.GetN();
+        points.SetPoint(iPoint, fit.p1, fit.p0);
+        points.SetPointError(iPoint, fit.p1Low, fit.p1High, fit.p0Hesse, fit.p0Hesse);
+        const double weight = 1. / (fit.p0Hesse * fit.p0Hesse);
+        sw   += weight;
+        swx  += weight * fit.p1;
+        swy  += weight * fit.p0;
+        swxx += weight * fit.p1 * fit.p1;
+        swxy += weight * fit.p1 * fit.p0;
+        xLo = std::min(xLo, fit.p1 - fit.p1Low);
+        xHi = std::max(xHi, fit.p1 + fit.p1High);
+    }
+    const double det = sw * swxx - swx * swx; // Zero when every point has the same p1
+    if (points.GetN() < 3 || !(det > 0.)) return out; // The caller warns: it knows the sample's name
+
+    // Step 2: the fit. Its range covers every point and its x error, so that no point falls outside it.
+    TF1 line(name.c_str(), "[0]+[1]*x", xLo - 1., xHi + 1.);
+    line.SetParNames("C_0", "C_1");
+    line.SetParameters((swxx * swy - swx * swxy) / det, (sw * swxy - swx * swy) / det);
+    // "S" returns the result; "Q" quiet; "N0" stores and draws nothing (the canvases draw the line from the numbers)
+    const TFitResultPtr result = points.Fit(&line, "S Q N0");
+    if (!result.Get()) return out;
+    out.chi2  = result->Chi2();
+    out.ndf   = result->Ndf();
+    out.valid = result->IsValid() && (out.ndf > 0);
+    out.c0      = result->Parameter(0);
+    out.c0Error = result->ParError(0);
+    out.c1      = result->Parameter(1);
+    out.c1Error = result->ParError(1);
+    out.cov01   = result->CovMatrix(0, 1);
+    return out;
+}
+
+/**
+ * @brief One canvas per sample: the sine fits' p0 against their p1, one point per eta_Proxy slice, written to dirPath as
+ *        Canvas_p0VsP1_<sample>.
+ *
+ * What it is for. An efficiency that depends on phi_AEE through the daughters' transverse opening (the DCA cut acts on
+ * the cowboy/sailor geometry, which goes as sin(theta*_z) sin(phi_AEE)) adds to R(phi_AEE) a sin^2(phi_AEE) term whose
+ * amplitude follows the sine's own. The constant part of sin^2 lands in p0, so that leak makes p0 proportional to p1
+ * slice by slice, and the points of such a sample fall on a straight line through the origin. An offset common to all
+ * slices (a genuine ring, or anything else that does not know about p1) shifts that line vertically. The line need not
+ * be exactly straight: the leak's slope depends on the slice's daughter kinematics, which change slowly with eta_Proxy.
+ * The line p0 = C_0 + C_1 p1 fitted to the sample (FitP0VsP1) is drawn over the points with its +/-1 sigma band, and its
+ * coefficients and chi2/ndf in a box (see the README, "The opening-angle leak into p0").
+ *
+ * Each point: x = p1 with its Minos errors, y = p0 with its Hesse error (the error every p0 is condensed with, as on
+ * Canvas_p0VsEta). Converged fits only. Colour and marker follow the slice's eta, as on the Overlay/ canvases
+ * (EtaSliceColor: blue below zero and red above, deeper further out; open markers below zero, filled above, a diamond
+ * for the central slice), so an antisymmetric p1 shows up as the two hues on opposite sides of x = 0. A colour bar in
+ * the right margin maps the colours back to eta.
+ *
+ * @param dirPath Where the canvases go (created if missing).
+ * @param head    Start of every canvas title (cell and system).
+ * @param lines   One per system (FitP0VsP1); an invalid one draws the points alone.
+ * @param etaName The slicing variable in TLatex, for the key and the colour bar.
+ */
+void DrawStoryP0VsP1(TDirectory* fileRoot, const std::string& dirPath, const std::string& head,
+                     const std::vector<PocSlice>& slices, const std::vector<PocSystemSlices>& systems,
+                     const PocSliceFitTable& fits, const std::vector<PocLineFit>& lines, const std::string& etaName) {
+    if (slices.empty() || !fileRoot) return;
+    // The colour depth runs over the whole sliced range, as on the Overlay/ canvases
+    const double etaMax = std::max(std::abs(slices.front().lo), std::abs(slices.back().hi));
+    // Layout: title and a one-row key in the top margin, so neither can sit on a point; the colour bar and its labels
+    // in a wide right margin
+    const double kLeft = 0.14, kRight = 0.15, kBottom = 0.12, kTop = 0.17;
+    const double kBarLeft = 1. - kRight + 0.02, kBarRight = 1. - kRight + 0.045; // NDC
+    for (size_t iSys = 0; iSys < systems.size() && iSys < fits.size(); ++iSys) {
+        const std::string& label = systems[iSys].cfg.legendLabel;
+        const std::string name = "Canvas_p0VsP1_" + CanvasSafe(label);
+
+        // Step 1: the converged slices, and a frame that holds them with their errors. Starting the extremes at zero
+        // keeps the origin in frame, so both zero lines are always drawn and a line through the origin can be judged.
+        std::vector<size_t> used;
+        double xLo = 0., xHi = 0., yLo = 0., yHi = 0.;
+        for (size_t iSlice = 0; iSlice < slices.size() && iSlice < fits[iSys].size(); ++iSlice) {
+            const OddPlusConstantFitResult& fit = fits[iSys][iSlice];
+            if (!fit.valid) continue;
+            used.push_back(iSlice);
+            xLo = std::min(xLo, fit.p1 - fit.p1Low);
+            xHi = std::max(xHi, fit.p1 + fit.p1High);
+            yLo = std::min(yLo, fit.p0 - fit.p0Hesse);
+            yHi = std::max(yHi, fit.p0 + fit.p0Hesse);
+        }
+        if (used.empty()) {
+            CountSkip("StreamlinedStory, " + name, "no converged sine fit", dirPath);
+            continue;
+        }
+        // A tenth of the span on every side; a fixed small span if a coordinate is degenerate (all zero)
+        const double xPad = (xHi - xLo > 1e-12) ? 0.1 * (xHi - xLo) : 0.05;
+        const double xMin = xLo - xPad, xMax = xHi + xPad;
+        // The fitted line and its band stay inside the frame: they are drawn as plain primitives, which ROOT clips at
+        // the pad and not at the frame. The band's upper edge is convex in x and its lower edge concave, so both reach
+        // their extremes at the ends of the x range, and checking the two ends is enough.
+        const bool withLine = iSys < lines.size() && lines[iSys].valid;
+        const PocLineFit noLine;
+        const PocLineFit& line = withLine ? lines[iSys] : noLine;
+        const auto lineAt = [&](double x) { return line.c0 + line.c1 * x; };
+        const auto bandAt = [&](double x) {
+            return std::sqrt(std::max(0., line.c0Error * line.c0Error + x * x * line.c1Error * line.c1Error +
+                                              2. * x * line.cov01));
+        };
+        if (withLine)
+            for (double xEnd : {xMin, xMax}) {
+                yLo = std::min(yLo, lineAt(xEnd) - bandAt(xEnd));
+                yHi = std::max(yHi, lineAt(xEnd) + bandAt(xEnd));
+            }
+        const double yPad = (yHi - yLo > 1e-12) ? 0.1 * (yHi - yLo) : 0.05;
+        // With a line, room at the top of the frame for its box, so the box never sits on a point
+        const double boxRoom = withLine ? 0.35 * (yHi - yLo + 2. * yPad) : 0.;
+        const double yMin = yLo - yPad, yMax = yHi + yPad + boxRoom;
+
+        // Step 2: the canvas, its frame (owned by the canvas) and the two zero lines. 900 px wide, so the frame keeps
+        // about the width it would have at 800 px without the colour bar.
+        TCanvas* canvas = new TCanvas(name.c_str(), (head + ", " + label + ": sine p0 vs p1").c_str(), 900, 650);
+        canvas->SetMargin(kLeft, kRight, kBottom, kTop);
+        canvas->SetGridx();
+        canvas->SetGridy();
+        TH1F* frame = canvas->DrawFrame(xMin, yMin, xMax, yMax);
+        // No histogram title: it would be placed by the reader's gStyle. The centred TLatex below is stored as is.
+        frame->SetTitle(";p_{1} (sine amplitude);p_{0} (sine offset)");
+        frame->GetXaxis()->SetTitleSize(0.045);
+        frame->GetYaxis()->SetTitleSize(0.045);
+        frame->GetYaxis()->SetTitleOffset(0.8);
+        for (int axis = 0; axis < 2; ++axis) {
+            TLine* zero = axis ? new TLine(0., yMin, 0., yMax) : new TLine(xMin, 0., xMax, 0.);
+            zero->SetLineStyle(2);
+            zero->SetLineWidth(2);
+            zero->SetBit(kCanDelete); // Deleted with the canvas
+            zero->Draw();
+        }
+        // The fitted line under the points: its +/-1 sigma band (from the full covariance, so it is narrowest near the
+        // weighted mean of p1) as a hatched polygon, upper edge left to right and lower edge back, then the line itself
+        if (withLine) {
+            const int kBandSteps = 50;
+            TGraph* band = new TGraph(2 * (kBandSteps + 1));
+            for (int iStep = 0; iStep <= kBandSteps; ++iStep) {
+                const double x = xMin + (xMax - xMin) * iStep / kBandSteps;
+                band->SetPoint(iStep, x, lineAt(x) + bandAt(x));
+                band->SetPoint(2 * kBandSteps + 1 - iStep, x, lineAt(x) - bandAt(x));
+            }
+            band->SetFillColor(kGray + 1);
+            band->SetFillStyle(3004);
+            band->SetLineWidth(0);
+            band->SetBit(kCanDelete);
+            band->Draw("F");
+            TLine* fitted = new TLine(xMin, lineAt(xMin), xMax, lineAt(xMax));
+            fitted->SetLineColor(kGray + 2);
+            fitted->SetLineWidth(2);
+            fitted->SetBit(kCanDelete);
+            fitted->Draw();
+        }
+
+        // Step 3: the points, one graph each, since every slice has its own colour and marker
+        for (size_t iSlice : used) {
+            const OddPlusConstantFitResult& fit = fits[iSys][iSlice];
+            const double centre = 0.5 * (slices[iSlice].lo + slices[iSlice].hi);
+            TGraphAsymmErrors* point = new TGraphAsymmErrors(1);
+            point->SetName(Form("%s_slice%zu", name.c_str(), iSlice));
+            point->SetPoint(0, fit.p1, fit.p0);
+            point->SetPointError(0, fit.p1Low, fit.p1High, fit.p0Hesse, fit.p0Hesse);
+            const int color = EtaSliceColor(centre, etaMax);
+            point->SetMarkerColor(color);
+            point->SetLineColor(color);
+            point->SetMarkerStyle((std::abs(centre) < 1e-9) ? 33 : (centre < 0. ? 24 : 20));
+            point->SetMarkerSize(1.3);
+            point->SetLineWidth(2);
+            point->SetBit(kCanDelete);
+            point->Draw("P");
+        }
+
+        // Step 4: the title in two centred lines (the sample, then the cell in smaller type: on one line they overflow
+        // the canvas), and the marker key in one row under it. The key's entries have no object behind them: each draws
+        // with its own marker attributes, so nothing else needs owning. Its colours are the deepest shades and the
+        // central slice's own, which is EtaSliceColor's lightest red (eta = 0 counts as non-negative there).
+        const double xMid = 0.5 * (kLeft + 1. - kRight);
+        TLatex* title = new TLatex(xMid, 0.950, (label + ": sine p_{0} vs p_{1}").c_str());
+        TLatex* subtitle = new TLatex(xMid, 0.910, (head + ", one point per " + etaName + " bin").c_str());
+        title->SetTextSize(0.036);
+        subtitle->SetTextSize(0.026);
+        for (TLatex* text : {title, subtitle}) {
+            text->SetNDC();
+            text->SetTextAlign(21);
+            text->SetBit(kCanDelete);
+            text->Draw();
+        }
+        TLegend* key = new TLegend(kLeft, 1. - kTop + 0.005, 1. - kRight, 0.880);
+        key->SetNColumns(3);
+        key->SetBorderSize(0);
+        key->SetFillStyle(0);
+        key->SetTextSize(0.028);
+        const std::pair<std::string, int> shapes[3] = {{etaName + " < 0", 24}, {etaName + " > 0", 20}, {"central bin", 33}};
+        const int shades[3] = {EtaSliceColor(-etaMax, etaMax), EtaSliceColor(etaMax, etaMax), EtaSliceColor(0., etaMax)};
+        for (int i = 0; i < 3; ++i) {
+            TLegendEntry* entry = key->AddEntry(static_cast<TObject*>(nullptr), shapes[i].first.c_str(), "p");
+            entry->SetMarkerStyle(shapes[i].second);
+            entry->SetMarkerColor(shades[i]);
+            entry->SetMarkerSize(1.3);
+        }
+        key->SetBit(kCanDelete);
+        key->Draw();
+        // The line's numbers, in the room left for them at the top of the frame. The PDG-scaled errors only when they
+        // differ; each built apart, as nesting Form() would reuse its one buffer.
+        if (withLine) {
+            TPaveText* lineBox = new TPaveText(kLeft + 0.015, 1. - kTop - 0.135, kLeft + 0.47, 1. - kTop - 0.015, "NDC");
+            lineBox->SetFillColor(kWhite);
+            lineBox->SetFillStyle(1001); // Opaque, so the grid does not run through the numbers
+            lineBox->SetBorderSize(1);
+            lineBox->SetTextSize(0.026);
+            lineBox->SetTextAlign(12);
+            const double scale = line.PdgScale();
+            const std::string c0Pdg = (scale > 1.) ? std::string(Form(" (PDG #pm %.1e)", scale * line.c0Error)) : "";
+            const std::string c1Pdg = (scale > 1.) ? std::string(Form(" (PDG #pm %.1e)", scale * line.c1Error)) : "";
+            lineBox->AddText("p_{0} = C_{0} + C_{1} p_{1}, errors on both axes");
+            lineBox->AddText(Form("C_{0} = %.3e #pm %.1e%s", line.c0, line.c0Error, c0Pdg.c_str()));
+            lineBox->AddText(Form("C_{1} = %.3e #pm %.1e%s", line.c1, line.c1Error, c1Pdg.c_str()));
+            lineBox->AddText(Form("#chi^{2}/ndf = %.1f/%d", line.chi2, line.ndf));
+            lineBox->SetBit(kCanDelete);
+            lineBox->Draw();
+        }
+
+        // Step 5: the colour bar, in the right margin. Not a TPaletteAxis: that needs a 2D histogram drawn with COLZ and
+        // a palette, which gStyle does not store with the canvas (see DrawMapCanvas), while these colours are a fixed
+        // discrete set. The bar is drawn in the frame's own user coordinates instead, which ROOT maps onto the area
+        // inside the margins: a margin position in NDC converts linearly through the frame's x range, and the bar spans
+        // the frame's height exactly. Plain boxes and an axis then reopen the same anywhere.
+        const double xPerNdc = (xMax - xMin) / (1. - kLeft - kRight);
+        const double xBarLo = xMin + (kBarLeft - kLeft) * xPerNdc, xBarHi = xMin + (kBarRight - kLeft) * xPerNdc;
+        const auto yOfEta = [&](double eta) { return yMin + (eta + etaMax) / (2. * etaMax) * (yMax - yMin); };
+        // The bands are found by sampling EtaSliceColor itself, so the bar follows it if its shades ever change: a run
+        // of samples with one colour becomes one box. 400 samples put every band edge at a quarter of etaMax exactly on
+        // a sample boundary.
+        const int kBarSamples = 400;
+        const double etaStep = 2. * etaMax / kBarSamples;
+        int runStart = 0;
+        for (int iSample = 1; iSample <= kBarSamples; ++iSample) {
+            const int runColor = EtaSliceColor(-etaMax + (runStart + 0.5) * etaStep, etaMax);
+            if (iSample < kBarSamples && EtaSliceColor(-etaMax + (iSample + 0.5) * etaStep, etaMax) == runColor) continue;
+            TBox* band = new TBox(xBarLo, yOfEta(-etaMax + runStart * etaStep), xBarHi, yOfEta(-etaMax + iSample * etaStep));
+            band->SetFillColor(runColor);
+            band->SetLineWidth(0);
+            band->SetBit(kCanDelete);
+            band->Draw();
+            runStart = iSample;
+        }
+        TBox* outline = new TBox(xBarLo, yMin, xBarHi, yMax);
+        outline->SetFillStyle(0); // Hollow: only the border is painted
+        outline->SetLineColor(kBlack);
+        outline->SetBit(kCanDelete);
+        outline->Draw();
+        // The eta scale on the bar's right edge: ticks into the bar, labels to the right ("+L", as TPaletteAxis
+        // draws its own). The bands are etaMax/4 wide, eight in all: four labelled divisions with two secondaries
+        // each (204), not optimised ("N"), put a tick on every band edge and a label on every other one.
+        TGaxis* etaAxis = new TGaxis(xBarHi, yMin, xBarHi, yMax, -etaMax, etaMax, 204, "+LN");
+        etaAxis->SetLabelFont(42);
+        etaAxis->SetLabelSize(0.030);
+        etaAxis->SetTickSize(0.02);
+        etaAxis->SetBit(kCanDelete);
+        etaAxis->Draw();
+        TLatex* barTitle = new TLatex(0.5 * (kBarLeft + kBarRight), 1. - kTop + 0.02, etaName.c_str());
+        barTitle->SetNDC();
+        barTitle->SetTextAlign(21);
+        barTitle->SetTextSize(0.032);
+        barTitle->SetBit(kCanDelete);
+        barTitle->Draw();
+
+        // Step 6: write, then free the canvas and everything it owns
+        EnsureDir(fileRoot, dirPath)->cd();
+        canvas->Write();
+        delete canvas;
+    }
+}
+
+/// @brief What EQD/ takes from plots 4 and 4_1 of the story (single borrow), by value: each system's condensed Delta R_0.
+struct StorySineResult {
+    PocConstantFit deltaMixed[2], deltaInOut[2]; // [system]: in-peak Data - Mix. Jet (plot 4), InPeak - OutOfPeak (plot 4_1)
+};
+
+/**
+ * @brief Plots 3, 4 and 5 of the story (see the block comment): the sine p0 of every sample, condensed over the
+ *        eta_Proxy bins; the in-peak Data - Mix. Jet difference of p0, formed bin by bin and then condensed; and each
+ *        sample's line p0 = C_0 + C_1 p1 over the same bins.
+ *
+ * Plot 4 subtracts before condensing: the eta dependence that p0 keeps, much the same in the data and in its mixed
+ * events, cancels bin by bin, so the constant fitted to the differences has a far smaller chi2/ndf than the levels'
+ * (and so a far smaller PDG scaling). The differences take the two fits' errors in quadrature, as every Delta p0
+ * (PocP0Difference: the mixed events share the data's Lambdas, with per-candidate correlations ~1e-3).
+ *
+ * Two fit groups, each led by its in-peak data (the reference of the Delta p0 canvases in SineFitQA/<System>/): OO and
+ * pp, each with its data, its mixed events and its resampled mixed events, in both mass regions, fitted once. Every
+ * bin of the acceptance is a slice (PocEtaSlices), so the fits use all the statistics. The slices come from the OO
+ * data's all-candidates map, as in AEE/RingVsPhiAEE/, so every sample of both groups is sliced alike.
+ * The fits are drawn twice: SineFitQA/<System>/ without the resampled mixed events, which would crowd every parameter
+ * canvas, and SineFitQA/<System>/With<N>Resamples/ with everything (no PerSlice/ there: it would repeat the first).
+ * Each view's P0VsP1/ holds p0 against p1 for each of its own samples (DrawStoryP0VsP1), so every sample appears once.
+ * SineFitQA_Clean/<System>/ redraws the main view's fits for presentation (see the block comment), the windows named
+ * after the system's own.
+ * @param keys          The mass windows' names, [system]: the story's canvases carry every column, so OO's name them.
+ * @param writePerSlice SineFitQA/<System>/PerSlice/ and SineFitQA_Clean/<System>/PerSlice/, one canvas per shown slice.
+ * @return The single-borrow Delta R_0 of each system, for EQD/.
+ */
+StorySineResult DrawStorySineP0(FileCache& cache, TDirectory* fileRoot, const PocCell (&cells)[2], const StoryStyles& ss,
+                                const StoryMassKey (&keys)[2], bool writePerSlice) {
+    StorySineResult result;
+    const StoryMassKey& key = keys[0];
+    const PocCell& cell = cells[0];
+    TProfile2D* ref = PocFetchAeeEtaMap(cache, cell.dataFile, cell.proxy);
+    if (!ref) return result; // Counted by the fetch
+    const std::vector<PocSlice> slices = PocEtaSlices(ref, cell.head + " story eta slices");
+    if (slices.empty()) { // Warned by PocEtaSlices
+        delete ref;
+        return result;
+    }
+    const std::string phiName = "#phi_{#Lambda}-#phi_{p}^{*}";
+    const std::string etaName = "#eta_{" + cell.proxy + "}";
+    const std::string yTitle  = "<" + cell.ringSym + ">";
+    // The condensed p0 of each sample, [column][region: 0 InPeak, 1 OutOfPeak][twin]: the data columns serve both twins
+    const PocConstantFit* p0[4][2][2] = {};
+    PocSliceFitSummary summaries[2][2]; // [group][view: 0 without the resampled mixed events, 1 with]: owns what p0 points to
+    const PocConstantFit* deltaP0[2][2] = {}; // [group][twin]: the condensed in-peak Data - Mix. Jet, from the same summaries
+    const PocConstantFit* deltaInOut[2] = {}; // [group]: the data's InPeak - OutOfPeak, bin by bin then condensed (plot 4_1)
+    PocLineFit p0Lines[4][2][2];              // [column][region][twin], as p0: each sample's p0 = C_0 + C_1 p1 (invalid: none)
+    const std::string fullView = "With" + ResampleCountOf(MIXED_RESAMPLES_TAG) + "Resamples";
+    for (int g = 0; g < 2; ++g) { // 0 OO, 1 pp
+        const int dataCol = 2 * g, mixCol = 2 * g + 1;
+        const std::string& dataFile    = g ? cell.ppFile : cell.dataFile;
+        const std::string& mixedFile   = g ? cell.ppMixedFile : cell.mixedFile;
+        const std::string& resampFile  = g ? cells[1].ppMixedFile : cells[1].mixedFile;
+        // The samples, the in-peak data first, each with the (column, region, twin) its p0 goes back to
+        struct StorySample { int column; bool inPeak, resampled; const std::string& file; };
+        const StorySample plan[6] = {{dataCol, true, false, dataFile},    {dataCol, false, false, dataFile},
+                                     {mixCol, true, false, mixedFile},    {mixCol, false, false, mixedFile},
+                                     {mixCol, true, true, resampFile},    {mixCol, false, true, resampFile}};
+        std::vector<PocFitSample> samples;
+        for (const StorySample& s : plan) {
+            VariationConfig cfg = StoryLook(ss, s.column, s.inPeak, s.resampled);
+            cfg.legendLabel = StoryLabel(ss, s.column, s.resampled) + (s.inPeak ? " InPeak" : " OutOfPeak");
+            samples.push_back({cfg, s.file, s.inPeak ? kPocRegionPeak : kPocRegionSideband});
+        }
+        std::vector<TH1*> owned;
+        const std::vector<PocSystemSlices> systems = PocSliceSamples(cache, ref, slices, samples, cell.proxy, cell.dirPath, owned);
+        if (!systems.empty()) {
+            const PocSliceFitTable fits = PocFitSlices(systems, slices.size(), kSineModel, "Eta");
+            // The line p0 = C_0 + C_1 p1 of every sample, for plot 5 and the P0VsP1/ canvases
+            std::vector<PocLineFit> lineFits;
+            for (size_t s = 0; s < systems.size(); ++s) {
+                lineFits.push_back(FitP0VsP1(fits[s], Form("lineP0VsP1_%d_%zu", g, s)));
+                if (!lineFits.back().valid)
+                    CountSkip("StreamlinedStory, p0 vs p1 line of " + systems[s].cfg.legendLabel,
+                              "fewer than three converged slices, a single p1, or no convergence", cell.dirPath);
+            }
+            // The main view: every sample but the resampled mixed events (told apart by label, unique by construction;
+            // a sample whose map is absent is not among the systems at all)
+            std::set<std::string> resampledLabels;
+            for (size_t i = 0; i < samples.size(); ++i)
+                if (plan[i].resampled) resampledLabels.insert(samples[i].cfg.legendLabel);
+            std::vector<PocSystemSlices> mainSystems, resampledSystems;
+            PocSliceFitTable mainFits, resampledFits;
+            std::vector<PocLineFit> mainLines, resampledLines;
+            for (size_t s = 0; s < systems.size(); ++s) {
+                const bool isResampled = resampledLabels.count(systems[s].cfg.legendLabel) > 0;
+                (isResampled ? resampledSystems : mainSystems).push_back(systems[s]);
+                (isResampled ? resampledFits : mainFits).push_back(fits[s]);
+                (isResampled ? resampledLines : mainLines).push_back(lineFits[s]);
+            }
+            // Each sample's line back to its (column, region, twin), as its p0 is below
+            for (size_t s = 0; s < systems.size(); ++s)
+                for (size_t i = 0; i < samples.size(); ++i) {
+                    if (samples[i].cfg.legendLabel != systems[s].cfg.legendLabel) continue;
+                    for (int twin = 0; twin < 2; ++twin)
+                        if (plan[i].column % 2 == 0 || plan[i].resampled == (twin == 1))
+                            p0Lines[plan[i].column][plan[i].inPeak ? 0 : 1][twin] = lineFits[s];
+                }
+            const std::string qaDir = cell.dirPath + "/SineFitQA/" + STORY_SYSTEM[g];
+            const std::string qaHead = cell.head + ", " + STORY_SYSTEM[g];
+            summaries[g][0] = DrawPocSliceFits(fileRoot, qaDir, qaHead, "Eta", slices, mainSystems, mainFits, kSineModel, phiName,
+                                               etaName, yTitle, false, writePerSlice);
+            if (mainSystems.size() < systems.size()) // Otherwise the full view would only repeat the main one
+                summaries[g][1] = DrawPocSliceFits(fileRoot, qaDir + "/" + fullView, qaHead + ", with the resampled mixing",
+                                                   "Eta", slices, systems, fits, kSineModel, phiName, etaName, yTitle, false,
+                                                   false);
+            // p0 against p1, one canvas per sample: the main view's samples in P0VsP1/, the resampled mixed events'
+            // in the full view's (each sample once, so the full view does not repeat the main one's)
+            DrawStoryP0VsP1(fileRoot, qaDir + "/P0VsP1", qaHead, slices, mainSystems, mainFits, mainLines, etaName);
+            DrawStoryP0VsP1(fileRoot, qaDir + "/" + fullView + "/P0VsP1", qaHead, slices, resampledSystems, resampledFits,
+                            resampledLines, etaName);
+
+            // SineFitQA_Clean/<System>/: the main view's fits again, for presentation. One mass region per canvas, Data
+            // against Mix. Jet, labelled by sample alone: the region is in the title, and p0 is called R_0
+            const std::string cleanDir = cell.dirPath + "/SineFitQA_Clean/" + STORY_SYSTEM[g];
+            const std::string systemHead = cell.proxy + ", " + StorySystemText(g);
+            const std::string regionName[2] = {keys[g].peak, keys[g].sideband};
+            const std::string modelText = yTitle + " = R_{0} + p_{1} sin[p_{2} (" + phiName + ")]";
+            // Each region's two samples in the main view (plan[0] to plan[3]), by label: [region][0 Data, 1 Mix. Jet]
+            int mainOf[2][2] = {{-1, -1}, {-1, -1}}; // -1: absent, already counted when its map was fetched
+            for (size_t s = 0; s < mainSystems.size(); ++s)
+                for (int i = 0; i < 4; ++i)
+                    if (samples[i].cfg.legendLabel == mainSystems[s].cfg.legendLabel)
+                        mainOf[plan[i].inPeak ? 0 : 1][plan[i].column % 2] = static_cast<int>(s);
+            // A sample's look on these canvases: its story look, under its column's name
+            auto cleanLook = [&](int region, int which) {
+                const int col = which ? mixCol : dataCol;
+                return PocRelabel(StoryLook(ss, col, region == 0, false), ss.column[col]);
+            };
+            // PerSlice/: per shown slice and region, the two samples with their fitted curves (dashed if not converged),
+            // and the model in a box
+            for (size_t k = 0; k < slices.size() && writePerSlice; ++k) {
+                if (!slices[k].shown) continue;
+                for (int region = 0; region < 2; ++region) {
+                    std::vector<ProfileBundle> bundles;
+                    std::vector<TF1*> curves;
+                    for (int which = 0; which < 2; ++which) {
+                        const int s = mainOf[region][which];
+                        if (s < 0 || !mainSystems[s].profiles[k]) continue;
+                        TProfile* prof = mainSystems[s].profiles[k];
+                        const OddPlusConstantFitResult& f = mainFits[s][k];
+                        VariationConfig cfg = cleanLook(region, which);
+                        if (!f.valid) cfg.legendLabel += f.hasParameters ? " (fit not converged)" : " (fit failed)";
+                        bundles.push_back({prof, cfg});
+                        if (f.hasParameters)
+                            curves.push_back(OddPlusConstantCurve(kSineModel, f, Form("fStoryClean_%d_%d_%zu_%d", g, region, k, which),
+                                                                  prof->GetXaxis()->GetXmin(), prof->GetXaxis()->GetXmax(), cfg.color));
+                    }
+                    if (bundles.empty()) continue;
+                    DrawComparisonCanvas(bundles, Form("Canvas_EtaSlice%02zu_%s", k, region ? "OutOfPeak" : "InPeak"),
+                                         systemHead + ", " + slices[k].label + ": " + regionName[region],
+                                         EnsureDir(fileRoot, cleanDir + "/PerSlice"), ProfileConfig{}, phiName, yTitle,
+                                         kNoLowerPad, false, false, {}, curves, {}, modelText);
+                    for (TF1* f : curves) delete f;
+                }
+            }
+            // R_0 per slice, one canvas per region, nothing fitted: the eta dependence of Data and of Mix. Jet
+            const double xLo = slices.front().lo, xHi = slices.back().hi;
+            for (int region = 0; region < 2; ++region) {
+                std::vector<PocAsymSeries> levels;
+                for (int which = 0; which < 2; ++which) {
+                    const int s = mainOf[region][which];
+                    if (s < 0) continue;
+                    PocAsymSeries series{cleanLook(region, which), {}};
+                    for (size_t k = 0; k < slices.size(); ++k) {
+                        const OddPlusConstantFitResult& f = mainFits[s][k];
+                        if (f.valid)
+                            series.points.push_back({0.5 * (slices[k].lo + slices[k].hi), slices[k].hi - slices[k].lo, f.p0,
+                                                     f.p0Hesse, f.p0Hesse});
+                    }
+                    levels.push_back(series);
+                }
+                if (levels.empty()) continue;
+                DrawPocAsymSeries(levels, xLo, xHi, std::string("Canvas_R0VsEta_") + (region ? "OutOfPeak" : "InPeak"),
+                                  systemHead + ": sine R_{0}, " + regionName[region], fileRoot, cleanDir, etaName, "R_{0}", false);
+            }
+            // In-peak Data - Mix. Jet per slice, with the constant fitted to it: plot 4's points and value
+            const int dataIn = mainOf[0][0], mixIn = mainOf[0][1];
+            if (dataIn >= 0 && mixIn >= 0) {
+                PocAsymSeries delta{PocRelabel(ss.in[dataCol], ss.column[dataCol] + " - " + ss.column[mixCol]), {}};
+                std::vector<ValErr> deltaVals;
+                for (size_t k = 0; k < slices.size(); ++k) {
+                    if (!mainFits[dataIn][k].valid || !mainFits[mixIn][k].valid) continue;
+                    const ValErr d = PocP0Difference(mainFits[dataIn][k], mainFits[mixIn][k]); // As every Delta p0
+                    deltaVals.push_back(d);
+                    delta.points.push_back({0.5 * (slices[k].lo + slices[k].hi), slices[k].hi - slices[k].lo, d.first, d.second,
+                                            d.second});
+                }
+                DrawPocAsymSeries({delta}, xLo, xHi, "Canvas_DeltaR0VsEta", systemHead + ": sine #DeltaR_{0}, " + regionName[0],
+                                  fileRoot, cleanDir, etaName, "#DeltaR_{0}", true, {PocFitConstant(deltaVals)});
+            }
+        }
+        for (TH1* h : owned) delete h;
+        for (size_t i = 0; i < samples.size(); ++i) {
+            // Each sample's constant from the view it is drawn in (the same fits, so the same value in both)
+            const PocCondensed* found = PocFindCondensed(summaries[g][plan[i].resampled ? 1 : 0].p0, samples[i].cfg.legendLabel);
+            if (!found) continue; // Not fitted: its file or map is absent (counted), or no slice converged
+            for (int twin = 0; twin < 2; ++twin)
+                if (plan[i].column % 2 == 0 || plan[i].resampled == (twin == 1))
+                    p0[plan[i].column][plan[i].inPeak ? 0 : 1][twin] = &found->plain;
+        }
+        // In-peak Data - Mix. Jet (plan[2]), and against the resampled mixed events in their view (plan[4])
+        for (int twin = 0; twin < 2; ++twin) {
+            const std::string diffLabel = samples[0].cfg.legendLabel + " - " + samples[twin ? 4 : 2].cfg.legendLabel;
+            if (const PocCondensed* found = PocFindCondensed(summaries[g][twin].p0Diff, diffLabel)) deltaP0[g][twin] = &found->plain;
+        }
+        // The data's InPeak - OutOfPeak (plan[1] is the data's OutOfPeak), from the main view: it holds both data samples
+        if (const PocCondensed* found = PocFindCondensed(summaries[g][0].p0Diff,
+                                                         samples[0].cfg.legendLabel + " - " + samples[1].cfg.legendLabel))
+            deltaInOut[g] = &found->plain;
+        // SineFitQA_Clean/<System>/Canvas_DeltaR0: the system's two condensed Delta R_0 (plots 4_1 and 4), PDG errors
+        PocPanel cleanDeltaPanel;
+        cleanDeltaPanel.title = cell.proxy + ", " + StorySystemText(g) + ": sine #DeltaR_{0}";
+        cleanDeltaPanel.yTitle = "#DeltaR_{0}";
+        cleanDeltaPanel.zeroLine = true;
+        cleanDeltaPanel.columnSeparators = true;
+        cleanDeltaPanel.labels = {ss.column[dataCol] + ": InPeak - OutOfPeak", ss.column[dataCol] + " - " + ss.column[mixCol] + ", InPeak"};
+        cleanDeltaPanel.cfgs = {ss.in[dataCol], ss.in[dataCol]};
+        for (const PocConstantFit* f : {deltaInOut[g], deltaP0[g][0]})
+            cleanDeltaPanel.vals.push_back((f && f->valid) ? ValErr{f->value, f->ScaledError()} : kPocMissing);
+        cleanDeltaPanel.note = "PDG-error: #sigma #times #sqrt{#chi^{2}/ndf} where #chi^{2}/ndf > 1";
+        DrawPocPanels({cleanDeltaPanel}, "Canvas_DeltaR0", cell.head + ", " + STORY_SYSTEM[g] + ": sine #DeltaR_{0}", fileRoot,
+                      cell.dirPath + "/SineFitQA_Clean/" + STORY_SYSTEM[g], false, false);
+        // For EQD/, by value: the condensed fits live in summaries, local to this function
+        if (deltaP0[g][0]) result.deltaMixed[g] = *deltaP0[g][0];
+        if (deltaInOut[g]) result.deltaInOut[g] = *deltaInOut[g];
+    }
+    delete ref;
+
+    const std::string model = "per " + etaName + " bin: " + yTitle + " = p_{0} + p_{1} sin[p_{2} (" + phiName + ")]";
+    for (int twin = 0; twin < 2; ++twin) {
+        const bool resampled = (twin == 1);
+        StoryColumns plain, pdg, redChi2;
+        for (int col = 0; col < 4; ++col)
+            for (int region = 0; region < 2; ++region) {
+                const PocConstantFit* f = p0[col][region][twin];
+                if (!f || !f->valid) continue;
+                ValErr* plainRow = region ? plain.out : plain.in; // The region's slots on each canvas
+                ValErr* pdgRow   = region ? pdg.out : pdg.in;
+                ValErr* chi2Row  = region ? redChi2.out : redChi2.in;
+                plainRow[col] = {f->value, f->error};
+                pdgRow[col]   = {f->value, f->ScaledError()};
+                if (f->ndf > 0) chi2Row[col] = {f->chi2 / f->ndf, 0.}; // No error bar: it is a fit quality
+            }
+        const std::string suffix = resampled ? StoryTwinSuffix() : "";
+        if (resampled && !plain.AnyMixed()) {
+            CountSkip("StreamlinedStory, Canvas_3_SineP0R" + suffix, "no resampled mixed events", cell.dirPath);
+            continue;
+        }
+        const std::string what = StorySamplesText(cell.proxy);
+        PocPanel plainPanel = StoryRegionsPanel(ss, key, plain, resampled, what + ": sine p_{0}", "p_{0}");
+        plainPanel.note = model;
+        DrawPocPanels({plainPanel}, "Canvas_3_SineP0R" + suffix, cell.head + ": sine p_{0} of every sample", fileRoot, cell.dirPath,
+                      false, false);
+        PocPanel pdgPanel = StoryRegionsPanel(ss, key, pdg, resampled, what + ": sine p_{0}, PDG errors", "p_{0}");
+        pdgPanel.note = model + "\nPDG-error: #sigma #times #sqrt{#chi^{2}/ndf} where #chi^{2}/ndf > 1";
+        PocPanel qualityPanel = StoryRegionsPanel(ss, key, redChi2, resampled, what + ": #chi^{2}/ndf of the constants", "#chi^{2}/ndf");
+        qualityPanel.zeroLine = false;
+        DrawPocPanels({pdgPanel, qualityPanel}, "Canvas_3_SineP0R_PDG" + suffix,
+                      cell.head + ": sine p_{0} of every sample, PDG errors", fileRoot, cell.dirPath, false, false);
+        // InPeak - OutOfPeak of the condensed p0, per column, as plots 1 and 2 do with their means: the difference of
+        // the two levels (disjoint candidates, so quadrature is exact). Plot 4_1 has the data's difference formed bin by
+        // bin instead: the two weigh the bins differently (equal when the regions' errors are proportional bin by bin),
+        // and only that one has a chi2/ndf, which says whether the two regions share their eta dependence.
+        PocPanel inOutPanel = StoryInMinusOutPanel(ss, plain, resampled, what + ": sine p_{0}, InPeak - OutOfPeak", "#Deltap_{0}");
+        inOutPanel.note = model;
+        DrawPocPanels({inOutPanel}, "Canvas_3_SineP0R_InMinusOut" + suffix,
+                      cell.head + ": sine p_{0}, InPeak - OutOfPeak", fileRoot, cell.dirPath, false, false);
+        PocPanel inOutPdgPanel = StoryInMinusOutPanel(ss, pdg, resampled, what + ": sine p_{0}, InPeak - OutOfPeak, PDG errors",
+                                                      "#Deltap_{0}");
+        inOutPdgPanel.note = model + "\nPDG-error: #sigma #times #sqrt{#chi^{2}/ndf} where #chi^{2}/ndf > 1, per region";
+        DrawPocPanels({inOutPdgPanel}, "Canvas_3_SineP0R_InMinusOut_PDG" + suffix,
+                      cell.head + ": sine p_{0}, InPeak - OutOfPeak, PDG errors", fileRoot, cell.dirPath, false, false);
+
+        // Plot 4: Delta p0 bin by bin, then the constant, for both systems
+        ValErr deltaPlain[2] = {kPocMissing, kPocMissing}, deltaPdg[2] = {kPocMissing, kPocMissing};
+        ValErr deltaChi2[2] = {kPocMissing, kPocMissing};
+        for (int g = 0; g < 2; ++g) {
+            const PocConstantFit* f = deltaP0[g][twin];
+            if (!f || !f->valid) continue;
+            deltaPlain[g] = {f->value, f->error};
+            deltaPdg[g]   = {f->value, f->ScaledError()};
+            if (f->ndf > 0) deltaChi2[g] = {f->chi2 / f->ndf, 0.};
+        }
+        const std::string deltaNote = "#Deltap_{0} = p_{0}(Data) - p_{0}(" + STORY_MIXED_LABEL + ") in each " + etaName + " bin\n" +
+                                      "both in " + key.peak;
+        PocPanel deltaPanel = StoryDeltaPanel(ss, deltaPlain, resampled, what + ": sine #Deltap_{0}, InPeak", "#Deltap_{0}");
+        deltaPanel.note = deltaNote;
+        DrawPocPanels({deltaPanel}, "Canvas_4_SineDeltaP0R" + suffix, cell.head + ": sine #Deltap_{0}, Data - " + STORY_MIXED_LABEL,
+                      fileRoot, cell.dirPath, false, false);
+        PocPanel deltaPdgPanel = StoryDeltaPanel(ss, deltaPdg, resampled, what + ": sine #Deltap_{0}, PDG errors", "#Deltap_{0}");
+        deltaPdgPanel.note = deltaNote + "\nPDG-error: #sigma #times #sqrt{#chi^{2}/ndf} where #chi^{2}/ndf > 1";
+        PocPanel deltaQualityPanel = StoryDeltaPanel(ss, deltaChi2, resampled, what + ": #chi^{2}/ndf of the constants",
+                                                     "#chi^{2}/ndf");
+        deltaQualityPanel.zeroLine = false;
+        DrawPocPanels({deltaPdgPanel, deltaQualityPanel}, "Canvas_4_SineDeltaP0R_PDG" + suffix,
+                      cell.head + ": sine #Deltap_{0}, Data - " + STORY_MIXED_LABEL + ", PDG errors", fileRoot, cell.dirPath,
+                      false, false);
+
+        // Plot 4_1: plot 4's two columns, each followed by its system's data InPeak - OutOfPeak, also bin by bin. The data
+        // column is the same in both twins.
+        ValErr pairPlain[4], pairPdg[4], pairChi2[4];
+        std::fill_n(pairPlain, 4, kPocMissing);
+        std::fill_n(pairPdg, 4, kPocMissing);
+        std::fill_n(pairChi2, 4, kPocMissing);
+        for (int g = 0; g < 2; ++g)
+            for (int k = 0; k < 2; ++k) {
+                const PocConstantFit* f = k ? deltaInOut[g] : deltaP0[g][twin];
+                if (!f || !f->valid) continue;
+                pairPlain[2 * g + k] = {f->value, f->error};
+                pairPdg[2 * g + k]   = {f->value, f->ScaledError()};
+                if (f->ndf > 0) pairChi2[2 * g + k] = {f->chi2 / f->ndf, 0.};
+            }
+        const std::string pairNote = "#Deltap_{0} in each " + etaName + " bin: Data - " + STORY_MIXED_LABEL + " both in " + key.peak +
+                                     "\nInPeak - OutOfPeak: " + key.peak + " minus " + key.sideband;
+        PocPanel pairPanel = StoryDeltaInOutPanel(ss, pairPlain, resampled, what + ": sine #Deltap_{0}", "#Deltap_{0}");
+        pairPanel.note = pairNote;
+        DrawPocPanels({pairPanel}, "Canvas_4_1_SineDeltaP0R" + suffix,
+                      cell.head + ": sine #Deltap_{0}, Data - " + STORY_MIXED_LABEL + " and InPeak - OutOfPeak", fileRoot,
+                      cell.dirPath, false, false);
+        PocPanel pairPdgPanel = StoryDeltaInOutPanel(ss, pairPdg, resampled, what + ": sine #Deltap_{0}, PDG errors", "#Deltap_{0}");
+        pairPdgPanel.note = pairNote + "\nPDG-error: #sigma #times #sqrt{#chi^{2}/ndf} where #chi^{2}/ndf > 1";
+        PocPanel pairQualityPanel = StoryDeltaInOutPanel(ss, pairChi2, resampled, what + ": #chi^{2}/ndf of the constants",
+                                                         "#chi^{2}/ndf");
+        pairQualityPanel.zeroLine = false;
+        DrawPocPanels({pairPdgPanel, pairQualityPanel}, "Canvas_4_1_SineDeltaP0R_PDG" + suffix,
+                      cell.head + ": sine #Deltap_{0}, Data - " + STORY_MIXED_LABEL + " and InPeak - OutOfPeak, PDG errors",
+                      fileRoot, cell.dirPath, false, false);
+
+        // Plot 5: each sample's line p0 = C_0 + C_1 p1 over the eta_Proxy bins. C_0 is p0 where the sine vanishes, and
+        // C_1 the slope of the leak. Both panels on one canvas, so a level is read next to the leak it was freed of.
+        StoryColumns c0Plain, c1Plain, c0Pdg, c1Pdg, lineChi2;
+        for (int col = 0; col < 4; ++col)
+            for (int region = 0; region < 2; ++region) {
+                const PocLineFit& lineFit = p0Lines[col][region][twin];
+                if (!lineFit.valid) continue;
+                const double scale = lineFit.PdgScale();
+                (region ? c0Plain.out : c0Plain.in)[col] = {lineFit.c0, lineFit.c0Error};
+                (region ? c1Plain.out : c1Plain.in)[col] = {lineFit.c1, lineFit.c1Error};
+                (region ? c0Pdg.out : c0Pdg.in)[col]     = {lineFit.c0, scale * lineFit.c0Error};
+                (region ? c1Pdg.out : c1Pdg.in)[col]     = {lineFit.c1, scale * lineFit.c1Error};
+                (region ? lineChi2.out : lineChi2.in)[col] = {lineFit.chi2 / lineFit.ndf, 0.}; // valid implies ndf > 0
+            }
+        const std::string lineNote = "per sample: p_{0} = C_{0} + C_{1} p_{1} over the " + etaName + " bins";
+        PocPanel c0Panel = StoryRegionsPanel(ss, key, c0Plain, resampled, what + ": C_{0}, p_{0} at zero sine", "C_{0}");
+        c0Panel.note = lineNote;
+        PocPanel c1Panel = StoryRegionsPanel(ss, key, c1Plain, resampled, what + ": C_{1}, slope of p_{0} in p_{1}", "C_{1}");
+        DrawPocPanels({c0Panel, c1Panel}, "Canvas_5_SineInterceptR" + suffix,
+                      cell.head + ": sine p_{0} = C_{0} + C_{1} p_{1} of every sample", fileRoot, cell.dirPath, false, false);
+        PocPanel c0PdgPanel = StoryRegionsPanel(ss, key, c0Pdg, resampled, what + ": C_{0}, PDG errors", "C_{0}");
+        c0PdgPanel.note = lineNote + "\nPDG-error: #sigma #times #sqrt{#chi^{2}/ndf} where #chi^{2}/ndf > 1";
+        PocPanel c1PdgPanel = StoryRegionsPanel(ss, key, c1Pdg, resampled, what + ": C_{1}, PDG errors", "C_{1}");
+        PocPanel lineQualityPanel = StoryRegionsPanel(ss, key, lineChi2, resampled, what + ": #chi^{2}/ndf of the lines",
+                                                      "#chi^{2}/ndf");
+        lineQualityPanel.zeroLine = false;
+        DrawPocPanels({c0PdgPanel, c1PdgPanel, lineQualityPanel}, "Canvas_5_SineInterceptR_PDG" + suffix,
+                      cell.head + ": sine p_{0} = C_{0} + C_{1} p_{1} of every sample, PDG errors", fileRoot, cell.dirPath,
+                      false, false);
+    }
+    return result;
+}
+
+// ===============================
+// EQD: the qualifying-exam set (Exame de Qualificacao de Doutorado), the Default selection's full ring
+// ===============================
+// Layout: ProofOfConcept/EQD/<Species>/<Proxy>/. No number is new: every value is the story's own (DrawStoryIntegrated,
+// DrawStorySineP0, single-borrow mixing), reduced to what the exam shows:
+//   Canvas_1_IntegratedR_OO             <R> of OO Data and Mix. Jet OO, InPeak and OutOfPeak, zoomed onto them
+//   Canvas_2_IntegratedR_pp             the same for pp, its windows named after its own
+//   Canvas_3_SummaryRCorrected_OO       OO's three estimates: Data InPeak - OutOfPeak and in-peak Data - Mix. Jet
+//                                       (integrated means, quadrature), and the sine fits' in-peak Data - Mix. Jet (plot 4,
+//                                       PDG-scaled), over the value/sigma strip
+//   Canvas_4_SummaryRCorrected_OOAndPp  the same frame, pp's three beside OO's, each against pp's own baselines
+//   PurityCorrectedQA/                  plot 4 with each system's estimates over its data's peak purity f_S (QA only)
+// Plots 3 and 4 are a build-up for the slides: plot 3 keeps pp's slots empty and takes pp's values as frameVals, so OO's
+// points sit at the same place in both. A key at the top left tells OO (filled) from pp (open); plot 3 lists OO alone
+// but keeps the room of both rows, so the key does not move the frame either. The four main canvases are restyled for
+// slides (PocPanelLook): half the default left margin and, on plots 3 and 4, larger column labels, y title and pad title,
+// with the note at the bottom right. Nothing is ever subtracted across systems, and nothing is corrected for purity or
+// response outside the QA folder (see the README, "EQD/").
+
+/// @brief Where the qualifying-exam set goes.
+const std::string EQD_DIR = "ProofOfConcept/EQD";
+
+/**
+ * @brief Writes one EQD/<Species>/<Proxy>/ folder (see the block comment above) from the story's numbers.
+ * @param keys       The mass windows' names, [system].
+ * @param integrated Plot 1 of the story, single borrow: the four columns' means and the data's peak purities.
+ * @param sine       Plots 4 and 4_1 of the story, single borrow.
+ */
+void DrawEqd(TDirectory* fileRoot, const std::string& dirPath, const PocCell& cell, const StoryStyles& ss,
+             const StoryMassKey (&keys)[2], const StoryIntegratedResult& integrated, const StorySineResult& sine) {
+    const std::string sym = "<" + cell.ringSym + ">";
+    const double kLeftMargin = 0.07; // The four main canvases': half the default, for slides
+
+    // Plots 1 and 2: each system's data and mixed events in both regions. Zero is not forced into the frame, which zooms
+    // onto the points: for the full ring it is no reference anyway, since every level carries the acceptance fake
+    for (int g = 0; g < 2; ++g) {
+        PocPanel pn = StoryRegionsPanel(ss, keys[g], integrated.means, false,
+                                        cell.proxy + ", " + StorySystemText(g) + ": integrated " + sym, sym, {2 * g, 2 * g + 1});
+        pn.zeroLine = false;
+        pn.look.leftMargin = kLeftMargin;
+        DrawPocPanels({pn}, "Canvas_" + std::to_string(g + 1) + "_IntegratedR_" + STORY_SYSTEM[g],
+                      cell.head + ", " + STORY_SYSTEM[g] + ": integrated " + sym, fileRoot, dirPath, false, false);
+    }
+
+    // The three estimates of each system against its own baselines, [system][estimate]
+    const std::string estimateLabel[3] = {"Data: InPeak - OutOfPeak", "InPeak: Data - " + STORY_MIXED_LABEL,
+                                          "Sine fits, InPeak: Data - " + STORY_MIXED_LABEL};
+    ValErr estimate[2][3];
+    for (int g = 0; g < 2; ++g) {
+        const ValErr& dataIn = integrated.means.in[2 * g];
+        estimate[g][0] = PocDiff(dataIn, integrated.means.out[2 * g]);    // Disjoint regions: quadrature is exact
+        estimate[g][1] = PocDiff(dataIn, integrated.means.in[2 * g + 1]); // Same Lambdas: quadrature over-covers (accepted)
+        const PocConstantFit& f = sine.deltaMixed[g];
+        estimate[g][2] = f.valid ? ValErr{f.value, f.ScaledError()} : kPocMissing; // As on plot 4's _PDG canvas
+    }
+    // One summary panel: a column per estimate, OO on the left of each and pp on the right. Without pp, its slots stay
+    // empty (DrawPocPanels keeps their place) and its values only shape the frame. The key tells the systems apart by a
+    // plain circle, filled for OO and open for pp, whatever each estimate's own shape; without pp it lists OO alone, but
+    // keeps the room of both rows
+    auto summaryPanel = [&](const ValErr (&values)[2][3], bool withPp, const std::string& title, const std::string& yTitle) {
+        PocPanel pn;
+        pn.title = title;
+        pn.yTitle = yTitle;
+        pn.zeroLine = true;
+        pn.columnSeparators = true;
+        for (int e = 0; e < 3; ++e) {
+            pn.labels.push_back(estimateLabel[e]);
+            for (int g = 0; g < 2; ++g) {
+                pn.columnOf.push_back(e);
+                pn.cfgs.push_back(ss.summary[e][g]);
+                pn.vals.push_back((g == 0 || withPp) ? values[g][e] : kPocMissing);
+            }
+            if (!withPp) pn.frameVals.push_back(values[1][e]);
+        }
+        pn.note = "Sine fits: PDG-scaled error (#times #sqrt{#chi^{2}/ndf}, if #chi^{2}/ndf > 1)";
+        pn.markerLegend = {{StorySystemText(0), 20}};
+        if (withPp) pn.markerLegend.push_back({StorySystemText(1), 24});
+        pn.fitKeyToText = true;
+        // Sized for slides
+        pn.look.labelSize = 0.11;
+        pn.look.yTitleSize = 0.08;
+        pn.look.titleSize = 0.07;
+        pn.look.leftMargin = kLeftMargin;
+        pn.look.keyTopLeft = true;
+        pn.look.noteBottomRight = true;
+        pn.look.keyRows = 2;
+        return pn;
+    };
+    const std::string yTitle = sym + "_{Corrected}";
+    const std::string bothSystems = StorySystemText(0) + " and " + StorySystemText(1);
+    DrawPocPanels({summaryPanel(estimate, false, cell.proxy + ", " + StorySystemText(0), yTitle)}, "Canvas_3_SummaryRCorrected_OO",
+                  cell.head + ": the three estimates, " + STORY_SYSTEM[0], fileRoot, dirPath, false, true);
+    DrawPocPanels({summaryPanel(estimate, true, cell.proxy + ", " + bothSystems, yTitle)}, "Canvas_4_SummaryRCorrected_OOAndPp",
+                  cell.head + ": the three estimates, " + STORY_SYSTEM[0] + " and " + STORY_SYSTEM[1], fileRoot, dirPath, false, true);
+
+    // PurityCorrectedQA/: plot 4 over each system's peak purity (bin counting, PocPurityPeak). Every estimate is formed on
+    // the peak's candidates, so one f_S per system dilutes all three alike; for InPeak - OutOfPeak the division is exactly
+    // the sideband subtraction in R units (see the README)
+    ValErr pure[2][3];
+    for (int g = 0; g < 2; ++g)
+        for (int e = 0; e < 3; ++e) pure[g][e] = PocDivide(estimate[g][e], integrated.purity[g]);
+    auto purityText = [](const ValErr& f) {
+        return (f.second >= 0.) ? std::string(Form("%.3f #pm %.3f", f.first, f.second)) : std::string("n/a");
+    };
+    PocPanel qa = summaryPanel(pure, true, cell.proxy + ", " + bothSystems + ": QA, over f_{S}", yTitle + " / f_{S}");
+    qa.note = "QA: each system over its data's peak purity (bin counting)\nf_{S}(" + STORY_SYSTEM[0] + ") = " +
+              purityText(integrated.purity[0]) + ", f_{S}(" + STORY_SYSTEM[1] + ") = " + purityText(integrated.purity[1]) + "\n" +
+              qa.note;
+    DrawPocPanels({qa}, "Canvas_4_SummaryRCorrected_OOAndPp", cell.head + ": QA, the three estimates over the peak purity",
+                  fileRoot, dirPath + "/PurityCorrectedQA", false, true);
+}
+
+/**
+ * @brief Writes ProofOfConcept/StreamlinedStory/ (see the block comment above): for every selection, species and proxy,
+ *        plot 1 where the full ring's centrality-selected data file exists, plot 2 where R_z's does, and plot 3 with
+ *        plot 1. The PerSlice/ canvases of plot 3 follow gPocPerBinNominalOnly, as the AEE mosaics do. The Default
+ *        selection's full ring also feeds ProofOfConcept/EQD/ (DrawEqd), cell by cell.
+ * @param families Full-ring families; R_z is the same family with its tag after the family suffix.
+ */
+void DrawStreamlinedStory(FileCache& cache, TDirectory* fileRoot, const std::string& consumerDir, const std::string& ppRefDir,
+                          const std::vector<FamilyConfig>& families, const StoryStyles& ss) {
+    const LongitudinalRing* ringZ = nullptr;
+    for (const auto& lr : LONGITUDINAL_RINGS)
+        if (lr.name == STORY_LONG_RING) ringZ = &lr;
+    if (!ringZ) WarnSkip("StreamlinedStory, plot 2", STORY_LONG_RING + " is not in LONGITUDINAL_RINGS: no R_z plots");
+    for (const auto& sel : POC_SELECTIONS)
+        for (const auto& fam : families)
+            for (const auto& proxy : PROXIES) {
+                const std::string dirPath = "ProofOfConcept/StreamlinedStory/" + sel.folder + "/" + fam.familyName + "/" + proxy;
+                // The single-borrow and resampled files of one ring definition; false (counted once) when its data were not run
+                auto makeCells = [&](const LongitudinalRing* lr, PocCell (&cells)[2]) {
+                    cells[0] = PocMakeCell(consumerDir, ppRefDir, sel, fam, lr);
+                    cells[1] = PocMakeCell(consumerDir, ppRefDir, sel, fam, lr, MIXED_RESAMPLES_TAG);
+                    if (gSystem->AccessPathName(cells[0].dataFile.c_str())) {
+                        CountSkip("StreamlinedStory", "data file not run", dirPath + (lr ? " (" + lr->name + ")" : ""));
+                        return false;
+                    }
+                    for (PocCell& c : cells) {
+                        c.proxy = proxy;
+                        c.head = fam.familyName + ", " + proxy + ", " + sel.folder;
+                        c.dirPath = dirPath;
+                    }
+                    return true;
+                };
+                PocCell full[2], longitudinal[2];
+                const bool hasFull = makeCells(nullptr, full);
+                const bool hasLong = ringZ && makeCells(ringZ, longitudinal);
+                if (!hasFull && !hasLong) continue;
+                // The keys name the mass windows from the OO data's own edges. They describe pp only if pp ran with the
+                // same windows, which is warned about otherwise; pp's own canvases (SineFitQA_Clean/, EQD/) name pp's
+                const PocCell& keyCell = hasFull ? full[0] : longitudinal[0];
+                StoryMassKey key, ppKey;
+                bool ppKeyFound = false;
+                if (ss.massWindowSigma > 0.) { // Without a sigma the default names stand, which the run banner states once
+                    if (!StoryMassKeyOf(cache, keyCell.dataFile, proxy, ss.massWindowSigma, key)) {
+                        CountSkip("StreamlinedStory keys", "no mass-region edges: the windows are called InPeak and OutOfPeak", dirPath);
+                    } else {
+                        ppKeyFound = StoryMassKeyOf(cache, keyCell.ppFile, proxy, ss.massWindowSigma, ppKey);
+                        if (ppKeyFound && (ppKey.peak != key.peak || ppKey.sideband != key.sideband))
+                            WarnSkip("StreamlinedStory keys", "pp ran with other mass windows than OO: the shared canvases name OO's",
+                                     dirPath);
+                    }
+                }
+                const StoryMassKey keys[2] = {key, ppKeyFound ? ppKey : key}; // pp falls back on OO's names without its own
+                // Creation order is browsing order: plots 1, 2 and 3
+                StoryIntegratedResult integrated;
+                if (hasFull) integrated = DrawStoryIntegrated(cache, fileRoot, full, "1_IntegratedR", ss, key);
+                if (hasLong) DrawStoryIntegrated(cache, fileRoot, longitudinal, "2_Integrated" + ringZ->shortName, ss, key);
+                if (hasFull) {
+                    const bool isDefault = (&sel == &POC_SELECTIONS.front());
+                    const bool isNominal = isDefault && proxy == POC_NOMINAL_PROXY;
+                    const StorySineResult sine = DrawStorySineP0(cache, fileRoot, full, ss, keys, !gPocPerBinNominalOnly || isNominal);
+                    // EQD/: the Default selection's full ring, from the numbers just drawn
+                    if (isDefault)
+                        DrawEqd(fileRoot, EQD_DIR + "/" + fam.familyName + "/" + proxy, full[0], ss, keys, integrated, sine);
+                }
+            }
+}
+
 // ---------------------------------------------------------
 // Main Macro
 // ---------------------------------------------------------
@@ -4000,32 +8365,41 @@ void DrawDifferentialRingVsLongitudinal(FileCache& cache, TDirectory* fileRoot, 
  *                     this, so turning it on enables it only for the profiles flagged in the table.
  * @param sigExtractDir Directory holding the signalExtractionRing_*.root files. Empty disables every
  *                     signal-extracted block.
+ * @param massWindowSigma The sigma (GeV/c^2) of the consumer's mass windows, run_all_wagons.sh's SIGMA: it only names
+ *                     the windows in StreamlinedStory/'s keys. 0 (or absent) leaves them InPeak and OutOfPeak.
  */
 void auxiliarySummaryPlots(const std::string& consumerDir,
                            const std::string& mcRefDir = "",
                            const std::string& ppRefDir = "",
                            const std::string& toyModelPath = "",
                            bool doIndividualComparisons = false,
-                           const std::string& sigExtractDir = "") {
-    
+                           const std::string& sigExtractDir = "",
+                           double massWindowSigma = 0.) {
+    // Every fit of this macro goes through Minuit2, silenced. The old TMinuit prints MINOS and IMPROVE banners ("NEW
+    // MINIMUM FOUND. GO BACK TO MINIMIZATION STEP.") whatever the "Q" option says. Strategy 2 buys the more careful
+    // Hessian that the curved p1/p2 valley of the constant-plus-odd fits needs (see OddPlusConstantFitter).
+    ROOT::Math::MinimizerOptions::SetDefaultMinimizer("Minuit2");
+    ROOT::Math::MinimizerOptions::SetDefaultPrintLevel(-1);
+    ROOT::Math::MinimizerOptions::SetDefaultStrategy(2);
+
     // 1. Define Systematic Variations (the list of all useful variations I would like to track into this plot)
     // The data config (empty suffix) is handled separately in the logic to ensure it is always first
     // Field order after isData: inRedux, inPtGateStudy, inEtaGateStudy.
     const std::string resampCount = ResampleCountOf(MIXED_RESAMPLES_TAG); // Legends take the count from the file tag
     std::vector<VariationConfig> sysVariations = {
-        // suffix                          legend                      colour     ls mk  data   redux  ptGate etaGate
-        {"_forceRandJet",                 "Rand Jet",                  kBlue,     1, 20, false, false,  true,  true}, // Full circle
+        // suffix                          legend                        colour     ls mk  data   redux  ptGate etaGate
+        {"_forceRandJet",                 "Rand Jet",                    kBlue,     1, 20, false, false,  true,  true}, // Full circle
         // Data-like is off the reduced canvas because it is the crudest of the mixing proxies: a
         // cheap event mixing, cheaper even than prevJet, which does not carry the correlations
         // between the angular distributions in full. It remains on the full systematics canvas and
         // in the pT gate study.
-        {"_forceDatalikeJet",               "Data-like Jet",             kRed,      1, 21, false, false, true,  false}, // Square
+        {"_forceDatalikeJet",               "Data-like Jet",             kGray+2,   1, 21, false, false, true,  false}, // Square
         {"_forcePerpToJet",                 "Perp to Jet",               kGreen+2,  1, 22, false, true,  true,  true},  // Triangle up
         {"_forcePreviousJet",               "Prev Jet",                  kOrange+1, 1, 34, false, false, false, false}, // Full cross (bold "+")
-        {"_MixedEventProxies",              "MixedEv Jet",               kGray+2,   1, 24, false, true,  false, false}, // Open circle
-        {"_MixedEventProxies_10ColGap",     "MixedEv Jet (10coll gap)",  kGray+1,   2, 25, false, false, false, false}, // Open circle, dashed line
+        {"_MixedEventProxies",              "MixedEv Jet",               kRed,      1, 20, false, true,  false, false}, // Open circle
+        {"_MixedEventProxies_10ColGap",     "MixedEv Jet (10coll gap)",  kRed+1,    2, 25, false, false, false, false}, // Open circle, dashed line
         {"_analysisCuts",                   "Data (AN-Cuts)",            kBlack,    2, 24, false, true,  false, false}, // Open circle, dashed line
-        {"_MixedEventProxies_analysisCuts", "MixedEv Jet (AN-Cuts)",     kGray+2,   2, 24, false, true,  false, false}, // Open circle
+        {"_MixedEventProxies_analysisCuts", "MixedEv Jet (AN-Cuts)",     kRed,      2, 20, false, true,  false, false}, // Open circle
         // The same mixed events, each target now borrowing nProxyResamples distinct jets: darker grey and an open
         // diamond, solid or dashed exactly as its single-borrow parent (off the reduced canvases)
         {"_MixedEventProxies" + MIXED_RESAMPLES_TAG,               "MixedEv Jet (" + resampCount + " resamp.)",         kGray+3, 1, 27, false, false, false, false}, // Open diamond
@@ -4039,7 +8413,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
         // canvas (Canvas_PtGateStudy) free of the unrelated systematics.
         {"_forceRandJet_gatePtOnProxy",     "Rand Jet (pT gated)",      kBlue,     2, 24, false, false, true,  false}, // Open circle
         {"_forcePerpToJet_gatePtOnProxy",   "Perp to Jet (pT gated)",   kGreen+2,  2, 26, false, false, true,  false}, // Open triangle up
-        {"_forceDatalikeJet_gatePtOnProxy", "Data-like Jet (pT gated)", kRed,      2, 25, false, false, true,  false}, // Open square
+        {"_forceDatalikeJet_gatePtOnProxy", "Data-like Jet (pT gated)", kGray+2,   2, 25, false, false, true,  false}, // Open square
 
         // Do the artificial proxies still make sense WITHOUT the eta acceptance gate? Unlike the pT
         // study above, gating on eta is now the default: an invented direction that ignores the
@@ -4080,8 +8454,8 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
     //  that window, defined by the v0InMassPeak bool in the consumer)
         // This is a naive alternative to signal extraction!
     std::vector<VariationConfig> massVariations = {
-        {"_excludeOutOfPeak", "InPeak (#mu#pm 1#sigma)",             kViolet+2, 1, 34, false}, // Cross
-        {"_excludeInPeak",    "OutOfPeak (#mu#pm[6#sigma,7#sigma])", kViolet,   1, 28, false}  // Open cross
+        {"_excludeOutOfPeak", "InPeak",    kViolet+2, 1, 34, false}, // Cross
+        {"_excludeInPeak",    "OutOfPeak", kViolet,   1, 28, false}  // Open cross
     };
 
     // 2. Define the Families
@@ -5176,7 +9550,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
 
                 // --- 6. tanh fit of the eta dependence ---
                 // Only for the fine-binned eta profiles, where there are enough points across the
-                // turn-over for p0 and p1 to separate at all.
+                // turn-over for p1 and p2 to separate at all.
                 if (profConfig.doTanhFit) {
                     TDirectory* fitDir    = EnsureDir(obsDir, "TanhFit");
                     TDirectory* perVarDir = EnsureDir(fitDir, "PerVariation");
@@ -5184,7 +9558,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     // Fit every variation, then every external reference, in the same axis order used
                     // by the integrated summaries so the four canvases below line up with them.
                     std::vector<std::string> fitLabels;
-                    std::vector<TanhFitResult> fitResults;
+                    std::vector<OddPlusConstantFitResult> fitResults;
                     std::vector<VariationConfig> fitConfigs;
                     std::vector<bool> fitIsToy; // Toy is excluded from the entries summary, see below
 
@@ -5194,7 +9568,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         fitLabels.push_back(bundle.config.legendLabel);
                         fitConfigs.push_back(bundle.config);
                         fitIsToy.push_back(false);
-                        fitResults.push_back(FitTanhProfile(pFit, profConfig, bundle.config,
+                        fitResults.push_back(OddPlusConstantFitter(pFit, kTanhModel, profConfig, bundle.config,
                                                             "Canvas_TanhFit_" + SanitizeName(bundle.config.legendLabel),
                                                             perVarDir));
                     }
@@ -5204,7 +9578,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         fitLabels.push_back(ext.second.config.legendLabel);
                         fitConfigs.push_back(ext.second.config);
                         fitIsToy.push_back(externals[ext.first].kind == ExternalRef::kToyModel);
-                        fitResults.push_back(FitTanhProfile(pFit, profConfig, ext.second.config,
+                        fitResults.push_back(OddPlusConstantFitter(pFit, kTanhModel, profConfig, ext.second.config,
                                                             "Canvas_TanhFit_" + SanitizeName(ext.second.config.legendLabel),
                                                             perVarDir));
                     }
@@ -5212,9 +9586,9 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     // Four cross-variation summaries. Entries and reduced chi2 keep EVERY variation,
                     // including the ones whose fit did not converge: a wild chi2/ndf is itself the
                     // quickest way to spot a failed fit. The parameter summaries keep only the
-                    // converged ones, since a non-converged p0 or p1 is not a measurement of anything.
+                    // converged ones, since a non-converged parameter is not a measurement of anything.
                     std::vector<std::string> allLabels, okLabels, entriesLabels;
-                    std::vector<FitSummaryPoint> entriesPts, chi2Pts, p0Pts, p1Pts;
+                    std::vector<FitSummaryPoint> entriesPts, chi2Pts, p0Pts, p1Pts, p2Pts;
 
                     for (size_t i = 0; i < fitResults.size(); ++i) {
                         const auto& fr = fitResults[i];
@@ -5233,13 +9607,15 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                         }
 
                         if (!fr.valid) {
-                            WarnSkip(fitLabels[i], "tanh fit did not converge, left out of the p0 / p1 summaries",
+                            WarnSkip(fitLabels[i], "tanh fit did not converge (status " + std::to_string(fr.status) +
+                                                       "), left out of the p0 / p1 / p2 summaries",
                                      std::string(fitDir->GetPath()));
                             continue;
                         }
                         okLabels.push_back(fitLabels[i]);
                         p0Pts.push_back({fitConfigs[i], fr.p0, fr.p0Low, fr.p0High});
                         p1Pts.push_back({fitConfigs[i], fr.p1, fr.p1Low, fr.p1High});
+                        p2Pts.push_back({fitConfigs[i], fr.p2, fr.p2Low, fr.p2High});
                     }
 
                     DrawFitSummaryCanvas(entriesLabels, entriesPts, "Canvas_FitSummary_Entries",
@@ -5247,9 +9623,11 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                     DrawFitSummaryCanvas(allLabels, chi2Pts, "Canvas_FitSummary_RedChi2",
                                          fam.familyName + " tanh fit: reduced #chi^{2}", fitDir, "#chi^{2}/ndf");
                     DrawFitSummaryCanvas(okLabels, p0Pts, "Canvas_FitSummary_p0",
-                                         fam.familyName + " tanh fit: p0 (amplitude)", fitDir, "p0");
+                                         fam.familyName + " tanh fit: p0 (offset)", fitDir, "p0");
                     DrawFitSummaryCanvas(okLabels, p1Pts, "Canvas_FitSummary_p1",
-                                         fam.familyName + " tanh fit: p1 (slope scale)", fitDir, "p1");
+                                         fam.familyName + " tanh fit: p1 (amplitude)", fitDir, "p1");
+                    DrawFitSummaryCanvas(okLabels, p2Pts, "Canvas_FitSummary_p2",
+                                         fam.familyName + " tanh fit: p2 (slope scale)", fitDir, "p2");
                 }
 
                 // Cleanup dynamically allocated profiles for this observable iteration
@@ -7130,7 +11508,7 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
     DrawDifferentialCorrections(cache, fOut, fullFamilies, pairings, "CheapSigExtract/OffPeakQA", "sideband only, QA: background candidates",
                                 [](const DifferentialSample& d, size_t i, CorrectionInputs& in) { return InputsOfSample(RegionAsSample(d.region[i], 0), in); });
 
-    // Sideband-subtracted: <y>_S = (Sum_P y - Sum_B y) / (N_P - N_B) for each of R, u v and w, then the usual correction
+    // Sideband-subtracted: <y>_S = (Sum_P y - s Sum_B y) / (N_P - s N_B) for each of R, u v and w, then the usual correction
     // (see InputsOfSidebandSubtracted: kappa_S keeps its exact covariance)
     const CorrectionFetcher fetchCheap = [&](const FakePairing& pr, const std::string& sfx, const std::string& proxy,
                                              CorrectionInputs& in) {
@@ -7146,6 +11524,76 @@ void auxiliarySummaryPlots(const std::string& consumerDir,
                                 [](const DifferentialSample& d, size_t i, CorrectionInputs& in) { return InputsOfSidebandSubtracted(d.region[i], in); });
     DrawKappaByRegion(cache, fOut, fullFamilies, pairings);
 
+    // ProofOfConcept: the centrality-selected data against its three controls (sideband, mixed events, pp minimum bias).
+    // Every look comes from the configs above, so a sample reads the same here as everywhere else. The mass regions take
+    // the mass-window markers, on the data's colour family (massVariations) or on the mixed events' grey; their legend
+    // labels are rewritten, as the massVariations ones describe the windows of the old _exclude* wagons.
+    std::cout << " -> ProofOfConcept (sideband, mixed events and pp controls)...\n";
+    const auto itMixed = std::find_if(sysVariations.begin(), sysVariations.end(),
+                                      [](const VariationConfig& v) { return v.suffix == POC_MIXED_TAG; });
+    if (itMixed == sysVariations.end() || massVariations.size() < 2) {
+        std::cerr << "  [Warning] ProofOfConcept: no " << POC_MIXED_TAG << " variation or mass-window styles to draw with, skipped\n";
+    } else {
+        PocStyles pocStyles;
+        pocStyles.data     = dataConfig;
+        pocStyles.dataIn   = PocRelabel(massVariations[0], dataConfig.legendLabel + " InPeak");
+        pocStyles.dataOut  = PocRelabel(massVariations[1], dataConfig.legendLabel + " OutOfPeak");
+        pocStyles.mixed    = PocRelabel(*itMixed, itMixed->legendLabel);
+        pocStyles.mixedIn  = PocRelabel(*itMixed, itMixed->legendLabel + " InPeak");
+        pocStyles.mixedOut = PocRelabel(*itMixed, itMixed->legendLabel + " OutOfPeak");
+        pocStyles.mixedIn.markerStyle  = massVariations[0].markerStyle;
+        pocStyles.mixedOut.markerStyle = massVariations[1].markerStyle;
+        pocStyles.pp = PocRelabel(ppConfig, ppConfig.legendLabel + " (MB)");
+        // The money plot: Data InPeak is its reference (thick, drawn on top), pp's peak keeps pp's own look
+        pocStyles.dataInRef = pocStyles.dataIn;
+        pocStyles.dataInRef.isData = true;
+        pocStyles.ppIn = PocRelabel(ppConfig, ppConfig.legendLabel + " (MB) InPeak");
+        DrawProofOfConcept(cache, fOut, consumerDir, ppRefDir, fullFamilies, pocStyles);
+
+        // StreamlinedStory: the same files, the full ring against R_z. Each column takes its system's colour (the data's,
+        // the mixed events', pp's) and each mass region its massVariations marker, so the key reads the same in every
+        // column; the resampled mixed events keep their own sysVariations colour
+        std::cout << " -> ProofOfConcept/StreamlinedStory and EQD (integrated R and R_z, sine p0 and Delta p0)...\n";
+        // WARNING, by design and so not repeated in the log: the keys' sigma (run_all_wagons.sh's SIGMA) is one fixed
+        // value from earlier fits, the same for every Lambda whatever its daughters' pT. The windows it names are
+        // APPROXIMATE, good only for this approximate signal extraction (the README says so in its warning block).
+        // Only a missing sigma is reported: it changes what the keys say, and it is a state of this run, not a design.
+        if (!(massWindowSigma > 0.))
+            std::cout << "    No mass-window sigma given: the keys say InPeak and OutOfPeak.\n";
+        StoryStyles storyStyles;
+        const VariationConfig* columnColour[4] = {&dataConfig, &*itMixed, &ppConfig, &*itMixed};
+        for (int col = 0; col < 4; ++col) {
+            const std::string& system = STORY_SYSTEM[col / 2];
+            storyStyles.column[col] = (col % 2) ? STORY_MIXED_LABEL + " " + system : system + " " + dataConfig.legendLabel;
+            storyStyles.in[col]  = PocMethodStyle(*columnColour[col], massVariations[0].markerStyle);
+            storyStyles.out[col] = PocMethodStyle(*columnColour[col], massVariations[1].markerStyle);
+            storyStyles.in[col].legendLabel  = storyStyles.column[col] + " InPeak";
+            storyStyles.out[col].legendLabel = storyStyles.column[col] + " OutOfPeak";
+        }
+        const auto itResampled = std::find_if(sysVariations.begin(), sysVariations.end(), [](const VariationConfig& v) {
+            return v.suffix == POC_MIXED_TAG + MIXED_RESAMPLES_TAG;
+        });
+        if (itResampled == sysVariations.end())
+            std::cerr << "  [Warning] StreamlinedStory: no " << POC_MIXED_TAG + MIXED_RESAMPLES_TAG
+                      << " variation to take a look from; its resampled mixed events are drawn in the single-borrow colour\n";
+        const VariationConfig& resampledColour = (itResampled != sysVariations.end()) ? *itResampled : *itMixed;
+        storyStyles.resampledIn  = PocMethodStyle(resampledColour, massVariations[0].markerStyle);
+        storyStyles.resampledOut = PocMethodStyle(resampledColour, massVariations[1].markerStyle);
+        storyStyles.resampledTag = " (" + ResampleCountOf(MIXED_RESAMPLES_TAG) + " resamp.)";
+        storyStyles.massWindowSigma = massWindowSigma;
+        // EQD/'s summaries: the story's own colours, one per estimate (InPeak - OutOfPeak the data's, Data - Mix. Jet the
+        // mixed events', the sine fits pp's), each with a marker shape of its own, filled for OO and open for pp. Solid
+        // error bars throughout: pp's dashed line style would read as a different kind of point
+        const VariationConfig* estimateColour[3] = {&dataConfig, &*itMixed, &ppConfig};
+        const int estimateMarker[3][2] = {{21, 25}, {20, 24}, {33, 27}}; // Square, circle, diamond: filled, open
+        for (int e = 0; e < 3; ++e)
+            for (int g = 0; g < 2; ++g) {
+                storyStyles.summary[e][g] = PocMethodStyle(*estimateColour[e], estimateMarker[e][g]);
+                storyStyles.summary[e][g].lineStyle = 1;
+            }
+        DrawStreamlinedStory(cache, fOut, consumerDir, ppRefDir, fullFamilies, storyStyles);
+    }
+
     cache.CloseAll(); // Release every input file before closing the output
 
     fOut->Close();
@@ -7160,9 +11608,11 @@ int main(int argc, char** argv) {
     if (argc < 2) { // Check is argc < 2 because this is the bare minimum. Everything after consumerDir is optional
         std::cerr << "Usage: " << argv[0]
                   << " <consumerDir> [mcRefDir] [ppRefDir] [toyModelPath]"
-                     " [doIndividualComparisons] [sigExtractDir]\n"
+                     " [doIndividualComparisons] [sigExtractDir] [massWindowSigma]\n"
                      "  sigExtractDir defaults to <consumerDir>/../results_SigExtract;"
                      " pass \"none\" to skip the signal-extraction plots.\n"
+                     "  massWindowSigma (GeV/c^2) names the consumer's mass windows in the story's keys"
+                     " (run_all_wagons.sh passes its SIGMA); absent, they are InPeak and OutOfPeak.\n"
                      "  Longitudinal-ring outputs (_useRingZ, _useRingZT) in <consumerDir> are detected by name and"
                      " summarised as <family>_RingZ and <family>_RingZT.\n";
         return 1;
@@ -7184,8 +11634,18 @@ int main(int argc, char** argv) {
         doIndividual = (flag == "1" || flag == "true" || flag == "yes" || flag == "on");
     }
 
+    // The sigma of the consumer's mass windows (run_all_wagons.sh's SIGMA), for the story's keys only. Anything that
+    // is not a positive number leaves it unknown, which the run banner states
+    double massWindowSigma = 0.;
+    if (argc > 7) {
+        char* end = nullptr;
+        const double parsed = std::strtod(argv[7], &end);
+        if (end != argv[7] && *end == '\0' && parsed > 0.) massWindowSigma = parsed;
+        else std::cerr << "  [Warning] massWindowSigma \"" << argv[7] << "\" is not a positive number: ignored\n";
+    }
+
     auxiliarySummaryPlots(consumerDir, mcRefDir, ppRefDir, toyModelPath, doIndividual,
-                          sigExtractDir);
+                          sigExtractDir, massWindowSigma);
     return 0;
 }
 #endif

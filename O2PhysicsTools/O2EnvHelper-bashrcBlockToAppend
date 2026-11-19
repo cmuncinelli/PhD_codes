@@ -1,0 +1,50 @@
+# A shortcut to access the O2Physics environment, and do so from the current folder.
+# Also preserves the environment identification scheme ([O2Physics/latest]), and adds
+# a little bit of color to the environment name.
+#   o2env               -> O2Physics/latest
+#   o2env sim           -> O2Physics/latest + O2DPG/latest-master-o2 (for the MC productions)
+#   o2env <pkgs>        -> any alienv package string, e.g. "O2sim/latest" or "A/v1,B/v2"
+o2env(){
+    local prev_dir="$PWD"
+    local env_name
+    case "${1:-}" in
+        "")  env_name="O2Physics/latest" ;;
+        sim) env_name="O2Physics/latest,O2DPG/latest-master-o2" ;;
+        *)   env_name="$1" ;;
+    esac
+
+    # Change to ~/alice to run the alienv command
+    cd ~/alice || return
+
+    # Create a temporary rcfile with the alienv environment
+    local rcfile="/tmp/o2env.$$"
+    if ! alienv printenv "$env_name" > "$rcfile"; then
+        echo "alienv printenv failed for '$env_name'"
+        rm -f "$rcfile"; cd "$prev_dir"; return 1
+    fi
+
+    # Append your custom settings for the new shell
+    {
+        echo "export O2ENV_NAME='$env_name'"
+        echo 'PS1="\[\e[1;36m\][\${O2ENV_NAME}]\[\e[0m\] \w \$> "'
+        # Our injected-polarization MC sandbox (used by the run scripts and ROOT macros)
+        echo "export INJPOL_ROOT=\"\$HOME/PhD_codes/InjectedPolO2MC\""
+        # Make the new shell start in the original directory
+        echo "cd \"$prev_dir\""
+        # Schedule the rcfile to be deleted
+        echo "rm -f \"$rcfile\""
+    } >> "$rcfile"
+
+    # Start the new interactive shell, which will pause this function
+    bash --rcfile "$rcfile"
+
+    # This line runs ONLY AFTER you exit the new shell
+    cd "$prev_dir"
+}
+
+# Shortcut for the MC environment (O2 + O2DPG)
+o2envsim(){ o2env sim; }
+
+# aliBuild's useful environment lines:
+export ALIBUILD_WORK_DIR="$HOME/alice/sw"
+eval "$(alienv shell-helper)"
