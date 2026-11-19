@@ -1728,6 +1728,7 @@ ProofOfConcept/<Selection>/<Family>[_<RingDefinition>]/
 ProofOfConcept/<Selection>/Masters/SpeciesVsRing/, SpeciesCombinationQA/
 ProofOfConcept/Masters/DefaultVsAnalysisCuts/
 ProofOfConcept/StreamlinedStory/                              the analysis in five plots (below)
+ProofOfConcept/EQD/<Species>/<Proxy>/                         the qualifying-exam set (below)
 ```
 
 `Integrated/Canvas_Values` and its `Canvas_Subtracted` and `Canvas_KappaCorrected` are the **money plot**: Data InPeak against the three controls, and nothing else. The same names with `_Full` carry every sample and pairing.
@@ -1780,7 +1781,7 @@ Two degeneracies decide the configuration. The models are exactly invariant unde
 
 **The $\eta_{\rm Proxy}$ slices are single bins of the fine axis**, never merged ones, so no slice straddles the acceptance edge. The edge is found from the occupancy of the data's all-candidates map: the outermost filled bin of each side holds the edge and is dropped, and the narrower side sets both. Every bin from there to the centre is a slice, mirrored, plus a centre slice $[-w,w]$: the fits and their condensed values use the whole acceptance ($|\eta|<0.5$ for the jets, `maxLeadJetEta`; $|\eta|<0.9$ for the leading particle). Only `POC_ETA_SLICES_PER_SIDE` (five) of them per side, evenly spaced, and the centre slice are drawn on their own (`Overlay/`, `PerSlice/`), which keeps those canvases readable; the parameter canvases show every slice. The all-candidates map only decides the edges. The fitted values always come from each sample's own region map. One set of slices must serve every sample, because $\Delta p_0$ is formed slice by slice and the symmetrization pairs a slice with its mirror, and the all-candidates occupancy is the most robust estimate of the edge.
 
-**Condensing.** Each $p_0$, $\Delta p_0$ and $p_1$ series is reduced to one number, the inverse-variance weighted mean, in closed form. When the slices scatter more than their errors allow, the error is scaled by $\sqrt{\chi^2/{\rm ndf}}$ (the PDG prescription), and every canvas showing such a value says "PDG-error". `SymmetrizationQA/` repeats it on the pair averages $\tfrac12[y(+x)+y(-x)]$, which cancel any part odd in the sliced axis exactly, whatever the statistics of the two sides. The pair half-differences show that odd part.
+**Condensing.** Each $p_0$, $\Delta p_0$ and $p_1$ series is reduced to one number, the inverse-variance weighted mean, in closed form. When the slices scatter more than their errors allow, the error is scaled by $\sqrt{\chi^2/{\rm ndf}}$ (the PDG prescription), and every canvas showing such a value says "PDG-error". On the parameter canvases each constant is drawn with its $\pm1\sigma$ band hatched in its series' colour and, where the scaling widens it, the PDG band behind it in solid, the palest shade of the same colour (`PaleTint`); the numbers sit on one power of ten. `SymmetrizationQA/` repeats it on the pair averages $\tfrac12[y(+x)+y(-x)]$, which cancel any part odd in the sliced axis exactly, whatever the statistics of the two sides. The pair half-differences show that odd part.
 
 For the sine fits the odd part of $p_1$ **is** the amplitude: $R(\varphi_{\rm AEE})$ turns over with the sign of $\eta_{\rm Proxy}$, so a plain average of $p_1$ cancels, and $\tfrac12[p_1(+\eta)-p_1(-\eta)]$ is the amplitude as seen at positive $\eta$, the same convention as the $\tanh$ amplitude.
 
@@ -1818,6 +1819,7 @@ ProofOfConcept/StreamlinedStory/<Selection>/<Species>/<Proxy>/
     SineFitQA/<System>/P0VsP1/                         p0 against p1, one canvas per sample (the leak test)
     SineFitQA/<System>/With10Resamples/                the same fits with them, for QA (no PerSlice/)
     SineFitQA/<System>/With10Resamples/P0VsP1/         p0 against p1 of the resampled mixed events
+    SineFitQA_Clean/<System>/                          the main fits again for presentation, p0 called R_0 (below)
 ```
 
 Each plot sets the full ring against $R_z$, or fits it, so the folder is keyed by species rather than by family and ring definition, and the names are numbered so they list in story order. Every canvas has four columns split by dashed lines -- OO Data, Mix. Jet OO, pp Data, Mix. Jet pp -- each holding its InPeak and OutOfPeak value side by side (filled and open markers). There are no value/sigma strips, and the pad titles are centred.
@@ -1834,6 +1836,7 @@ The key names the two windows by their mass, "$m_{V0}\in m_\Lambda\pm2\sigma$" a
 - **Plot 5** fits, for each sample, the line $p_0=C_0+C_1\,p_1$ through its bins (the points of `P0VsP1/`), with the errors of both coordinates ([below](#the-line-through-the-points)). $C_0$, the $p_0$ where the sine vanishes, stands beside $C_1$, the slope of the leak, on the layout of plot 3. `_PDG` scales both errors by the line's $\sqrt{\chi^2/{\rm ndf}}$ where that exceeds one, and shows the $\chi^2/{\rm ndf}$ in a third panel.
 - **The fits behind plots 3 to 5** are made once per system (OO and pp) and drawn twice: `SineFitQA/<System>/` leaves the resampled mixed events out, since they crowd every parameter canvas, and `With10Resamples/` below it has everything, for QA. Its `PerSlice/` holds the shown slices only and follows `gPocPerBinNominalOnly`, as the AEE mosaics do.
 - **`P0VsP1/`** plots, for each sample of its view, the sine $p_0$ of every $\eta_{\rm Proxy}$ bin against its $p_1$ ($p_1$ with its Minos errors, $p_0$ with the Hesse error it is condensed with; converged fits only). The points take the `Overlay/` canvases' colours: blue below $\eta=0$ and red above, deeper further out, open and filled markers, a diamond for the central bin, with a colour bar in the right margin mapping them back to $\eta_{\rm Proxy}$. It is the direct test of the opening-angle leak ([below](#the-opening-angle-leak-into-p_0)): a leak puts the points on a line through the origin, and an offset common to all bins shifts that line. The line of plot 5 is drawn over the points with its $\pm1\sigma$ band, and its coefficients and $\chi^2/{\rm ndf}$ in a box.
+- **`SineFitQA_Clean/<System>/`** redraws the main view's fits for presentation, one mass region per canvas and $p_0$ called $R_0$. `PerSlice/` (the shown slices, following `gPocPerBinNominalOnly`) has Data and Mix. Jet of one region with their sine curves, labelled by sample alone, and the model in a box; `Canvas_R0VsEta_{InPeak,OutOfPeak}` the $R_0$ of every bin, nothing fitted; `Canvas_DeltaR0VsEta` plot 4's in-peak differences bin by bin, with their constant; `Canvas_DeltaR0` the system's two condensed $\Delta R_0$, InPeak $-$ OutOfPeak (plot 4_1) and Data $-$ Mix. Jet (plot 4), PDG-scaled. A system's own canvases name its own mass windows.
 - The files are built by `PocMakeCell`, as for the rest of `ProofOfConcept/`.
 
 "OO", "pp" and "Mix. Jet" are story constants (`STORY_SYSTEM`, `STORY_MIXED_LABEL`); the rest of the macro still says "MixedEv Jet".
@@ -1915,6 +1918,36 @@ If the points curve, the model may only be extended by odd functions of $p_1$ (a
 ##### The pair symmetrization, precisely
 
 `SymmetrizationQA/` averages each slice with its mirror, $\tfrac12[y(+\eta)+y(-\eta)]$, with equal weights whatever the statistics of the two sides. That average is the even part of $y(\eta)$, identically: nothing is reweighted, and the odd part is removed exactly. Whether the odd part is the whole fake is a separate statement. Under $M_z$ ($\vec B$ is axial and normal to that mirror, so it survives it), a true ring is even in $\eta_{\rm Jet}$ for a symmetric collision system and parity-conserving production, while a fake is odd **only if the whole setup is $M_z$-symmetric**: the detector, the $z_{\rm vtx}$ distribution and the populations inside each slice. An A/C difference or an offset $z_{\rm vtx}$ gives the fake an even part, which the average keeps and only a control removes (the mixed events, as far as they reproduce it). It can also give a true ring an odd part, through an $M_z$-asymmetric response, which the average then removes along with the fake. So an odd trend in $p_0(\eta)$ is always detector-made, but the symmetrised $p_0$ is fake-free only as far as $M_z$ holds. The half-differences show the odd part; the even part of the fake shows only against the mixed events.
+
+#### `EQD/` -- the qualifying-exam set
+
+```
+ProofOfConcept/EQD/<Species>/<Proxy>/
+    Canvas_1_IntegratedR_OO               <R> of OO Data and Mix. Jet OO, InPeak and OutOfPeak
+    Canvas_2_IntegratedR_pp               the same for pp
+    Canvas_3_SummaryRCorrected_OO         the three estimates, OO
+    Canvas_4_SummaryRCorrected_OOAndPp    the same frame, with pp beside OO
+    PurityCorrectedQA/                    plot 4 over each system's peak purity (QA only)
+```
+
+The set shown at the qualifying exam (Exame de Qualificacao de Doutorado): the Default selection's full ring, for every species and proxy. No number in it is new. Every value is the story's own, from the same single-borrow files (`DrawStoryIntegrated`, `DrawStorySineP0`), so the two folders cannot disagree.
+
+- **Plots 1 and 2** are plot 1 of the story, one system each. Zero is not forced into the frame, which zooms onto the points: for the full ring it is no reference anyway, since every level carries the acceptance fake. pp's windows are named after pp's own edges, which match OO's unless the run warned otherwise.
+- **Plots 3 and 4** set three estimates side by side, each system against its own baselines, over the value/sigma strip. Nothing is ever subtracted across systems.
+
+| Column | Estimate | Error |
+|---|---|---|
+| Data: InPeak $-$ OutOfPeak | $\langle R\rangle_P-\langle R\rangle_B$ of the data, integrated | quadrature, exact (disjoint regions) |
+| InPeak: Data $-$ Mix. Jet | in-peak $\langle R\rangle$ of the data minus that of its mixed events, integrated | quadrature, over-covers (the same $\Lambda$s) |
+| Sine fits, InPeak: Data $-$ Mix. Jet | plot 4's $\Delta R_0$: in-peak, bin by bin, then condensed | PDG-scaled |
+
+The y axis reads $\langle R\rangle_{\rm Corrected}$: the baseline-subtracted ring, in $R$ units. **Nothing is corrected for purity or for the response.** The three columns of one system still compare, because all three are formed on the peak's candidates, so one $f_S$ dilutes them alike ([One dilution for every estimate](#one-dilution-for-every-estimate)). Their responses are close but not equal: the integrated differences respond with $3\langle u^2\rangle_P-k\,R_dR_f$, the sine offset with $c$, which for an ideal detector is $1-\tfrac{\alpha^2}{6}p_1^2$ per slice ([What the sine $p_0$ measures](#what-the-sine-p_0-measures)), and which the toys put between $0.8$ and $1.0$. "The same scale" therefore holds to about 10-20%. Across systems neither holds, since OO's and pp's purities and responses differ: a column of plot 4 compares each system with its own baselines, never OO's height with pp's.
+
+**The build-up.** Plot 4 is plot 3 with pp added, two steps of one slide, so OO's points must not move between them. Horizontally they do not: `DrawPocPanels` keeps a value's slot even when it is empty, so plot 3 passes pp as missing and OO sits at the left slot of every column in both. Vertically they would, since both ranges (values and pulls) follow what is drawn, so `PocPanel::frameVals` holds values that enter the ranges without being drawn, and plot 3 gets pp's there. A key at the top left tells the systems apart by a plain circle, filled for OO and open for pp. Its height would move the frame too, so plot 3 lists OO alone but keeps the room of both rows (`PocPanelLook::keyRows`). The looks are the story's colours, one per estimate (the data's black, the mixed events' red, pp's azure), each with its own marker shape, filled for OO and open for pp.
+
+**Sized for slides.** The four main canvases take half the default left margin, and plots 3 and 4 also larger column labels, y title and pad title, with the note at the bottom right (room is kept for it under the points, as for the boxes at the top). These are a `PocPanelLook` of their own; every other canvas keeps the defaults.
+
+**`PurityCorrectedQA/`** divides plot 4 by each system's bin-counting purity, $f_S=(N_P-s\,N_B)/N_P$ (`PocPurityPeak`), both values in the note. For the first column the division is exactly the sideband subtraction, $(R_P-R_B)/f_S=R_S-R_B$. The error adds the relative errors in quadrature, ignoring the counts that $f_S$ shares with the means. It brings OO and pp closer to one scale (the responses still differ), for reading magnitudes, not for showing.
 
 ### Output layout
 
